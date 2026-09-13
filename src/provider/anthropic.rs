@@ -53,7 +53,7 @@ impl HttpClient<AnthropicAdapter> {
 /// Anthropic requires strictly alternating user/assistant roles; merge
 /// consecutive same-role content into blocks. Consecutive tool results become
 /// one user message of tool_result blocks.
-fn to_blocks(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
+fn to_blocks(messages: &[ChatMessage], drop_reasoning: bool) -> (Vec<String>, Vec<Value>) {
     let mut system: Vec<String> = vec![];
     let mut out: Vec<Value> = vec![];
     for m in messages {
@@ -66,9 +66,12 @@ fn to_blocks(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
             Role::Assistant => {
                 let mut parts: Vec<Value> = vec![];
                 // verbatim thinking/redacted_thinking blocks lead the
-                // assistant message (required for echo-back)
-                if let Some(Value::Array(items)) = &m.provider_state {
-                    parts.extend(items.iter().cloned());
+                // assistant message (required for echo-back); skipped once
+                // a 400 has dropped thinking for this attempt
+                if !drop_reasoning {
+                    if let Some(Value::Array(items)) = &m.provider_state {
+                        parts.extend(items.iter().cloned());
+                    }
                 }
                 if let Some(c) = &m.content {
                     parts.push(json!({"type": "text", "text": c}));
@@ -145,7 +148,7 @@ impl ProtocolAdapter for AnthropicAdapter {
         tools: &[ToolSpec],
         attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
-        let (system, msgs) = to_blocks(messages);
+        let (system, msgs) = to_blocks(messages, attempt.drop_reasoning);
         let tool_specs: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -174,7 +177,8 @@ impl ProtocolAdapter for AnthropicAdapter {
                 max_tokens = b + max_out;
             }
             body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
-        } else {
+        }
+        if !thinking_on && !attempt.drop_temperature {
             // temperature is rejected when extended thinking is enabled
             body["temperature"] = json!(self.route.temperature);
         }
