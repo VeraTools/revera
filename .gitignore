@@ -2,3 +2,6 @@
 .revera/
 .vera/
 *.log
+
+eval/corpus/
+eval/tmp/
