@@ -8,18 +8,22 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 CONFIG_NAME="$1"; CORPUS="$2"; REPS="${3:-1}"
+REP_START="${4:-1}"
 CONFIG="$HERE/configs/${CONFIG_NAME}.yaml"
 SRC="$HERE/corpus/$CORPUS"
 BIN="$ROOT/target/debug/revera"
 RESULTS="$HERE/results.jsonl"
+REPORTS="$HERE/reports"
 
 export PATH="$HOME/.local/bin:$PATH"
 export VERA_HOME="${VERA_HOME:-$HOME/.vera-revera}"
 
 [ -f "$CONFIG" ] || { echo "no config $CONFIG" >&2; exit 1; }
 [ -d "$SRC" ] || { echo "no corpus $SRC" >&2; exit 1; }
+mkdir -p "$REPORTS"
 
-for rep in $(seq 1 "$REPS"); do
+REP_END=$((REP_START + REPS - 1))
+for rep in $(seq "$REP_START" "$REP_END"); do
     TMP="$(mktemp -d)"
     cp -a "$SRC" "$TMP/repo"
     git -C "$TMP/repo" checkout -q head 2>/dev/null || true
@@ -30,6 +34,7 @@ for rep in $(seq 1 "$REPS"); do
         --out "$OUT" > "$TMP/stdout.txt" 2> "$TMP/stderr.log"
     RC=$?
     if [ -f "$OUT" ]; then
+        cp "$OUT" "$REPORTS/${CONFIG_NAME}-${CORPUS}-${rep}.json"
         python3 "$HERE/score.py" "$OUT" "$SRC/truth.json" \
             "$CONFIG_NAME" "$CORPUS" "$rep" >> "$RESULTS"
     else

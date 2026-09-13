@@ -42,6 +42,10 @@ struct WorkerReport {
     gaps: Vec<String>,
 }
 
+fn worker_failure_reason(index: usize, model: &str, detail: &str) -> String {
+    format!("worker {index} ({model}) did not complete: {detail}")
+}
+
 /// Delegated strategy: lead plans bounded questions, workers answer them
 /// concurrently, the lead synthesizes final candidates.
 pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, ReviewState)> {
@@ -121,16 +125,14 @@ async fn delegated_candidates(
     questions.truncate(cfg.delegated.max_questions);
     if questions.is_empty() {
         // no questions -> degrade to baseline investigator
+        prep.partial_reasons
+            .push("lead produced no questions; fell back to baseline".into());
         tracing::info!("delegated: lead returned no questions; running baseline investigator");
         return super::baseline::investigate(cfg, req, prep).await;
     }
 
     // ---- 2. workers concurrently ----
-    let worker_routes: Vec<_> = cfg
-        .models
-        .workers
-        .clone()
-        .unwrap_or_else(|| vec![cfg.models.investigator.clone()]);
+    let worker_routes = cfg.models.workers.as_deref().unwrap_or(&[]);
     let worker_terminal = terminal_submit_worker_result_spec();
     let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(&[
         "read_file",
@@ -148,7 +150,7 @@ async fn delegated_candidates(
     // Create clients in lane order so scripted conversations pop deterministically.
     let mut worker_clients = Vec::new();
     for (i, _q) in questions.iter().enumerate() {
-        let route = &worker_routes[i % worker_routes.len()];
+        let route = select_worker_route(worker_routes, &cfg.models.investigator, i);
         let c = match make_client(
             route,
             "workers",
@@ -165,6 +167,9 @@ async fn delegated_candidates(
     let max_req = cfg.budget.run_max_requests;
     let lane_futs = questions.iter().enumerate().map(|(i, q)| {
         let client = worker_clients[i].clone();
+        let worker_model = select_worker_route(worker_routes, &cfg.models.investigator, i)
+            .model
+            .clone();
         let tb = worker_tb.clone();
         let terminal = worker_terminal.clone();
         let budget = lane_budget.clone();
@@ -186,7 +191,7 @@ async fn delegated_candidates(
         );
         async move {
             if ledger.request_count() >= max_req {
-                return (i, qid, None);
+                return (i, qid, worker_model, None);
             }
             let run = run_agent(
                 client.as_ref(),
@@ -197,14 +202,14 @@ async fn delegated_candidates(
                 &budget,
             )
             .await;
-            (i, qid, Some(run))
+            (i, qid, worker_model, Some(run))
         }
     });
     let mut lanes =
         futures::stream::iter(lane_futs).buffer_unordered(cfg.review.concurrency.max(1));
     let mut skipped = 0usize;
     let mut reports: Vec<WorkerReport> = Vec::new();
-    while let Some((i, qid, run)) = lanes.next().await {
+    while let Some((i, qid, worker_model, run)) = lanes.next().await {
         let Some(run) = run else {
             skipped += 1;
             continue;
@@ -263,6 +268,10 @@ async fn delegated_candidates(
                 gaps: vec![format!("question {qid}: worker failed: {e}")],
             },
         };
+        if report.result == "blocked" {
+            prep.partial_reasons
+                .push(worker_failure_reason(i, &worker_model, &report.answer));
+        }
         let _ = i;
         reports.push(report);
     }
@@ -356,6 +365,19 @@ async fn delegated_candidates(
     Ok(candidates)
 }
 
+fn select_worker_route<'a>(
+    workers: &'a [crate::config::ModelRoute],
+    investigator: &'a crate::config::ModelRoute,
+    question_index: usize,
+) -> &'a crate::config::ModelRoute {
+    workers
+        .iter()
+        .filter(|w| !w.model.is_empty())
+        .cycle()
+        .nth(question_index)
+        .unwrap_or(investigator)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,10 +427,34 @@ vera: {}
 
     #[test]
     fn worker_routing_round_robins() {
-        // question i uses workers[i % len]
-        let workers = ["w0", "w1"];
-        let assigned: Vec<&&str> = (0..5).map(|i| &workers[i % workers.len()]).collect();
-        assert_eq!(assigned, [&"w0", &"w1", &"w0", &"w1", &"w0"]);
+        let c = cfg();
+        let workers = c.models.workers.as_deref().unwrap();
+        let assigned: Vec<String> = (0..5)
+            .map(|i| {
+                select_worker_route(workers, &c.models.investigator, i)
+                    .model
+                    .clone()
+            })
+            .collect();
+        assert_eq!(assigned, ["w0", "w1", "w0", "w1", "w0"]);
+        let empty: Vec<crate::config::ModelRoute> = vec![];
+        let assigned: Vec<String> = (0..5)
+            .map(|i| {
+                select_worker_route(&empty, &c.models.investigator, i)
+                    .model
+                    .clone()
+            })
+            .collect();
+        assert!(assigned.iter().all(|model| model == "m"));
+    }
+
+    #[test]
+    fn blocked_worker_reason_is_partial_specific() {
+        let reason = worker_failure_reason(2, "worker-model", "worker stopped without submitting");
+        assert_eq!(
+            reason,
+            "worker 2 (worker-model) did not complete: worker stopped without submitting"
+        );
     }
 
     #[tokio::test]

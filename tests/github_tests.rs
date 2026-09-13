@@ -13,14 +13,14 @@ fn event() -> PrEvent {
     parse_event(Path::new("tests/fixtures/pr_event.json")).unwrap()
 }
 
-fn report(inline: Vec<InlineComment>) -> RunReport {
+fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> RunReport {
     RunReport {
         status: RunStatus::Complete,
         reason: None,
         base: "b".into(),
         head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         strategy: "baseline".into(),
-        findings: vec![],
+        findings,
         plan: PublicationPlan {
             inline,
             summary_markdown: "## Revera review\n\n- finding\n".into(),
@@ -37,6 +37,10 @@ fn report(inline: Vec<InlineComment>) -> RunReport {
         publication: Default::default(),
         coverage_gaps: vec![],
     }
+}
+
+fn report(inline: Vec<InlineComment>) -> RunReport {
+    report_with_findings(inline, vec![])
 }
 
 fn finding(id_body_file: &str) -> Finding {
@@ -303,4 +307,208 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
     assert_eq!(comments.len(), 1, "only the unposted id is commented");
     assert_eq!(comments[0]["path"], "src/y.rs");
     assert!(st.findings.iter().all(|f| f.posted));
+}
+
+#[tokio::test]
+async fn summary_only_finding_marked_posted() {
+    let server = MockServer::start().await;
+    let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": head_sha}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .mount(&server)
+        .await;
+
+    let api = GitHubApi::with_base(&server.uri(), "t");
+    let f = finding("src/outside.rs");
+    let mut rep = report_with_findings(vec![], vec![f.clone()]);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    let p = publish(
+        &api,
+        &event(),
+        &mut rep,
+        &mut st,
+        10,
+        "<!-- revera-summary -->",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(p.review_id.is_none());
+    assert_eq!(p.summary_comment_id, Some(555));
+    assert!(st.findings[0].posted);
+    assert!(!st
+        .findings
+        .iter()
+        .any(|f| f.status == FindingState::Open && !f.posted));
+
+    let reqs = server.received_requests().await.unwrap();
+    assert!(!reqs
+        .iter()
+        .any(|r| r.url.path() == "/repos/acme/widgets/pulls/42/reviews"));
+    let summary_req = reqs
+        .iter()
+        .find(|r| r.url.path() == "/repos/acme/widgets/issues/42/comments" && r.method == "POST")
+        .expect("summary comment posted");
+    let v: serde_json::Value = serde_json::from_slice(&summary_req.body).unwrap();
+    let persisted = decode_state(v["body"].as_str().unwrap()).unwrap();
+    assert!(persisted.findings[0].posted);
+}
+
+#[tokio::test]
+async fn summary_failure_leaves_finding_unposted() {
+    let server = MockServer::start().await;
+    let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": head_sha}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let api = GitHubApi::with_base(&server.uri(), "t");
+    let f = finding("src/outside.rs");
+    let mut rep = report_with_findings(vec![], vec![f.clone()]);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(publish(
+        &api,
+        &event(),
+        &mut rep,
+        &mut st,
+        10,
+        "<!-- revera-summary -->",
+        &[],
+    )
+    .await
+    .is_err());
+    assert!(!st.findings[0].posted);
+}
+
+#[tokio::test]
+async fn inline_review_422_degrades_to_summary_only() {
+    let server = MockServer::start().await;
+    let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": head_sha}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(ResponseTemplate::new(422).set_body_string("line is not part of the diff"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .mount(&server)
+        .await;
+
+    let api = GitHubApi::with_base(&server.uri(), "t");
+    let f = finding("src/x.rs");
+    let mut rep = report_with_findings(
+        vec![InlineComment {
+            file: f.file.clone(),
+            line: f.start_line,
+            end_line: None,
+            body: revera::report::finding_body(&f),
+        }],
+        vec![f.clone()],
+    );
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    let p = publish(
+        &api,
+        &event(),
+        &mut rep,
+        &mut st,
+        10,
+        "<!-- revera-summary -->",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(p.review_id.is_none());
+    assert_eq!(p.summary_comment_id, Some(555));
+    assert_eq!(
+        p.skipped_reason.as_deref(),
+        Some("inline review rejected by GitHub (422); findings listed in summary only")
+    );
+    assert!(st.findings.iter().all(|f| f.posted));
+}
+
+#[tokio::test]
+async fn inline_review_500_still_fails_and_leaves_unposted() {
+    let server = MockServer::start().await;
+    let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": head_sha}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+        .mount(&server)
+        .await;
+
+    let api = GitHubApi::with_base(&server.uri(), "t");
+    let f = finding("src/x.rs");
+    let mut rep = report_with_findings(
+        vec![InlineComment {
+            file: f.file.clone(),
+            line: f.start_line,
+            end_line: None,
+            body: revera::report::finding_body(&f),
+        }],
+        vec![f.clone()],
+    );
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(publish(
+        &api,
+        &event(),
+        &mut rep,
+        &mut st,
+        10,
+        "<!-- revera-summary -->",
+        &[],
+    )
+    .await
+    .is_err());
+    assert!(!st.findings[0].posted);
 }

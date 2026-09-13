@@ -217,6 +217,16 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                 }
             }
         }
+        if parsed["status"].as_str() == Some("incomplete")
+            && parsed["incomplete_details"]["reason"].as_str() == Some("max_output_tokens")
+            && calls.is_empty()
+            && text_parts.is_empty()
+        {
+            return Parse::Err(ProviderError::Other(
+                "output truncated at max_output_tokens with empty output; raise max_output_tokens or lower reasoning effort"
+                    .into(),
+            ));
+        }
         if calls.is_empty() && text_parts.is_empty() {
             return Parse::Err(ProviderError::Other(format!(
                 "no usable output items in response: {}",

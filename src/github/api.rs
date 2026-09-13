@@ -1,5 +1,20 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::fmt;
+
+#[derive(Debug)]
+pub struct GitHubHttpError {
+    pub status: u16,
+    pub body: String,
+}
+
+impl fmt::Display for GitHubHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "GitHub HTTP {}: {}", self.status, excerpt(&self.body))
+    }
+}
+
+impl std::error::Error for GitHubHttpError {}
 
 #[derive(Debug, Clone)]
 pub struct GhComment {
@@ -64,7 +79,7 @@ impl GitHubApi {
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         if status >= 400 {
-            bail!("GitHub HTTP {status}: {}", excerpt(&text));
+            return Err(GitHubHttpError { status, body: text }.into());
         }
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }

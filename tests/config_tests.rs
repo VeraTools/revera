@@ -132,3 +132,20 @@ vera: {backend: local}
     let f = write_tmp(&bad);
     assert!(Config::load(f.path()).is_err(), "unknown effort must fail");
 }
+
+#[test]
+fn empty_workers_and_scouts_normalize_to_none() {
+    let yaml = r#"
+review: {strategy: baseline}
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+  validator: {protocol: scripted, script: /tmp/s, model: m}
+  workers: []
+  scouts: []
+vera: {backend: local}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert!(c.models.workers.is_none());
+    assert!(c.models.scouts.is_none());
+}

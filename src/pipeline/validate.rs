@@ -1,5 +1,5 @@
 use super::make_client;
-use crate::agent::{run_agent, AgentBudget, AgentRun};
+use crate::agent::{run_agent, AgentBudget, AgentRun, StopReason};
 use crate::config::Config;
 use crate::diff::DiffSet;
 use crate::findings::{Finding, ValidationStatus, Verdict};
@@ -8,6 +8,23 @@ use crate::provider::{LedgerHandle, ToolSpec};
 use crate::tools::{terminal_submit_verdict_spec, ToolBox};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+
+fn validator_budget_at(
+    max_tool_calls: u32,
+    max_seconds: u64,
+    now: std::time::Instant,
+    deadline: std::time::Instant,
+) -> Option<AgentBudget> {
+    let remaining = deadline.checked_duration_since(now)?;
+    let max_seconds = max_seconds.min(remaining.as_secs());
+    if max_seconds == 0 {
+        return None;
+    }
+    Some(AgentBudget {
+        max_tool_calls,
+        max_seconds,
+    })
+}
 
 /// Run one fresh-context validator agent per candidate, bounded by a
 /// concurrency semaphore. Failures mark the candidate uncertain; returns
@@ -48,6 +65,25 @@ pub async fn validate_candidates(
         let excerpt = diff.file_excerpt(&cand.file);
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
+            let agent_budget = match validator_budget_at(
+                budget.agent_max_tool_calls,
+                budget.agent_max_seconds,
+                std::time::Instant::now(),
+                deadline,
+            ) {
+                Some(budget) => budget,
+                None => {
+                    return (
+                        i,
+                        Ok(AgentRun {
+                            final_call: None,
+                            transcript_len: 0,
+                            tool_calls: 0,
+                            stopped: StopReason::TimeBudget,
+                        }),
+                    )
+                }
+            };
             let client =
                 match make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name) {
                     Ok(c) => c,
@@ -74,10 +110,7 @@ pub async fn validate_candidates(
                 &user,
                 &tb,
                 &terminal,
-                &AgentBudget {
-                    max_tool_calls: budget.agent_max_tool_calls,
-                    max_seconds: budget.agent_max_seconds,
-                },
+                &agent_budget,
             )
             .await;
             (i, run)
@@ -90,7 +123,7 @@ pub async fn validate_candidates(
         }
     }
     let mut clean = skipped_from.is_none();
-    let reason = skipped_from.map(|_| "run time budget exhausted".to_string());
+    let mut reason = skipped_from.map(|_| "run time budget exhausted".to_string());
     while let Some(res) = set.join_next().await {
         let (i, run) = res.expect("validator task panicked");
         let cand = &mut candidates[i];
@@ -119,6 +152,15 @@ pub async fn validate_candidates(
                     cand.rationale = Some(format!("validator returned malformed verdict: {e}"));
                 }
             },
+            Ok(AgentRun {
+                stopped: StopReason::TimeBudget,
+                ..
+            }) => {
+                clean = false;
+                reason = Some("run time budget exhausted".into());
+                cand.validation_status = Some(ValidationStatus::Uncertain);
+                cand.rationale = Some("run time budget exhausted".into());
+            }
             Ok(AgentRun { stopped, .. }) => {
                 clean = false;
                 cand.validation_status = Some(ValidationStatus::Uncertain);
@@ -148,4 +190,24 @@ pub fn validator_prompt() -> &'static str {
 
 pub fn recheck_prompt() -> &'static str {
     prompts::RECHECK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validator_budget_at;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn validator_budget_is_none_after_deadline() {
+        let now = Instant::now();
+        assert!(validator_budget_at(4, 30, now, now - Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn validator_budget_is_none_under_one_second() {
+        let now = Instant::now();
+        assert!(validator_budget_at(4, 30, now, now + Duration::from_millis(400)).is_none());
+        let b = validator_budget_at(4, 30, now, now + Duration::from_secs(5)).unwrap();
+        assert_eq!(b.max_seconds, 5);
+    }
 }

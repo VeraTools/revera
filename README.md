@@ -23,13 +23,20 @@ managed summary comment carrying its state blob.
 
 ```yaml
 - uses: actions/checkout@v4
-  with: { fetch-depth: 0 }
-- uses: VeraTools/revera@v1
+  with:
+    fetch-depth: 0
+    ref: ${{ github.event.pull_request.head.sha }}
+- uses: VeraTools/revera@v0
   with: { config: revera.yaml }
   env:
     REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
+
+`@v1` becomes available with the 1.0.0 release; pin `@v0.1.0` for an exact version.
+
+The checkout must use the PR head SHA so reviewer tools read the exact PR
+tree rather than GitHub's synthetic merge ref.
 
 Workflow permissions: `pull-requests: write`, `contents: read`.
 
@@ -70,13 +77,22 @@ CI; requires `OPENROUTER_API_KEY`):
 ```sh
 cargo build
 bash eval/build-corpus.sh            # 6 repos under eval/corpus/
+bash eval/build-corpus-hard.sh       # +7 harder repos (regressions, multi-hop, clean traps)
 bash eval/run.sh A-baseline crossfile 2   # one config x corpus x reps
 bash eval/run-all.sh 2               # full matrix, <=3 lanes parallel
-python3 eval/summarize.py eval/results.jsonl
+CORPORA="utf8-truncate trait-contract" CONFIGS="A-baseline F-delegated" bash eval/run-all.sh 2
+python3 eval/summarize.py eval/results.jsonl [corpus1,corpus2,...]
 ```
+
+Measured so far (muse-spark on every route; see docs/EVAL.md): all
+configurations find 8/8 easy and 9/10 hard defects; baseline with Vera and
+validation has zero false positives and the lowest cost, so it is the default.
+Panel/delegated cost 1.8–2x with no recall gain here. Not measured: strong
+validator or scout models, large repositories.
 
 ## Status
 
-M5: all three strategies (baseline / delegated / panel), GitHub event mode
-with `--publish comment`, composite action + release workflow, and a 6-repo
-eval harness in `eval/` (see docs/EVAL.md).
+All three strategies (baseline / delegated / panel), GitHub event mode with
+`--publish comment` reviewing the exact PR head, composite action + verified
+release workflow, and a 13-repo eval harness in `eval/`. No release tag has
+been cut yet; see STATUS.md for limitations and docs/EVAL.md for results.

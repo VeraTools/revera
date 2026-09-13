@@ -100,7 +100,7 @@
   ```yaml
   - uses: actions/checkout@v4
     with: { fetch-depth: 0 }
-  - uses: VeraTools/revera@v1
+  - uses: VeraTools/revera@v0
     with: { config: revera.yaml }
     env: { REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}, OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }} }
   ```

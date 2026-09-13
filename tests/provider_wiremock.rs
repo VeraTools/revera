@@ -1,3 +1,4 @@
+use chrono::{Duration as ChronoDuration, Utc};
 use revera::config::{ModelRoute, Protocol};
 use revera::provider::openai_chat::OpenAiChatClient;
 use revera::provider::{ChatMessage, LedgerHandle, ModelClient, ProviderError};
@@ -5,6 +6,32 @@ use serde_json::json;
 use std::collections::HashMap;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[test]
+fn retry_after_supports_delta_dates_and_caps() {
+    use revera::provider::http::HttpTransport;
+
+    let now = Utc::now();
+    assert_eq!(
+        HttpTransport::retry_delay(Some("3"), 1, now),
+        std::time::Duration::from_secs(3)
+    );
+    let date = (now + ChronoDuration::seconds(10)).to_rfc2822();
+    let date_delay = HttpTransport::retry_delay(Some(&date), 1, now);
+    assert!((9..=10).contains(&date_delay.as_secs()));
+    assert_eq!(
+        HttpTransport::retry_delay(Some("abc"), 1, now),
+        std::time::Duration::from_millis(500)
+    );
+    assert_eq!(
+        HttpTransport::retry_delay(Some("1e9"), 1, now),
+        std::time::Duration::from_secs(60)
+    );
+    assert_eq!(
+        HttpTransport::retry_delay(Some("Wed, 21 Oct 2015 07:28:00 GMT"), 1, now),
+        std::time::Duration::ZERO
+    );
+}
 
 fn route(url: &str) -> ModelRoute {
     std::env::set_var("REVERA_TEST_KEY", "sk-test");
@@ -47,6 +74,48 @@ async fn success_with_tool_calls() {
     assert_eq!(r.message.tool_calls[0].name, "submit_findings");
     assert_eq!(r.usage.prompt_tokens, 10);
     assert_eq!(r.model, "test-model");
+}
+
+#[tokio::test]
+async fn truncated_empty_chat_reply_is_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": null}
+            }],
+            "usage": {}
+        })))
+        .mount(&server)
+        .await;
+    let err = client(&server.uri())
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("output truncated"));
+}
+
+#[tokio::test]
+async fn truncated_chat_reply_with_content_succeeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": "partial answer"}
+            }],
+            "usage": {}
+        })))
+        .mount(&server)
+        .await;
+    let result = client(&server.uri())
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap();
+    assert_eq!(result.message.content.as_deref(), Some("partial answer"));
 }
 
 #[tokio::test]

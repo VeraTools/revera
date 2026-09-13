@@ -1,4 +1,5 @@
 use super::{ChatMessage, Completion, LedgerEntry, LedgerHandle, ProviderError, ToolSpec, Usage};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
@@ -123,14 +124,24 @@ impl HttpTransport {
     }
 
     fn backoff(attempt: u32) -> Duration {
-        let backoff = 0.5 * 2f64.powi(attempt as i32 - 1);
-        let jitter = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
-            % 250) as f64
-            / 1000.0;
-        Duration::from_secs_f64(backoff + jitter)
+        let backoff = 0.5 * 2f64.powi(attempt.saturating_sub(1) as i32);
+        Duration::from_secs_f64(backoff.min(MAX_RETRY_AFTER_SECS))
+    }
+
+    pub fn retry_delay(header: Option<&str>, attempt: u32, now: DateTime<Utc>) -> Duration {
+        if let Some(value) = header.map(str::trim) {
+            if let Ok(seconds) = value.parse::<f64>() {
+                if seconds.is_finite() && seconds >= 0.0 {
+                    return Duration::from_secs_f64(seconds.min(MAX_RETRY_AFTER_SECS));
+                }
+            } else if let Ok(date) = DateTime::parse_from_rfc2822(value) {
+                let seconds = (date.with_timezone(&Utc) - now)
+                    .to_std()
+                    .unwrap_or_default();
+                return seconds.min(Duration::from_secs_f64(MAX_RETRY_AFTER_SECS));
+            }
+        }
+        Self::backoff(attempt)
     }
 
     pub async fn send<A: ProtocolAdapter>(
@@ -181,9 +192,7 @@ impl HttpTransport {
                         .headers()
                         .get("retry-after")
                         .and_then(|h| h.to_str().ok())
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .filter(|s| s.is_finite() && *s >= 0.0)
-                        .map(|s| s.min(MAX_RETRY_AFTER_SECS));
+                        .map(str::to_string);
                     let text = resp.text().await.unwrap_or_default();
                     if status == 429 || status >= 500 {
                         if attempts <= self.retries {
@@ -197,9 +206,8 @@ impl HttpTransport {
                                 },
                             );
                             retries_used += 1;
-                            let d = retry_after
-                                .map(Duration::from_secs_f64)
-                                .unwrap_or_else(|| Self::backoff(retries_used));
+                            let d =
+                                Self::retry_delay(retry_after.as_deref(), retries_used, Utc::now());
                             tokio::time::sleep(d).await;
                             continue;
                         }
@@ -289,7 +297,7 @@ impl HttpTransport {
                             },
                         );
                         retries_used += 1;
-                        tokio::time::sleep(Self::backoff(retries_used)).await;
+                        tokio::time::sleep(Self::retry_delay(None, retries_used, Utc::now())).await;
                         continue;
                     }
                     let err = ProviderError::Http(e.to_string());

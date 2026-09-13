@@ -1,4 +1,5 @@
 name: Revera
+# Consumers must check out pull_request.head.sha so reviewer tools read the PR head tree.
 description: Provider-independent PR reviewer with Vera retrieval
 branding:
   icon: search
@@ -89,17 +90,9 @@ runs:
       run: |
         set -euo pipefail
         ver="${{ inputs.revera-version }}"
-        base="https://github.com/VeraTools/revera/releases/download/v${ver}"
         mkdir -p "$RUNNER_TEMP/bin"
-        curl -fsSL "$base/revera-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/revera.tar.gz
-        curl -fsSL "$base/revera-x86_64-unknown-linux-gnu.tar.gz.sha256" -o /tmp/revera.sha256
-        want=$(cut -d' ' -f1 /tmp/revera.sha256)
-        got=$(sha256sum /tmp/revera.tar.gz | cut -d' ' -f1)
-        if [ "$want" != "$got" ]; then echo "revera sha256 mismatch: $got != $want" >&2; exit 1; fi
-        tar -xzf /tmp/revera.tar.gz -C "$RUNNER_TEMP/bin"
-        chmod +x "$RUNNER_TEMP/bin/revera"
+        "${{ github.action_path }}/scripts/install-revera.sh" "$ver" "$RUNNER_TEMP/bin"
         echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-        revera --version || true
 
     - name: Run revera
       id: revera
