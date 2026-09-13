@@ -33,7 +33,7 @@ models:
     api_key_env: REVIEW_API_KEY
     model: strong-validator-model
     max_output_tokens: 3000
-  # lead: (optional; delegated mode) defaults to validator
+  # lead: (optional; delegated mode) defaults to investigator
   # workers: (optional; delegated mode) list, defaults to [investigator]
   scouts:                     # panel mode lanes; also used as delegated workers if `workers` is unset
     - name: general
@@ -62,6 +62,15 @@ vera:
     model: qwen/qwen3-reranker-8b
     api_key_env: OPENROUTER_API_KEY
   exclude: []                 # extra globs passed to `vera update --exclude`
+
+delegated:                   # strategy: delegated
+  max_questions: 4            # lead's plan is capped here
+  worker_max_tool_calls: 12
+  worker_max_seconds: 120
+
+panel:                       # strategy: panel
+  focuses: [general, cross-file]
+  scout_max_tool_calls: 15
 
 github:
   token_env: GITHUB_TOKEN

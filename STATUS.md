@@ -19,20 +19,33 @@
 - `openai-chat` provider (tool calling, retries, `max_completion_tokens`
   fallback, content-array replies, run request budget) and `scripted`
   provider for offline fixtures.
-- Fixture suite: `fixtures/run-fixture.sh` exercises break → fix → clean.
+- `delegated` strategy: lead plans bounded questions (`submit_plan`), workers
+  answer them concurrently on a restricted toolbox (`submit_worker_result`),
+  lead synthesizes final candidates (`submit_findings`); blocked/gaps surface
+  as coverage_gaps under "Not checked"; 0-question plans degrade to baseline.
+- `panel` strategy: concurrent scout lanes (investigator prompt + focus
+  addendum parsed from prompts/scout_focus.md `## <focus>` sections), union +
+  collapse, "panel: N scouts, M raw candidates → K unique" in the summary.
+- Run-wide controls: wall-clock deadline (run_max_seconds) caps every agent
+  call and marks unvalidated candidates uncertain; request reservations count
+  every HTTP attempt (incl. retries); lanes past the request budget are
+  skipped with a partial_reason.
+- Fixture suite: `fixtures/run-fixture.sh` exercises break → fix → clean →
+  delegated → panel (all scripted).
 - `action.yml` composite action (vera+revera install with sha256 verify,
   .vera cache restore/save, fail-on), release workflow (tag `v*` → release +
   major tag move), self-review dogfood workflow.
 
 ## Current blocker
 
-None for M1+M2+M3 baseline. `delegated`/`panel` strategies remain future work.
+None for M1–M4. Live delegated + panel runs on the crossfile `break` fixture
+both found the bug (muse-spark all routes); see docs/EVAL.md.
 
 ## Next three tasks
 
-1. `delegated` strategy (lead plan → workers → lead synthesize).
-2. `panel` strategy (scout lanes, union + collapse).
-3. Cut a `v0.1.x`/`v1.x` tag to exercise the release workflow.
+1. Address review feedback / CI on the PR.
+2. Cut a `v0.1.x`/`v1.x` tag to exercise the release workflow.
+3. Tune delegated/panel model routing (lead vs worker/scout quality).
 
 ## Exact test-demo command
 
