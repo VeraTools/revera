@@ -28,6 +28,13 @@ models:
     model: cheap-review-model
     max_output_tokens: 4000
     temperature: 0.2
+    reasoning: medium          # none|minimal|low|medium|high|xhigh (default medium)
+    # long form:
+    # reasoning:
+    #   effort: high           # effort level
+    #   budget_tokens: 16384   # wins over the effort->budget map
+    #   field: auto            # openai-chat only: auto|openai|openrouter
+    #                          # (auto = openrouter iff base_url host is openrouter.ai)
   validator:
     protocol: openai-chat
     base_url: ${REVIEW_BASE_URL}
