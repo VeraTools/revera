@@ -94,5 +94,5 @@ validator or scout models, large repositories.
 
 All three strategies (baseline / delegated / panel), GitHub event mode with
 `--publish comment` reviewing the exact PR head, composite action + verified
-release workflow, and a 13-repo eval harness in `eval/`. No release tag has
-been cut yet; see STATUS.md for limitations and docs/EVAL.md for results.
+release workflow, and a 13-repo eval harness in `eval/`. `v0.1.0` is released
+(`@v0` resolves); see STATUS.md for limitations and docs/EVAL.md for results.
