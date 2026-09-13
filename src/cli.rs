@@ -1,7 +1,7 @@
 use crate::config::{Config, PublishMode, Strategy};
 use crate::pipeline::common::ReviewRequest;
 use crate::pipeline::run as pipeline_run;
-use crate::report::RunStatus;
+use crate::report::{surfaced_ids, RunStatus};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -351,6 +351,13 @@ async fn review(a: ReviewArgs) -> i32 {
             if let Err(e) = std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()) {
                 eprintln!("error: cannot write {}: {e}", out.display());
                 return 1;
+            }
+            if !(api.is_some() && publish == PublishMode::Comment) {
+                state.mark_posted(&surfaced_ids(&report));
+                if let Err(e) = state.save(&repo) {
+                    eprintln!("error: cannot save state: {e}");
+                    return 1;
+                }
             }
             eprintln!("report: {}", out.display());
             match report.status {

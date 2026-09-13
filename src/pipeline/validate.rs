@@ -1,5 +1,5 @@
-use super::make_client;
-use crate::agent::{run_agent, AgentBudget, AgentRun};
+use super::{common::clamp_budget, make_client};
+use crate::agent::{run_agent, AgentRun};
 use crate::config::Config;
 use crate::diff::DiffSet;
 use crate::findings::{Finding, ValidationStatus, Verdict};
@@ -46,6 +46,11 @@ pub async fn validate_candidates(
         let role = role.to_string();
         let cand = c.clone();
         let excerpt = diff.file_excerpt(&cand.file);
+        let agent_budget = clamp_budget(
+            budget.agent_max_tool_calls,
+            budget.agent_max_seconds,
+            deadline,
+        );
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let client =
@@ -74,10 +79,7 @@ pub async fn validate_candidates(
                 &user,
                 &tb,
                 &terminal,
-                &AgentBudget {
-                    max_tool_calls: budget.agent_max_tool_calls,
-                    max_seconds: budget.agent_max_seconds,
-                },
+                &agent_budget,
             )
             .await;
             (i, run)

@@ -1,4 +1,5 @@
 use crate::findings::{Finding, ValidationStatus};
+use crate::pipeline::anchor::is_publishable;
 use crate::provider::RunLedger;
 use crate::state::ReviewState;
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,15 @@ pub struct RunReport {
     /// Things the run could not check (worker gaps/blocked items).
     #[serde(default)]
     pub coverage_gaps: Vec<String>,
+}
+
+pub fn surfaced_ids(report: &RunReport) -> Vec<String> {
+    report
+        .findings
+        .iter()
+        .filter(|f| is_publishable(f))
+        .map(|f| f.id())
+        .collect()
 }
 
 /// Strip `<!--` so model text cannot forge our HTML markers.

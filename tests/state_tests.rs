@@ -1,4 +1,5 @@
 use revera::findings::{Finding, Severity, ValidationStatus};
+use revera::report::{surfaced_ids, LedgerReport, PublicationPlan, RunReport, RunStatus};
 use revera::state::{recheck_transition, FindingState, ReviewState};
 
 fn finding(file: &str, key: &str, line: u32) -> Finding {
@@ -77,4 +78,35 @@ fn recheck_transitions() {
         recheck_transition(ValidationStatus::Uncertain),
         FindingState::Uncertain
     );
+}
+
+#[test]
+fn surfaced_ids_only_returns_accepted_findings() {
+    let accepted = finding("accepted.rs", "accepted", 1);
+    let mut rejected = finding("rejected.rs", "rejected", 2);
+    rejected.validation_status = Some(ValidationStatus::Rejected);
+    let report = RunReport {
+        status: RunStatus::Complete,
+        reason: None,
+        base: "b".into(),
+        head: "h".into(),
+        strategy: "baseline".into(),
+        findings: vec![accepted.clone(), rejected],
+        plan: PublicationPlan {
+            inline: vec![],
+            summary_markdown: String::new(),
+            state: ReviewState::default(),
+        },
+        ledger: LedgerReport {
+            requests: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            reasoning_tokens: 0,
+            by_route: vec![],
+            wall_ms: 0,
+        },
+        publication: Default::default(),
+        coverage_gaps: vec![],
+    };
+    assert_eq!(surfaced_ids(&report), vec![accepted.id()]);
 }
