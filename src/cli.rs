@@ -20,9 +20,12 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
-        base: String,
+        base: Option<String>,
         #[arg(long)]
         head: Option<String>,
+        /// GitHub event payload path (pull_request / pull_request_target).
+        #[arg(long)]
+        event: Option<PathBuf>,
         #[arg(long)]
         config: Option<PathBuf>,
         #[arg(long)]
@@ -73,6 +76,7 @@ pub async fn run() -> i32 {
             repo,
             base,
             head,
+            event,
             config,
             profile,
             strategy,
@@ -86,6 +90,7 @@ pub async fn run() -> i32 {
                 repo,
                 base,
                 head,
+                event,
                 config,
                 profile,
                 strategy,
@@ -102,8 +107,9 @@ pub async fn run() -> i32 {
 
 struct ReviewArgs {
     repo: PathBuf,
-    base: String,
+    base: Option<String>,
     head: Option<String>,
+    event: Option<PathBuf>,
     config: Option<PathBuf>,
     profile: Option<String>,
     strategy: Option<StrategyArg>,
@@ -131,16 +137,39 @@ async fn review(a: ReviewArgs) -> i32 {
             return 1;
         }
     };
-    let publish = a
+    let mut publish = a
         .publish
         .map(|p| match p {
             PublishArg::DryRun => PublishMode::DryRun,
             PublishArg::Comment => PublishMode::Comment,
         })
         .unwrap_or(cfg.review.publish);
-    if publish == PublishMode::Comment {
-        eprintln!("error: --publish comment requires GitHub publication support (lands in M3)");
+    if publish == PublishMode::Comment && a.event.is_none() {
+        eprintln!("error: --publish comment requires --event");
         return 1;
+    }
+
+    // ---- event mode ----
+    let ev = match &a.event {
+        Some(p) => match crate::github::event::parse(p) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                return 1;
+            }
+        },
+        None => None,
+    };
+    let mut fork_note = false;
+    if let Some(e) = &ev {
+        if e.is_fork() && publish == PublishMode::Comment && !cfg.github.allow_forks {
+            eprintln!(
+                "revera: fork PR ({} -> {}): publication skipped (github.allow_forks=false)",
+                e.head_repo_full_name, e.repo_full_name
+            );
+            publish = PublishMode::DryRun;
+            fork_note = true;
+        }
     }
     let strategy = a.strategy.map(|s| match s {
         StrategyArg::Baseline => Strategy::Baseline,
@@ -152,18 +181,113 @@ async fn review(a: ReviewArgs) -> i32 {
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
+    let repo = crate::git::repo_root(&a.repo);
+
+    // Event mode supplies base/head/title/body and GitHub-backed state.
+    let api = ev.as_ref().map(|e| {
+        let token = std::env::var(&cfg.github.token_env).unwrap_or_default();
+        (e.clone(), crate::github::api::GitHubApi::new(&token))
+    });
+    let mut prior_open_titles: Vec<String> = Vec::new();
+    let (base, head, title, pr_body) = match &api {
+        Some((e, api)) => {
+            // ensure the base sha exists locally (shallow checkouts)
+            if !crate::git::has_commit(&repo, &e.base_sha).await {
+                if let Err(err) = crate::git::fetch_sha(&repo, &e.base_sha).await {
+                    eprintln!("error: cannot fetch base sha {}: {err:#}", e.base_sha);
+                    return 1;
+                }
+            }
+            // seed state from the managed summary comment (fallback: empty)
+            let (owner, rname) = e.owner_repo();
+            let seeded = match api.list_issue_comments(owner, rname, e.number).await {
+                Ok(comments) => comments
+                    .iter()
+                    .find(|c| c.body.contains(&cfg.github.summary_marker))
+                    .and_then(|c| crate::github::publish::decode_state(&c.body))
+                    .unwrap_or_default(),
+                Err(err) => {
+                    tracing::warn!("could not list PR comments for state: {err:#}");
+                    crate::state::ReviewState::default()
+                }
+            };
+            prior_open_titles = seeded
+                .open_findings()
+                .iter()
+                .map(|f| f.title.clone())
+                .collect();
+            let _ = seeded.save(&repo);
+            (
+                e.base_sha.clone(),
+                Some(e.head_sha.clone()),
+                Some(e.title.clone()),
+                e.body.clone(),
+            )
+        }
+        None => {
+            let Some(b) = a.base.clone() else {
+                eprintln!("error: --base is required without --event");
+                return 1;
+            };
+            (b, a.head.clone(), a.title.clone(), body)
+        }
+    };
+
     let req = ReviewRequest {
         repo: a.repo.clone(),
-        base: a.base,
-        head: a.head,
-        title: a.title,
-        body,
+        base,
+        head,
+        title,
+        body: pr_body,
         strategy_override: strategy,
         force: a.force,
     };
-    let repo = crate::git::repo_root(&req.repo);
     match baseline_run(&cfg, &req).await {
-        Ok((report, _state)) => {
+        Ok((mut report, mut state)) => {
+            if fork_note {
+                report
+                    .plan
+                    .summary_markdown
+                    .push_str("\n> fork PR: publication skipped\n");
+                report.publication.mode = "dry-run".into();
+                report.publication.skipped_reason = Some("fork PR: publication skipped".into());
+            }
+            let mut publish_failed = false;
+            if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {
+                let resolved: Vec<String> = state
+                    .findings
+                    .iter()
+                    .filter(|f| {
+                        f.status == crate::state::FindingState::Resolved
+                            && prior_open_titles.contains(&f.title)
+                    })
+                    .map(|f| f.title.clone())
+                    .collect();
+                match crate::github::publish::publish(
+                    api,
+                    e,
+                    &mut report,
+                    &mut state,
+                    cfg.review.max_findings,
+                    &cfg.github.summary_marker,
+                    &resolved,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        let _ = state.save(&repo);
+                    }
+                    Err(err) => {
+                        eprintln!("error: publish failed: {err:#}");
+                        report.status = RunStatus::Partial;
+                        report.reason = Some(match report.reason.take() {
+                            Some(r) => format!("{r}; publish failed: {err:#}"),
+                            None => format!("publish failed: {err:#}"),
+                        });
+                        publish_failed = true;
+                    }
+                }
+            }
             print!("{}", report.plan.summary_markdown);
             let out = a
                 .out
@@ -177,6 +301,7 @@ async fn review(a: ReviewArgs) -> i32 {
             }
             eprintln!("report: {}", out.display());
             match report.status {
+                _ if publish_failed => 2,
                 RunStatus::Complete => 0,
                 RunStatus::Partial => 2,
                 RunStatus::Failed => 1,

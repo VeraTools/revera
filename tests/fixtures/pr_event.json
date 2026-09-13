@@ -1,0 +1,19 @@
+{
+  "action": "opened",
+  "number": 42,
+  "repository": {"full_name": "acme/widgets"},
+  "pull_request": {
+    "title": "Change discount units",
+    "body": "Switch discount_for_tier to percent.",
+    "number": 42,
+    "head": {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ref": "feat/discount-percent",
+      "repo": {"full_name": "acme/widgets"}
+    },
+    "base": {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "main"
+    }
+  }
+}

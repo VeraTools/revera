@@ -30,9 +30,22 @@ pub async fn is_repo(repo: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `git diff --no-color --unified=3 base...head` (merge-base form).
+/// `git cat-file -e <sha>` — is the object present locally?
+pub async fn has_commit(repo: &Path, sha: &str) -> bool {
+    git(repo, &["cat-file", "-e", sha]).await.is_ok()
+}
+
+/// Fetch a single sha from origin (shallow repos may lack the base).
+pub async fn fetch_sha(repo: &Path, sha: &str) -> Result<()> {
+    git(repo, &["fetch", "--no-tags", "--depth=1", "origin", sha])
+        .await
+        .map(|_| ())
+}
+
+/// `git diff --no-color --unified=3 base...head` (merge-base form);
+/// falls back to two-dot `base head` when no merge-base exists (shallow clone).
 pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
-    git(
+    match git(
         repo,
         &[
             "diff",
@@ -42,15 +55,27 @@ pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
         ],
     )
     .await
+    {
+        Ok(d) => Ok(d),
+        Err(e) => {
+            tracing::warn!("three-dot diff failed ({e}); falling back to two-dot diff");
+            git(
+                repo,
+                &[
+                    "diff",
+                    "--no-color",
+                    "--unified=3",
+                    &format!("{} {}", base, head),
+                ],
+            )
+            .await
+        }
+    }
 }
 
 /// `git patch-id --stable` of the base...head diff.
 pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
-    let diff_text = git(
-        repo,
-        &["diff", "--no-color", &format!("{}...{}", base, head)],
-    )
-    .await?;
+    let diff_text = diff(repo, base, head).await?;
     let mut child = Command::new("git")
         .args(["patch-id", "--stable"])
         .current_dir(repo)

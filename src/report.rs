@@ -45,6 +45,29 @@ pub struct LedgerReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Publication {
+    /// "dry-run" | "comment"
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_comment_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+}
+
+impl Default for Publication {
+    fn default() -> Self {
+        Self {
+            mode: "dry-run".into(),
+            review_id: None,
+            summary_comment_id: None,
+            skipped_reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
     pub status: RunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +78,8 @@ pub struct RunReport {
     pub findings: Vec<Finding>,
     pub plan: PublicationPlan,
     pub ledger: LedgerReport,
+    #[serde(default)]
+    pub publication: Publication,
 }
 
 pub fn finding_body(f: &Finding) -> String {
