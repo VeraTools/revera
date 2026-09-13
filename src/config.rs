@@ -25,7 +25,17 @@ pub enum PublishMode {
 #[serde(rename_all = "kebab-case")]
 pub enum Protocol {
     OpenaiChat,
+    OpenaiResponses,
+    Anthropic,
+    Gemini,
     Scripted,
+}
+
+impl Protocol {
+    /// Whether this protocol goes over the HTTP transport + adapter stack.
+    pub fn is_http(&self) -> bool {
+        !matches!(self, Protocol::Scripted)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -359,22 +369,31 @@ fn expand_route(r: &mut ModelRoute) -> Result<()> {
 
 fn validate_route(name: &str, r: &ModelRoute) -> Result<()> {
     match r.protocol {
-        Protocol::OpenaiChat => {
+        Protocol::OpenaiChat | Protocol::OpenaiResponses => {
             if r.base_url.as_deref().is_none_or(|s| s.is_empty()) {
-                bail!("models.{name}: protocol openai-chat requires base_url");
-            }
-            let env = r.api_key_env.as_deref().unwrap_or_default();
-            if env.is_empty() {
-                bail!("models.{name}: protocol openai-chat requires api_key_env");
-            }
-            if std::env::var(env).is_err() {
-                bail!("models.{name}: api_key_env {env} is not set in the environment");
+                bail!("models.{name}: protocol {:?} requires base_url", r.protocol);
             }
         }
+        // anthropic/gemini have default base_urls; api key still required
+        Protocol::Anthropic | Protocol::Gemini => {}
         Protocol::Scripted => {
             if r.script.is_none() {
                 bail!("models.{name}: protocol scripted requires script path");
             }
+            return Ok(());
+        }
+    }
+    // every HTTP protocol requires api_key_env
+    if r.protocol.is_http() {
+        let env = r.api_key_env.as_deref().unwrap_or_default();
+        if env.is_empty() {
+            bail!(
+                "models.{name}: protocol {:?} requires api_key_env",
+                r.protocol
+            );
+        }
+        if std::env::var(env).is_err() {
+            bail!("models.{name}: api_key_env {env} is not set in the environment");
         }
     }
     Ok(())
