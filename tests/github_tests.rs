@@ -359,6 +359,13 @@ async fn summary_only_finding_marked_posted() {
     assert!(!reqs
         .iter()
         .any(|r| r.url.path() == "/repos/acme/widgets/pulls/42/reviews"));
+    let summary_req = reqs
+        .iter()
+        .find(|r| r.url.path() == "/repos/acme/widgets/issues/42/comments" && r.method == "POST")
+        .expect("summary comment posted");
+    let v: serde_json::Value = serde_json::from_slice(&summary_req.body).unwrap();
+    let persisted = decode_state(v["body"].as_str().unwrap()).unwrap();
+    assert!(persisted.findings[0].posted);
 }
 
 #[tokio::test]

@@ -133,6 +133,7 @@ pub fn parse_candidate_findings(v: &serde_json::Value) -> Vec<Finding> {
 /// short-circuit, ensure the Vera index, and recheck prior open findings.
 pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> Result<PrepareOut> {
     let wall = Instant::now();
+    let deadline = wall + std::time::Duration::from_secs(cfg.budget.run_max_seconds);
     let repo = git::repo_root(&req.repo);
     if !git::is_repo(&repo).await {
         bail!("{} is not a git repository", repo.display());
@@ -151,8 +152,6 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             "working tree has uncommitted changes to tracked files; commit or stash them so the reviewed tree matches {head_sha} (HEAD is {current_head})"
         );
     }
-    let deadline = Instant::now() + std::time::Duration::from_secs(cfg.budget.run_max_seconds);
-
     let raw_diff = git::diff(&repo, &req.base, head_rev).await?;
     let diff: Arc<DiffSet> = Arc::new(parse_unified(&raw_diff));
     let patch_id = git::patch_id(&repo, &req.base, head_rev)

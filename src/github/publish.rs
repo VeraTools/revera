@@ -129,9 +129,11 @@ pub async fn publish(
     }
 
     // (3) upsert the managed summary comment
+    let mut staged = state.clone();
+    staged.mark_posted(&surfaced_ids(report));
     let mut body = format!("{summary_marker}\n{}", report.plan.summary_markdown);
     // all currently open findings (incl. previously posted)
-    let open: Vec<_> = state
+    let open: Vec<_> = staged
         .findings
         .iter()
         .filter(|f| f.status == FindingState::Open)
@@ -155,7 +157,7 @@ pub async fn publish(
         }
     }
     body.push('\n');
-    body.push_str(&encode_state(state));
+    body.push_str(&encode_state(&staged));
 
     let comments = api.list_issue_comments(owner, repo, ev.number).await?;
     let managed = comments
@@ -170,7 +172,7 @@ pub async fn publish(
         }
     };
     pubn.summary_comment_id = Some(comment.id);
-    state.mark_posted(&surfaced_ids(report));
+    *state = staged;
 
     report.publication = pubn.clone();
     Ok(pubn)
