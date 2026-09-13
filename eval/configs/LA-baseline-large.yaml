@@ -1,0 +1,41 @@
+review:
+  strategy: baseline
+  publish: dry-run
+  min_severity: low
+budget:
+  run_max_seconds: 600
+  agent_max_seconds: 420
+  agent_max_tool_calls: 40
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    model: meta/muse-spark-1.3-contributor
+    max_output_tokens: 4000
+    temperature: 0.2
+    extra_headers:
+      HTTP-Referer: https://github.com/VeraTools/revera
+      X-Title: Revera
+  validator:
+    protocol: openai-chat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    model: meta/muse-spark-1.3-contributor
+    max_output_tokens: 3000
+    temperature: 0.2
+    extra_headers:
+      HTTP-Referer: https://github.com/VeraTools/revera
+      X-Title: Revera
+vera:
+  executable: vera
+  version: "1.4.1"
+  backend: api
+  embedding:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-embedding-8b
+    api_key_env: OPENROUTER_API_KEY
+  reranker:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-reranker-8b
+    api_key_env: OPENROUTER_API_KEY

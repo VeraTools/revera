@@ -1,0 +1,4 @@
+{"defects": [{"file": "crates/globset/src/pathutil.rs", "line_min": 40, "line_max": 60,
+  "keywords": [".env", "dotfile", "leading dot", "hidden file", "strategy", "regex", "inconsistent", "*.", "gitignore", "required_ext", "ext()"],
+  "cross_file_keywords": ["glob.rs", "lib.rs", "extensionstrategy", "requiredextension", "strategy", "regex", "ext()", "required_ext", "ignore", "gitignore", "--glob"]}],
+ "clean": false}
