@@ -102,6 +102,7 @@ fn summary_rendering() {
         &["openai-chat:http://x:m".into()],
         false,
         None,
+        None,
     );
     assert!(md.contains("Revera review"));
     assert!(md.contains("**[high]** `src/a.rs`:12"));

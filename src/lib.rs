@@ -11,5 +11,6 @@ pub mod provider;
 pub mod report;
 pub mod state;
 pub mod text;
+pub mod timing;
 pub mod tools;
 pub mod vera;

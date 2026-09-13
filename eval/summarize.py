@@ -22,8 +22,8 @@ def is_clean(r):
     return r.get("clean", r["corpus"] in CLEAN)
 
 
-print("| config | TP | TP high/crit | FN | FP | clean-PR commented | rejected | uncertain | incomplete | median wall s | mean req | mean tok | total cost |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| config | TP | TP high/crit | FN | FP | clean-PR commented | rejected | uncertain | incomplete | median wall s | median first-validated s | incomplete phases | mean req | mean tok | total cost |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 order = ["A-baseline", "B-baseline-novera", "C-baseline-norerank",
          "D-candidate-only", "E-panel-2scouts", "F-delegated"]
 for cfg in order + sorted(set(agg) - set(order)):
@@ -39,12 +39,16 @@ for cfg in order + sorted(set(agg) - set(order)):
     clean_commented = sum(1 for r in rs if is_clean(r) and r["fp"] > 0)
     incomplete = sum(1 for r in rs if r["status"] != "complete")
     walls = [r["wall_ms"] / 1000 for r in rs]
+    fv = [r["first_validated_s"] for r in rs if r.get("first_validated_s") is not None]
+    fv_str = f"{statistics.median(fv):.1f}" if fv else "-"
+    inc_phases = sum(r.get("incomplete_phases") or 0 for r in rs)
     reqs = [r["requests"] for r in rs]
     toks = [r["prompt_tokens"] + r["completion_tokens"] for r in rs]
     cost = sum(r["est_cost"] for r in rs)
     print(
         f"| {cfg} | {tp} | {tp_high} | {fn} | {fp} | {clean_commented} | {rejected} | {uncertain} | {incomplete} | "
-        f"{statistics.median(walls):.1f} | {statistics.mean(reqs):.1f} | "
+        f"{statistics.median(walls):.1f} | {fv_str} | {inc_phases} | "
+        f"{statistics.mean(reqs):.1f} | "
         f"{statistics.mean(toks):.0f} | ${cost:.4f} |"
     )
 
