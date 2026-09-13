@@ -18,10 +18,28 @@ fi
 
 (cd "$ROOT" && cargo build -q)
 
-bash "$HERE/build-corpus.sh"
+CORPORA="${CORPORA:-crossfile nullpath offbyone lockdrop clean-refactor clean-docs}"
+CONFIGS="${CONFIGS:-A-baseline B-baseline-novera C-baseline-norerank D-candidate-only E-panel-2scouts F-delegated}"
 
-CORPORA="crossfile nullpath offbyone lockdrop clean-refactor clean-docs"
-CONFIGS="A-baseline B-baseline-novera C-baseline-norerank D-candidate-only E-panel-2scouts F-delegated"
+hard_corpora="utf8-truncate modzero-routing retry-after posted-state trait-contract clean-signature clean-dead-helper"
+build_hard=0
+for c in $hard_corpora; do
+    if [[ " $CORPORA " == *" $c "* ]]; then
+        build_hard=1
+        break
+    fi
+done
+if [ "$CORPORA" != "${CORPORA/crossfile/}" ] ||
+    [ "$CORPORA" != "${CORPORA/nullpath/}" ] ||
+    [ "$CORPORA" != "${CORPORA/offbyone/}" ] ||
+    [ "$CORPORA" != "${CORPORA/lockdrop/}" ] ||
+    [ "$CORPORA" != "${CORPORA/clean-refactor/}" ] ||
+    [ "$CORPORA" != "${CORPORA/clean-docs/}" ]; then
+    bash "$HERE/build-corpus.sh"
+fi
+if [ "$build_hard" -eq 1 ]; then
+    bash "$HERE/build-corpus-hard.sh"
+fi
 
 # warm index once per corpus (vera enabled configs reuse the copied .vera)
 export VERA_BACKEND=api \
