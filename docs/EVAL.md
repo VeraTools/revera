@@ -72,3 +72,22 @@ with the PR head checked out (event mode does this naturally).
    (required: defect_key,severity,file,start_line,title,claim) plus tolerant
    parsing (`path:"file:line"` → file+start_line, `description` → `claim`) and a
    warn log for dropped findings.
+
+## M4 strategy comparison — crossfile fixture `break` (live, muse-spark all routes)
+
+| strategy | found bug | false findings | requests | prompt tok | completion tok | wall s | est. cost |
+|---|---|---|---|---|---|---|---|
+| baseline | yes (checkout.rs:3, outside-diff) | 0 | 8 | 20,758 | 2,858 | 24.1 | ~$0.0026 |
+| delegated | yes (checkout.rs:4, outside-diff) | 0 | 10 | 31,100 | 5,710 | 66.5 | ~$0.0043 |
+| panel | yes (checkout.rs:4, outside-diff) | 0 | 13 | 40,084 | 5,324 | 46.2 | ~$0.0051 |
+
+Notes:
+- All three strategies found the real defect with zero false findings; both new
+  strategies anchored at the caller (checkout.rs, not in the diff) → "Findings
+  outside the diff", same as baseline's muse run.
+- Delegated: lead planned 2 questions, both workers answered, synthesis
+  re-derived the finding (one worker candidate was dropped as malformed —
+  missing `severity` — but the lead still produced the correct finding).
+- Panel: `2 scouts, 2 raw candidates → 1 unique` (both scouts converged on the
+  same defect; collapse merged them).
+- Cost estimate: $0.10/M prompt + $0.20/M completion (muse-spark pricing).
