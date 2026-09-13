@@ -23,13 +23,18 @@ managed summary comment carrying its state blob.
 
 ```yaml
 - uses: actions/checkout@v4
-  with: { fetch-depth: 0 }
+  with:
+    fetch-depth: 0
+    ref: ${{ github.event.pull_request.head.sha }}
 - uses: VeraTools/revera@v1
   with: { config: revera.yaml }
   env:
     REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
+
+The checkout must use the PR head SHA so reviewer tools read the exact PR
+tree rather than GitHub's synthetic merge ref.
 
 Workflow permissions: `pull-requests: write`, `contents: read`.
 

@@ -126,11 +126,7 @@ async fn delegated_candidates(
     }
 
     // ---- 2. workers concurrently ----
-    let worker_routes: Vec<_> = cfg
-        .models
-        .workers
-        .clone()
-        .unwrap_or_else(|| vec![cfg.models.investigator.clone()]);
+    let worker_routes = cfg.models.workers.as_deref().unwrap_or(&[]);
     let worker_terminal = terminal_submit_worker_result_spec();
     let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(&[
         "read_file",
@@ -148,7 +144,7 @@ async fn delegated_candidates(
     // Create clients in lane order so scripted conversations pop deterministically.
     let mut worker_clients = Vec::new();
     for (i, _q) in questions.iter().enumerate() {
-        let route = &worker_routes[i % worker_routes.len()];
+        let route = select_worker_route(worker_routes, &cfg.models.investigator, i);
         let c = match make_client(
             route,
             "workers",
@@ -356,6 +352,19 @@ async fn delegated_candidates(
     Ok(candidates)
 }
 
+fn select_worker_route<'a>(
+    workers: &'a [crate::config::ModelRoute],
+    investigator: &'a crate::config::ModelRoute,
+    question_index: usize,
+) -> &'a crate::config::ModelRoute {
+    workers
+        .iter()
+        .filter(|w| !w.model.is_empty())
+        .cycle()
+        .nth(question_index)
+        .unwrap_or(investigator)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,10 +414,25 @@ vera: {}
 
     #[test]
     fn worker_routing_round_robins() {
-        // question i uses workers[i % len]
-        let workers = ["w0", "w1"];
-        let assigned: Vec<&&str> = (0..5).map(|i| &workers[i % workers.len()]).collect();
-        assert_eq!(assigned, [&"w0", &"w1", &"w0", &"w1", &"w0"]);
+        let c = cfg();
+        let workers = c.models.workers.as_deref().unwrap();
+        let assigned: Vec<String> = (0..5)
+            .map(|i| {
+                select_worker_route(workers, &c.models.investigator, i)
+                    .model
+                    .clone()
+            })
+            .collect();
+        assert_eq!(assigned, ["w0", "w1", "w0", "w1", "w0"]);
+        let empty: Vec<crate::config::ModelRoute> = vec![];
+        let assigned: Vec<String> = (0..5)
+            .map(|i| {
+                select_worker_route(&empty, &c.models.investigator, i)
+                    .model
+                    .clone()
+            })
+            .collect();
+        assert!(assigned.iter().all(|model| model == "m"));
     }
 
     #[tokio::test]

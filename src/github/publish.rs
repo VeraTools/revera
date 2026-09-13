@@ -1,5 +1,6 @@
 use super::api::{GitHubApi, ReviewComment};
 use super::event::PrEvent;
+use crate::pipeline::anchor::is_publishable;
 use crate::report::{Publication, RunReport};
 use crate::state::{FindingState, ReviewState};
 use anyhow::Result;
@@ -154,6 +155,13 @@ pub async fn publish(
         }
     };
     pubn.summary_comment_id = Some(comment.id);
+    let summary_ids: Vec<String> = report
+        .findings
+        .iter()
+        .filter(|f| is_publishable(f))
+        .map(|f| f.id())
+        .collect();
+    state.mark_posted(&summary_ids);
 
     report.publication = pubn.clone();
     Ok(pubn)

@@ -534,6 +534,12 @@ impl Config {
                 "github.summary_marker must be an HTML comment starting with '<!-- revera' (got {m:?})"
             );
         }
+        if self.models.workers.as_ref().is_some_and(|ws| ws.is_empty()) {
+            self.models.workers = None;
+        }
+        if self.models.scouts.as_ref().is_some_and(|ss| ss.is_empty()) {
+            self.models.scouts = None;
+        }
         expand_route(&mut self.models.investigator)?;
         expand_route(&mut self.models.validator)?;
         if let Some(l) = &mut self.models.lead {
