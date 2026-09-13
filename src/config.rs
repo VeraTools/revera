@@ -77,6 +77,109 @@ pub struct BudgetConfig {
     pub retries: u32,
 }
 
+/// Reasoning effort levels; `none` disables and emits no reasoning fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    #[default]
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl ReasoningEffort {
+    /// Effort -> thinking budget in tokens (where the provider takes a budget).
+    pub fn budget(&self) -> u64 {
+        match self {
+            Self::None => 0,
+            Self::Minimal => 1024,
+            Self::Low => 2048,
+            Self::Medium => 8192,
+            Self::High => 16384,
+            Self::Xhigh => 32768,
+        }
+    }
+    /// Wire spelling (openai has no "xhigh" on non-gpt-5 models — caller maps).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+        }
+    }
+}
+
+/// Which wire field openai-chat uses for reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningField {
+    #[default]
+    Auto,
+    Openai,
+    Openrouter,
+}
+
+/// Long form of `reasoning:`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReasoningSpec {
+    #[serde(default)]
+    pub effort: ReasoningEffort,
+    #[serde(default)]
+    pub budget_tokens: Option<u64>,
+    #[serde(default)]
+    pub field: ReasoningField,
+}
+
+/// `reasoning: medium` or the long `{effort, budget_tokens, field}` form.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Reasoning {
+    Effort(ReasoningEffort),
+    Spec(ReasoningSpec),
+}
+
+impl Default for Reasoning {
+    fn default() -> Self {
+        Reasoning::Effort(ReasoningEffort::Medium)
+    }
+}
+
+impl Reasoning {
+    pub fn effort(&self) -> ReasoningEffort {
+        match self {
+            Reasoning::Effort(e) => *e,
+            Reasoning::Spec(s) => s.effort,
+        }
+    }
+    pub fn budget_tokens(&self) -> Option<u64> {
+        match self {
+            Reasoning::Effort(_) => None,
+            Reasoning::Spec(s) => s.budget_tokens,
+        }
+    }
+    pub fn field(&self) -> ReasoningField {
+        match self {
+            Reasoning::Effort(_) => ReasoningField::Auto,
+            Reasoning::Spec(s) => s.field,
+        }
+    }
+    /// Effective thinking budget: explicit budget wins, else effort->budget.
+    pub fn effective_budget(&self) -> u64 {
+        self.budget_tokens()
+            .unwrap_or_else(|| self.effort().budget())
+    }
+    pub fn enabled(&self) -> bool {
+        self.effort() != ReasoningEffort::None
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRoute {
@@ -91,6 +194,9 @@ pub struct ModelRoute {
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
     pub script: Option<PathBuf>,
+    /// Reasoning/thinking level; on by default (medium). `none` disables.
+    #[serde(default)]
+    pub reasoning: Reasoning,
 }
 
 #[derive(Debug, Clone, Deserialize)]

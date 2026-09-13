@@ -1,8 +1,9 @@
 use super::http::{
-    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    detect_400_fallback, AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse,
+    ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
-use crate::config::ModelRoute;
+use crate::config::{ModelRoute, ReasoningEffort, ReasoningField};
 use serde_json::{json, Value};
 
 /// OpenAI chat-completions adapter. Wire format unchanged from before the
@@ -110,14 +111,53 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 })
             })
             .collect();
-        let body = json!({
+        let mut body = json!({
             "model": self.route.model,
             "messages": msgs,
             "tools": tool_specs,
             "tool_choice": "auto",
-            "temperature": self.route.temperature,
             attempt.tokens_key.clone(): self.route.max_output_tokens,
         });
+        if !attempt.drop_temperature {
+            body["temperature"] = json!(self.route.temperature);
+        }
+        // reasoning wire field: openai (reasoning_effort) vs openrouter
+        // (reasoning object); auto picks by base_url host
+        let r = &self.route.reasoning;
+        if r.enabled() && !attempt.drop_reasoning {
+            let field = match r.field() {
+                ReasoningField::Auto => {
+                    if self
+                        .route
+                        .base_url
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("openrouter.ai")
+                    {
+                        ReasoningField::Openrouter
+                    } else {
+                        ReasoningField::Openai
+                    }
+                }
+                f => f,
+            };
+            match field {
+                ReasoningField::Openai => {
+                    let mut e = r.effort();
+                    if e == ReasoningEffort::Xhigh && !self.route.model.starts_with("gpt-5") {
+                        e = ReasoningEffort::High;
+                    }
+                    body["reasoning_effort"] = json!(e.as_str());
+                }
+                ReasoningField::Openrouter => {
+                    body["reasoning"] = match r.budget_tokens() {
+                        Some(b) => json!({"max_tokens": b}),
+                        None => json!({"effort": r.effort().as_str()}),
+                    };
+                }
+                ReasoningField::Auto => unreachable!(),
+            }
+        }
         let mut headers = vec![
             (
                 "authorization".to_string(),
@@ -138,6 +178,11 @@ impl ProtocolAdapter for OpenAiChatAdapter {
         {
             attempt.tokens_key = "max_completion_tokens".into();
             return Parse::RetrySameSlot("400: retrying with max_completion_tokens".into());
+        }
+        if let Some(p) =
+            detect_400_fallback(status, body, attempt, &["reasoning", "reasoning_effort"])
+        {
+            return p;
         }
         if status >= 400 {
             return Parse::Err(ProviderError::Http(format!(
@@ -196,6 +241,11 @@ impl ProtocolAdapter for OpenAiChatAdapter {
         let usage = Usage {
             prompt_tokens: parsed["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+            // response `reasoning_content`/`reasoning` fields are ignored
+            // except usage accounting (completion_tokens_details)
+            reasoning_tokens: parsed["usage"]["completion_tokens_details"]["reasoning_tokens"]
+                .as_u64()
+                .unwrap_or(0),
         };
         Parse::Ok(
             ChatMessage {
@@ -204,6 +254,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 tool_calls: calls,
                 tool_call_id: None,
                 name: None,
+                provider_state: None,
             },
             usage,
         )

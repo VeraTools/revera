@@ -37,6 +37,7 @@ impl ModelClient for Stub {
                 }],
                 tool_call_id: None,
                 name: None,
+                provider_state: None,
             });
         Ok(Completion {
             message: msg,
@@ -64,6 +65,7 @@ fn assistant_calls(calls: Vec<(&str, serde_json::Value)>) -> ChatMessage {
             .collect(),
         tool_call_id: None,
         name: None,
+        provider_state: None,
     }
 }
 
@@ -74,6 +76,7 @@ fn assistant_text(t: &str) -> ChatMessage {
         tool_calls: vec![],
         tool_call_id: None,
         name: None,
+        provider_state: None,
     }
 }
 
@@ -223,5 +226,5 @@ fn ledger_records() {
         ..Default::default()
     });
     assert_eq!(l.request_count(), 1);
-    assert_eq!(l.totals(), (1, 1, 0));
+    assert_eq!(l.totals(), (1, 1, 0, 0));
 }
