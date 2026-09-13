@@ -1,0 +1,22 @@
+{
+  "roles": {
+    "investigator": [
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {
+          "findings": [],
+          "coverage": "re-reviewed base...fix diff; checkout.rs now converts percent to fraction"
+        }}]}
+      ]
+    ],
+    "validator": [
+      [
+        {"tool_calls": [{"name": "read_file", "arguments": {"path": "src/checkout.rs"}}]},
+        {"tool_calls": [{"name": "submit_verdict", "arguments": {
+          "validation_status": "rejected",
+          "counterevidence_checked": ["read src/checkout.rs:5 — caller now divides by 100.0"],
+          "rationale": "the call site now converts the percent to a fraction; defect fixed"
+        }}]}
+      ]
+    ]
+  }
+}

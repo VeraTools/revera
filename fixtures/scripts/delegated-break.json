@@ -1,0 +1,96 @@
+{
+  "roles": {
+    "lead": [
+      [
+        {"tool_calls": [{"name": "vera_overview", "arguments": {}}]},
+        {"tool_calls": [{"name": "submit_plan", "arguments": {
+          "questions": [
+            {
+              "id": "q1",
+              "question": "Do any callers of discount_for_tier outside src/pricing.rs still assume it returns a fraction 0..1?",
+              "symbols": ["discount_for_tier"],
+              "expected_evidence": "list of callers and whether each treats the value as fraction or percent",
+              "stop_condition": "after checking all callers or 10 tool calls",
+              "files_hint": ["src/checkout.rs"]
+            },
+            {
+              "id": "q2",
+              "question": "Do tests encode the old fraction contract?",
+              "symbols": ["discount_for_tier", "final_price"],
+              "expected_evidence": "test assertions on discount/final_price values",
+              "stop_condition": "after reading tests/pricing_test.rs",
+              "files_hint": ["tests/pricing_test.rs"]
+            }
+          ]
+        }}]}
+      ],
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {
+          "findings": [
+            {
+              "defect_key": "final_price_treats_percent_as_fraction",
+              "severity": "high",
+              "file": "src/pricing.rs",
+              "start_line": 4,
+              "title": "discount_for_tier now returns percent; checkout still treats it as a fraction",
+              "claim": "discount_for_tier changed from fraction (0.0-1.0) to percentage (0-100); final_price still computes base * (1.0 - d).",
+              "trigger": "final_price(100.0, \"gold\") returns -1900.",
+              "impact": "Tiered prices go negative.",
+              "introduced_by_change": true,
+              "supporting_evidence": [
+                {"path": "src/checkout.rs", "start_line": 5, "note": "base * (1.0 - d)"},
+                {"path": "src/pricing.rs", "start_line": 4, "note": "\"gold\" => 20.0"}
+              ],
+              "suggested_fix": "let d = discount_for_tier(tier) / 100.0;"
+            }
+          ],
+          "coverage": "worker q1 found the caller bug; q2 found tests updated"
+        }}]}
+      ]
+    ],
+    "workers": [
+      [
+        {"tool_calls": [{"name": "vera_references", "arguments": {"symbol": "discount_for_tier"}}]},
+        {"tool_calls": [{"name": "read_file", "arguments": {"path": "src/checkout.rs"}}],
+         "expect_tool_result_contains": "checkout.rs"},
+        {"tool_calls": [{"name": "submit_worker_result", "arguments": {
+          "result": "answered",
+          "answer": "final_price in src/checkout.rs still treats the return value as a fraction: base * (1.0 - d).",
+          "evidence": [{"path": "src/checkout.rs", "start_line": 5, "note": "base * (1.0 - d)"}],
+          "candidate_findings": [
+            {
+              "defect_key": "final_price_treats_percent_as_fraction",
+              "severity": "high",
+              "file": "src/pricing.rs",
+              "start_line": 4,
+              "title": "discount_for_tier now returns percent; checkout still treats it as a fraction",
+              "claim": "caller treats percent as fraction",
+              "trigger": "final_price(100, gold) = -1900",
+              "introduced_by_change": true
+            }
+          ],
+          "gaps": []
+        }}]}
+      ],
+      [
+        {"tool_calls": [{"name": "submit_worker_result", "arguments": {
+          "result": "no_issue",
+          "answer": "tests were updated to percent expectations",
+          "evidence": [{"path": "tests/pricing_test.rs", "start_line": 4, "note": "expects 20.0"}],
+          "candidate_findings": [],
+          "gaps": []
+        }}]}
+      ]
+    ],
+    "validator": [
+      [
+        {"tool_calls": [{"name": "read_file", "arguments": {"path": "src/checkout.rs"}}]},
+        {"tool_calls": [{"name": "submit_verdict", "arguments": {
+          "validation_status": "accepted",
+          "counterevidence_checked": ["read src/checkout.rs:5 — base*(1.0-d) still treats percent as fraction"],
+          "rationale": "confirmed caller-side fraction assumption"
+        }}]}
+      ]
+    ]
+  }
+}

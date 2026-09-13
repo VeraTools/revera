@@ -1,0 +1,117 @@
+# Revera design
+
+Revera is a provider-independent GitHub PR reviewer. Deterministic Rust owns
+review state and GitHub publication; configurable models do the reasoning;
+[Vera](https://github.com/VeraTools/Vera) supplies repository-aware retrieval.
+
+## Shape
+
+```text
+GitHub Action (composite) or local CLI
+        |
+        v
+revera (single Rust crate)
+  cli/        clap surface: review, doctor, cache-info
+  config/     revera.yaml + env interpolation, model roles
+  git/        base/head/merge-base, unified diff -> hunks -> reviewable lines
+  vera/       external `vera` executable: version, index/update, search, references, grep, overview
+  provider/   ModelClient trait; `openai-chat` (tool calling) and `scripted` (offline fixtures)
+  tools/      read-only tool set exposed to models
+  agent/      bounded tool-calling loop with budgets
+  pipeline/   strategies (baseline | delegated | panel) -> candidates -> fresh validation -> anchoring/dedup
+  findings/   schema, stable ids, state
+  github/     PR collection from event JSON, review/summary publication, state marker
+  report/     run report + dry-run plan
+```
+
+## Architecture decision: standalone Rust core, Vera external
+
+Chosen over forking a TypeScript reviewer (misospace/pr-reviewer-action,
+jbot) because: the reasoning loop, anchoring and state logic are small; a
+native binary avoids a Node toolchain in the Action; Vera is already a Rust
+binary and is invoked as a pinned executable so Revera does not inherit its
+build (ONNX, tree-sitter grammars). Linking `vera-core` is deferred until a
+measured need appears.
+
+## Boundaries
+
+1. Models return structured findings through a `submit_findings` /
+   `submit_verdict` tool. They never post comments.
+2. Model tools are read-only: `read_file`, `vera_search`, `vera_references`,
+   `vera_grep`, `vera_overview`, `diff_context`, `list_changed_files`. No shell.
+3. Provider/model/credentials come from trusted config only.
+4. Indexing is controller-owned: Revera runs `vera update .` once before any
+   model call; a model cannot rebuild the index.
+5. Publisher re-fetches the PR head SHA and refuses to publish if it moved.
+
+## Latency and strong-model economy
+
+- Strong-model tokens are the scarce resource; cheap-model tokens are not.
+- One `vera update` per run; all model tool calls hit the prepared index.
+- Investigation lanes (scouts/workers) run concurrently (`tokio::JoinSet`),
+  bounded by `review.concurrency`.
+- Validation runs per candidate in fresh contexts, concurrently; candidates are
+  first collapsed (same file + overlapping lines + same `defect_key`) so the
+  strong validator sees each logical defect once.
+- Hard budgets per agent (tool calls, output tokens, wall clock) and per run
+  (total model requests, wall clock). A budget breach yields status `partial`
+  with the reason surfaced in the summary — never a fake clean review.
+- Tool outputs are truncated to a configurable byte cap so cheap models do not
+  flood their own context.
+
+## Finding schema
+
+```text
+id                    12 hex chars = sha256(file + "\0" + defect_key)[..12]
+defect_key            model-supplied snake_case identity of the defect (not wording)
+severity              high | medium | low
+file, start_line, end_line?
+title, claim, trigger, impact
+introduced_by_change  bool
+supporting_evidence[] { path, start_line, end_line, note }
+counterevidence_checked[]   strings, filled by the validator
+validation_status     accepted | rejected | uncertain
+suggested_fix?
+source                investigator | scout:<name> | worker:<n> | prior
+```
+
+Only `accepted` findings are published. `uncertain` findings are listed in the
+summary as "unconfirmed" only when `review.publish_uncertain` is on (default
+off) and are always kept in the run report.
+
+## Re-review
+
+State = `{ reviewed_head, reviewed_base, findings: [{id, status, file, start_line, title, posted}] }`.
+Stored in `.revera/state.json` locally and, on GitHub, embedded in the managed
+summary comment as `<!-- revera-state:<base64 json> -->`.
+
+On a new push: prior unresolved findings are handed to the validator as
+"recheck" candidates against the new head; findings that no longer hold are
+marked `resolved`; findings still valid and already posted are not reposted.
+New candidates are deduplicated against prior ids.
+
+## Anchoring
+
+Inline comments require `file` to be a changed file and `start_line` to be in
+the head-side line set of some hunk in the PR diff (added or context lines).
+Anything else goes into the summary under "Findings outside the diff".
+
+## Strategies
+
+- `baseline`: investigator (one agent, tools) -> candidates -> validator.
+- `delegated`: lead produces N bounded questions (no tools, one call) ->
+  workers answer each concurrently with tools -> lead synthesizes candidates
+  from worker reports (one call) -> validator.
+- `panel`: each configured scout runs the investigator prompt independently
+  -> union + collapse -> validator. No majority voting; minority findings
+  survive until the validator rejects them.
+
+All strategies share tools, schema, validator, anchoring and publication.
+
+## Vera integration
+
+Environment for `vera` subprocesses is built from `vera:` config
+(`backend: api` sets `VERA_BACKEND=api` + `EMBEDDING_*`/`RERANKER_*` from the
+configured env names). `.revera/vera-cache.json` records `vera_version`,
+`embedding_model`, `dim` (from `.vera/vectors.manifest`) so the Action cache
+key invalidates when the embedding space changes.

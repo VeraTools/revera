@@ -1,0 +1,138 @@
+name: Revera
+description: Provider-independent PR reviewer with Vera retrieval
+branding:
+  icon: search
+  color: purple
+inputs:
+  config:
+    description: Path to revera config file
+    default: revera.yaml
+  profile:
+    description: Config profile to apply
+    default: ""
+  strategy:
+    description: Review strategy override
+    default: ""
+  publish:
+    description: "Publication mode: dry-run | comment"
+    default: comment
+  fail-on:
+    description: "Fail the step on: failed | partial | never"
+    default: failed
+  revera-version:
+    description: Revera release version to install
+    default: "0.1.0"
+  vera-version:
+    description: Vera release version to install
+    default: "1.4.1"
+  github-token:
+    description: Token used to read PR data and post comments
+    default: ${{ github.token }}
+  cache:
+    description: Cache the .vera index between runs
+    default: "true"
+outputs:
+  status:
+    description: Review status (complete | partial | failed)
+    value: ${{ steps.revera.outputs.status }}
+  report-path:
+    description: Path to the JSON run report
+    value: ${{ steps.revera.outputs.report-path }}
+  findings:
+    description: Number of accepted findings
+    value: ${{ steps.revera.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    - name: Runner check
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" != "Linux" ] || [ "$RUNNER_ARCH" != "X64" ]; then
+          echo "revera action supports Linux x86_64 runners only" >&2
+          exit 1
+        fi
+
+    - name: Restore .vera index cache
+      if: inputs.cache == 'true'
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: .vera
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.sha }}
+        restore-keys: |
+          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-
+          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-
+
+    - name: Install vera
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver="${{ inputs.vera-version }}"
+        base="https://github.com/VeraTools/Vera/releases/download/v${ver}"
+        curl -fsSL "$base/vera-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/vera.tar.gz
+        curl -fsSL "$base/release-manifest.json" -o /tmp/vera-manifest.json
+        want=$(python3 -c "import json;m=json.load(open('/tmp/vera-manifest.json'));a=[x for x in (m.get('assets') or m) if 'x86_64-unknown-linux-gnu' in json.dumps(x)];print(a[0]['sha256'] if isinstance(a[0],dict) else a[0])")
+        got=$(sha256sum /tmp/vera.tar.gz | cut -d' ' -f1)
+        if [ "$want" != "$got" ]; then echo "vera sha256 mismatch: $got != $want" >&2; exit 1; fi
+        mkdir -p /tmp/vera-bin && tar -xzf /tmp/vera.tar.gz -C /tmp/vera-bin
+        find /tmp/vera-bin -name vera -type f -exec install -m755 {} "$RUNNER_TEMP/bin/vera" \; -quit || true
+        if [ ! -x "$RUNNER_TEMP/bin/vera" ]; then
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m755 "$(find /tmp/vera-bin -name vera -type f | head -1)" "$RUNNER_TEMP/bin/vera"
+        fi
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+        vera --version
+
+    - name: Install revera
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver="${{ inputs.revera-version }}"
+        base="https://github.com/VeraTools/revera/releases/download/v${ver}"
+        mkdir -p "$RUNNER_TEMP/bin"
+        curl -fsSL "$base/revera-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/revera.tar.gz
+        curl -fsSL "$base/revera-x86_64-unknown-linux-gnu.tar.gz.sha256" -o /tmp/revera.sha256
+        want=$(cut -d' ' -f1 /tmp/revera.sha256)
+        got=$(sha256sum /tmp/revera.tar.gz | cut -d' ' -f1)
+        if [ "$want" != "$got" ]; then echo "revera sha256 mismatch: $got != $want" >&2; exit 1; fi
+        tar -xzf /tmp/revera.tar.gz -C "$RUNNER_TEMP/bin"
+        chmod +x "$RUNNER_TEMP/bin/revera"
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+        revera --version || true
+
+    - name: Run revera
+      id: revera
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+        args=(review --event "$GITHUB_EVENT_PATH" --config "${{ inputs.config }}" --publish "${{ inputs.publish }}" --out .revera/report.json)
+        if [ -n "${{ inputs.profile }}" ]; then args+=(--profile "${{ inputs.profile }}"); fi
+        if [ -n "${{ inputs.strategy }}" ]; then args+=(--strategy "${{ inputs.strategy }}"); fi
+        revera "${args[@]}"
+        code=$?
+        set -e
+        status=failed
+        if [ "$code" -eq 0 ]; then status=complete; elif [ "$code" -eq 2 ]; then status=partial; fi
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+        echo "report-path=.revera/report.json" >> "$GITHUB_OUTPUT"
+        findings=0
+        if [ -f .revera/report.json ]; then
+          findings=$(python3 -c "import json;print(len([f for f in json.load(open('.revera/report.json'))['findings'] if f.get('validation_status')=='accepted']))")
+        fi
+        echo "findings=$findings" >> "$GITHUB_OUTPUT"
+        case "${{ inputs.fail-on }}" in
+          failed)  [ "$code" -eq 1 ] && exit 1; exit 0 ;;
+          partial) [ "$code" -ne 0 ] && exit "$code"; exit 0 ;;
+          never)   exit 0 ;;
+          *) echo "invalid fail-on: ${{ inputs.fail-on }}" >&2; exit 1 ;;
+        esac
+
+    - name: Save .vera index cache
+      if: always() && inputs.cache == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .vera
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.sha }}

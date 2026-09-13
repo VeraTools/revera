@@ -1,0 +1,13 @@
+{
+  "roles": {
+    "investigator": [
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {
+          "findings": [],
+          "coverage": "docs-only change to pricing.rs comment; no behavior changed"
+        }}]}
+      ]
+    ],
+    "validator": []
+  }
+}
