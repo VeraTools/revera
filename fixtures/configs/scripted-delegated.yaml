@@ -1,0 +1,33 @@
+review:
+  strategy: delegated
+  publish: dry-run
+  concurrency: 1
+models:
+  investigator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/delegated-break.json
+    model: scripted-investigator
+  validator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/delegated-break.json
+    model: scripted-validator
+  lead:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/delegated-break.json
+    model: scripted-lead
+  workers:
+    - protocol: scripted
+      script: ${FIXTURE_SCRIPTS}/delegated-break.json
+      model: scripted-worker
+delegated:
+  max_questions: 4
+  worker_max_tool_calls: 12
+  worker_max_seconds: 120
+vera:
+  executable: vera
+  version: "1.4.1"
+  backend: api
+  embedding:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-embedding-8b
+    api_key_env: OPENROUTER_API_KEY

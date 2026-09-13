@@ -1,0 +1,67 @@
+{
+  "roles": {
+    "general": [
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {
+          "findings": [
+            {
+              "defect_key": "final_price_treats_percent_as_fraction",
+              "severity": "high",
+              "file": "src/pricing.rs",
+              "start_line": 4,
+              "title": "discount_for_tier now returns percent; checkout still treats it as a fraction",
+              "claim": "discount_for_tier changed from fraction to percentage; final_price still computes base * (1.0 - d).",
+              "trigger": "final_price(100.0, \"gold\") returns -1900.",
+              "introduced_by_change": true
+            }
+          ],
+          "coverage": "general lane"
+        }}]}
+      ]
+    ],
+    "cross-file": [
+      [
+        {"tool_calls": [{"name": "vera_references", "arguments": {"symbol": "discount_for_tier"}}]},
+        {"tool_calls": [{"name": "submit_findings", "arguments": {
+          "findings": [
+            {
+              "defect_key": "final_price_treats_percent_as_fraction",
+              "severity": "high",
+              "file": "src/pricing.rs",
+              "start_line": 4,
+              "title": "checkout treats the percent discount as a fraction",
+              "claim": "same defect: caller still computes base * (1.0 - d)",
+              "introduced_by_change": true
+            },
+            {
+              "defect_key": "lib_module_docs_junk",
+              "severity": "low",
+              "file": "src/lib.rs",
+              "start_line": 1,
+              "title": "lib.rs could document the percent convention",
+              "claim": "speculative documentation nit, not a defect",
+              "introduced_by_change": false
+            }
+          ],
+          "coverage": "cross-file lane"
+        }}]}
+      ]
+    ],
+    "validator": [
+      [
+        {"tool_calls": [{"name": "submit_verdict", "arguments": {
+          "validation_status": "accepted",
+          "counterevidence_checked": ["caller computes base*(1.0-d)"],
+          "rationale": "real defect"
+        }}]}
+      ],
+      [
+        {"tool_calls": [{"name": "submit_verdict", "arguments": {
+          "validation_status": "rejected",
+          "counterevidence_checked": ["not a defect; docs nit"],
+          "rationale": "junk: no concrete failure mechanism"
+        }}]}
+      ]
+    ]
+  }
+}

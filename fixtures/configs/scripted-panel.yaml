@@ -1,0 +1,33 @@
+review:
+  strategy: panel
+  publish: dry-run
+  concurrency: 1
+models:
+  investigator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/panel-break.json
+    model: scripted-investigator
+  validator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/panel-break.json
+    model: scripted-validator
+  scouts:
+    - name: general
+      protocol: scripted
+      script: ${FIXTURE_SCRIPTS}/panel-break.json
+      model: scripted-general
+    - name: cross-file
+      protocol: scripted
+      script: ${FIXTURE_SCRIPTS}/panel-break.json
+      model: scripted-cross-file
+panel:
+  focuses: [general, cross-file]
+  scout_max_tool_calls: 15
+vera:
+  executable: vera
+  version: "1.4.1"
+  backend: api
+  embedding:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-embedding-8b
+    api_key_env: OPENROUTER_API_KEY

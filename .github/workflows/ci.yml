@@ -14,6 +14,14 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Install vera
+        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        run: |
+          curl -fsSL https://github.com/VeraTools/Vera/releases/download/v1.4.1/vera-x86_64-unknown-linux-gnu.tar.gz -o /tmp/vera.tar.gz
+          echo "42123fea81972e10afff70eea934d829000e956a946f8b2f59c22a78bbfea406  /tmp/vera.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf /tmp/vera.tar.gz -C /tmp
+          install -m755 "$(find /tmp -name vera -type f | head -1)" "$RUNNER_TEMP/bin/vera"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: fixture run (needs Vera + OpenRouter)
         if: ${{ secrets.OPENROUTER_API_KEY != '' }}
         env:
