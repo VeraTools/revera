@@ -163,10 +163,21 @@ pub async fn run_agent(
             });
         }
 
-        let results = run_tool_calls(toolbox, &msg.tool_calls).await;
-        tool_calls += msg.tool_calls.len() as u32;
+        // cap the batch at the remaining tool budget; skipped calls still get
+        // tool results so the transcript stays valid for the API
+        let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
+        let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
+        let results = run_tool_calls(toolbox, exec).await;
+        tool_calls += exec.len() as u32;
         for (id, name, res) in results {
             messages.push(ChatMessage::tool(id, name, res));
+        }
+        for c in skipped {
+            messages.push(ChatMessage::tool(
+                c.id.clone(),
+                c.name.clone(),
+                r#"{"error":"not executed: budget"}"#.to_string(),
+            ));
         }
     }
 }

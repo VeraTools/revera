@@ -80,39 +80,62 @@ pub struct RunReport {
     pub ledger: LedgerReport,
     #[serde(default)]
     pub publication: Publication,
+    /// Things the run could not check (worker gaps/blocked items).
+    #[serde(default)]
+    pub coverage_gaps: Vec<String>,
+}
+
+/// Strip `<!--` so model text cannot forge our HTML markers.
+fn sanitize(t: &str) -> String {
+    t.replace("<!--", "<!\u{200b}--")
+}
+
+/// Longest run of backticks in `s`.
+fn backtick_run(s: &str) -> usize {
+    s.split(|c| c != '`').map(str::len).max().unwrap_or(0)
 }
 
 pub fn finding_body(f: &Finding) -> String {
-    let mut b = format!("**[{}] {}**\n\n{}\n", f.severity, f.title, f.claim);
+    let mut b = format!(
+        "**[{}] {}**\n\n{}\n",
+        f.severity,
+        sanitize(&f.title),
+        sanitize(&f.claim)
+    );
     if !f.trigger.is_empty() {
-        b.push_str(&format!("\nTrigger: {}\n", f.trigger));
+        b.push_str(&format!("\nTrigger: {}\n", sanitize(&f.trigger)));
     }
     if !f.impact.is_empty() {
-        b.push_str(&format!("Impact: {}\n", f.impact));
+        b.push_str(&format!("Impact: {}\n", sanitize(&f.impact)));
     }
     if !f.supporting_evidence.is_empty() {
         let ev: Vec<String> = f
             .supporting_evidence
             .iter()
-            .map(|e| format!("{}:{}", e.path, e.start_line))
+            .map(|e| format!("{}:{}", sanitize(&e.path), e.start_line))
             .collect();
         b.push_str(&format!("Evidence: {}\n", ev.join(", ")));
     }
     if let Some(fix) = &f.suggested_fix {
-        b.push_str(&format!("\nSuggested fix:\n```\n{}\n```\n", fix));
+        let fix = sanitize(fix);
+        let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
+        b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
     }
     b.push_str(&format!("\n<!-- revera-id:{} -->", f.id()));
     b
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn summary_markdown(
     findings: &[Finding],
     outside_diff: &[&Finding],
     coverage: &str,
+    coverage_gaps: &[String],
     status: RunStatus,
     strategy: &str,
     routes: &[String],
     publish_uncertain: bool,
+    note: Option<&str>,
 ) -> String {
     let mut s = String::from("## Revera review\n\n");
     let accepted: Vec<&Finding> = findings
@@ -150,6 +173,12 @@ pub fn summary_markdown(
         }
     }
     s.push_str(&format!("\nNot checked: {}\n", coverage));
+    for g in coverage_gaps {
+        s.push_str(&format!("- not checked: {g}\n"));
+    }
+    if let Some(n) = note {
+        s.push_str(&format!("\n_{n}_\n"));
+    }
     s.push_str(&format!("\nStatus: {:?}\n", status).to_lowercase());
     let routes = {
         let mut r = routes.to_vec();

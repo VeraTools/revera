@@ -10,8 +10,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 /// Run one fresh-context validator agent per candidate, bounded by a
-/// concurrency semaphore. Failures mark the candidate uncertain and flag the
-/// run partial via the returned bool (false = had failures).
+/// concurrency semaphore. Failures mark the candidate uncertain; returns
+/// Some(partial_reason) when any candidate could not be conclusively validated.
 #[allow(clippy::too_many_arguments)]
 pub async fn validate_candidates(
     cfg: &Config,
@@ -23,10 +23,16 @@ pub async fn validate_candidates(
     terminal: &ToolSpec,
     role: &str,
     recheck: bool,
-) -> bool {
+    deadline: std::time::Instant,
+) -> Option<String> {
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
+    let mut skipped_from = None;
     for (i, c) in candidates.iter().enumerate() {
+        if std::time::Instant::now() >= deadline {
+            skipped_from = Some(i);
+            break;
+        }
         let sem = sem.clone();
         let cfg_models = cfg.models.validator.clone();
         let ledger = ledger.clone();
@@ -77,7 +83,14 @@ pub async fn validate_candidates(
             (i, run)
         });
     }
-    let mut clean = true;
+    if let Some(from) = skipped_from {
+        for c in candidates.iter_mut().skip(from) {
+            c.validation_status = Some(ValidationStatus::Uncertain);
+            c.rationale = Some("run time budget exhausted".into());
+        }
+    }
+    let mut clean = skipped_from.is_none();
+    let reason = skipped_from.map(|_| "run time budget exhausted".to_string());
     while let Some(res) = set.join_next().await {
         let (i, run) = res.expect("validator task panicked");
         let cand = &mut candidates[i];
@@ -118,7 +131,11 @@ pub async fn validate_candidates(
             }
         }
     }
-    clean
+    if clean {
+        None
+    } else {
+        Some(reason.unwrap_or_else(|| "one or more validations were inconclusive".into()))
+    }
 }
 
 pub fn validator_terminal() -> ToolSpec {

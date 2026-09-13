@@ -1,5 +1,6 @@
 use crate::config::{Config, PublishMode, Strategy};
-use crate::pipeline::baseline::{run as baseline_run, ReviewRequest};
+use crate::pipeline::common::ReviewRequest;
+use crate::pipeline::run as pipeline_run;
 use crate::report::RunStatus;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -137,7 +138,7 @@ async fn review(a: ReviewArgs) -> i32 {
             return 1;
         }
     };
-    let mut publish = a
+    let publish = a
         .publish
         .map(|p| match p {
             PublishArg::DryRun => PublishMode::DryRun,
@@ -160,15 +161,53 @@ async fn review(a: ReviewArgs) -> i32 {
         },
         None => None,
     };
-    let mut fork_note = false;
+    // Fork guard: no model or Vera calls at all — return partial immediately.
     if let Some(e) = &ev {
         if e.is_fork() && publish == PublishMode::Comment && !cfg.github.allow_forks {
+            let reason = "fork PR: review skipped (github.allow_forks=false)";
             eprintln!(
-                "revera: fork PR ({} -> {}): publication skipped (github.allow_forks=false)",
+                "revera: {reason} ({} -> {})",
                 e.head_repo_full_name, e.repo_full_name
             );
-            publish = PublishMode::DryRun;
-            fork_note = true;
+            let rep = crate::report::RunReport {
+                status: crate::report::RunStatus::Partial,
+                reason: Some(reason.into()),
+                base: e.base_sha.clone(),
+                head: e.head_sha.clone(),
+                strategy: format!("{:?}", cfg.review.strategy).to_lowercase(),
+                findings: vec![],
+                plan: crate::report::PublicationPlan {
+                    inline: vec![],
+                    summary_markdown: format!(
+                        "## Revera review\n\n> fork PR: publication skipped\n\nNot checked: {reason}\n\nstatus: partial\n\n<sub>revera</sub>\n"
+                    ),
+                    state: crate::state::ReviewState::default(),
+                },
+                ledger: crate::report::LedgerReport {
+                    requests: 0,
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    by_route: vec![],
+                    wall_ms: 0,
+                },
+                publication: crate::report::Publication {
+                    mode: "dry-run".into(),
+                    skipped_reason: Some(reason.into()),
+                    ..Default::default()
+                },
+                coverage_gaps: vec![],
+            };
+            print!("{}", rep.plan.summary_markdown);
+            let out = a
+                .out
+                .clone()
+                .unwrap_or_else(|| crate::git::repo_root(&a.repo).join(".revera/last-report.json"));
+            if let Some(p) = out.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            let _ = std::fs::write(&out, serde_json::to_string_pretty(&rep).unwrap());
+            eprintln!("report: {}", out.display());
+            return 2;
         }
     }
     let strategy = a.strategy.map(|s| match s {
@@ -242,16 +281,8 @@ async fn review(a: ReviewArgs) -> i32 {
         strategy_override: strategy,
         force: a.force,
     };
-    match baseline_run(&cfg, &req).await {
+    match pipeline_run(&cfg, &req).await {
         Ok((mut report, mut state)) => {
-            if fork_note {
-                report
-                    .plan
-                    .summary_markdown
-                    .push_str("\n> fork PR: publication skipped\n");
-                report.publication.mode = "dry-run".into();
-                report.publication.skipped_reason = Some("fork PR: publication skipped".into());
-            }
             let mut publish_failed = false;
             if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {
                 let resolved: Vec<String> = state

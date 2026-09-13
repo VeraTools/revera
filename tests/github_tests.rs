@@ -34,6 +34,7 @@ fn report(inline: Vec<InlineComment>) -> RunReport {
             wall_ms: 1,
         },
         publication: Default::default(),
+        coverage_gaps: vec![],
     }
 }
 

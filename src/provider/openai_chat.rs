@@ -117,7 +117,7 @@ impl OpenAiChatClient {
         if msg.is_null() {
             return Err(ProviderError::Other(format!(
                 "no choices[0].message in response: {}",
-                &v.to_string()[..v.to_string().len().min(500)]
+                crate::text::excerpt_bytes(&v.to_string(), 500)
             )));
         }
         // content may be a string, null, or an array of parts
@@ -176,15 +176,14 @@ impl ModelClient for OpenAiChatClient {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
-        if self.ledger.request_count() >= self.max_requests {
-            return Err(ProviderError::BudgetExhausted);
-        }
         let mut attempts = 0u32;
         let mut retries_used = 0u32;
         let mut tokens_key = "max_tokens";
         let start = Instant::now();
         loop {
-            if self.ledger.request_count() >= self.max_requests {
+            // reserve a slot for every HTTP attempt, including retries and
+            // the max_tokens -> max_completion_tokens fallback
+            if !self.ledger.try_reserve(self.max_requests) {
                 return Err(ProviderError::BudgetExhausted);
             }
             attempts += 1;
@@ -211,11 +210,25 @@ impl ModelClient for OpenAiChatClient {
                         && tokens_key == "max_tokens"
                         && text.contains("max_completion_tokens")
                     {
+                        self.ledger.record(LedgerEntry {
+                            route: self.route_label(),
+                            model: self.route.model.clone(),
+                            latency_ms: start.elapsed().as_millis() as u64,
+                            error: Some("400: retrying with max_completion_tokens".into()),
+                            ..Default::default()
+                        });
                         tokens_key = "max_completion_tokens";
                         continue;
                     }
                     if status == 429 || status >= 500 {
                         if attempts <= self.retries {
+                            self.ledger.record(LedgerEntry {
+                                route: self.route_label(),
+                                model: self.route.model.clone(),
+                                latency_ms: start.elapsed().as_millis() as u64,
+                                error: Some(format!("HTTP {status} (will retry)")),
+                                ..Default::default()
+                            });
                             retries_used += 1;
                             let backoff =
                                 retry_after.unwrap_or(0.5 * 2f64.powi(retries_used as i32 - 1));
@@ -230,7 +243,7 @@ impl ModelClient for OpenAiChatClient {
                         }
                         let err = ProviderError::RetryExhausted(format!(
                             "HTTP {status}: {}",
-                            &text[..text.len().min(400)]
+                            crate::text::excerpt_bytes(&text, 400)
                         ));
                         self.ledger.record(LedgerEntry {
                             route: self.route_label(),
@@ -245,7 +258,7 @@ impl ModelClient for OpenAiChatClient {
                     if status >= 400 {
                         let err = ProviderError::Http(format!(
                             "HTTP {status}: {}",
-                            &text[..text.len().min(400)]
+                            crate::text::excerpt_bytes(&text, 400)
                         ));
                         self.ledger.record(LedgerEntry {
                             route: self.route_label(),
@@ -257,13 +270,38 @@ impl ModelClient for OpenAiChatClient {
                         });
                         return Err(err);
                     }
-                    let parsed: Value = serde_json::from_str(&text).map_err(|e| {
-                        ProviderError::Other(format!(
-                            "bad JSON response: {e}: {}",
-                            &text[..text.len().min(300)]
-                        ))
-                    })?;
-                    let message = Self::parse_message(&parsed)?;
+                    let parsed: Value = match serde_json::from_str(&text) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let err = ProviderError::Other(format!(
+                                "bad JSON response: {e}: {}",
+                                crate::text::excerpt_bytes(&text, 300)
+                            ));
+                            self.ledger.record(LedgerEntry {
+                                route: self.route_label(),
+                                model: self.route.model.clone(),
+                                latency_ms: start.elapsed().as_millis() as u64,
+                                retries: retries_used,
+                                error: Some(err.to_string()),
+                                ..Default::default()
+                            });
+                            return Err(err);
+                        }
+                    };
+                    let message = match Self::parse_message(&parsed) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            self.ledger.record(LedgerEntry {
+                                route: self.route_label(),
+                                model: self.route.model.clone(),
+                                latency_ms: start.elapsed().as_millis() as u64,
+                                retries: retries_used,
+                                error: Some(e.to_string()),
+                                ..Default::default()
+                            });
+                            return Err(e);
+                        }
+                    };
                     let usage = Usage {
                         prompt_tokens: parsed["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
                         completion_tokens: parsed["usage"]["completion_tokens"]
@@ -297,6 +335,13 @@ impl ModelClient for OpenAiChatClient {
                 Err(e) => {
                     let transient = e.is_timeout() || e.is_connect();
                     if transient && attempts <= self.retries {
+                        self.ledger.record(LedgerEntry {
+                            route: self.route_label(),
+                            model: self.route.model.clone(),
+                            latency_ms: start.elapsed().as_millis() as u64,
+                            error: Some(format!("{e} (will retry)")),
+                            ..Default::default()
+                        });
                         retries_used += 1;
                         let backoff = 0.5 * 2f64.powi(retries_used as i32 - 1);
                         let jitter = (std::time::SystemTime::now()

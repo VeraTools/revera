@@ -112,7 +112,7 @@ impl ModelClient for ScriptedClient {
                         return Err(ProviderError::ScriptExpectationFailed(format!(
                             "role {}: expected tool result to contain {needle:?}, got: {}",
                             self.role,
-                            &last_tool[..last_tool.len().min(300)]
+                            crate::text::truncate_bytes(&last_tool, 300)
                         )));
                     }
                 }
