@@ -79,4 +79,43 @@ assert len(r["findings"]) == 0, r["findings"]
 PY
 echo "clean run ok: $CLEAN_OUT"
 
+# --- delegated strategy ---
+git -C "$FIX/crossfile" checkout -q break
+rm -f "$FIX/crossfile/.revera/state.json"
+DEL_OUT="$FIX/crossfile/.revera/delegated-report.json"
+"$BIN" review --repo "$FIX/crossfile" --base base --head break \
+    --config "$HERE/configs/scripted-delegated.yaml" \
+    --title "pricing percent refactor" --out "$DEL_OUT" || fail "delegated run exited $?"
+python3 - "$DEL_OUT" <<'PY' || fail "delegated assertions"
+import json, sys
+r = json.load(open(sys.argv[1]))
+acc = [f for f in r["findings"] if f.get("validation_status") == "accepted"]
+assert len(acc) == 1, f"expected 1 accepted finding, got {len(acc)}"
+assert acc[0]["file"] == "src/pricing.rs", acc[0]["file"]
+assert acc[0]["source"].startswith("delegated:"), acc[0]["source"]
+assert len(r["plan"]["inline"]) == 1, r["plan"]["inline"]
+assert r["status"] == "complete", r["status"]
+PY
+echo "delegated run ok: $DEL_OUT"
+
+# --- panel strategy ---
+rm -f "$FIX/crossfile/.revera/state.json"
+PANEL_OUT="$FIX/crossfile/.revera/panel-report.json"
+"$BIN" review --repo "$FIX/crossfile" --base base --head break \
+    --config "$HERE/configs/scripted-panel.yaml" \
+    --title "pricing percent refactor" --out "$PANEL_OUT" || fail "panel run exited $?"
+python3 - "$PANEL_OUT" <<'PY' || fail "panel assertions"
+import json, sys
+r = json.load(open(sys.argv[1]))
+acc = [f for f in r["findings"] if f.get("validation_status") == "accepted"]
+assert len(acc) == 1, f"expected 1 accepted finding (union collapsed, junk rejected), got {len(acc)}"
+assert acc[0]["file"] == "src/pricing.rs", acc[0]["file"]
+rej = [f for f in r["findings"] if f.get("validation_status") == "rejected"]
+assert len(rej) == 1, f"expected 1 rejected junk finding, got {len(rej)}"
+assert len(r["plan"]["inline"]) == 1, r["plan"]["inline"]
+assert "panel: 2 scouts," in r["plan"]["summary_markdown"], r["plan"]["summary_markdown"]
+assert r["status"] == "complete", r["status"]
+PY
+echo "panel run ok: $PANEL_OUT"
+
 echo "ALL FIXTURE ASSERTIONS PASSED"
