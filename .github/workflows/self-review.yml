@@ -1,0 +1,38 @@
+name: self-review
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  has-key:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      ok: ${{ steps.c.outputs.ok }}
+    steps:
+      - id: c
+        shell: bash
+        env:
+          K: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -n "$K" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+
+  revera:
+    needs: has-key
+    if: needs.has-key.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          config: revera.yaml
+          publish: comment
+        env:
+          REVIEW_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
