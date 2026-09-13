@@ -36,6 +36,9 @@
 - Eval harness in `eval/`: 6 synthetic corpus repos, 6 configs (baseline,
   no-vera, no-reranker, candidate-only, panel, delegated) x 2 reps; scoring
   + markdown summary in `eval/results.jsonl` / docs/EVAL.md.
+- Per-route `reasoning` levels (default `medium`) across all four HTTP
+  adapters; `provider_state` echoes reasoning/thinking items verbatim;
+  400s mentioning the reasoning field drop it and retry on the same slot.
 - `action.yml` composite action (vera+revera install with sha256 verify,
   .vera cache restore/save, fail-on), release workflow (tag `v*` → release +
   major tag move), self-review dogfood workflow.

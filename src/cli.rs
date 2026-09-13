@@ -187,6 +187,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     requests: 0,
                     prompt_tokens: 0,
                     completion_tokens: 0,
+                    reasoning_tokens: 0,
                     by_route: vec![],
                     wall_ms: 0,
                 },
@@ -366,6 +367,16 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
             } else {
                 println!("models.{name}: FAIL — key env {env} not set");
                 ok = false;
+            }
+            let rea = &r.reasoning;
+            if rea.enabled() {
+                println!(
+                    "models.{name}: reasoning effort={} (budget {})",
+                    rea.effort().as_str(),
+                    rea.effective_budget()
+                );
+            } else {
+                println!("models.{name}: reasoning off");
             }
         }
     }

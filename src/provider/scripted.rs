@@ -137,6 +137,7 @@ impl ModelClient for ScriptedClient {
                     tool_calls: calls,
                     tool_call_id: None,
                     name: None,
+                    provider_state: None,
                 }
             }
             None => {
@@ -154,6 +155,7 @@ impl ModelClient for ScriptedClient {
                     }],
                     tool_call_id: None,
                     name: None,
+                    provider_state: None,
                 }
             }
         };

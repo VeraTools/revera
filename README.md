@@ -44,13 +44,19 @@ names given in config.
 
 Each route independently picks a protocol:
 
-| protocol | wire format | base_url |
-|---|---|---|
-| `openai-chat` | POST `{base}/chat/completions` | required (e.g. OpenRouter) |
-| `openai-responses` | POST `{base}/responses` | required |
-| `anthropic` | POST `{base}/v1/messages` | optional (default `https://api.anthropic.com`) |
-| `gemini` | POST `{base}/v1beta/models/{model}:generateContent` | optional (default `generativelanguage.googleapis.com`) |
-| `scripted` | offline JSON script (tests) | — |
+| protocol | wire format | base_url | reasoning |
+|---|---|---|---|
+| `openai-chat` | POST `{base}/chat/completions` | required (e.g. OpenRouter) | `reasoning_effort` or `reasoning` (openrouter) |
+| `openai-responses` | POST `{base}/responses` | required | `reasoning.effort` + encrypted echo-back |
+| `anthropic` | POST `{base}/v1/messages` | optional (default `https://api.anthropic.com`) | `thinking.budget_tokens` |
+| `gemini` | POST `{base}/v1beta/models/{model}:generateContent` | optional (default `generativelanguage.googleapis.com`) | `thinkingConfig` (level/budget) |
+| `scripted` | offline JSON script (tests) | — | ignored |
+
+Every route defaults to `reasoning: medium`; set `reasoning: none` (or a
+long form `{effort, budget_tokens, field}`) to tune or disable. Reasoning
+items/thinking blocks/thoughtSignatures are echoed back verbatim across
+turns via `provider_state`; a 400 mentioning the reasoning field drops it
+and retries once on the same ledger slot.
 
 All HTTP protocols share one transport (retries, Retry-After, request
 budget, ledger) with a per-protocol wire adapter, so routes can mix — e.g.
