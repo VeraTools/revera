@@ -88,6 +88,7 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
 }
 
 impl ReasoningEffort {
@@ -100,6 +101,7 @@ impl ReasoningEffort {
             Self::Medium => 8192,
             Self::High => 16384,
             Self::Xhigh => 32768,
+            Self::Max => 65536,
         }
     }
     /// Wire spelling (openai has no "xhigh" on non-gpt-5 models — caller maps).
@@ -111,6 +113,7 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -193,6 +196,10 @@ pub struct ModelRoute {
     pub temperature: f64,
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
+    /// Header name sent on every request with a stable per-run session id.
+    /// Defaults to `x-opencode-session` when the base_url host is opencode.ai.
+    #[serde(default)]
+    pub session_header: Option<String>,
     pub script: Option<PathBuf>,
     /// Reasoning/thinking level; on by default (medium). `none` disables.
     #[serde(default)]
@@ -469,6 +476,19 @@ fn expand_route(r: &mut ModelRoute) -> Result<()> {
     }
     for v in r.extra_headers.values_mut() {
         *v = expand_env(v)?;
+    }
+    if r.session_header.is_none()
+        && r.base_url.as_deref().is_some_and(|b| {
+            b.split("://")
+                .nth(1)
+                .unwrap_or(b)
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .ends_with("opencode.ai")
+        })
+    {
+        r.session_header = Some("x-opencode-session".into());
     }
     Ok(())
 }

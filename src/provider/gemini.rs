@@ -1,6 +1,6 @@
 use super::http::{
-    detect_400_fallback, AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse,
-    ProtocolAdapter,
+    detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec, HttpTransport,
+    Parse, ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::ModelRoute;
@@ -245,9 +245,7 @@ impl ProtocolAdapter for GeminiAdapter {
             ("x-goog-api-key".to_string(), self.api_key.clone()),
             ("content-type".to_string(), "application/json".into()),
         ];
-        for (k, v) in &self.route.extra_headers {
-            headers.push((k.clone(), v.clone()));
-        }
+        headers.extend(route_headers(&self.route));
         Ok(HttpRequestSpec {
             url: format!(
                 "{}/v1beta/models/{}:generateContent",

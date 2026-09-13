@@ -149,3 +149,32 @@ vera: {backend: local}
     assert!(c.models.workers.is_none());
     assert!(c.models.scouts.is_none());
 }
+
+#[test]
+fn opencode_ai_base_url_defaults_session_header() {
+    std::env::set_var("REVERA_TEST_KEY", "sk-test");
+    let yaml = r#"
+review: {strategy: baseline}
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: REVERA_TEST_KEY
+    model: m
+  validator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {backend: local}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert_eq!(
+        c.models.investigator.session_header.as_deref(),
+        Some("x-opencode-session")
+    );
+    let other = yaml.replace(
+        "https://opencode.ai/zen/go/v1",
+        "https://openrouter.ai/api/v1",
+    );
+    let f = write_tmp(&other);
+    let c = Config::load(f.path()).unwrap();
+    assert!(c.models.investigator.session_header.is_none());
+}
