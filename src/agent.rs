@@ -74,7 +74,7 @@ pub async fn run_agent(
     let mut tool_calls = 0u32;
     let mut nudged = false;
     let mut budget_notice_sent = false;
-    let mut extra_completion_after_budget = false;
+    let mut budget_stop = StopReason::ToolBudget;
     let start = Instant::now();
 
     loop {
@@ -82,23 +82,15 @@ pub async fn run_agent(
         let tools_up = tool_calls >= budget.max_tool_calls;
         if (time_up || tools_up) && !budget_notice_sent {
             budget_notice_sent = true;
-            extra_completion_after_budget = true;
-            messages.push(ChatMessage::user(format!(
-                "Budget exhausted; call {} now with what you have",
-                terminal_tool.name
-            )));
-        } else if (time_up || tools_up) && budget_notice_sent && extra_completion_after_budget {
-            let stopped = if time_up {
+            budget_stop = if time_up {
                 StopReason::TimeBudget
             } else {
                 StopReason::ToolBudget
             };
-            return Ok(AgentRun {
-                final_call: None,
-                transcript_len: messages.len(),
-                tool_calls,
-                stopped,
-            });
+            messages.push(ChatMessage::user(format!(
+                "Budget exhausted; call {} now with what you have",
+                terminal_tool.name
+            )));
         }
 
         let completion = match client.complete(&messages, &specs).await {
@@ -113,9 +105,6 @@ pub async fn run_agent(
                 });
             }
         };
-        if extra_completion_after_budget {
-            extra_completion_after_budget = false;
-        }
         let msg = completion.message;
         messages.push(msg.clone());
 
@@ -130,7 +119,7 @@ pub async fn run_agent(
                         stopped: StopReason::Terminal,
                     });
                 }
-                if !nudged {
+                if !nudged && !budget_notice_sent {
                     nudged = true;
                     messages.push(ChatMessage::user(format!(
                         "Call `{}` to finish.",
@@ -143,7 +132,11 @@ pub async fn run_agent(
                 final_call: None,
                 transcript_len: messages.len(),
                 tool_calls,
-                stopped: StopReason::NoTerminalCall,
+                stopped: if budget_notice_sent {
+                    budget_stop
+                } else {
+                    StopReason::NoTerminalCall
+                },
             });
         }
 
@@ -157,6 +150,17 @@ pub async fn run_agent(
                     stopped: StopReason::Terminal,
                 });
             }
+        }
+
+        // After the budget notice, a non-terminal completion ends the loop
+        // immediately — no further tool calls are executed.
+        if budget_notice_sent {
+            return Ok(AgentRun {
+                final_call: None,
+                transcript_len: messages.len(),
+                tool_calls,
+                stopped: budget_stop,
+            });
         }
 
         let results = run_tool_calls(toolbox, &msg.tool_calls).await;

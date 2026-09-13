@@ -33,7 +33,8 @@ fn state_roundtrip_and_transitions() {
         ..Default::default()
     };
     let f = finding("src/x.rs", "k", 5);
-    s.upsert(&f, FindingState::Open, true);
+    s.upsert(&f, FindingState::Open);
+    s.mark_posted(&[f.id()]);
     s.save(dir.path()).unwrap();
 
     let loaded = ReviewState::load(dir.path()).unwrap().unwrap();
@@ -55,9 +56,10 @@ fn state_roundtrip_and_transitions() {
 fn upsert_preserves_posted() {
     let mut s = ReviewState::default();
     let f = finding("f.rs", "k", 1);
-    s.upsert(&f, FindingState::Open, true);
+    s.upsert(&f, FindingState::Open);
+    s.mark_posted(&[f.id()]);
     // re-review of the same still-open finding keeps posted=true
-    s.upsert(&f, FindingState::Open, false);
+    s.upsert(&f, FindingState::Open);
     assert!(s.findings[0].posted);
 }
 
@@ -73,6 +75,6 @@ fn recheck_transitions() {
     );
     assert_eq!(
         recheck_transition(ValidationStatus::Uncertain),
-        FindingState::Open
+        FindingState::Uncertain
     );
 }

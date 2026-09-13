@@ -165,6 +165,28 @@ async fn budget_exhaustion_path() {
 }
 
 #[tokio::test]
+async fn post_budget_nonterminal_stops_without_tools() {
+    // Once the budget notice has been sent, a non-terminal completion must end
+    // the loop with ToolBudget without executing further tool calls.
+    let replies = (0..5)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    let stub = Stub {
+        replies: Mutex::new(replies),
+    };
+    let b = AgentBudget {
+        max_tool_calls: 2,
+        max_seconds: 600,
+    };
+    let r = run_agent(&stub, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::ToolBudget);
+    assert_eq!(r.tool_calls, 2);
+    assert!(r.final_call.is_none());
+}
+
+#[tokio::test]
 async fn text_json_fallback() {
     let stub = Stub {
         replies: Mutex::new(VecDeque::from(vec![assistant_text(

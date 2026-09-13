@@ -17,6 +17,7 @@ use crate::state::{recheck_transition, FindingState, ReviewState};
 use crate::tools::{terminal_submit_findings_spec, ToolBox};
 use crate::vera::VeraClient;
 use anyhow::{bail, Result};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -35,7 +36,43 @@ fn parse_findings(args: &serde_json::Value) -> Vec<Finding> {
         .as_array()
         .map(|a| {
             a.iter()
-                .filter_map(|v| serde_json::from_value::<Finding>(v.clone()).ok())
+                .filter_map(|v| {
+                    let mut v = v.clone();
+                    if let Some(o) = v.as_object_mut() {
+                        // tolerate "path": "file.rs:12" and "description" aliases
+                        if !o.contains_key("file") {
+                            if let Some(p) = o
+                                .remove("path")
+                                .and_then(|p| p.as_str().map(str::to_string))
+                            {
+                                match p.rsplit_once(':') {
+                                    Some((f, l)) if l.parse::<u32>().is_ok() => {
+                                        o.insert(
+                                            "start_line".into(),
+                                            json!(l.parse::<u32>().unwrap()),
+                                        );
+                                        o.insert("file".into(), json!(f));
+                                    }
+                                    _ => {
+                                        o.insert("file".into(), json!(p));
+                                    }
+                                }
+                            }
+                        }
+                        if !o.contains_key("claim") {
+                            if let Some(d) = o.remove("description") {
+                                o.insert("claim".into(), d);
+                            }
+                        }
+                    }
+                    match serde_json::from_value::<Finding>(v) {
+                        Ok(f) => Some(f),
+                        Err(e) => {
+                            tracing::warn!("dropping malformed finding: {e}");
+                            None
+                        }
+                    }
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -95,9 +132,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
 
     // short-circuit: identical patch content already reviewed
     if !req.force && had_prior && state.is_unchanged(&base_sha, &patch_id) {
-        let mut plan_state = state.clone();
-        plan_state.reviewed_head = head_sha.clone();
+        state.reviewed_head = head_sha.clone();
         state.save(&repo)?;
+        let plan_state = state.clone();
         let summary = summary_markdown(
             &[],
             &[],
@@ -120,25 +157,35 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 state: plan_state,
             },
             ledger: ledger_report(&ledger.0.lock().unwrap(), wall.elapsed().as_millis() as u64),
+            publication: Default::default(),
         };
         return Ok((rep, state));
     }
 
+    let mut partial_reasons: Vec<String> = Vec::new();
     let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?);
-    if let Err(e) = vera.ensure_index().await {
-        tracing::warn!("vera index failed (continuing without retrieval): {e}");
-    }
+    let vera_err = match vera.ensure_index().await {
+        Ok(_) => None,
+        Err(e) => {
+            let r = format!("retrieval unavailable: {e}");
+            tracing::warn!("vera index failed (continuing without retrieval): {e}");
+            partial_reasons.push(r.clone());
+            Some(r)
+        }
+    };
     let toolbox = Arc::new(ToolBox::new(
         repo.clone(),
         diff.clone(),
         vera,
         cfg.review.max_tool_output_bytes,
     ));
+    if let Some(r) = vera_err {
+        toolbox.disable_vera(r);
+    }
     let budget = AgentBudget {
         max_tool_calls: cfg.budget.agent_max_tool_calls,
         max_seconds: cfg.budget.agent_max_seconds,
     };
-    let mut partial_reasons: Vec<String> = Vec::new();
 
     // ---- recheck prior open findings ----
     let mut rechecks = recheck_candidates(&state);
@@ -202,6 +249,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     match run.stopped {
         crate::agent::StopReason::Terminal => {
             if let Some(call) = &run.final_call {
+                tracing::debug!(args = %call.arguments, "investigator terminal call");
                 coverage = call.arguments["coverage"]
                     .as_str()
                     .unwrap_or("(none)")
@@ -225,10 +273,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     collapsed.retain(|f| {
         let id = f.id();
         !(state.has_posted(&id)
-            || state
-                .findings
-                .iter()
-                .any(|p| p.id == id && p.status == FindingState::Open))
+            || state.findings.iter().any(|p| {
+                p.id == id && matches!(p.status, FindingState::Open | FindingState::Uncertain)
+            }))
     });
 
     // ---- validate ----
@@ -274,14 +321,13 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     }
     // ---- state update ----
     for f in &final_findings {
+        // `posted` is only ever set by the publisher via mark_posted().
         let st = match f.validation_status {
             Some(crate::findings::ValidationStatus::Accepted) => FindingState::Open,
             Some(crate::findings::ValidationStatus::Rejected) => FindingState::Rejected,
-            _ => FindingState::Open,
+            _ => FindingState::Uncertain,
         };
-        let posted = st == FindingState::Open
-            && f.validation_status == Some(crate::findings::ValidationStatus::Accepted);
-        state.upsert(f, st, posted);
+        state.upsert(f, st);
     }
     state.reviewed_base = base_sha.clone();
     state.reviewed_head = head_sha.clone();
@@ -328,6 +374,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
             state: state.clone(),
         },
         ledger: ledger_report(&ledger.0.lock().unwrap(), wall.elapsed().as_millis() as u64),
+        publication: Default::default(),
     };
     Ok((rep, state))
 }
