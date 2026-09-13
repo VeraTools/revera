@@ -4,6 +4,7 @@ pub mod config;
 pub mod diff;
 pub mod findings;
 pub mod git;
+pub mod github;
 pub mod pipeline;
 pub mod prompts;
 pub mod provider;

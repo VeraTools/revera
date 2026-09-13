@@ -136,6 +136,9 @@ pub struct GithubConfig {
     pub token_env: String,
     #[serde(default = "default_marker")]
     pub summary_marker: String,
+    /// Allow publishing comments on forked-PR events (default false).
+    #[serde(default)]
+    pub allow_forks: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -242,6 +245,7 @@ impl Default for GithubConfig {
         Self {
             token_env: default_token_env(),
             summary_marker: default_marker(),
+            allow_forks: false,
         }
     }
 }
