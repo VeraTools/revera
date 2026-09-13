@@ -15,12 +15,14 @@ fn validator_budget_at(
     now: std::time::Instant,
     deadline: std::time::Instant,
 ) -> Option<AgentBudget> {
-    if now >= deadline {
+    let remaining = deadline.checked_duration_since(now)?;
+    let max_seconds = max_seconds.min(remaining.as_secs());
+    if max_seconds == 0 {
         return None;
     }
     Some(AgentBudget {
         max_tool_calls,
-        max_seconds: max_seconds.min(deadline.duration_since(now).as_secs()),
+        max_seconds,
     })
 }
 
@@ -199,5 +201,13 @@ mod tests {
     fn validator_budget_is_none_after_deadline() {
         let now = Instant::now();
         assert!(validator_budget_at(4, 30, now, now - Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn validator_budget_is_none_under_one_second() {
+        let now = Instant::now();
+        assert!(validator_budget_at(4, 30, now, now + Duration::from_millis(400)).is_none());
+        let b = validator_budget_at(4, 30, now, now + Duration::from_secs(5)).unwrap();
+        assert_eq!(b.max_seconds, 5);
     }
 }
