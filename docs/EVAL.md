@@ -211,3 +211,46 @@ eval/run-all.sh 2`; per-run reports land in `eval/reports/` (gitignored).
 - Two reps per cell; single-model; no cost in real dollars beyond the
   $0.10/$0.20 per-M estimate. None of the numbers above are statistically
   strong; they are enough to say the corpus is no longer a trivial tie.
+
+## Large-repo multi-hop corpus — ripgrep, 2 configs x 4 corpora x 2 reps (muse-spark, 2026-09-13)
+
+Spec: `eval/large/cases.md`; truth lives outside the repos in
+`eval/large/truth/`. Each case is a fresh clone of ripgrep (~50k LOC, 11
+crates) at a pinned commit with one synthetic edit to a single file whose
+defect only shows through untouched callers in other files/crates (LineStep
+terminator contract, CRLF trimming in the printer, globset extension
+strategies vs dotfiles) plus one behaviour-preserving control. Budgets were
+equal for both configs (`run_max_seconds: 600`, `agent_max_seconds: 420`,
+`agent_max_tool_calls: 40`); they differ only in `vera.enabled`.
+
+| config | TP | TP high/crit | FN | FP | xf | clean-PR commented | median wall s | mean req | mean tok | total cost |
+|---|---|---|---|---|---|---|---|---|---|---|
+| LA-baseline-large (Vera on) | 5/6 | 4 | 1 | 0 | 5 | 0 | 138.5 | 17.8 | 244974 | $0.2074 |
+| LB-baseline-large-novera | 4/6 | 2 | 2 | 0 | 4 | 0 | 118.5 | 16.5 | 208690 | $0.1775 |
+
+`xf` = accepted true positives whose text cites the cross-file mechanism
+(keywords per case). All 9 TPs did. Misses: LineStep rep 2 under both configs,
+CRLF rep 2 without Vera. Control: 0 FP in all four runs.
+
+Indexing: a cold `vera index` of ripgrep through the OpenRouter embedding
+backend took 22 min (229 files, 5,259 chunks); the index files stopped
+growing after ~7 min and the process then sat ~15 min on one idle embedding
+connection — a Vera api-backend stall worth reporting upstream. Relocating a
+warm `.vera` and running `vera update` took 5–6 s per corpus, which is the
+path the Action's prefix-restored cache takes.
+
+### What this does and does not show
+
+- First evidence in Vera's favour: +1 recall and higher severities with Vera
+  on, at ~17% more wall time and ~17% more tokens. Two reps per cell on three
+  defect cases is not statistically strong; label: **Vera on is the
+  provisional default for large repos** (best measured, insufficient
+  evidence for a strong claim).
+- Without Vera the model still found cross-file evidence via `read_file` +
+  `vera_grep`-free exploration in 4/6 runs; the corpus is multi-hop but the
+  hops are short (one crate boundary). Deeper cases are the next step.
+- Tool usage is not yet in the report (the ledger counts requests/tokens
+  only); per-tool counters are a follow-up so search efficiency can be
+  compared rather than inferred from token counts.
+- Cold index cost on a real repo dominates first-run latency; the Action's
+  cache restore + `vera update` is what makes this acceptable in CI.
