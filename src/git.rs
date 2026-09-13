@@ -23,6 +23,42 @@ pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
     Ok(git(repo, &["rev-parse", rev]).await?.trim().to_string())
 }
 
+pub async fn current_head(repo: &Path) -> Result<String> {
+    rev_parse(repo, "HEAD").await
+}
+
+pub async fn tracked_dirty(repo: &Path) -> Result<bool> {
+    Ok(
+        !git(repo, &["status", "--porcelain", "--untracked-files=no"])
+            .await?
+            .trim()
+            .is_empty(),
+    )
+}
+
+pub async fn checkout_detached(repo: &Path, sha: &str) -> Result<()> {
+    git(repo, &["checkout", "--detach", "--quiet", sha])
+        .await
+        .map(|_| ())
+}
+
+/// Ensure the working tree materializes the requested commit.
+pub async fn materialize_head(repo: &Path, sha: &str) -> Result<()> {
+    let current = current_head(repo).await?;
+    if current != sha && !has_commit(repo, sha).await {
+        fetch_sha(repo, sha).await?;
+    }
+    if tracked_dirty(repo).await? {
+        bail!(
+            "working tree has uncommitted changes to tracked files; commit or stash them so the reviewed tree matches {sha} (HEAD is {current})"
+        );
+    }
+    if current != sha {
+        checkout_detached(repo, sha).await?;
+    }
+    Ok(())
+}
+
 pub async fn is_repo(repo: &Path) -> bool {
     git(repo, &["rev-parse", "--is-inside-work-tree"])
         .await
