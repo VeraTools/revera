@@ -1,0 +1,77 @@
+# Revera configuration. Copy to revera.yaml (repo root) or pass --config.
+# ${VAR} in string values is expanded from the environment at load time.
+
+review:
+  strategy: baseline          # baseline | delegated | panel
+  max_findings: 10            # published inline comments cap; the rest go to the summary
+  publish: dry-run            # dry-run | comment
+  publish_uncertain: false    # list validator-"uncertain" findings in the summary
+  concurrency: 4              # parallel model lanes (scouts/workers/validations)
+  max_tool_output_bytes: 12000
+  max_diff_bytes: 200000      # PR diffs larger than this are truncated per file with a note
+  min_severity: low           # low | medium | high  (below this is dropped before validation)
+
+budget:
+  agent_max_tool_calls: 25    # per agent loop
+  agent_max_seconds: 300
+  run_max_requests: 120       # total model HTTP requests per run
+  run_max_seconds: 900
+  retries: 3                  # on 429/5xx/timeouts, exponential backoff
+
+models:
+  # Role slots. Each may point to a different endpoint; several may share one.
+  investigator:
+    protocol: openai-chat     # openai-chat | scripted
+    base_url: ${REVIEW_BASE_URL}
+    api_key_env: REVIEW_API_KEY
+    model: cheap-review-model
+    max_output_tokens: 4000
+    temperature: 0.2
+  validator:
+    protocol: openai-chat
+    base_url: ${REVIEW_BASE_URL}
+    api_key_env: REVIEW_API_KEY
+    model: strong-validator-model
+    max_output_tokens: 3000
+  # lead: (optional; delegated mode) defaults to validator
+  # workers: (optional; delegated mode) list, defaults to [investigator]
+  scouts:                     # panel mode lanes; also used as delegated workers if `workers` is unset
+    - name: general
+      protocol: openai-chat
+      base_url: ${REVIEW_BASE_URL}
+      api_key_env: REVIEW_API_KEY
+      model: cheap-model-a
+      focus: general          # general | cross-file | security | concurrency | data
+    - name: cross-file
+      protocol: openai-chat
+      base_url: ${REVIEW_BASE_URL}
+      api_key_env: REVIEW_API_KEY
+      model: cheap-model-b
+      focus: cross-file
+
+vera:
+  executable: vera            # name on PATH or absolute path
+  version: "1.4.1"            # doctor warns on mismatch
+  backend: api                # api | local
+  embedding:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-embedding-8b
+    api_key_env: OPENROUTER_API_KEY
+  reranker:                   # optional; omit to disable reranking
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-reranker-8b
+    api_key_env: OPENROUTER_API_KEY
+  exclude: []                 # extra globs passed to `vera update --exclude`
+
+github:
+  token_env: GITHUB_TOKEN
+  summary_marker: "<!-- revera-summary -->"
+
+# Named partial overrides selectable with `--profile <name>`.
+profiles:
+  fast: {}                    # the defaults
+  deep:
+    budget:
+      agent_max_tool_calls: 60
+      run_max_requests: 400
+      run_max_seconds: 2400
