@@ -108,6 +108,20 @@ Anything else goes into the summary under "Findings outside the diff".
 
 All strategies share tools, schema, validator, anchoring and publication.
 
+## Timing
+
+Every run records wall-clock `PhaseTiming` entries into the report's
+`timing.phases`: `vera_index`, `recheck`, `lane` (baseline `investigator`,
+`panel:<focus>`, delegated `worker:<qid>`), `plan`, `synthesis`,
+`arbitration`, `validate` (label = candidate id), and `publish`. Outcomes are
+`ok` (with `ok:candidates`/`ok:accepted` variants), `timeout`,
+`tool_budget`, `error:<short>`, or `skipped`. Derived metrics in the report:
+`total_ms`, `vera_index_ms`, `first_candidate_ms` (end of the first lane
+that produced candidates), `first_validated_ms` (end of the first accepted
+validate), `lanes_ms`/`validate_ms` (phase spans), `validate_p50_ms`/
+`validate_p95_ms` (nearest-rank), and `incomplete_phases`. The summary
+markdown footer carries a one-line rendering (`_Timing: total … · lanes …_`).
+
 ## Vera integration
 
 Environment for `vera` subprocesses is built from `vera:` config

@@ -573,6 +573,58 @@ impl Config {
         Ok(())
     }
 
+    /// Reasoning effort for a ledger route label ("scripted:<role>" or
+    /// "<proto>:<base_url>"), used to render `route:model@effort` in footers.
+    pub fn route_effort(&self, route_label: &str) -> Option<&'static str> {
+        let route_by_role = |role: &str| -> Option<&ModelRoute> {
+            match role {
+                "investigator" => Some(&self.models.investigator),
+                "validator" => Some(&self.models.validator),
+                "lead" => Some(
+                    self.models
+                        .lead
+                        .as_ref()
+                        .unwrap_or(&self.models.investigator),
+                ),
+                "workers" => Some(
+                    self.models
+                        .workers
+                        .as_deref()
+                        .and_then(|ws| ws.first())
+                        .unwrap_or(&self.models.investigator),
+                ),
+                other => self
+                    .models
+                    .scouts
+                    .as_ref()?
+                    .iter()
+                    .find(|s| s.name == other)
+                    .map(|s| &s.route),
+            }
+        };
+        if let Some(role) = route_label.strip_prefix("scripted:") {
+            return route_by_role(role).map(|r| r.reasoning.effort().as_str());
+        }
+        let proto = |p: Protocol| match p {
+            Protocol::OpenaiChat => "openai-chat",
+            Protocol::OpenaiResponses => "openai-responses",
+            Protocol::Anthropic => "anthropic",
+            Protocol::Gemini => "gemini",
+            Protocol::Scripted => "scripted",
+        };
+        std::iter::once(&self.models.investigator)
+            .chain(std::iter::once(&self.models.validator))
+            .chain(self.models.lead.iter())
+            .chain(self.models.workers.iter().flatten())
+            .chain(self.models.scouts.iter().flatten().map(|s| &s.route))
+            .find(|r| {
+                r.base_url
+                    .as_deref()
+                    .is_some_and(|b| route_label == format!("{}:{}", proto(r.protocol), b))
+            })
+            .map(|r| r.reasoning.effort().as_str())
+    }
+
     pub fn apply_profile(&mut self, name: &str) -> Result<()> {
         let Some(p) = self.profiles.get(name) else {
             bail!("unknown profile {name:?}");

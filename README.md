@@ -13,7 +13,9 @@ revera cache-info [--repo <path>]
 ```
 
 `review` prints a summary to stdout and writes a full JSON report to
-`--out` (default `.revera/last-report.json`). Exit codes: 0 complete,
+`--out` (default `.revera/last-report.json`). The report includes a
+`timing` object with per-phase wall-clock breakdowns (indexing, lanes,
+validation, publish). Exit codes: 0 complete,
 2 partial, 1 failed/config error. With `--event <path>` (a
 `pull_request`/`pull_request_target` payload) Revera takes base/head/title
 from the event and, with `--publish comment`, posts an inline review plus a
