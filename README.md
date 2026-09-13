@@ -26,12 +26,14 @@ managed summary comment carrying its state blob.
   with:
     fetch-depth: 0
     ref: ${{ github.event.pull_request.head.sha }}
-- uses: VeraTools/revera@v1
+- uses: VeraTools/revera@v0
   with: { config: revera.yaml }
   env:
     REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
+
+`@v1` becomes available with the 1.0.0 release; pin `@v0.1.0` for an exact version.
 
 The checkout must use the PR head SHA so reviewer tools read the exact PR
 tree rather than GitHub's synthetic merge ref.
