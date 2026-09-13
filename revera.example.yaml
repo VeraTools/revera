@@ -66,6 +66,7 @@ vera:
 github:
   token_env: GITHUB_TOKEN
   summary_marker: "<!-- revera-summary -->"
+  allow_forks: false          # publish comments on forked-PR events
 
 # Named partial overrides selectable with `--profile <name>`.
 profiles:

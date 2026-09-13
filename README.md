@@ -14,7 +14,24 @@ revera cache-info [--repo <path>]
 
 `review` prints a summary to stdout and writes a full JSON report to
 `--out` (default `.revera/last-report.json`). Exit codes: 0 complete,
-2 partial, 1 failed/config error.
+2 partial, 1 failed/config error. With `--event <path>` (a
+`pull_request`/`pull_request_target` payload) Revera takes base/head/title
+from the event and, with `--publish comment`, posts an inline review plus a
+managed summary comment carrying its state blob.
+
+## GitHub Action
+
+```yaml
+- uses: actions/checkout@v4
+  with: { fetch-depth: 0 }
+- uses: VeraTools/revera@v1
+  with: { config: revera.yaml }
+  env:
+    REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
+    OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+Workflow permissions: `pull-requests: write`, `contents: read`.
 
 ## Configuration
 
@@ -25,6 +42,8 @@ mode reads keys from the env names given in config.
 
 ## Status
 
-M1+M2 core: baseline strategy (investigate → collapse → validate → anchor),
-state/patch-id short-circuit, dry-run report. `delegated`/`panel` strategies
-and GitHub publication (`--publish comment`) are not yet implemented.
+M3 core: baseline strategy (investigate → collapse → validate → anchor),
+state/patch-id short-circuit, GitHub event mode with `--publish comment`
+(inline review + managed summary comment, head-SHA recheck, fork guard),
+composite action + release workflow. `delegated`/`panel` strategies are not
+yet implemented.
