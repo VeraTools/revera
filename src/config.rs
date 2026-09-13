@@ -46,6 +46,10 @@ pub struct ReviewConfig {
     pub max_diff_bytes: usize,
     #[serde(default)]
     pub min_severity: Severity,
+    /// Eval-only knob: skip the validation pass and treat candidates as
+    /// accepted (warns in the log). Default true.
+    #[serde(default = "default_true")]
+    pub validate: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,6 +125,9 @@ pub struct VeraConfig {
     #[serde(default = "default_vera_exe")]
     pub executable: String,
     pub version: Option<String>,
+    /// When false: skip indexing and remove the vera_* tools entirely.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default)]
     pub backend: VeraBackend,
     pub embedding: Option<VeraEndpoint>,
@@ -209,6 +216,9 @@ pub struct Config {
     pub profiles: HashMap<String, ProfileOverride>,
 }
 
+fn default_true() -> bool {
+    true
+}
 fn default_max_findings() -> usize {
     10
 }

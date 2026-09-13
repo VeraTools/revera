@@ -11,6 +11,8 @@ pub struct ToolBox {
     pub vera: Arc<VeraClient>,
     pub max_output_bytes: usize,
     vera_disabled: std::sync::Mutex<Option<String>>,
+    /// vera.enabled=false: vera_* tools are not offered at all.
+    hide_vera: bool,
     /// When set, only these tool names are exposed/callable.
     allowed: Option<Vec<String>>,
 }
@@ -136,6 +138,7 @@ impl ToolBox {
             vera,
             max_output_bytes,
             vera_disabled: std::sync::Mutex::new(None),
+            hide_vera: false,
             allowed: None,
         }
     }
@@ -149,6 +152,7 @@ impl ToolBox {
             vera: self.vera.clone(),
             max_output_bytes: self.max_output_bytes,
             vera_disabled: std::sync::Mutex::new(self.vera_disabled.lock().unwrap().clone()),
+            hide_vera: self.hide_vera,
             allowed: Some(names.iter().map(|s| s.to_string()).collect()),
         }
     }
@@ -159,8 +163,13 @@ impl ToolBox {
         *self.vera_disabled.lock().unwrap() = Some(reason);
     }
 
+    /// vera.enabled=false: drop vera_* tools from specs entirely.
+    pub fn hide_vera_tools(&mut self) {
+        self.hide_vera = true;
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
-        let all: Vec<ToolSpec> = vec![
+        let mut all: Vec<ToolSpec> = vec![
             ToolSpec {
                 name: "read_file".into(),
                 description:
@@ -236,6 +245,9 @@ impl ToolBox {
                 parameters: obj_schema(json!({}), &[]),
             },
         ];
+        if self.hide_vera {
+            all.retain(|t| !t.name.starts_with("vera_"));
+        }
         match &self.allowed {
             Some(names) => all
                 .into_iter()

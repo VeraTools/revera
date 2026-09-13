@@ -10,6 +10,7 @@ review:
   max_tool_output_bytes: 12000
   max_diff_bytes: 200000      # PR diffs larger than this are truncated per file with a note
   min_severity: low           # low | medium | high  (below this is dropped before validation)
+  # validate: false           # eval-only: skip validation, treat candidates as accepted
 
 budget:
   agent_max_tool_calls: 25    # per agent loop
@@ -50,6 +51,7 @@ models:
       focus: cross-file
 
 vera:
+  enabled: true               # false: skip indexing, no vera_* tools
   executable: vera            # name on PATH or absolute path
   version: "1.4.1"            # doctor warns on mismatch
   backend: api                # api | local

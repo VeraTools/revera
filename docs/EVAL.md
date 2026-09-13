@@ -91,3 +91,29 @@ Notes:
 - Panel: `2 scouts, 2 raw candidates → 1 unique` (both scouts converged on the
   same defect; collapse merged them).
 - Cost estimate: $0.10/M prompt + $0.20/M completion (muse-spark pricing).
+
+## M5 eval corpus — 6 configs x 6 corpora x 2 reps (muse-spark all routes)
+
+Corpus: `eval/corpus/` (built by `eval/build-corpus.sh`; defects in
+crossfile/nullpath/offbyone/lockdrop, clean in clean-refactor/clean-docs).
+Strong-model comparisons (package 09 items 4, 6): not run — single-model
+constraint (all routes are `meta/muse-spark-1.3-contributor`).
+
+| config | TP | FN | FP | clean-PR commented | incomplete | median wall s | mean req | mean tok | total cost |
+|---|---|---|---|---|---|---|---|---|---|
+| A-baseline | 8 | 0 | 0 | 0 | 0 | 19.2 | 6.2 | 17532 | $0.0235 |
+| B-baseline-novera | 8 | 0 | 0 | 0 | 0 | 28.3 | 5.8 | 14421 | $0.0201 |
+| C-baseline-norerank | 8 | 0 | 0 | 0 | 0 | 16.9 | 6.0 | 16761 | $0.0223 |
+| D-candidate-only | 8 | 0 | 0 | 0 | 0 | 11.4 | 3.5 | 10031 | $0.0133 |
+| E-panel-2scouts | 8 | 0 | 2 | 0 | 0 | 19.6 | 10.9 | 32421 | $0.0432 |
+| F-delegated | 8 | 0 | 0 | 0 | 0 | 45.8 | 9.2 | 26286 | $0.0372 |
+
+All 72 runs completed; none failed. muse-spark detected every defect under
+every configuration — including without retrieval (B) and without the
+validation pass (D), and produced zero comments on the two clean corpora.
+Panel produced the only false positives (2) and delegated was slowest
+(~46s median). Raw results: `eval/results.jsonl`.
+
+### Decision
+
+TODO(lead)

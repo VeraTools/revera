@@ -40,10 +40,21 @@ See `revera.example.yaml` and `docs/DESIGN.md`. Model roles
 a `protocol` (`openai-chat` or `scripted`), endpoint, and model; Vera API
 mode reads keys from the env names given in config.
 
+## Evaluation
+
+`eval/` holds a small synthetic corpus plus scoring scripts (not wired into
+CI; requires `OPENROUTER_API_KEY`):
+
+```sh
+cargo build
+bash eval/build-corpus.sh            # 6 repos under eval/corpus/
+bash eval/run.sh A-baseline crossfile 2   # one config x corpus x reps
+bash eval/run-all.sh 2               # full matrix, <=3 lanes parallel
+python3 eval/summarize.py eval/results.jsonl
+```
+
 ## Status
 
-M3 core: baseline strategy (investigate → collapse → validate → anchor),
-state/patch-id short-circuit, GitHub event mode with `--publish comment`
-(inline review + managed summary comment, head-SHA recheck, fork guard),
-composite action + release workflow. `delegated`/`panel` strategies are not
-yet implemented.
+M5: all three strategies (baseline / delegated / panel), GitHub event mode
+with `--publish comment`, composite action + release workflow, and a 6-repo
+eval harness in `eval/` (see docs/EVAL.md).

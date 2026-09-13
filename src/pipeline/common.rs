@@ -185,21 +185,30 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
 
     let mut partial_reasons: Vec<String> = Vec::new();
     let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?);
-    let vera_err = match vera.ensure_index().await {
-        Ok(_) => None,
-        Err(e) => {
-            let r = format!("retrieval unavailable: {e}");
-            tracing::warn!("vera index failed (continuing without retrieval): {e}");
-            partial_reasons.push(r.clone());
-            Some(r)
+    let vera_err = if !cfg.vera.enabled {
+        tracing::info!("vera disabled by config; no index, no retrieval tools");
+        None
+    } else {
+        match vera.ensure_index().await {
+            Ok(_) => None,
+            Err(e) => {
+                let r = format!("retrieval unavailable: {e}");
+                tracing::warn!("vera index failed (continuing without retrieval): {e}");
+                partial_reasons.push(r.clone());
+                Some(r)
+            }
         }
     };
-    let toolbox = Arc::new(ToolBox::new(
+    let mut tb = ToolBox::new(
         repo.clone(),
         diff.clone(),
         vera.clone(),
         cfg.review.max_tool_output_bytes,
-    ));
+    );
+    if !cfg.vera.enabled {
+        tb.hide_vera_tools();
+    }
+    let toolbox = Arc::new(tb);
     if let Some(r) = vera_err {
         toolbox.disable_vera(r);
     }
@@ -315,7 +324,13 @@ pub async fn finish(
     });
 
     // ---- validate ----
-    if !collapsed.is_empty() {
+    if !cfg.review.validate {
+        // eval-only knob: candidates treated as accepted, no validation pass
+        tracing::warn!("review.validate=false: skipping validation (eval-only)");
+        for c in &mut collapsed {
+            c.validation_status = Some(crate::findings::ValidationStatus::Accepted);
+        }
+    } else if !collapsed.is_empty() {
         let clean = validate_candidates(
             cfg,
             prep.ledger.clone(),

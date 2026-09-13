@@ -32,13 +32,16 @@
   skipped with a partial_reason.
 - Fixture suite: `fixtures/run-fixture.sh` exercises break → fix → clean →
   delegated → panel (all scripted).
+- Eval harness in `eval/`: 6 synthetic corpus repos, 6 configs (baseline,
+  no-vera, no-reranker, candidate-only, panel, delegated) x 2 reps; scoring
+  + markdown summary in `eval/results.jsonl` / docs/EVAL.md.
 - `action.yml` composite action (vera+revera install with sha256 verify,
   .vera cache restore/save, fail-on), release workflow (tag `v*` → release +
   major tag move), self-review dogfood workflow.
 
 ## Current blocker
 
-None for M1–M4. Live delegated + panel runs on the crossfile `break` fixture
+None for M1–M5. Live delegated + panel runs on the crossfile `break` fixture
 both found the bug (muse-spark all routes); see docs/EVAL.md.
 
 ## Next three tasks
