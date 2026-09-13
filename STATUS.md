@@ -61,14 +61,11 @@
 
 ## Current blocker / known limitations
 
-- No release has been cut: `v0.1.0` does not exist yet, so `uses:
-  VeraTools/revera@v0` and the Action's default `revera-version: 0.1.0` only
-  work after PR #4 merges and `git tag v0.1.0 && git push origin v0.1.0` runs
-  the release workflow (which now verifies the packaged tarball + checksum
-  before publishing).
-- `.vera` cache key in `action.yml` uses `github.sha` (the merge commit), not
-  the PR head; restore keys omit the SHA, so a restored index may be stale
-  until Vera re-indexes changed files (delegated to the external `vera`).
+- `v0.1.0` is released and `uses: VeraTools/revera@v0` resolves (`v0` and
+  `v0.1.0` both point at the release commit). Known issue: the 0.1.0
+  `x86_64-unknown-linux-gnu` binary needs glibc >= 2.39, so it fails on
+  Ubuntu 22.04 hosts; fixed on main by shipping a static
+  `x86_64-unknown-linux-musl` asset in the next release.
 - Eval evidence is muse-spark-only, 2 reps per cell, small repos; Vera's
   recall effect is still unmeasured (docs/EVAL.md). Strong-model comparisons
   were not run (user directive).
@@ -77,11 +74,9 @@
 
 ## Next three tasks
 
-1. Merge PR #4, tag `v0.1.0`, confirm the release job's verify step and the
-   `v0` tag move; then dogfood the Action on the next PR.
-2. Key the `.vera` cache on the PR head SHA (or verify Vera's incremental
-   re-index makes staleness harmless) — see limitation above.
-3. Add one large-repo, multi-hop eval case to measure Vera's recall effect.
+1. Tag the next release to ship the musl asset, then dogfood the Action on
+   the next PR.
+2. Add one large-repo, multi-hop eval case to measure Vera's recall effect.
 
 ## Exact test-demo command
 

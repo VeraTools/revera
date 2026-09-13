@@ -1,6 +1,6 @@
 use super::http::{
-    detect_400_fallback, AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse,
-    ProtocolAdapter,
+    detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec, HttpTransport,
+    Parse, ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::{ModelRoute, ReasoningEffort, ReasoningField};
@@ -144,7 +144,9 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             match field {
                 ReasoningField::Openai => {
                     let mut e = r.effort();
-                    if e == ReasoningEffort::Xhigh && !self.route.model.starts_with("gpt-5") {
+                    if matches!(e, ReasoningEffort::Xhigh | ReasoningEffort::Max)
+                        && !self.route.model.starts_with("gpt-5")
+                    {
                         e = ReasoningEffort::High;
                     }
                     body["reasoning_effort"] = json!(e.as_str());
@@ -165,9 +167,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             ),
             ("content-type".to_string(), "application/json".into()),
         ];
-        for (k, v) in &self.route.extra_headers {
-            headers.push((k.clone(), v.clone()));
-        }
+        headers.extend(route_headers(&self.route));
         Ok(HttpRequestSpec { url, headers, body })
     }
 

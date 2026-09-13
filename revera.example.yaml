@@ -28,7 +28,10 @@ models:
     model: cheap-review-model
     max_output_tokens: 4000
     temperature: 0.2
-    reasoning: medium          # none|minimal|low|medium|high|xhigh (default medium)
+    reasoning: medium          # none|minimal|low|medium|high|xhigh|max (default medium)
+    # extra_headers: {X-Custom: value}   # extra headers on every request
+    # session_header: x-opencode-session # header carrying a stable per-run id;
+                                         # auto-set for base_url host opencode.ai
     # long form:
     # reasoning:
     #   effort: high           # effort level
