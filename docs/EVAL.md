@@ -116,4 +116,29 @@ Panel produced the only false positives (2) and delegated was slowest
 
 ### Decision
 
-TODO(lead)
+Provisional default: **`baseline` with Vera retrieval and fresh validation on**
+(config A), fast profile budgets.
+
+Reasoning and caveats:
+
+- The corpus is saturated: every configuration found all 8 defects, so this
+  run cannot rank configurations on recall. It *can* rank them on cost,
+  latency and false positives, and on those baseline dominates: panel costs
+  1.8x and produced the only false positives; delegated costs 1.6x and takes
+  2.4x longer with no quality gain. Neither becomes a default. They stay
+  available under the `deep` profile / `--strategy` for hard PRs.
+- Validation (A vs D) showed no FP difference here because the investigator
+  produced no junk; the fixture suite shows validation rejecting junk when
+  it does occur (panel scripted fixture) and it is the only defence before
+  publication, so it stays on. `review.validate: false` remains eval-only.
+- Vera (A vs B) did not change recall on these single-hop defects but
+  reduced wall time (19s vs 28s median), consistent with the model reaching
+  the caller via retrieval instead of `read_file` exploration (not verified
+  per-transcript). Retrieval
+  stays on; a corpus with multi-hop, larger-repo defects is needed to measure
+  its recall effect and is the first follow-up.
+- Reranker (A vs C) is within noise at this scale (2 reps); keep it
+  configurable, default on when the user supplies a reranker route.
+- Strong-vs-cheap portfolio comparisons (package items 4 and 6) are not run
+  under the single-model constraint; re-run `eval/run-all.sh` with a strong
+  validator route when one is available.
