@@ -30,6 +30,7 @@ fn report(inline: Vec<InlineComment>) -> RunReport {
             requests: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            reasoning_tokens: 0,
             by_route: vec![],
             wall_ms: 1,
         },

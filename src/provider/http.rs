@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 pub struct AttemptState {
     pub tokens_key: String,
     pub drop_temperature: bool,
+    pub drop_reasoning: bool,
 }
 
 impl Default for AttemptState {
@@ -16,6 +17,7 @@ impl Default for AttemptState {
         Self {
             tokens_key: "max_tokens".into(),
             drop_temperature: false,
+            drop_reasoning: false,
         }
     }
 }
@@ -30,6 +32,34 @@ pub enum Parse {
     RetrySameSlot(String),
     /// Fatal parse/HTTP error.
     Err(ProviderError),
+}
+
+/// Shared 400 fallback detection for reasoning/thinking fields and
+/// temperature (reasoning models reject it). Returns Some(RetrySameSlot)
+/// after mutating `attempt`, else None. `reason_keys` are the wire
+/// spellings the protocol uses (e.g. &["reasoning"], &["thinking"]).
+pub fn detect_400_fallback(
+    status: u16,
+    body: &str,
+    attempt: &mut AttemptState,
+    reason_keys: &[&str],
+) -> Option<Parse> {
+    if status != 400 {
+        return None;
+    }
+    if !attempt.drop_reasoning && reason_keys.iter().any(|k| body.contains(k)) {
+        attempt.drop_reasoning = true;
+        return Some(Parse::RetrySameSlot(
+            "400: retrying without reasoning".into(),
+        ));
+    }
+    if !attempt.drop_temperature && body.contains("temperature") {
+        attempt.drop_temperature = true;
+        return Some(Parse::RetrySameSlot(
+            "400: retrying without temperature".into(),
+        ));
+    }
+    None
 }
 
 /// A fully materialized HTTP request.

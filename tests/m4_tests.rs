@@ -210,6 +210,7 @@ impl ModelClient for RecStub {
                 }],
                 tool_call_id: None,
                 name: None,
+                provider_state: None,
             });
         Ok(Completion {
             message: msg,
@@ -236,6 +237,7 @@ fn calls(n: u32) -> ChatMessage {
             .collect(),
         tool_call_id: None,
         name: None,
+        provider_state: None,
     }
 }
 

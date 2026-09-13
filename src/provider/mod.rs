@@ -36,6 +36,11 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Opaque adapter-owned state echoed back verbatim on the next turn
+    /// (reasoning items, thinking blocks, thoughtSignatures). Only the
+    /// adapter that produced it interprets it; foreign shapes are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_state: Option<serde_json::Value>,
 }
 
 impl ChatMessage {
@@ -46,6 +51,7 @@ impl ChatMessage {
             tool_calls: vec![],
             tool_call_id: None,
             name: None,
+            provider_state: None,
         }
     }
     pub fn user(s: impl Into<String>) -> Self {
@@ -55,6 +61,7 @@ impl ChatMessage {
             tool_calls: vec![],
             tool_call_id: None,
             name: None,
+            provider_state: None,
         }
     }
     pub fn tool(
@@ -68,6 +75,7 @@ impl ChatMessage {
             tool_calls: vec![],
             tool_call_id: Some(id.into()),
             name: Some(name.into()),
+            provider_state: None,
         }
     }
 }
@@ -83,6 +91,8 @@ pub struct ToolSpec {
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Reasoning/thinking tokens, where the provider reports them.
+    pub reasoning_tokens: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +126,7 @@ pub struct LedgerEntry {
     pub latency_ms: u64,
     pub retries: u32,
     pub error: Option<String>,
+    pub reasoning_tokens: u64,
 }
 
 #[derive(Debug, Default)]
@@ -157,12 +168,14 @@ impl LedgerHandle {
     pub fn request_count(&self) -> u32 {
         self.0.lock().unwrap().entries.len() as u32
     }
-    pub fn totals(&self) -> (u64, u64, u64) {
+    /// (requests, prompt_tokens, completion_tokens, reasoning_tokens)
+    pub fn totals(&self) -> (u64, u64, u64, u64) {
         let g = self.0.lock().unwrap();
         let r = g.entries.len() as u64;
         let p = g.entries.iter().map(|e| e.prompt_tokens).sum();
         let c = g.entries.iter().map(|e| e.completion_tokens).sum();
-        (r, p, c)
+        let re = g.entries.iter().map(|e| e.reasoning_tokens).sum();
+        (r, p, c, re)
     }
 }
 

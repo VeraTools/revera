@@ -187,6 +187,7 @@ mod tests {
             temperature: 0.0,
             extra_headers: HashMap::new(),
             script: None,
+            reasoning: crate::config::Reasoning::default(),
         }
     }
 

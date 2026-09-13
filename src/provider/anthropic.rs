@@ -1,5 +1,6 @@
 use super::http::{
-    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    detect_400_fallback, AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse,
+    ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::ModelRoute;
@@ -64,6 +65,11 @@ fn to_blocks(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
             }
             Role::Assistant => {
                 let mut parts: Vec<Value> = vec![];
+                // verbatim thinking/redacted_thinking blocks lead the
+                // assistant message (required for echo-back)
+                if let Some(Value::Array(items)) = &m.provider_state {
+                    parts.extend(items.iter().cloned());
+                }
                 if let Some(c) = &m.content {
                     parts.push(json!({"type": "text", "text": c}));
                 }
@@ -137,7 +143,7 @@ impl ProtocolAdapter for AnthropicAdapter {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSpec],
-        _attempt: &mut AttemptState,
+        attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
         let (system, msgs) = to_blocks(messages);
         let tool_specs: Vec<Value> = tools
@@ -150,14 +156,29 @@ impl ProtocolAdapter for AnthropicAdapter {
                 })
             })
             .collect();
+        let max_out = self.route.max_output_tokens as u64;
+        let r = &self.route.reasoning;
+        let thinking_on = r.enabled() && !attempt.drop_reasoning;
+        let mut max_tokens = max_out;
         let mut body = json!({
             "model": self.route.model,
             "messages": msgs,
             "tools": tool_specs,
             "tool_choice": {"type": "auto"},
-            "max_tokens": self.route.max_output_tokens,
-            "temperature": self.route.temperature,
         });
+        if thinking_on {
+            // thinking budget counts toward max_tokens; raise max_tokens
+            // when the budget leaves too little headroom for the answer
+            let b = r.effective_budget().min(max_out.saturating_sub(1024));
+            if max_out <= b + 1024 {
+                max_tokens = b + max_out;
+            }
+            body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
+        } else {
+            // temperature is rejected when extended thinking is enabled
+            body["temperature"] = json!(self.route.temperature);
+        }
+        body["max_tokens"] = json!(max_tokens);
         if !system.is_empty() {
             body["system"] = json!(system.join("\n\n"));
         }
@@ -176,7 +197,10 @@ impl ProtocolAdapter for AnthropicAdapter {
         })
     }
 
-    fn parse(&self, status: u16, body: &str, _attempt: &mut AttemptState) -> Parse {
+    fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
+        if let Some(p) = detect_400_fallback(status, body, attempt, &["thinking"]) {
+            return p;
+        }
         if status >= 400 {
             return Parse::Err(ProviderError::Http(format!(
                 "HTTP {status}: {}",
@@ -194,6 +218,7 @@ impl ProtocolAdapter for AnthropicAdapter {
         };
         let mut content_parts: Vec<String> = vec![];
         let mut calls = vec![];
+        let mut provider_state: Vec<Value> = vec![];
         if let Some(arr) = parsed["content"].as_array() {
             for b in arr {
                 match b["type"].as_str() {
@@ -201,6 +226,9 @@ impl ProtocolAdapter for AnthropicAdapter {
                         if let Some(t) = b["text"].as_str() {
                             content_parts.push(t.to_string());
                         }
+                    }
+                    Some("thinking") | Some("redacted_thinking") => {
+                        provider_state.push(b.clone());
                     }
                     Some("tool_use") => {
                         calls.push(ToolCall {
@@ -216,6 +244,8 @@ impl ProtocolAdapter for AnthropicAdapter {
         let usage = Usage {
             prompt_tokens: parsed["usage"]["input_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            // anthropic reports thinking under output_tokens; no split
+            reasoning_tokens: 0,
         };
         Parse::Ok(
             ChatMessage {
@@ -228,6 +258,11 @@ impl ProtocolAdapter for AnthropicAdapter {
                 tool_calls: calls,
                 tool_call_id: None,
                 name: None,
+                provider_state: if provider_state.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(provider_state))
+                },
             },
             usage,
         )
