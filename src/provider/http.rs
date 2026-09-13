@@ -53,6 +53,8 @@ pub trait ProtocolAdapter: Send + Sync {
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse;
 }
 
+const MAX_RETRY_AFTER_SECS: f64 = 60.0;
+
 /// Shared attempt loop: ledger reservation per attempt, 429/5xx + transient
 /// retry with Retry-After + exponential backoff + jitter, ledger entries for
 /// every attempt (success and failure), latency accounting.
@@ -149,7 +151,9 @@ impl HttpTransport {
                         .headers()
                         .get("retry-after")
                         .and_then(|h| h.to_str().ok())
-                        .and_then(|s| s.parse::<f64>().ok());
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .filter(|s| s.is_finite() && *s >= 0.0)
+                        .map(|s| s.min(MAX_RETRY_AFTER_SECS));
                     let text = resp.text().await.unwrap_or_default();
                     if status == 429 || status >= 500 {
                         if attempts <= self.retries {
