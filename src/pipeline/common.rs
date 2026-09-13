@@ -55,11 +55,19 @@ pub struct Prepared {
 impl Prepared {
     /// AgentBudget capped by both the per-agent limit and the run deadline.
     pub fn budget(&self, max_tool_calls: u32, max_seconds: u64) -> crate::agent::AgentBudget {
-        let left = self.deadline.saturating_duration_since(Instant::now());
-        crate::agent::AgentBudget {
-            max_tool_calls,
-            max_seconds: max_seconds.min(left.as_secs()),
-        }
+        clamp_budget(max_tool_calls, max_seconds, self.deadline)
+    }
+}
+
+pub fn clamp_budget(
+    max_tool_calls: u32,
+    max_seconds: u64,
+    deadline: Instant,
+) -> crate::agent::AgentBudget {
+    let left = deadline.saturating_duration_since(Instant::now());
+    crate::agent::AgentBudget {
+        max_tool_calls,
+        max_seconds: max_seconds.min(left.as_secs()),
     }
 }
 
@@ -125,6 +133,7 @@ pub fn parse_candidate_findings(v: &serde_json::Value) -> Vec<Finding> {
 /// short-circuit, ensure the Vera index, and recheck prior open findings.
 pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> Result<PrepareOut> {
     let wall = Instant::now();
+    let deadline = wall + std::time::Duration::from_secs(cfg.budget.run_max_seconds);
     let repo = git::repo_root(&req.repo);
     if !git::is_repo(&repo).await {
         bail!("{} is not a git repository", repo.display());
@@ -132,7 +141,17 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     let base_sha = git::rev_parse(&repo, &req.base).await?;
     let head_rev = req.head.as_deref().unwrap_or("HEAD");
     let head_sha = git::rev_parse(&repo, head_rev).await?;
-
+    let current_head = git::current_head(&repo).await?;
+    if head_sha != current_head {
+        bail!(
+            "head {head_sha} is not the checked-out tree (HEAD is {current_head}); reviewer tools read the working tree, so check out the PR head first (GitHub Actions: actions/checkout with ref: ${{{{ github.event.pull_request.head.sha }}}})"
+        );
+    }
+    if git::tracked_dirty(&repo).await? {
+        bail!(
+            "working tree has uncommitted changes to tracked files; commit or stash them so the reviewed tree matches {head_sha} (HEAD is {current_head})"
+        );
+    }
     let raw_diff = git::diff(&repo, &req.base, head_rev).await?;
     let diff: Arc<DiffSet> = Arc::new(parse_unified(&raw_diff));
     let patch_id = git::patch_id(&repo, &req.base, head_rev)
@@ -213,7 +232,6 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         toolbox.disable_vera(r);
     }
 
-    let deadline = Instant::now() + std::time::Duration::from_secs(cfg.budget.run_max_seconds);
     // ---- recheck prior open findings ----
     let mut rechecks = recheck_candidates(&state);
     if !rechecks.is_empty() {
@@ -257,7 +275,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         coverage: String::new(),
         coverage_gaps: vec![],
         report_note: None,
-        deadline: Instant::now() + std::time::Duration::from_secs(cfg.budget.run_max_seconds),
+        deadline,
         wall,
     })))
 }
@@ -460,4 +478,19 @@ pub fn investigator_user(req: &ReviewRequest, diff: &DiffSet, max_diff_bytes: us
         changed.join("\n"),
         diff.render_truncated(max_diff_bytes),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_budget;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn clamp_budget_uses_remaining_deadline() {
+        let budget = clamp_budget(7, 100, Instant::now() + Duration::from_secs(5));
+        assert!(budget.max_seconds <= 5);
+
+        let expired = clamp_budget(7, 100, Instant::now() - Duration::from_secs(1));
+        assert_eq!(expired.max_seconds, 0);
+    }
 }

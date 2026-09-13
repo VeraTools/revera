@@ -1,14 +1,15 @@
 use crate::config::{Config, PublishMode, Strategy};
 use crate::pipeline::common::ReviewRequest;
 use crate::pipeline::run as pipeline_run;
-use crate::report::RunStatus;
+use crate::report::{surfaced_ids, RunStatus};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "revera",
-    about = "Provider-independent PR reviewer with Vera retrieval"
+    about = "Provider-independent PR reviewer with Vera retrieval",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
@@ -238,6 +239,27 @@ async fn review(a: ReviewArgs) -> i32 {
                     return 1;
                 }
             }
+            let current = match crate::git::current_head(&repo).await {
+                Ok(current) => current,
+                Err(err) => {
+                    eprintln!("error: cannot determine checked-out HEAD: {err:#}");
+                    return 1;
+                }
+            };
+            if current != e.head_sha {
+                if let Err(err) = crate::git::materialize_head(&repo, &e.head_sha).await {
+                    if crate::git::tracked_dirty(&repo).await.unwrap_or(false) {
+                        eprintln!("error: {err:#}");
+                        return 2;
+                    }
+                    eprintln!("error: cannot check out PR head {}: {err:#}", e.head_sha);
+                    return 1;
+                }
+                eprintln!(
+                    "event: checked out PR head {} (was {})",
+                    e.head_sha, current
+                );
+            }
             // seed state from the managed summary comment (fallback: empty)
             let (owner, rname) = e.owner_repo();
             let seeded = match api.list_issue_comments(owner, rname, e.number).await {
@@ -330,6 +352,13 @@ async fn review(a: ReviewArgs) -> i32 {
             if let Err(e) = std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()) {
                 eprintln!("error: cannot write {}: {e}", out.display());
                 return 1;
+            }
+            if !(api.is_some() && publish == PublishMode::Comment) {
+                state.mark_posted(&surfaced_ids(&report));
+                if let Err(e) = state.save(&repo) {
+                    eprintln!("error: cannot save state: {e}");
+                    return 1;
+                }
             }
             eprintln!("report: {}", out.display());
             match report.status {

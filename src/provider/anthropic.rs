@@ -245,6 +245,15 @@ impl ProtocolAdapter for AnthropicAdapter {
                 }
             }
         }
+        if parsed["stop_reason"].as_str() == Some("max_tokens")
+            && content_parts.is_empty()
+            && calls.is_empty()
+        {
+            return Parse::Err(ProviderError::Other(
+                "output truncated at max_tokens with empty content; raise max_tokens or lower reasoning effort"
+                    .into(),
+            ));
+        }
         let usage = Usage {
             prompt_tokens: parsed["usage"]["input_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["output_tokens"].as_u64().unwrap_or(0),

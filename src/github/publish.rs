@@ -1,6 +1,6 @@
-use super::api::{GitHubApi, ReviewComment};
+use super::api::{GitHubApi, GitHubHttpError, ReviewComment};
 use super::event::PrEvent;
-use crate::report::{Publication, RunReport};
+use crate::report::{surfaced_ids, Publication, RunReport};
 use crate::state::{FindingState, ReviewState};
 use anyhow::Result;
 use base64::Engine;
@@ -96,7 +96,7 @@ pub async fn publish(
                 posted_ids.push(id);
             }
         }
-        let review_id = api
+        let review_result = api
             .create_review(
                 owner,
                 repo,
@@ -105,17 +105,35 @@ pub async fn publish(
                 "Revera inline review findings",
                 &comments,
             )
-            .await?;
-        pubn.review_id = Some(review_id);
-        // (4) mark posted ids only after a successful post, so the state blob
-        // embedded below carries them
-        state.mark_posted(&posted_ids);
+            .await;
+        match review_result {
+            Ok(review_id) => {
+                pubn.review_id = Some(review_id);
+                // (4) mark posted ids only after a successful post, so the state blob
+                // embedded below carries them
+                state.mark_posted(&posted_ids);
+            }
+            Err(err)
+                if err
+                    .downcast_ref::<GitHubHttpError>()
+                    .is_some_and(|e| e.status == 422) =>
+            {
+                tracing::warn!("GitHub rejected inline review (422); continuing with summary");
+                pubn.skipped_reason = Some(
+                    "inline review rejected by GitHub (422); findings listed in summary only"
+                        .into(),
+                );
+            }
+            Err(err) => return Err(err),
+        }
     }
 
     // (3) upsert the managed summary comment
+    let mut staged = state.clone();
+    staged.mark_posted(&surfaced_ids(report));
     let mut body = format!("{summary_marker}\n{}", report.plan.summary_markdown);
     // all currently open findings (incl. previously posted)
-    let open: Vec<_> = state
+    let open: Vec<_> = staged
         .findings
         .iter()
         .filter(|f| f.status == FindingState::Open)
@@ -139,7 +157,7 @@ pub async fn publish(
         }
     }
     body.push('\n');
-    body.push_str(&encode_state(state));
+    body.push_str(&encode_state(&staged));
 
     let comments = api.list_issue_comments(owner, repo, ev.number).await?;
     let managed = comments
@@ -154,6 +172,7 @@ pub async fn publish(
         }
     };
     pubn.summary_comment_id = Some(comment.id);
+    *state = staged;
 
     report.publication = pubn.clone();
     Ok(pubn)

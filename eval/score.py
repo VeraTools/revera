@@ -39,6 +39,12 @@ def main():
             used.add(hit)
     fn = len(truth["defects"]) - tp
     fp = len(accepted) - len(used)
+    tp_high = sum(
+        1 for i in used if accepted[i].get("severity") in ("high", "critical")
+    )
+    statuses = [f.get("validation_status") for f in r.get("findings", [])]
+    rejected = statuses.count("rejected")
+    uncertain = statuses.count("uncertain")
 
     led = r.get("ledger", {})
     ptok = led.get("prompt_tokens", 0)
@@ -50,9 +56,13 @@ def main():
         "rep": int(rep),
         "status": r.get("status", "failed"),
         "reason": r.get("reason"),
+        "clean": bool(truth.get("clean", False)),
         "tp": tp,
+        "tp_high": tp_high,
         "fp": fp,
         "fn": fn,
+        "rejected": rejected,
+        "uncertain": uncertain,
         "requests": led.get("requests", 0),
         "prompt_tokens": ptok,
         "completion_tokens": ctok,
