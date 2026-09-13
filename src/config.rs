@@ -143,6 +143,26 @@ pub struct GithubConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DelegatedConfig {
+    #[serde(default = "default_max_questions")]
+    pub max_questions: usize,
+    #[serde(default = "default_worker_tool_calls")]
+    pub worker_max_tool_calls: u32,
+    #[serde(default = "default_worker_seconds")]
+    pub worker_max_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelConfig {
+    #[serde(default = "default_focuses")]
+    pub focuses: Vec<String>,
+    #[serde(default = "default_scout_tool_calls")]
+    pub scout_max_tool_calls: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileOverride {
     pub review: Option<ReviewOverride>,
     pub budget: Option<BudgetOverride>,
@@ -181,6 +201,10 @@ pub struct Config {
     pub vera: VeraConfig,
     #[serde(default)]
     pub github: GithubConfig,
+    #[serde(default)]
+    pub delegated: DelegatedConfig,
+    #[serde(default)]
+    pub panel: PanelConfig,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileOverride>,
 }
@@ -227,6 +251,21 @@ fn default_token_env() -> String {
 fn default_marker() -> String {
     "<!-- revera-summary -->".into()
 }
+fn default_max_questions() -> usize {
+    4
+}
+fn default_worker_tool_calls() -> u32 {
+    12
+}
+fn default_worker_seconds() -> u64 {
+    120
+}
+fn default_focuses() -> Vec<String> {
+    vec!["general".into(), "cross-file".into()]
+}
+fn default_scout_tool_calls() -> u32 {
+    15
+}
 
 impl Default for BudgetConfig {
     fn default() -> Self {
@@ -236,6 +275,25 @@ impl Default for BudgetConfig {
             run_max_requests: default_run_requests(),
             run_max_seconds: default_run_seconds(),
             retries: default_retries(),
+        }
+    }
+}
+
+impl Default for DelegatedConfig {
+    fn default() -> Self {
+        Self {
+            max_questions: default_max_questions(),
+            worker_max_tool_calls: default_worker_tool_calls(),
+            worker_max_seconds: default_worker_seconds(),
+        }
+    }
+}
+
+impl Default for PanelConfig {
+    fn default() -> Self {
+        Self {
+            focuses: default_focuses(),
+            scout_max_tool_calls: default_scout_tool_calls(),
         }
     }
 }
@@ -335,6 +393,12 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self) -> Result<()> {
+        let m = &self.github.summary_marker;
+        if !(m.starts_with("<!-- revera") && m.trim_end().ends_with("-->")) {
+            bail!(
+                "github.summary_marker must be an HTML comment starting with '<!-- revera' (got {m:?})"
+            );
+        }
         expand_route(&mut self.models.investigator)?;
         expand_route(&mut self.models.validator)?;
         if let Some(l) = &mut self.models.lead {

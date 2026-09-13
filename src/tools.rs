@@ -11,6 +11,8 @@ pub struct ToolBox {
     pub vera: Arc<VeraClient>,
     pub max_output_bytes: usize,
     vera_disabled: std::sync::Mutex<Option<String>>,
+    /// When set, only these tool names are exposed/callable.
+    allowed: Option<Vec<String>>,
 }
 
 fn obj_schema(props: Value, required: &[&str]) -> Value {
@@ -55,6 +57,53 @@ pub fn terminal_submit_findings_spec() -> ToolSpec {
     }
 }
 
+/// Delegated-mode lead planning terminal tool.
+pub fn terminal_submit_plan_spec() -> ToolSpec {
+    ToolSpec {
+        name: "submit_plan".into(),
+        description: "Submit the investigation plan. Call exactly once.".into(),
+        parameters: obj_schema(
+            json!({
+                "questions": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "symbols": {"type": "array", "items": {"type": "string"}},
+                        "expected_evidence": {"type": "string"},
+                        "stop_condition": {"type": "string"},
+                        "files_hint": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["id","question","symbols","expected_evidence","stop_condition"],
+                }},
+                "note": {"type": "string"},
+            }),
+            &["questions"],
+        ),
+    }
+}
+
+/// Delegated-mode worker terminal tool.
+pub fn terminal_submit_worker_result_spec() -> ToolSpec {
+    ToolSpec {
+        name: "submit_worker_result".into(),
+        description: "Submit your answer to the assigned question. Call exactly once.".into(),
+        parameters: obj_schema(
+            json!({
+                "result": {"type": "string", "enum": ["answered","blocked","no_issue","complete"]},
+                "blocked_reason": {"type": "string"},
+                "answer": {"type": "string"},
+                "evidence": {"type": "array", "items": {"type": "object",
+                    "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "note": {"type": "string"}},
+                    "required": ["path"]}},
+                "candidate_findings": {"type": "array", "items": {"type": "object"}},
+                "gaps": {"type": "array", "items": {"type": "string"}},
+            }),
+            &["result", "answer"],
+        ),
+    }
+}
+
 pub fn terminal_submit_verdict_spec() -> ToolSpec {
     ToolSpec {
         name: "submit_verdict".into(),
@@ -87,6 +136,20 @@ impl ToolBox {
             vera,
             max_output_bytes,
             vera_disabled: std::sync::Mutex::new(None),
+            allowed: None,
+        }
+    }
+
+    /// A toolbox exposing only the named tools (e.g. synthesis gets read-only
+    /// file access and nothing else).
+    pub fn restricted(&self, names: &[&str]) -> ToolBox {
+        ToolBox {
+            repo_root: self.repo_root.clone(),
+            diff: self.diff.clone(),
+            vera: self.vera.clone(),
+            max_output_bytes: self.max_output_bytes,
+            vera_disabled: std::sync::Mutex::new(self.vera_disabled.lock().unwrap().clone()),
+            allowed: Some(names.iter().map(|s| s.to_string()).collect()),
         }
     }
 
@@ -97,7 +160,7 @@ impl ToolBox {
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
-        vec![
+        let all: Vec<ToolSpec> = vec![
             ToolSpec {
                 name: "read_file".into(),
                 description:
@@ -172,18 +235,18 @@ impl ToolBox {
                 description: "High-level architecture summary of the indexed repository.".into(),
                 parameters: obj_schema(json!({}), &[]),
             },
-        ]
+        ];
+        match &self.allowed {
+            Some(names) => all
+                .into_iter()
+                .filter(|t| names.contains(&t.name))
+                .collect(),
+            None => all,
+        }
     }
 
     fn truncate(&self, s: String) -> String {
-        if s.len() <= self.max_output_bytes {
-            s
-        } else {
-            let total = s.len();
-            let mut cut = s[..self.max_output_bytes].to_string();
-            cut.push_str(&format!("...[truncated, {total} bytes total]"));
-            cut
-        }
+        crate::text::truncate_bytes(&s, self.max_output_bytes)
     }
 
     fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
@@ -316,6 +379,12 @@ impl ToolBox {
 
     /// Errors are returned to the model as a JSON tool result.
     pub async fn call(&self, name: &str, args: Value) -> String {
+        if let Some(names) = &self.allowed {
+            if !names.iter().any(|n| n == name) {
+                return json!({"error": format!("tool {name} not available in this step")})
+                    .to_string();
+            }
+        }
         if name.starts_with("vera_") {
             if let Some(r) = self.vera_disabled.lock().unwrap().clone() {
                 return json!({"error": r}).to_string();

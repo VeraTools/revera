@@ -10,5 +10,6 @@ pub mod prompts;
 pub mod provider;
 pub mod report;
 pub mod state;
+pub mod text;
 pub mod tools;
 pub mod vera;
