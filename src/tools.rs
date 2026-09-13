@@ -10,6 +10,7 @@ pub struct ToolBox {
     pub diff: Arc<DiffSet>,
     pub vera: Arc<VeraClient>,
     pub max_output_bytes: usize,
+    vera_disabled: std::sync::Mutex<Option<String>>,
 }
 
 fn obj_schema(props: Value, required: &[&str]) -> Value {
@@ -26,7 +27,27 @@ pub fn terminal_submit_findings_spec() -> ToolSpec {
         description: "Submit the final candidate findings and finish. Call exactly once.".into(),
         parameters: obj_schema(
             json!({
-                "findings": {"type": "array", "items": {"type": "object"}},
+                "findings": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "defect_key": {"type": "string"},
+                        "severity": {"type": "string", "enum": ["high","medium","low"]},
+                        "file": {"type": "string"},
+                        "start_line": {"type": "integer"},
+                        "end_line": {"type": "integer"},
+                        "title": {"type": "string"},
+                        "claim": {"type": "string"},
+                        "trigger": {"type": "string"},
+                        "impact": {"type": "string"},
+                        "introduced_by_change": {"type": "boolean"},
+                        "supporting_evidence": {"type": "array", "items": {"type": "object",
+                            "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "note": {"type": "string"}},
+                            "required": ["path"]}},
+                        "counterevidence_checked": {"type": "array", "items": {"type": "string"}},
+                        "suggested_fix": {"type": "string"},
+                    },
+                    "required": ["defect_key","severity","file","start_line","title","claim"],
+                }},
                 "coverage": {"type": "string"},
             }),
             &["findings", "coverage"],
@@ -65,7 +86,14 @@ impl ToolBox {
             diff,
             vera,
             max_output_bytes,
+            vera_disabled: std::sync::Mutex::new(None),
         }
+    }
+
+    /// After index/retrieval setup fails, vera_* tools fail fast instead of
+    /// re-invoking vera on every call.
+    pub fn disable_vera(&self, reason: String) {
+        *self.vera_disabled.lock().unwrap() = Some(reason);
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -288,6 +316,11 @@ impl ToolBox {
 
     /// Errors are returned to the model as a JSON tool result.
     pub async fn call(&self, name: &str, args: Value) -> String {
+        if name.starts_with("vera_") {
+            if let Some(r) = self.vera_disabled.lock().unwrap().clone() {
+                return json!({"error": r}).to_string();
+            }
+        }
         let res = self.call_inner(name, &args).await;
         let s = match res {
             Ok(s) => s,

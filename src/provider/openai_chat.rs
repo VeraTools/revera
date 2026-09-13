@@ -120,7 +120,25 @@ impl OpenAiChatClient {
                 &v.to_string()[..v.to_string().len().min(500)]
             )));
         }
-        let content = msg["content"].as_str().map(|s| s.to_string());
+        // content may be a string, null, or an array of parts
+        // (e.g. [{"type":"text","text":"..."}]) — join the text parts.
+        let content = match &msg["content"] {
+            Value::String(s) => Some(s.clone()),
+            Value::Array(parts) => {
+                let text: String = parts
+                    .iter()
+                    .filter(|p| p["type"].as_str().unwrap_or("text") == "text")
+                    .filter_map(|p| p["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            }
+            _ => None,
+        };
         let mut calls = Vec::new();
         if let Some(arr) = msg["tool_calls"].as_array() {
             for t in arr {

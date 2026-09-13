@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "lowercase")]
 pub enum FindingState {
     Open,
+    Uncertain,
     Resolved,
     Rejected,
 }
@@ -66,7 +67,7 @@ impl ReviewState {
     pub fn open_findings(&self) -> Vec<&StateFinding> {
         self.findings
             .iter()
-            .filter(|f| f.status == FindingState::Open)
+            .filter(|f| matches!(f.status, FindingState::Open | FindingState::Uncertain))
             .collect()
     }
 
@@ -80,15 +81,15 @@ impl ReviewState {
         }
     }
 
-    /// Upsert a finding into state; `posted` is preserved on re-review of a
-    /// still-open finding.
-    pub fn upsert(&mut self, f: &Finding, status: FindingState, posted: bool) {
+    /// Upsert a finding into state; an existing `posted` flag is preserved.
+    /// The pipeline never sets `posted` — only the publisher does, via
+    /// `mark_posted`, after a successful GitHub review post.
+    pub fn upsert(&mut self, f: &Finding, status: FindingState) {
         let id = f.id();
         if let Some(e) = self.findings.iter_mut().find(|x| x.id == id) {
             e.status = status;
             e.start_line = f.start_line;
             e.title = f.title.clone();
-            e.posted = e.posted || posted;
             return;
         }
         self.findings.push(StateFinding {
@@ -97,9 +98,18 @@ impl ReviewState {
             file: f.file.clone(),
             start_line: f.start_line,
             title: f.title.clone(),
-            posted,
+            posted: false,
             defect_key: f.defect_key.clone(),
         });
+    }
+
+    /// Called by the publisher after a successful post; marks ids as posted.
+    pub fn mark_posted(&mut self, ids: &[String]) {
+        for f in self.findings.iter_mut() {
+            if ids.contains(&f.id) {
+                f.posted = true;
+            }
+        }
     }
 }
 
@@ -108,6 +118,6 @@ pub fn recheck_transition(v: ValidationStatus) -> FindingState {
     match v {
         ValidationStatus::Accepted => FindingState::Open,
         ValidationStatus::Rejected => FindingState::Resolved,
-        ValidationStatus::Uncertain => FindingState::Open,
+        ValidationStatus::Uncertain => FindingState::Uncertain,
     }
 }
