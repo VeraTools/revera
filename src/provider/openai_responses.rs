@@ -1,5 +1,6 @@
 use super::http::{
-    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    detect_400_fallback, AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse,
+    ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::ModelRoute;
@@ -73,6 +74,11 @@ fn to_input(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
                         "content": [{"type": "output_text", "text": c}],
                     }));
                 }
+                // reasoning items go immediately before this turn's
+                // function_call items (store:false echo-back)
+                if let Some(Value::Array(items)) = &m.provider_state {
+                    out.extend(items.iter().cloned());
+                }
                 for t in &m.tool_calls {
                     out.push(json!({
                         "type": "function_call",
@@ -136,6 +142,11 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         if !attempt.drop_temperature {
             body["temperature"] = json!(self.route.temperature);
         }
+        let r = &self.route.reasoning;
+        if r.enabled() && !attempt.drop_reasoning {
+            body["reasoning"] = json!({"effort": r.effort().as_str()});
+            body["include"] = json!(["reasoning.encrypted_content"]);
+        }
         let mut headers = vec![
             (
                 "authorization".to_string(),
@@ -154,10 +165,9 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
-        // reasoning models reject `temperature` -> retry without it
-        if status == 400 && !attempt.drop_temperature && body.contains("temperature") {
-            attempt.drop_temperature = true;
-            return Parse::RetrySameSlot("400: retrying without temperature".into());
+        // reasoning or temperature 400 -> drop the named field, same slot
+        if let Some(p) = detect_400_fallback(status, body, attempt, &["reasoning"]) {
+            return p;
         }
         if status >= 400 {
             return Parse::Err(ProviderError::Http(format!(
@@ -176,6 +186,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         };
         let mut text_parts: Vec<String> = vec![];
         let mut calls = vec![];
+        let mut provider_state: Vec<Value> = vec![];
         if let Some(arr) = parsed["output"].as_array() {
             for item in arr {
                 match item["type"].as_str() {
@@ -189,6 +200,9 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                                 }
                             }
                         }
+                    }
+                    Some("reasoning") => {
+                        provider_state.push(item.clone());
                     }
                     Some("function_call") => {
                         let raw = item["arguments"].as_str().unwrap_or("{}");
@@ -212,6 +226,9 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         let usage = Usage {
             prompt_tokens: parsed["usage"]["input_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            reasoning_tokens: parsed["usage"]["output_tokens_details"]["reasoning_tokens"]
+                .as_u64()
+                .unwrap_or(0),
         };
         Parse::Ok(
             ChatMessage {
@@ -224,6 +241,11 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                 tool_calls: calls,
                 tool_call_id: None,
                 name: None,
+                provider_state: if provider_state.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(provider_state))
+                },
             },
             usage,
         )

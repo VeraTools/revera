@@ -1,5 +1,6 @@
 use super::http::{
-    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    detect_400_fallback, AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse,
+    ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::ModelRoute;
@@ -98,13 +99,44 @@ fn contents(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
             }
             Role::Assistant => {
                 let mut parts: Vec<Value> = vec![];
-                if let Some(c) = &m.content {
-                    parts.push(json!({"text": c}));
+                // ordered per-part echo: each original text/functionCall part
+                // rides back with its own thoughtSignature. Foreign shapes
+                // fall through to the joined-content fallback below.
+                if let Some(Value::Array(items)) = &m.provider_state {
+                    for it in items {
+                        match it["kind"].as_str() {
+                            Some("text") => {
+                                let mut p = json!({"text": it["text"]});
+                                if let Some(sig) = it["signature"].as_str() {
+                                    p["thoughtSignature"] = json!(sig);
+                                }
+                                parts.push(p);
+                            }
+                            Some("call") => {
+                                let i = it["idx"].as_u64().unwrap_or(0) as usize;
+                                if let Some(t) = m.tool_calls.get(i) {
+                                    let mut p = json!({
+                                        "functionCall": {"name": t.name, "args": t.arguments}
+                                    });
+                                    if let Some(sig) = it["signature"].as_str() {
+                                        p["thoughtSignature"] = json!(sig);
+                                    }
+                                    parts.push(p);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-                for t in &m.tool_calls {
-                    parts.push(json!({
-                        "functionCall": {"name": t.name, "args": t.arguments}
-                    }));
+                if parts.is_empty() {
+                    if let Some(c) = &m.content {
+                        parts.push(json!({"text": c}));
+                    }
+                    for t in &m.tool_calls {
+                        parts.push(json!({
+                            "functionCall": {"name": t.name, "args": t.arguments}
+                        }));
+                    }
                 }
                 push("model", parts, &mut out);
             }
@@ -150,7 +182,7 @@ impl ProtocolAdapter for GeminiAdapter {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSpec],
-        _attempt: &mut AttemptState,
+        attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
         let (system, contents) = contents(messages);
         let decls: Vec<Value> = tools
@@ -161,13 +193,50 @@ impl ProtocolAdapter for GeminiAdapter {
                 json!({"name": t.name, "description": t.description, "parameters": params})
             })
             .collect();
+        let max_out = self.route.max_output_tokens as u64;
+        let mut effective_max_out = max_out;
+        let r = &self.route.reasoning;
+        let mut thinking_cfg: Option<Value> = None;
+        if !attempt.drop_reasoning {
+            if self.route.model.starts_with("gemini-3") {
+                // gemini-3 takes a thinking level, not a token budget;
+                // level models skip the budget/max reconcile
+                if r.enabled() {
+                    let level = match r.effort() {
+                        crate::config::ReasoningEffort::Minimal
+                        | crate::config::ReasoningEffort::Low => "low",
+                        _ => "high",
+                    };
+                    thinking_cfg = Some(json!({"thinkingLevel": level}));
+                }
+            } else if r.enabled() {
+                // thinking budget counts toward maxOutputTokens — reconcile
+                // like anthropic: clamp to max-1024 headroom, raise the cap
+                // when the budget leaves too little room for the answer
+                let b = r.effective_budget().min(max_out.saturating_sub(1024));
+                if max_out <= b + 1024 {
+                    effective_max_out = b + max_out;
+                }
+                thinking_cfg = Some(json!({
+                    "thinkingBudget": b,
+                    "includeThoughts": false,
+                }));
+            } else if !self.route.model.starts_with("gemini-2.5-pro") {
+                // 2.5-pro cannot disable thinking; others get budget 0
+                thinking_cfg = Some(json!({"thinkingBudget": 0, "includeThoughts": false}));
+            }
+        }
+        let mut gen = json!({"maxOutputTokens": effective_max_out});
+        if !attempt.drop_temperature {
+            gen["temperature"] = json!(self.route.temperature);
+        }
+        if let Some(t) = thinking_cfg {
+            gen["thinkingConfig"] = t;
+        }
         let mut body = json!({
             "contents": contents,
             "tools": [{"functionDeclarations": decls}],
-            "generationConfig": {
-                "temperature": self.route.temperature,
-                "maxOutputTokens": self.route.max_output_tokens,
-            },
+            "generationConfig": gen,
         });
         if !system.is_empty() {
             body["systemInstruction"] = json!({"parts": [{"text": system.join("\n\n")}]});
@@ -189,7 +258,10 @@ impl ProtocolAdapter for GeminiAdapter {
         })
     }
 
-    fn parse(&self, status: u16, body: &str, _attempt: &mut AttemptState) -> Parse {
+    fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
+        if let Some(p) = detect_400_fallback(status, body, attempt, &["thinking"]) {
+            return p;
+        }
         if status >= 400 {
             return Parse::Err(ProviderError::Http(format!(
                 "HTTP {status}: {}",
@@ -207,14 +279,24 @@ impl ProtocolAdapter for GeminiAdapter {
         };
         let mut text_parts: Vec<String> = vec![];
         let mut calls = vec![];
+        let mut state_parts: Vec<Value> = vec![];
         let mut idx = 0u32;
         if let Some(parts) = parsed["candidates"][0]["content"]["parts"].as_array() {
             for p in parts {
+                let sig = p["thoughtSignature"].as_str().map(|v| v.to_string());
                 if let Some(t) = p["text"].as_str() {
                     text_parts.push(t.to_string());
+                    state_parts.push(json!({
+                        "kind": "text", "text": t, "signature": sig,
+                    }));
                 }
                 if let Some(fc) = p.get("functionCall") {
                     let name = fc["name"].as_str().unwrap_or("").to_string();
+                    state_parts.push(json!({
+                        "kind": "call",
+                        "idx": calls.len(),
+                        "signature": sig,
+                    }));
                     calls.push(ToolCall {
                         id: format!("{name}-{idx}"),
                         name,
@@ -234,6 +316,14 @@ impl ProtocolAdapter for GeminiAdapter {
         let usage = Usage {
             prompt_tokens: u["promptTokenCount"].as_u64().unwrap_or(0),
             completion_tokens: u["candidatesTokenCount"].as_u64().unwrap_or(0),
+            reasoning_tokens: u["thoughtsTokenCount"].as_u64().unwrap_or(0),
+        };
+        // keep an ordered per-part record only when a signature was
+        // actually returned; otherwise preserve the joined-text echo
+        let provider_state = if state_parts.iter().any(|p| !p["signature"].is_null()) {
+            Some(Value::Array(state_parts))
+        } else {
+            None
         };
         Parse::Ok(
             ChatMessage {
@@ -246,6 +336,7 @@ impl ProtocolAdapter for GeminiAdapter {
                 tool_calls: calls,
                 tool_call_id: None,
                 name: None,
+                provider_state,
             },
             usage,
         )

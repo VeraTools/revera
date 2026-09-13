@@ -33,6 +33,8 @@ pub struct RouteLedger {
     pub requests: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub reasoning_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,8 @@ pub struct LedgerReport {
     pub requests: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub reasoning_tokens: u64,
     pub by_route: Vec<RouteLedger>,
     pub wall_ms: u64,
 }
@@ -195,24 +199,28 @@ pub fn summary_markdown(
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     use std::collections::BTreeMap;
     let mut by: BTreeMap<String, RouteLedger> = BTreeMap::new();
-    let (mut pr, mut cr) = (0u64, 0u64);
+    let (mut pr, mut cr, mut rr) = (0u64, 0u64, 0u64);
     for e in &ledger.entries {
         let r = by.entry(e.route.clone()).or_insert(RouteLedger {
             route: e.route.clone(),
             requests: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            reasoning_tokens: 0,
         });
         r.requests += 1;
         r.prompt_tokens += e.prompt_tokens;
         r.completion_tokens += e.completion_tokens;
+        r.reasoning_tokens += e.reasoning_tokens;
         pr += e.prompt_tokens;
         cr += e.completion_tokens;
+        rr += e.reasoning_tokens;
     }
     LedgerReport {
         requests: ledger.entries.len() as u64,
         prompt_tokens: pr,
         completion_tokens: cr,
+        reasoning_tokens: rr,
         by_route: by.into_values().collect(),
         wall_ms,
     }

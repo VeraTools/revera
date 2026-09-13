@@ -43,6 +43,7 @@ def main():
     led = r.get("ledger", {})
     ptok = led.get("prompt_tokens", 0)
     ctok = led.get("completion_tokens", 0)
+    rtok = led.get("reasoning_tokens", 0)
     out = {
         "config": config,
         "corpus": corpus,
@@ -55,6 +56,7 @@ def main():
         "requests": led.get("requests", 0),
         "prompt_tokens": ptok,
         "completion_tokens": ctok,
+        "reasoning_tokens": rtok,
         "wall_ms": led.get("wall_ms", 0),
         "est_cost": ptok * PROMPT_COST + ctok * COMPLETION_COST,
     }

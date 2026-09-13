@@ -17,6 +17,7 @@ fn route(url: &str) -> ModelRoute {
         temperature: 0.2,
         extra_headers: HashMap::new(),
         script: None,
+        reasoning: Default::default(),
     }
 }
 
@@ -174,6 +175,7 @@ fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
         temperature: 0.2,
         extra_headers: HashMap::new(),
         script: None,
+        reasoning: Default::default(),
     }
 }
 
@@ -191,6 +193,7 @@ fn convo() -> (Vec<ChatMessage>, Vec<revera::provider::ToolSpec>) {
             }],
             tool_call_id: None,
             name: None,
+            provider_state: None,
         },
         ChatMessage::tool("call_1", "read_file", "file contents"),
     ];
@@ -528,4 +531,976 @@ async fn gemini_retries_429() {
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(ledger.request_count(), 2);
     server.verify().await;
+}
+
+// ================= M7: per-route reasoning =================
+
+use revera::config::{Reasoning, ReasoningEffort, ReasoningField, ReasoningSpec};
+
+fn route_reasoning(url: &str, proto: Protocol, model: &str, r: Reasoning) -> ModelRoute {
+    let mut rt = route_for(url, proto, model);
+    rt.reasoning = r;
+    rt
+}
+
+fn spec(effort: ReasoningEffort, budget: Option<u64>, field: ReasoningField) -> Reasoning {
+    Reasoning::Spec(ReasoningSpec {
+        effort,
+        budget_tokens: budget,
+        field,
+    })
+}
+
+// ---------- openai-chat reasoning ----------
+
+#[tokio::test]
+async fn openai_chat_reasoning_effort_high_emitted() {
+    let server = MockServer::start().await;
+    // field: auto + non-openrouter host -> "reasoning_effort"
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "test-model",
+            spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_chat_reasoning_openrouter_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning": {"effort": "high"}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "m",
+            spec(ReasoningEffort::High, None, ReasoningField::Openrouter),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_chat_reasoning_budget_becomes_max_tokens() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"reasoning": {"max_tokens": 4096}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "m",
+            spec(ReasoningEffort::Low, Some(4096), ReasoningField::Openrouter),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_chat_reasoning_none_emits_nothing() {
+    let server = MockServer::start().await;
+    // wiremock has no "field absent" matcher; capture via a handler that
+    // fails when the field is present by matching exact-ish body? Use a
+    // response that requires no reasoning field via a negative check on
+    // request journal instead.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "m",
+            spec(ReasoningEffort::None, None, ReasoningField::Auto),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("reasoning").is_none(), "{body}");
+    assert!(body.get("reasoning_effort").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn openai_chat_reasoning_400_retries_without() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "m",
+            spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        ),
+        ledger.clone(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    assert_eq!(ledger.request_count(), 2);
+    let reqs = server.received_requests().await.unwrap();
+    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(body2.get("reasoning_effort").is_none(), "{body2}");
+    assert!(body2.get("reasoning").is_none(), "{body2}");
+    assert!(ledger.totals().0 == 2);
+}
+
+#[tokio::test]
+async fn openai_chat_xhigh_clamps_to_high_for_non_gpt5() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "test-model",
+            spec(ReasoningEffort::Xhigh, None, ReasoningField::Openai),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+// ---------- openai-responses reasoning + provider_state ----------
+
+fn resp_adapter(url: &str, r: Reasoning) -> HttpClient<OpenAiResponsesAdapter> {
+    HttpClient {
+        adapter: OpenAiResponsesAdapter::from_route(route_reasoning(
+            url,
+            Protocol::OpenaiResponses,
+            "m-resp",
+            r,
+        ))
+        .unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn responses_reasoning_emits_effort_and_include() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "reasoning": {"effort": "high"},
+            "include": ["reasoning.encrypted_content"]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    resp_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn responses_reasoning_none_emits_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    resp_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::None, None, ReasoningField::Auto),
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("reasoning").is_none(), "{body}");
+    assert!(body.get("include").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn responses_reasoning_400_retries_without() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning": {"effort": "high"}})))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("unsupported parameter: reasoning"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = HttpClient {
+        adapter: OpenAiResponsesAdapter::from_route(route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiResponses,
+            "m",
+            spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        ))
+        .unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+    };
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    assert_eq!(ledger.request_count(), 2);
+    let reqs = server.received_requests().await.unwrap();
+    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(body2.get("reasoning").is_none(), "{body2}");
+}
+
+#[tokio::test]
+async fn responses_reasoning_items_echo_verbatim_before_calls() {
+    let server = MockServer::start().await;
+    // first turn: response contains a reasoning item + function_call
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [
+                {"type": "reasoning", "id": "rs_1", "encrypted_content": "BLOB",
+                 "summary": []},
+                {"type": "function_call", "call_id": "fc_1", "name": "read_file",
+                 "arguments": "{}"}
+            ],
+            "usage": {"input_tokens": 3, "output_tokens": 5,
+                      "output_tokens_details": {"reasoning_tokens": 42}}
+        })))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // second turn: reasoning item must appear immediately before the
+    // function_call item in input
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "x"}]},
+                {"type": "reasoning", "id": "rs_1", "encrypted_content": "BLOB",
+                 "summary": []},
+                {"type": "function_call", "call_id": "fc_1", "name": "read_file",
+                 "arguments": "{}"}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"done"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = resp_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    let r1 = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    assert_eq!(r1.usage.reasoning_tokens, 42);
+    let st = r1.message.provider_state.as_ref().expect("provider_state");
+    assert!(st.as_array().unwrap()[0]["type"] == "reasoning");
+    let mut msgs = vec![ChatMessage::user("x")];
+    msgs.push(r1.message);
+    c.complete(&msgs, &[]).await.unwrap();
+    server.verify().await;
+}
+
+// ---------- anthropic thinking + provider_state ----------
+
+fn anth_adapter(url: &str, r: Reasoning, max_out: u32) -> HttpClient<AnthropicAdapter> {
+    let mut rt = route_reasoning(url, Protocol::Anthropic, "claude-x", r);
+    rt.max_output_tokens = max_out;
+    HttpClient {
+        adapter: AnthropicAdapter::from_route(rt).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn anthropic_thinking_emitted_and_temp_omitted() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "thinking": {"type": "enabled", "budget_tokens": 16384},
+            "max_tokens": 20000
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // max_output_tokens 20000: budget 16384 leaves 3616 > 1024 headroom
+    anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        20000,
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("temperature").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn anthropic_thinking_budget_clamps_and_raises_max() {
+    let server = MockServer::start().await;
+    // max_output_tokens 4000 < B+1024 → clamp B to 2976, raise max_tokens
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "thinking": {"type": "enabled", "budget_tokens": 2976},
+            "max_tokens": 6976
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        4000,
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn anthropic_thinking_none_emits_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::None, None, ReasoningField::Auto),
+        4000,
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("thinking").is_none(), "{body}");
+    assert_eq!(body["temperature"], json!(0.2), "{body}");
+}
+
+#[tokio::test]
+async fn anthropic_thinking_400_retries_without() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"thinking": {"type": "enabled"}})))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid field: thinking"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let mut rt = route_reasoning(
+        &server.uri(),
+        Protocol::Anthropic,
+        "claude-x",
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    rt.max_output_tokens = 20000;
+    let c = HttpClient {
+        adapter: AnthropicAdapter::from_route(rt).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+    };
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    assert_eq!(ledger.request_count(), 2);
+    let reqs = server.received_requests().await.unwrap();
+    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(body2.get("thinking").is_none(), "{body2}");
+}
+
+#[tokio::test]
+async fn anthropic_thinking_blocks_echo_verbatim() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "SIG"},
+                {"type": "tool_use", "id": "tu_1", "name": "read_file",
+                 "input": {"path": "a.rs"}}
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 9}
+        })))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // echo: thinking block must lead the assistant message content
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "x"}]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "hmm", "signature": "SIG"},
+                    {"type": "tool_use", "id": "tu_1", "name": "read_file",
+                     "input": {"path": "a.rs"}}]}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"done"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        20000,
+    );
+    let r1 = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    let st = r1
+        .message
+        .provider_state
+        .as_ref()
+        .expect("thinking provider_state");
+    assert_eq!(st[0]["signature"], json!("SIG"));
+    let msgs = vec![ChatMessage::user("x"), r1.message];
+    c.complete(&msgs, &[]).await.unwrap();
+    server.verify().await;
+}
+
+// ---------- gemini thinkingConfig + thoughtSignature ----------
+
+fn gem_adapter(url: &str, model: &str, r: Reasoning) -> HttpClient<GeminiAdapter> {
+    HttpClient {
+        adapter: GeminiAdapter::from_route(route_reasoning(url, Protocol::Gemini, model, r))
+            .unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn gemini_thinking_budget_emitted() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 16384, "includeThoughts": false}
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    {
+        let mut rt = route_reasoning(
+            &server.uri(),
+            Protocol::Gemini,
+            "gemini-2.5-flash",
+            spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        );
+        rt.max_output_tokens = 20000;
+        let c = HttpClient {
+            adapter: GeminiAdapter::from_route(rt).unwrap(),
+            transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        };
+        c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    }
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn gemini_3_uses_thinking_level() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    gem_adapter(
+        &server.uri(),
+        "gemini-3-pro",
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn gemini_none_budget_zero_on_flash_nothing_on_pro() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
+        .and(body_partial_json(json!({
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-pro:generateContent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let none = spec(ReasoningEffort::None, None, ReasoningField::Auto);
+    gem_adapter(&server.uri(), "gemini-2.5-flash", none.clone())
+        .complete(&[ChatMessage::user("x")], &[])
+        .await
+        .unwrap();
+    gem_adapter(&server.uri(), "gemini-2.5-pro", none)
+        .complete(&[ChatMessage::user("x")], &[])
+        .await
+        .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let pro: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(
+        pro["generationConfig"].get("thinkingConfig").is_none(),
+        "{pro}"
+    );
+}
+
+#[tokio::test]
+async fn gemini_thinking_400_retries_without() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 16384}}
+        })))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unknown field thinkingConfig"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let mut rt = route_reasoning(
+        &server.uri(),
+        Protocol::Gemini,
+        "gemini-2.5-flash",
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    rt.max_output_tokens = 20000;
+    let c = HttpClient {
+        adapter: GeminiAdapter::from_route(rt).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+    };
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    assert_eq!(ledger.request_count(), 2);
+    let reqs = server.received_requests().await.unwrap();
+    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(
+        body2["generationConfig"].get("thinkingConfig").is_none(),
+        "{body2}"
+    );
+}
+
+#[tokio::test]
+async fn gemini_thought_signature_round_trips() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "hmm", "thoughtSignature": "TS1"},
+                {"functionCall": {"name": "read_file", "args": {"path": "a.rs"}},
+                 "thoughtSignature": "TS2"}
+            ]}}],
+            "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 5,
+                              "thoughtsTokenCount": 17}
+        })))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "x"}]},
+                {"role": "model", "parts": [
+                    {"text": "hmm", "thoughtSignature": "TS1"},
+                    {"functionCall": {"name": "read_file", "args": {"path": "a.rs"}},
+                     "thoughtSignature": "TS2"}]}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = gem_adapter(
+        &server.uri(),
+        "gemini-2.5-flash",
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    let r1 = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    assert_eq!(r1.usage.reasoning_tokens, 17);
+    assert!(r1.message.provider_state.is_some());
+    let msgs = vec![ChatMessage::user("x"), r1.message];
+    c.complete(&msgs, &[]).await.unwrap();
+    server.verify().await;
+}
+
+// ================= review fixes (PR #3) =================
+
+#[tokio::test]
+async fn gemini_thinking_budget_reconciles_max_output() {
+    let server = MockServer::start().await;
+    // max_output 4000 < B+1024 → clamp B to 2976, raise maxOutputTokens
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "generationConfig": {
+                "maxOutputTokens": 6976,
+                "thinkingConfig": {"thinkingBudget": 2976, "includeThoughts": false}
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut rt = route_reasoning(
+        &server.uri(),
+        Protocol::Gemini,
+        "gemini-2.5-flash",
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    rt.max_output_tokens = 4000;
+    let c = HttpClient {
+        adapter: GeminiAdapter::from_route(rt).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+    };
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn gemini_provider_state_rebuilds_parts_in_order() {
+    let server = MockServer::start().await;
+    // first turn: two signed text parts + a signed call
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "first thought", "thoughtSignature": "SA"},
+                {"text": "second thought", "thoughtSignature": "SB"},
+                {"functionCall": {"name": "read_file", "args": {"path": "a.rs"}},
+                 "thoughtSignature": "SC"}
+            ]}}],
+            "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 5}
+        })))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // echo: three separate parts, signatures in order
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "x"}]},
+                {"role": "model", "parts": [
+                    {"text": "first thought", "thoughtSignature": "SA"},
+                    {"text": "second thought", "thoughtSignature": "SB"},
+                    {"functionCall": {"name": "read_file", "args": {"path": "a.rs"}},
+                     "thoughtSignature": "SC"}]}
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = gem_adapter(
+        &server.uri(),
+        "gemini-2.5-flash",
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    let r1 = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    let st = r1.message.provider_state.as_ref().expect("provider_state");
+    assert_eq!(st.as_array().unwrap().len(), 3, "ordered per-part state");
+    let msgs = vec![ChatMessage::user("x"), r1.message];
+    c.complete(&msgs, &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn anthropic_400_thinking_drops_provider_state_blocks() {
+    let server = MockServer::start().await;
+    // request 1 (fresh): ok with thinking block
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "SIG"},
+                {"type": "text", "text": "looking"}
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 5}
+        })))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // request 2 (echoes the thinking block): 400 mentions thinking
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "thinking": {"type": "enabled"}
+        })))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid field: thinking"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // request 3 (same-slot retry): no thinking anywhere
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"done"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        20000,
+    );
+    let r1 = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    assert!(r1.message.provider_state.is_some());
+    let msgs = vec![ChatMessage::user("x"), r1.message];
+    let r2 = c.complete(&msgs, &[]).await.unwrap();
+    assert_eq!(r2.message.content.as_deref(), Some("done"));
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 3);
+    let body3: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert!(body3.get("thinking").is_none(), "{body3}");
+    let asst = &body3["messages"][1];
+    assert!(
+        !asst["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["type"] == "thinking" || b["type"] == "redacted_thinking"),
+        "{asst}"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_temperature_400_retries_without() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"temperature": 0.2})))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unsupported: temperature"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::None, None, ReasoningField::Auto),
+        4000,
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(body2.get("temperature").is_none(), "{body2}");
+}
+
+#[tokio::test]
+async fn gemini_temperature_400_retries_without() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"generationConfig": {"temperature": 0.2}}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unsupported: temperature"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    gem_adapter(
+        &server.uri(),
+        "gemini-2.5-pro", // 2.5-pro with effort none → no thinkingConfig, cleanest check
+        spec(ReasoningEffort::None, None, ReasoningField::Auto),
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(
+        body2["generationConfig"].get("temperature").is_none(),
+        "{body2}"
+    );
+}
+
+#[tokio::test]
+async fn ledger_entry_records_reasoning_tokens() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 9,
+                      "output_tokens_details": {"reasoning_tokens": 7}}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = HttpClient {
+        adapter: OpenAiResponsesAdapter::from_route(route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiResponses,
+            "m",
+            spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        ))
+        .unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+    };
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let entries = ledger.0.lock().unwrap().entries.clone();
+    assert_eq!(entries[0].reasoning_tokens, 7);
+    assert_eq!(ledger.totals().3, 7);
 }
