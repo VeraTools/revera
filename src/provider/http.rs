@@ -228,6 +228,7 @@ impl HttpTransport {
                                 LedgerEntry {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
+                                    reasoning_tokens: usage.reasoning_tokens,
                                     latency_ms: latency,
                                     retries: retries_used,
                                     error: None,

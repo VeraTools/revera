@@ -99,28 +99,44 @@ fn contents(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
             }
             Role::Assistant => {
                 let mut parts: Vec<Value> = vec![];
-                // per-part thoughtSignatures must ride back on the echoed
-                // text/functionCall parts they were returned on
-                let sigs = m.provider_state.as_ref();
-                let text_sig = sigs.and_then(|v| v["text"].as_str()).map(|v| v.to_string());
-                if let Some(c) = &m.content {
-                    let mut p = json!({"text": c});
-                    if let Some(sig) = text_sig {
-                        p["thoughtSignature"] = json!(sig);
+                // ordered per-part echo: each original text/functionCall part
+                // rides back with its own thoughtSignature. Foreign shapes
+                // fall through to the joined-content fallback below.
+                if let Some(Value::Array(items)) = &m.provider_state {
+                    for it in items {
+                        match it["kind"].as_str() {
+                            Some("text") => {
+                                let mut p = json!({"text": it["text"]});
+                                if let Some(sig) = it["signature"].as_str() {
+                                    p["thoughtSignature"] = json!(sig);
+                                }
+                                parts.push(p);
+                            }
+                            Some("call") => {
+                                let i = it["idx"].as_u64().unwrap_or(0) as usize;
+                                if let Some(t) = m.tool_calls.get(i) {
+                                    let mut p = json!({
+                                        "functionCall": {"name": t.name, "args": t.arguments}
+                                    });
+                                    if let Some(sig) = it["signature"].as_str() {
+                                        p["thoughtSignature"] = json!(sig);
+                                    }
+                                    parts.push(p);
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                    parts.push(p);
                 }
-                for (i, t) in m.tool_calls.iter().enumerate() {
-                    let mut p = json!({
-                        "functionCall": {"name": t.name, "args": t.arguments}
-                    });
-                    if let Some(sig) = sigs
-                        .and_then(|v| v["calls"][i].as_str())
-                        .map(|v| v.to_string())
-                    {
-                        p["thoughtSignature"] = json!(sig);
+                if parts.is_empty() {
+                    if let Some(c) = &m.content {
+                        parts.push(json!({"text": c}));
                     }
-                    parts.push(p);
+                    for t in &m.tool_calls {
+                        parts.push(json!({
+                            "functionCall": {"name": t.name, "args": t.arguments}
+                        }));
+                    }
                 }
                 push("model", parts, &mut out);
             }
@@ -177,31 +193,45 @@ impl ProtocolAdapter for GeminiAdapter {
                 json!({"name": t.name, "description": t.description, "parameters": params})
             })
             .collect();
-        let mut gen = json!({
-            "temperature": self.route.temperature,
-            "maxOutputTokens": self.route.max_output_tokens,
-        });
+        let max_out = self.route.max_output_tokens as u64;
+        let mut effective_max_out = max_out;
         let r = &self.route.reasoning;
+        let mut thinking_cfg: Option<Value> = None;
         if !attempt.drop_reasoning {
             if self.route.model.starts_with("gemini-3") {
-                // gemini-3 takes a thinking level, not a token budget
+                // gemini-3 takes a thinking level, not a token budget;
+                // level models skip the budget/max reconcile
                 if r.enabled() {
                     let level = match r.effort() {
                         crate::config::ReasoningEffort::Minimal
                         | crate::config::ReasoningEffort::Low => "low",
                         _ => "high",
                     };
-                    gen["thinkingConfig"] = json!({"thinkingLevel": level});
+                    thinking_cfg = Some(json!({"thinkingLevel": level}));
                 }
             } else if r.enabled() {
-                gen["thinkingConfig"] = json!({
-                    "thinkingBudget": r.effective_budget(),
+                // thinking budget counts toward maxOutputTokens — reconcile
+                // like anthropic: clamp to max-1024 headroom, raise the cap
+                // when the budget leaves too little room for the answer
+                let b = r.effective_budget().min(max_out.saturating_sub(1024));
+                if max_out <= b + 1024 {
+                    effective_max_out = b + max_out;
+                }
+                thinking_cfg = Some(json!({
+                    "thinkingBudget": b,
                     "includeThoughts": false,
-                });
+                }));
             } else if !self.route.model.starts_with("gemini-2.5-pro") {
                 // 2.5-pro cannot disable thinking; others get budget 0
-                gen["thinkingConfig"] = json!({"thinkingBudget": 0, "includeThoughts": false});
+                thinking_cfg = Some(json!({"thinkingBudget": 0, "includeThoughts": false}));
             }
+        }
+        let mut gen = json!({"maxOutputTokens": effective_max_out});
+        if !attempt.drop_temperature {
+            gen["temperature"] = json!(self.route.temperature);
+        }
+        if let Some(t) = thinking_cfg {
+            gen["thinkingConfig"] = t;
         }
         let mut body = json!({
             "contents": contents,
@@ -249,28 +279,28 @@ impl ProtocolAdapter for GeminiAdapter {
         };
         let mut text_parts: Vec<String> = vec![];
         let mut calls = vec![];
-        let mut text_sig: Option<String> = None;
-        let mut call_sigs: Vec<Value> = vec![];
+        let mut state_parts: Vec<Value> = vec![];
         let mut idx = 0u32;
         if let Some(parts) = parsed["candidates"][0]["content"]["parts"].as_array() {
             for p in parts {
                 let sig = p["thoughtSignature"].as_str().map(|v| v.to_string());
                 if let Some(t) = p["text"].as_str() {
                     text_parts.push(t.to_string());
-                    if let Some(sv) = &sig {
-                        text_sig = Some(sv.clone());
-                    }
+                    state_parts.push(json!({
+                        "kind": "text", "text": t, "signature": sig,
+                    }));
                 }
                 if let Some(fc) = p.get("functionCall") {
                     let name = fc["name"].as_str().unwrap_or("").to_string();
+                    state_parts.push(json!({
+                        "kind": "call",
+                        "idx": calls.len(),
+                        "signature": sig,
+                    }));
                     calls.push(ToolCall {
                         id: format!("{name}-{idx}"),
                         name,
                         arguments: fc["args"].clone(),
-                    });
-                    call_sigs.push(match sig {
-                        Some(s) => json!(s),
-                        None => Value::Null,
                     });
                     idx += 1;
                 }
@@ -288,8 +318,10 @@ impl ProtocolAdapter for GeminiAdapter {
             completion_tokens: u["candidatesTokenCount"].as_u64().unwrap_or(0),
             reasoning_tokens: u["thoughtsTokenCount"].as_u64().unwrap_or(0),
         };
-        let provider_state = if text_sig.is_some() || call_sigs.iter().any(|s| !s.is_null()) {
-            Some(json!({"text": text_sig, "calls": call_sigs}))
+        // keep an ordered per-part record only when a signature was
+        // actually returned; otherwise preserve the joined-text echo
+        let provider_state = if state_parts.iter().any(|p| !p["signature"].is_null()) {
+            Some(Value::Array(state_parts))
         } else {
             None
         };
