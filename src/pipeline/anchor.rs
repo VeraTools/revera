@@ -20,6 +20,19 @@ pub fn anchor(diff: &DiffSet, findings: Vec<Finding>, max_findings: usize) -> Ve
     let mut items: Vec<Anchored> = findings
         .into_iter()
         .map(|f| {
+            let mut f = f;
+            // drop an invalid end_line: it must be >= start_line and a
+            // head-side diff line; a bad range becomes a single-line comment
+            if let Some(end) = f.end_line {
+                let ok = end >= f.start_line
+                    && diff
+                        .file(&f.file)
+                        .map(|_| diff.head_side_lines(&f.file).contains(&end))
+                        .unwrap_or(false);
+                if !ok {
+                    f.end_line = None;
+                }
+            }
             let inline_ok = diff.file(&f.file).is_some()
                 && diff.head_side_lines(&f.file).contains(&f.start_line);
             Anchored {

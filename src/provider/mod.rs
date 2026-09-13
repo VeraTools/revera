@@ -117,6 +117,8 @@ pub struct LedgerEntry {
 #[derive(Debug, Default)]
 pub struct RunLedger {
     pub entries: Vec<LedgerEntry>,
+    /// In-flight reservations (requests sent but not yet recorded).
+    pub reserved: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -127,7 +129,26 @@ impl LedgerHandle {
         Self::default()
     }
     pub fn record(&self, e: LedgerEntry) {
-        self.0.lock().unwrap().entries.push(e);
+        let mut g = self.0.lock().unwrap();
+        g.reserved = g.reserved.saturating_sub(1);
+        g.entries.push(e);
+    }
+    /// Atomically reserve a request slot; false when the budget is spent.
+    /// Every HTTP attempt (incl. retries and the max_completion_tokens
+    /// fallback) must hold a reservation.
+    pub fn try_reserve(&self, max_requests: u32) -> bool {
+        let mut g = self.0.lock().unwrap();
+        let used = g.entries.len() as u32 + g.reserved;
+        if used >= max_requests {
+            return false;
+        }
+        g.reserved += 1;
+        true
+    }
+    /// Release a reservation without recording (e.g. request build failure).
+    pub fn release(&self) {
+        let mut g = self.0.lock().unwrap();
+        g.reserved = g.reserved.saturating_sub(1);
     }
     pub fn request_count(&self) -> u32 {
         self.0.lock().unwrap().entries.len() as u32

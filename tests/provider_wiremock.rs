@@ -138,3 +138,19 @@ async fn other_400_is_fatal_with_body() {
     assert!(e.to_string().contains("invalid something else"), "{e}");
     server.verify().await;
 }
+
+#[tokio::test]
+async fn run_budget_blocks_second_attempt_on_retry() {
+    // max_requests=1: the first HTTP attempt consumes the only slot; the
+    // retry must fail BudgetExhausted without hitting the server again.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(route(&server.uri()), LedgerHandle::new(), 1, 3).unwrap();
+    let r = c.complete(&[ChatMessage::user("hi")], &[]).await;
+    assert!(matches!(r, Err(ProviderError::BudgetExhausted)), "{r:?}");
+    server.verify().await;
+}

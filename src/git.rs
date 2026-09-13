@@ -59,16 +59,7 @@ pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
         Ok(d) => Ok(d),
         Err(e) => {
             tracing::warn!("three-dot diff failed ({e}); falling back to two-dot diff");
-            git(
-                repo,
-                &[
-                    "diff",
-                    "--no-color",
-                    "--unified=3",
-                    &format!("{} {}", base, head),
-                ],
-            )
-            .await
+            git(repo, &["diff", "--no-color", "--unified=3", base, head]).await
         }
     }
 }

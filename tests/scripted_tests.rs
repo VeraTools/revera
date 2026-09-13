@@ -96,10 +96,12 @@ fn summary_rendering() {
         &[f],
         &[],
         "checked callers",
+        &[],
         revera::report::RunStatus::Complete,
         "baseline",
         &["openai-chat:http://x:m".into()],
         false,
+        None,
     );
     assert!(md.contains("Revera review"));
     assert!(md.contains("**[high]** `src/a.rs`:12"));

@@ -209,6 +209,81 @@ fn strip_ab_prefix(path: &str) -> String {
     }
 }
 
+/// Unquote a git C-style quoted path (`"a\tb"` → `a<TAB>b`, `\ooo` octal
+/// escapes decoded to bytes then UTF-8).
+fn unquote(s: &str) -> Option<String> {
+    let s = s.trim();
+    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
+    let b = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 1 < b.len() {
+            i += 1;
+            match b[i] {
+                b'"' => out.push(b'"'),
+                b'\\' => out.push(b'\\'),
+                b't' => out.push(b'\t'),
+                b'n' => out.push(b'\n'),
+                b'r' => out.push(b'\r'),
+                c @ b'0'..=b'7' => {
+                    let mut v = (c - b'0') as u16;
+                    let mut n = 1;
+                    while n < 3 && i + 1 < b.len() && (b'0'..=b'7').contains(&b[i + 1]) {
+                        i += 1;
+                        v = v * 8 + (b[i] - b'0') as u16;
+                        n += 1;
+                    }
+                    out.push(v as u8);
+                }
+                c => out.push(c),
+            }
+            i += 1;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Next path token from a diff header line; handles quoted paths containing
+/// spaces. Returns (decoded path, remainder).
+fn path_token(s: &str) -> (String, &str) {
+    let s = s.trim_start();
+    if s.starts_with('"') {
+        let b = s.as_bytes();
+        let mut i = 1;
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 2,
+                b'"' => {
+                    let tok = &s[..=i];
+                    return (unquote(tok).unwrap_or_else(|| tok.to_string()), &s[i + 1..]);
+                }
+                _ => i += 1,
+            }
+        }
+        (unquote(s).unwrap_or_else(|| s.to_string()), "")
+    } else {
+        match s.find(char::is_whitespace) {
+            Some(i) => (s[..i].to_string(), &s[i..]),
+            None => (s.to_string(), ""),
+        }
+    }
+}
+
+/// Unquote (if quoted) then strip a/ or b/ prefix.
+fn normalize_diff_path(path: &str) -> String {
+    let p = path.trim();
+    let p = if p.starts_with('"') {
+        unquote(p).unwrap_or_else(|| p.to_string())
+    } else {
+        p.to_string()
+    };
+    strip_ab_prefix(&p)
+}
+
 /// Parse `git diff` unified output (handles `diff --git`, rename headers,
 /// new/deleted files, `\ No newline at end of file`).
 pub fn parse_unified(text: &str) -> DiffSet {
@@ -226,10 +301,11 @@ pub fn parse_unified(text: &str) -> DiffSet {
                 }
                 set.files.push(f);
             }
-            // diff --git a/x b/y
-            let mut parts = rest.split_whitespace();
-            let a = parts.next().map(strip_ab_prefix).unwrap_or_default();
-            let b = parts.next().map(strip_ab_prefix).unwrap_or_default();
+            // diff --git a/x b/y — paths may be C-quoted (spaces, non-ASCII)
+            let (a_raw, rest) = path_token(rest);
+            let (b_raw, _) = path_token(rest);
+            let a = strip_ab_prefix(&a_raw);
+            let b = strip_ab_prefix(&b_raw);
             cur = Some(FileDiff {
                 old_path: a,
                 new_path: b,
@@ -240,11 +316,11 @@ pub fn parse_unified(text: &str) -> DiffSet {
         }
         let Some(f) = cur.as_mut() else { continue };
         if let Some(p) = line.strip_prefix("rename from ") {
-            f.old_path = p.to_string();
+            f.old_path = normalize_diff_path(p);
             continue;
         }
         if let Some(p) = line.strip_prefix("rename to ") {
-            f.new_path = p.to_string();
+            f.new_path = normalize_diff_path(p);
             f.status = FileStatus::Renamed;
             continue;
         }
@@ -259,7 +335,7 @@ pub fn parse_unified(text: &str) -> DiffSet {
         if line.starts_with("--- ") {
             let p = line.trim_start_matches("-").trim();
             if p != "/dev/null" {
-                f.old_path = strip_ab_prefix(p);
+                f.old_path = normalize_diff_path(p);
             } else {
                 f.status = FileStatus::Added;
             }
@@ -268,7 +344,7 @@ pub fn parse_unified(text: &str) -> DiffSet {
         if line.starts_with("+++ ") {
             let p = line.trim_start_matches("+").trim();
             if p != "/dev/null" {
-                f.new_path = strip_ab_prefix(p);
+                f.new_path = normalize_diff_path(p);
             } else {
                 f.status = FileStatus::Deleted;
             }
