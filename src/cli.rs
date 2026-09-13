@@ -8,7 +8,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "revera",
-    about = "Provider-independent PR reviewer with Vera retrieval"
+    about = "Provider-independent PR reviewer with Vera retrieval",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
