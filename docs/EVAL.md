@@ -142,3 +142,72 @@ Reasoning and caveats:
 - Strong-vs-cheap portfolio comparisons (package items 4 and 6) are not run
   under the single-model constraint; re-run `eval/run-all.sh` with a strong
   validator route when one is available.
+
+## Hard corpus — 5 configs x 7 corpora x 2 reps (muse-spark all routes, 2026-09-13)
+
+Motivation: the 6-repo corpus above is saturated (every config found every
+defect), so it cannot separate configurations on recall. `eval/build-corpus-hard.sh`
+adds seven repos where the evidence for the bug is outside the diff:
+
+| corpus | kind | defect (all in files the diff does not explain) |
+|---|---|---|
+| utf8-truncate | historical Revera regression | `&s[..max]` byte slice on model-visible text; caller doc says non-ASCII is expected |
+| modzero-routing | historical (empty worker list) | `routes[i % routes.len()]` after `workers` became a defaulted `Vec` |
+| retry-after | historical (Retry-After parse) | `parse::<u64>().unwrap()` while http.rs documents HTTP-date values |
+| posted-state | historical, multi-hop | new same-patch short-circuit depends on `all_posted()`, but publish.rs never marks summary-only findings |
+| trait-contract | multi-hop Vera case | impl returns `Ok(empty)` on miss; trait doc + `Cache::get_or_fill` rely on `Err(NotFound)` |
+| clean-signature | clean control + FP trap | signature change with all callers updated; `unwrap()` guarded by `validate()?` |
+| clean-dead-helper | clean control + FP trap | deletes unused `legacy::format_row`; a same-name `render::format_row` remains used |
+
+Configs: A-baseline, B-baseline-novera, E-panel-2scouts, F-delegated,
+G-baseline-reasoning-high (same model, `reasoning: high` on investigator and
+validator). All routes are `meta/muse-spark-1.3-contributor`; strong-model
+validator/scout comparisons were **not run** (user directive: muse-spark only).
+
+| config | TP | TP high/crit | FN | FP | clean-PR commented | rejected | uncertain | incomplete | median wall s | mean req | mean tok | total cost |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A-baseline | 9 | 9 | 1 | 0 | 0 | 0 | 0 | 0 | 33.1 | 6.9 | 24014 | $0.0388 |
+| B-baseline-novera | 9 | 9 | 1 | 0 | 0 | 0 | 0 | 0 | 27.2 | 5.9 | 17045 | $0.0289 |
+| E-panel-2scouts | 9 | 9 | 1 | 2 | 0 | 1 | 0 | 2 | 31.0 | 12.1 | 42628 | $0.0685 |
+| F-delegated | 9 | 8 | 1 | 1 | 0 | 1 | 0 | 0 | 43.4 | 14.1 | 46879 | $0.0762 |
+| G-baseline-reasoning-high | 9 | 8 | 1 | 0 | 0 | 0 | 0 | 1 | 26.8 | 6.7 | 23443 | $0.0376 |
+
+Per-corpus: utf8-truncate, modzero-routing, retry-after and trait-contract were
+found 2/2 by every config; both clean controls drew zero comments from every
+config (0 clean-PR comments in 70 runs); posted-state was found 1/2 by every
+config. Incomplete runs (status `partial`, findings still reported): E x
+posted-state rep 2 (scout ProviderError), E x clean-signature rep 2 (scout
+ToolBudget), G x posted-state rep 1 (investigator ProviderError).
+Reproduce with `CORPORA="utf8-truncate modzero-routing retry-after posted-state
+trait-contract clean-signature clean-dead-helper" CONFIGS="A-baseline
+B-baseline-novera E-panel-2scouts F-delegated G-baseline-reasoning-high" bash
+eval/run-all.sh 2`; per-run reports land in `eval/reports/` (gitignored).
+
+### What this does and does not show
+
+- Recall still ties (9/10 everywhere), so the hard corpus separates configs on
+  false positives, cost and robustness, not on recall. A and B (0 FP, cheapest)
+  dominate E (2 FP, 1.8x cost, 2 partial runs) and F (1 FP, 2x cost, slowest).
+  The provisional default (baseline + Vera + validation) stands.
+- Vera on vs off (A vs B): no recall difference on these repos either; B was
+  cheaper (17k vs 24k tokens) and faster. The repos are 3–6 files, so
+  `read_file` exploration covers them without retrieval; this corpus is still
+  too small to measure Vera's recall effect. A large-repo case remains the
+  open follow-up.
+- `reasoning: high` (G) was honoured by muse-spark (reasoning tokens > 0 in
+  14/14 runs, 25.6k total) but changed nothing on recall/FP and had one
+  provider error.
+- The two panel/delegated FPs are not junk: one is a duplicate of the
+  modzero-routing defect (collapse missed it), one is an additional valid
+  observation on retry-after (server delay bypasses the backoff cap) that the
+  truth file does not list. Validators rejected 2 other candidates (both
+  posted-state), which is the first time this corpus shows validation doing
+  work.
+- posted-state scoring is loose: `score.py` matches on file/line or keywords,
+  and several accepted findings there describe a neighbouring problem (the
+  short-circuit ignoring a changed `Plan`) rather than the summary-only
+  posting gap; only A rep 1 and E rep 2 name the actual mechanism. Treat
+  posted-state TP counts as "flagged the right lines", not "explained the bug".
+- Two reps per cell; single-model; no cost in real dollars beyond the
+  $0.10/$0.20 per-M estimate. None of the numbers above are statistically
+  strong; they are enough to say the corpus is no longer a trivial tie.
