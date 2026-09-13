@@ -486,17 +486,21 @@ pub struct Cfg {
     pub port: Option<u16>,
 }
 
-pub struct ParseError;
+pub enum ParseError {
+    MissingPort,
+}
 
 impl Cfg {
     pub fn validate(&self) -> Result<(), ParseError> {
-        if self.port.is_none() { Err(ParseError) } else { Ok(()) }
+        if self.port.is_none() { Err(ParseError::MissingPort) } else { Ok(()) }
     }
 }
 
 pub fn parse(s: &str, strict: bool) -> Result<Cfg, ParseError> {
-    let _ = strict;
     let port = s.parse::<u16>().ok();
+    if strict && port.is_none() {
+        return Err(ParseError::MissingPort);
+    }
     Ok(Cfg { port })
 }
 EOF

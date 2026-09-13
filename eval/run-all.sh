@@ -58,7 +58,7 @@ for cfg in $CONFIGS; do
     for c in $CORPORA; do
         for rep in $(seq 1 "$REPS"); do
             while [ "$(jobs_running)" -ge 3 ]; do wait -n; done
-            bash "$HERE/run.sh" "$cfg" "$c" 1 &
+            bash "$HERE/run.sh" "$cfg" "$c" 1 "$rep" &
         done
     done
 done
