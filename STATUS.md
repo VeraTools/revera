@@ -33,26 +33,55 @@
   skipped with a partial_reason.
 - Fixture suite: `fixtures/run-fixture.sh` exercises break → fix → clean →
   delegated → panel (all scripted).
-- Eval harness in `eval/`: 6 synthetic corpus repos, 6 configs (baseline,
-  no-vera, no-reranker, candidate-only, panel, delegated) x 2 reps; scoring
-  + markdown summary in `eval/results.jsonl` / docs/EVAL.md.
+- Eval harness in `eval/`: 6 synthetic corpus repos + 7 hard repos
+  (`build-corpus-hard.sh`: historical Revera regressions, multi-hop trait
+  contract, two clean controls with FP traps), 7 configs; scoring counts TP by
+  severity, validator rejections and clean-PR noise. Results in
+  `eval/results.jsonl` / docs/EVAL.md.
+- Event mode reviews the exact PR head: `prepare` refuses when HEAD != the
+  requested head or tracked files are dirty; `--event` checks out
+  `pull_request.head.sha` (detached) before indexing. Empty `models.workers`
+  falls back to the investigator. Summary-only and local/dry-run findings are
+  marked posted after the summary/report is written, so identical reruns
+  short-circuit. One run deadline spans rechecks, agents and validators.
+  GitHub 422 on the inline review degrades to summary-only. Retry-After
+  accepts HTTP-dates; backoff is capped at 60s. Empty length-truncated
+  provider replies are errors, not silent no-ops.
+- Release path: `scripts/check-versions.sh` (CI) keeps `action.yml`'s
+  `revera-version` equal to Cargo's version; `scripts/install-revera.sh` is
+  shared by the Action and the release workflow's verify step (`sha256sum -c`,
+  `revera --version`); tags `vX.Y.Z` move `vX`.
 - Per-route `reasoning` levels (default `medium`) across all four HTTP
   adapters; `provider_state` echoes reasoning/thinking items verbatim;
   400s mentioning the reasoning field drop it and retry on the same slot.
 - `action.yml` composite action (vera+revera install with sha256 verify,
-  .vera cache restore/save, fail-on), release workflow (tag `v*` → release +
-  major tag move), self-review dogfood workflow.
+  .vera cache restore/save, fail-on), release workflow (tag `v*` → verify
+  packaged artifact → release → move `vX`), self-review dogfood workflow
+  (checks out `pull_request.head.sha`).
 
-## Current blocker
+## Current blocker / known limitations
 
-None for M1–M5. Live delegated + panel runs on the crossfile `break` fixture
-both found the bug (muse-spark all routes); see docs/EVAL.md.
+- No release has been cut: `v0.1.0` does not exist yet, so `uses:
+  VeraTools/revera@v0` and the Action's default `revera-version: 0.1.0` only
+  work after PR #4 merges and `git tag v0.1.0 && git push origin v0.1.0` runs
+  the release workflow (which now verifies the packaged tarball + checksum
+  before publishing).
+- `.vera` cache key in `action.yml` uses `github.sha` (the merge commit), not
+  the PR head; restore keys omit the SHA, so a restored index may be stale
+  until Vera re-indexes changed files (delegated to the external `vera`).
+- Eval evidence is muse-spark-only, 2 reps per cell, small repos; Vera's
+  recall effect is still unmeasured (docs/EVAL.md). Strong-model comparisons
+  were not run (user directive).
+- The fixture suite needs live OpenRouter embeddings; it passed on this
+  branch after one earlier run timed out at the embeddings endpoint.
 
 ## Next three tasks
 
-1. Address review feedback / CI on the PR.
-2. Cut a `v0.1.x`/`v1.x` tag to exercise the release workflow.
-3. Tune delegated/panel model routing (lead vs worker/scout quality).
+1. Merge PR #4, tag `v0.1.0`, confirm the release job's verify step and the
+   `v0` tag move; then dogfood the Action on the next PR.
+2. Key the `.vera` cache on the PR head SHA (or verify Vera's incremental
+   re-index makes staleness harmless) — see limitation above.
+3. Add one large-repo, multi-hop eval case to measure Vera's recall effect.
 
 ## Exact test-demo command
 
@@ -72,7 +101,8 @@ VERA_HOME=$HOME/.vera-revera revera review --repo <repo> --base <base> \
   lives inside the managed summary comment (`<!-- revera-state:base64 -->`).
 - Model output contract is the `submit_findings`/`submit_verdict` tool-call
   schema; prompt files in `prompts/` are the interface contract.
-- `posted` is set only by the GitHub publisher after a successful post —
-  dry-run never marks findings posted.
+- `posted` is set only after a successful surface: the GitHub publisher
+  after inline post/summary upsert, and the local/dry-run path after the
+  report is written — never before.
 - All model routes default to `meta/muse-spark-1.3-contributor` (user
   directive); see docs/EVAL.md.
