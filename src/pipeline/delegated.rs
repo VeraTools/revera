@@ -42,6 +42,10 @@ struct WorkerReport {
     gaps: Vec<String>,
 }
 
+fn worker_failure_reason(index: usize, model: &str, detail: &str) -> String {
+    format!("worker {index} ({model}) did not complete: {detail}")
+}
+
 /// Delegated strategy: lead plans bounded questions, workers answer them
 /// concurrently, the lead synthesizes final candidates.
 pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, ReviewState)> {
@@ -121,6 +125,8 @@ async fn delegated_candidates(
     questions.truncate(cfg.delegated.max_questions);
     if questions.is_empty() {
         // no questions -> degrade to baseline investigator
+        prep.partial_reasons
+            .push("lead produced no questions; fell back to baseline".into());
         tracing::info!("delegated: lead returned no questions; running baseline investigator");
         return super::baseline::investigate(cfg, req, prep).await;
     }
@@ -161,6 +167,9 @@ async fn delegated_candidates(
     let max_req = cfg.budget.run_max_requests;
     let lane_futs = questions.iter().enumerate().map(|(i, q)| {
         let client = worker_clients[i].clone();
+        let worker_model = select_worker_route(worker_routes, &cfg.models.investigator, i)
+            .model
+            .clone();
         let tb = worker_tb.clone();
         let terminal = worker_terminal.clone();
         let budget = lane_budget.clone();
@@ -182,7 +191,7 @@ async fn delegated_candidates(
         );
         async move {
             if ledger.request_count() >= max_req {
-                return (i, qid, None);
+                return (i, qid, worker_model, None);
             }
             let run = run_agent(
                 client.as_ref(),
@@ -193,14 +202,14 @@ async fn delegated_candidates(
                 &budget,
             )
             .await;
-            (i, qid, Some(run))
+            (i, qid, worker_model, Some(run))
         }
     });
     let mut lanes =
         futures::stream::iter(lane_futs).buffer_unordered(cfg.review.concurrency.max(1));
     let mut skipped = 0usize;
     let mut reports: Vec<WorkerReport> = Vec::new();
-    while let Some((i, qid, run)) = lanes.next().await {
+    while let Some((i, qid, worker_model, run)) = lanes.next().await {
         let Some(run) = run else {
             skipped += 1;
             continue;
@@ -259,6 +268,10 @@ async fn delegated_candidates(
                 gaps: vec![format!("question {qid}: worker failed: {e}")],
             },
         };
+        if report.result == "blocked" {
+            prep.partial_reasons
+                .push(worker_failure_reason(i, &worker_model, &report.answer));
+        }
         let _ = i;
         reports.push(report);
     }
@@ -433,6 +446,15 @@ vera: {}
             })
             .collect();
         assert!(assigned.iter().all(|model| model == "m"));
+    }
+
+    #[test]
+    fn blocked_worker_reason_is_partial_specific() {
+        let reason = worker_failure_reason(2, "worker-model", "worker stopped without submitting");
+        assert_eq!(
+            reason,
+            "worker 2 (worker-model) did not complete: worker stopped without submitting"
+        );
     }
 
     #[tokio::test]

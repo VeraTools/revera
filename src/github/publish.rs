@@ -1,7 +1,6 @@
-use super::api::{GitHubApi, ReviewComment};
+use super::api::{GitHubApi, GitHubHttpError, ReviewComment};
 use super::event::PrEvent;
-use crate::pipeline::anchor::is_publishable;
-use crate::report::{Publication, RunReport};
+use crate::report::{surfaced_ids, Publication, RunReport};
 use crate::state::{FindingState, ReviewState};
 use anyhow::Result;
 use base64::Engine;
@@ -97,7 +96,7 @@ pub async fn publish(
                 posted_ids.push(id);
             }
         }
-        let review_id = api
+        let review_result = api
             .create_review(
                 owner,
                 repo,
@@ -106,11 +105,27 @@ pub async fn publish(
                 "Revera inline review findings",
                 &comments,
             )
-            .await?;
-        pubn.review_id = Some(review_id);
-        // (4) mark posted ids only after a successful post, so the state blob
-        // embedded below carries them
-        state.mark_posted(&posted_ids);
+            .await;
+        match review_result {
+            Ok(review_id) => {
+                pubn.review_id = Some(review_id);
+                // (4) mark posted ids only after a successful post, so the state blob
+                // embedded below carries them
+                state.mark_posted(&posted_ids);
+            }
+            Err(err)
+                if err
+                    .downcast_ref::<GitHubHttpError>()
+                    .is_some_and(|e| e.status == 422) =>
+            {
+                tracing::warn!("GitHub rejected inline review (422); continuing with summary");
+                pubn.skipped_reason = Some(
+                    "inline review rejected by GitHub (422); findings listed in summary only"
+                        .into(),
+                );
+            }
+            Err(err) => return Err(err),
+        }
     }
 
     // (3) upsert the managed summary comment
@@ -155,13 +170,7 @@ pub async fn publish(
         }
     };
     pubn.summary_comment_id = Some(comment.id);
-    let summary_ids: Vec<String> = report
-        .findings
-        .iter()
-        .filter(|f| is_publishable(f))
-        .map(|f| f.id())
-        .collect();
-    state.mark_posted(&summary_ids);
+    state.mark_posted(&surfaced_ids(report));
 
     report.publication = pubn.clone();
     Ok(pubn)

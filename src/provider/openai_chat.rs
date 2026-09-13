@@ -238,6 +238,15 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 });
             }
         }
+        if parsed["choices"][0]["finish_reason"].as_str() == Some("length")
+            && content.is_none()
+            && calls.is_empty()
+        {
+            return Parse::Err(ProviderError::Other(
+                "output truncated at max_output_tokens with empty content; raise max_output_tokens or lower reasoning effort"
+                    .into(),
+            ));
+        }
         let usage = Usage {
             prompt_tokens: parsed["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["completion_tokens"].as_u64().unwrap_or(0),
