@@ -16,9 +16,10 @@
   summary comment upsert, `posted` marking after successful posts, fork guard
   (`github.allow_forks`, default false).
 - `revera doctor`, `revera cache-info`.
-- `openai-chat` provider (tool calling, retries, `max_completion_tokens`
-  fallback, content-array replies, run request budget) and `scripted`
-  provider for offline fixtures.
+- Providers via a shared `HttpTransport` (ledger reservation per attempt,
+  429/5xx + transient retry, Retry-After, backoff+jitter) + per-protocol
+  `ProtocolAdapter`: `openai-chat`, `openai-responses`, `anthropic`,
+  `gemini` (no call ids — synthesized `name-idx`), and offline `scripted`.
 - `delegated` strategy: lead plans bounded questions (`submit_plan`), workers
   answer them concurrently on a restricted toolbox (`submit_worker_result`),
   lead synthesizes final candidates (`submit_findings`); blocked/gaps surface

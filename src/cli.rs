@@ -359,7 +359,7 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
         ("investigator", &cfg.models.investigator),
         ("validator", &cfg.models.validator),
     ] {
-        if r.protocol == crate::config::Protocol::OpenaiChat {
+        if r.protocol.is_http() {
             let env = r.api_key_env.clone().unwrap_or_default();
             if std::env::var(&env).is_ok() {
                 println!("models.{name}: key env {env} set");

@@ -37,8 +37,24 @@ Workflow permissions: `pull-requests: write`, `contents: read`.
 
 See `revera.example.yaml` and `docs/DESIGN.md`. Model roles
 (`investigator`, `validator`, optional `lead`/`workers`/`scouts`) each take
-a `protocol` (`openai-chat` or `scripted`), endpoint, and model; Vera API
-mode reads keys from the env names given in config.
+a `protocol`, endpoint, and model; Vera API mode reads keys from the env
+names given in config.
+
+### Providers
+
+Each route independently picks a protocol:
+
+| protocol | wire format | base_url |
+|---|---|---|
+| `openai-chat` | POST `{base}/chat/completions` | required (e.g. OpenRouter) |
+| `openai-responses` | POST `{base}/responses` | required |
+| `anthropic` | POST `{base}/v1/messages` | optional (default `https://api.anthropic.com`) |
+| `gemini` | POST `{base}/v1beta/models/{model}:generateContent` | optional (default `generativelanguage.googleapis.com`) |
+| `scripted` | offline JSON script (tests) | — |
+
+All HTTP protocols share one transport (retries, Retry-After, request
+budget, ledger) with a per-protocol wire adapter, so routes can mix — e.g.
+an Anthropic validator with an OpenRouter investigator.
 
 ## Evaluation
 
