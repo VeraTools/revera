@@ -33,9 +33,12 @@ for rep in $(seq "$REP_START" "$REP_END"); do
         --config "$CONFIG" --title "eval $CORPUS" --force \
         --out "$OUT" > "$TMP/stdout.txt" 2> "$TMP/stderr.log"
     RC=$?
+    cp "$TMP/stderr.log" "$REPORTS/${CONFIG_NAME}-${CORPUS}-${rep}.stderr.log"
+    TRUTH="$SRC/truth.json"
+    [ -f "$TRUTH" ] || TRUTH="$HERE/large/truth/$CORPUS.json"
     if [ -f "$OUT" ]; then
         cp "$OUT" "$REPORTS/${CONFIG_NAME}-${CORPUS}-${rep}.json"
-        python3 "$HERE/score.py" "$OUT" "$SRC/truth.json" \
+        python3 "$HERE/score.py" "$OUT" "$TRUTH" \
             "$CONFIG_NAME" "$CORPUS" "$rep" >> "$RESULTS"
     else
         python3 - "$CONFIG_NAME" "$CORPUS" "$rep" "$RC" "$TMP/stderr.log" <<'PY' >> "$RESULTS"
