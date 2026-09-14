@@ -1,0 +1,38 @@
+review:
+  strategy: baseline
+  publish: dry-run
+  min_severity: low
+budget:
+  run_max_seconds: 600
+  agent_max_seconds: 300
+  agent_max_tool_calls: 30
+  run_max_requests: 120
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://relay.fast/v1
+    api_key_env: RELAY_FAST_API_KEY
+    model: glm-5.3
+    max_output_tokens: 6000
+    temperature: 0.2
+    reasoning: max
+  validator:
+    protocol: openai-chat
+    base_url: https://relay.fast/v1
+    api_key_env: RELAY_FAST_API_KEY
+    model: glm-5.3-flash
+    max_output_tokens: 4000
+    temperature: 0.2
+    reasoning: high
+vera:
+  executable: vera
+  version: "1.4.1"
+  backend: api
+  embedding:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-embedding-8b
+    api_key_env: OPENROUTER_API_KEY
+  reranker:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-reranker-8b
+    api_key_env: OPENROUTER_API_KEY
