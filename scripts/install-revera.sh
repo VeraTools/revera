@@ -4,7 +4,7 @@ set -euo pipefail
 version=${1:?usage: install-revera.sh VERSION TARGET_DIR}
 target_dir=${2:?usage: install-revera.sh VERSION TARGET_DIR}
 base=${REVERA_DOWNLOAD_BASE:-"https://github.com/VeraTools/revera/releases/download/v${version}"}
-archive="revera-x86_64-unknown-linux-gnu.tar.gz"
+archive="revera-x86_64-unknown-linux-musl.tar.gz"
 checksum="${archive}.sha256"
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT

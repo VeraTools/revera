@@ -81,13 +81,13 @@
   with restore-keys dropping the sha then the ref; (2) install vera: download
   `https://github.com/VeraTools/Vera/releases/download/v<ver>/vera-x86_64-unknown-linux-gnu.tar.gz`
   + `release-manifest.json`, verify sha256 from the manifest, put on PATH;
-  (3) install revera: download `https://github.com/VeraTools/revera/releases/download/v<ver>/revera-x86_64-unknown-linux-gnu.tar.gz`
+  (3) install revera: download `https://github.com/VeraTools/revera/releases/download/v<ver>/revera-x86_64-unknown-linux-musl.tar.gz`
   + `.sha256`, verify, put on PATH; (4) run `revera review --event "$GITHUB_EVENT_PATH" --config ... --publish ... --out .revera/report.json`
   with `GITHUB_TOKEN` from the input, capturing exit code, set outputs, then
   apply `fail-on`; (5) `actions/cache/save@v4` (always, `if: always()`) with
   the full key. Linux x86_64 only; error clearly on other runners.
 - `.github/workflows/release.yml`: on tag `v*`: build release binary on
-  ubuntu-latest, package `revera-x86_64-unknown-linux-gnu.tar.gz` + `.sha256`,
+  ubuntu-latest, package `revera-x86_64-unknown-linux-musl.tar.gz` + `.sha256`,
   create GitHub release with `softprops/action-gh-release@v2`, then force-move
   the major tag (`v1`) to the release commit (`git tag -f v1 && git push -f origin v1`)
   when the tag is `v1.*`.

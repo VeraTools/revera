@@ -186,6 +186,7 @@ mod tests {
             max_output_tokens: 100,
             temperature: 0.0,
             extra_headers: HashMap::new(),
+            session_header: None,
             script: None,
             reasoning: crate::config::Reasoning::default(),
         }
