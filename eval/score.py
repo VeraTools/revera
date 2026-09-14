@@ -43,6 +43,24 @@ def main():
         1 for i in used if accepted[i].get("severity") in ("high", "critical")
     )
     statuses = [f.get("validation_status") for f in r.get("findings", [])]
+    # cross-file evidence: accepted TP whose text mentions a cross_file_keyword
+    xf_kw = [
+        k.lower()
+        for d in truth["defects"]
+        for k in d.get("cross_file_keywords", [])
+    ]
+    xf = 0
+    for i in used:
+        f = accepted[i]
+        text = (
+            f.get("title", "")
+            + " "
+            + f.get("claim", "")
+            + " "
+            + json.dumps(f.get("supporting_evidence", []))
+        ).lower()
+        if any(k in text for k in xf_kw):
+            xf += 1
     rejected = statuses.count("rejected")
     uncertain = statuses.count("uncertain")
 
@@ -68,8 +86,14 @@ def main():
         "completion_tokens": ctok,
         "reasoning_tokens": rtok,
         "wall_ms": led.get("wall_ms", 0),
+        "xf": xf,
         "est_cost": ptok * PROMPT_COST + ctok * COMPLETION_COST,
     }
+    timing = r.get("timing") or {}
+    for k in ("first_validated_ms", "lanes_ms", "validate_ms"):
+        v = timing.get(k)
+        out[k.replace("_ms", "_s")] = v / 1000 if v is not None else None
+    out["incomplete_phases"] = timing.get("incomplete_phases")
     print(json.dumps(out))
 
 
