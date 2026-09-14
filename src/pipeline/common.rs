@@ -10,6 +10,7 @@ use crate::report::{
     RunStatus,
 };
 use crate::state::{recheck_transition, FindingState, ReviewState};
+use crate::timing::Recorder;
 use crate::tools::ToolBox;
 use crate::vera::VeraClient;
 use anyhow::{bail, Result};
@@ -50,6 +51,7 @@ pub struct Prepared {
     /// wall-clock deadline for the whole run (start + run_max_seconds).
     pub deadline: Instant,
     pub wall: Instant,
+    pub timing: Recorder,
 }
 
 impl Prepared {
@@ -133,6 +135,7 @@ pub fn parse_candidate_findings(v: &serde_json::Value) -> Vec<Finding> {
 /// short-circuit, ensure the Vera index, and recheck prior open findings.
 pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> Result<PrepareOut> {
     let wall = Instant::now();
+    let timing = Recorder::default();
     let deadline = wall + std::time::Duration::from_secs(cfg.budget.run_max_seconds);
     let repo = git::repo_root(&req.repo);
     if !git::is_repo(&repo).await {
@@ -182,6 +185,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             &[],
             cfg.review.publish_uncertain,
             None,
+            None,
         );
         let rep = RunReport {
             status: RunStatus::Complete,
@@ -198,6 +202,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             ledger: ledger_report(&ledger.0.lock().unwrap(), wall.elapsed().as_millis() as u64),
             publication: Default::default(),
             coverage_gaps: vec![],
+            timing: timing.finish(wall),
         };
         return Ok(PrepareOut::ShortCircuit(Box::new(rep), state));
     }
@@ -206,11 +211,23 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?);
     let vera_err = if !cfg.vera.enabled {
         tracing::info!("vera disabled by config; no index, no retrieval tools");
+        timing.record("vera_index", "", Instant::now(), wall, "skipped");
         None
     } else {
+        let t0 = Instant::now();
         match vera.ensure_index().await {
-            Ok(_) => None,
+            Ok(_) => {
+                timing.record("vera_index", "", t0, wall, "ok");
+                None
+            }
             Err(e) => {
+                timing.record(
+                    "vera_index",
+                    "",
+                    t0,
+                    wall,
+                    &format!("error:{}", crate::text::excerpt_bytes(&e.to_string(), 60)),
+                );
                 let r = format!("retrieval unavailable: {e}");
                 tracing::warn!("vera index failed (continuing without retrieval): {e}");
                 partial_reasons.push(r.clone());
@@ -246,6 +263,9 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             "validator",
             true,
             deadline,
+            &timing,
+            wall,
+            "recheck",
         )
         .await;
         if let Some(r) = clean {
@@ -277,6 +297,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         report_note: None,
         deadline,
         wall,
+        timing,
     })))
 }
 
@@ -360,6 +381,9 @@ pub async fn finish(
             "validator",
             false,
             prep.deadline,
+            &prep.timing,
+            prep.wall,
+            "validate",
         )
         .await;
         if let Some(r) = clean {
@@ -417,6 +441,7 @@ pub async fn finish(
     } else {
         Some(prep.partial_reasons.join("; "))
     };
+    let timing = prep.timing.finish(prep.wall);
     let routes: Vec<String> = prep
         .ledger
         .0
@@ -424,7 +449,10 @@ pub async fn finish(
         .unwrap()
         .entries
         .iter()
-        .map(|e| format!("{}:{}", e.route, e.model))
+        .map(|e| match cfg.route_effort(&e.route) {
+            Some(eff) => format!("{}:{}@{}", e.route, e.model, eff),
+            None => format!("{}:{}", e.route, e.model),
+        })
         .collect();
     let coverage = if prep.coverage.is_empty() {
         "(none reported)".to_string()
@@ -441,6 +469,7 @@ pub async fn finish(
         &routes,
         cfg.review.publish_uncertain,
         prep.report_note.as_deref(),
+        Some(&timing),
     );
     let rep = RunReport {
         status,
@@ -460,6 +489,7 @@ pub async fn finish(
         ),
         publication: Default::default(),
         coverage_gaps: prep.coverage_gaps.clone(),
+        timing,
     };
     Ok((rep, state))
 }

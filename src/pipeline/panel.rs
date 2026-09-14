@@ -89,6 +89,8 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let max_req = cfg.budget.run_max_requests;
     let ledger0 = prep.ledger.clone();
     let tb0 = prep.toolbox.clone();
+    let timing0 = prep.timing.clone();
+    let wall = prep.wall;
     let lane_budget = prep.budget(cfg.panel.scout_max_tool_calls, cfg.budget.agent_max_seconds);
     let lane_futs = lanes.iter().map(|(focus, route)| {
         let ledger = ledger0.clone();
@@ -99,14 +101,23 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         let route = route.clone();
         let budget = lane_budget.clone();
         let retries = cfg.budget.retries;
+        let timing = timing0.clone();
         async move {
+            let lane_start = std::time::Instant::now();
             if ledger.request_count() >= max_req {
-                return (focus, None);
+                timing.record(
+                    "lane",
+                    &format!("panel:{focus}"),
+                    lane_start,
+                    wall,
+                    "skipped",
+                );
+                return (focus, None, lane_start);
             }
             let client = match make_client(&route, &focus, ledger, max_req, retries, &terminal.name)
             {
                 Ok(c) => c,
-                Err(e) => return (focus, Some(Err(e))),
+                Err(e) => return (focus, Some(Err(e)), lane_start),
             };
             let addendum = focus_addendum(&focus).unwrap_or_default();
             let system = format!(
@@ -116,7 +127,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 addendum
             );
             let run = run_agent(client.as_ref(), &system, &user, &tb, &terminal, &budget).await;
-            (focus, Some(run))
+            (focus, Some(run), lane_start)
         }
     });
     let mut stream =
@@ -124,33 +135,55 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
 
     let mut raw: Vec<Finding> = vec![];
     let mut skipped = 0usize;
-    while let Some((focus, run)) = stream.next().await {
+    while let Some((focus, run, lane_start)) = stream.next().await {
         let Some(run) = run else {
             skipped += 1;
             continue;
         };
-        match run {
+        let outcome = match run {
             Ok(r) => match r.stopped {
                 crate::agent::StopReason::Terminal => {
+                    let mut n = 0usize;
                     if let Some(call) = &r.final_call {
                         let mut fs = parse_findings(&call.arguments);
+                        n = fs.len();
                         for f in &mut fs {
                             f.source = format!("panel:{focus}");
                             f.sources = vec![f.source.clone()];
                         }
                         raw.extend(fs);
                     }
+                    if n > 0 { "ok:candidates" } else { "ok" }.to_string()
+                }
+                crate::agent::StopReason::TimeBudget => {
+                    prep.partial_reasons
+                        .push(format!("scout {focus} stopped early: TimeBudget"));
+                    "timeout".into()
+                }
+                crate::agent::StopReason::ToolBudget => {
+                    prep.partial_reasons
+                        .push(format!("scout {focus} stopped early: ToolBudget"));
+                    "tool_budget".into()
                 }
                 other => {
                     prep.partial_reasons
                         .push(format!("scout {focus} stopped early: {other:?}"));
+                    "error".into()
                 }
             },
             Err(e) => {
                 prep.partial_reasons
                     .push(format!("scout {focus} failed: {e}"));
+                format!("error:{}", crate::text::excerpt_bytes(&e.to_string(), 60))
             }
-        }
+        };
+        prep.timing.record(
+            "lane",
+            &format!("panel:{focus}"),
+            lane_start,
+            prep.wall,
+            &outcome,
+        );
     }
     if skipped > 0 {
         prep.partial_reasons
@@ -186,6 +219,7 @@ mod tests {
             max_output_tokens: 100,
             temperature: 0.0,
             extra_headers: HashMap::new(),
+            session_header: None,
             script: None,
             reasoning: crate::config::Reasoning::default(),
         }

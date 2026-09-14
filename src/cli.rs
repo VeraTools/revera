@@ -198,6 +198,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     ..Default::default()
                 },
                 coverage_gaps: vec![],
+                timing: Default::default(),
             };
             print!("{}", rep.plan.summary_markdown);
             let out = a
@@ -317,7 +318,8 @@ async fn review(a: ReviewArgs) -> i32 {
                     })
                     .map(|f| f.title.clone())
                     .collect();
-                match crate::github::publish::publish(
+                let publish_start = std::time::Instant::now();
+                let publish_result = crate::github::publish::publish(
                     api,
                     e,
                     &mut report,
@@ -326,12 +328,21 @@ async fn review(a: ReviewArgs) -> i32 {
                     &cfg.github.summary_marker,
                     &resolved,
                 )
-                .await
-                {
+                .await;
+                let publish_ms = publish_start.elapsed().as_millis() as u64;
+                match publish_result {
                     Ok(_) => {
+                        report
+                            .timing
+                            .append_publish(report.timing.total_ms, publish_ms, "ok");
                         let _ = state.save(&repo);
                     }
                     Err(err) => {
+                        report.timing.append_publish(
+                            report.timing.total_ms,
+                            publish_ms,
+                            &format!("error:{}", crate::text::excerpt_bytes(&err.to_string(), 60)),
+                        );
                         eprintln!("error: publish failed: {err:#}");
                         report.status = RunStatus::Partial;
                         report.reason = Some(match report.reason.take() {
