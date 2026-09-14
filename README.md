@@ -13,7 +13,9 @@ revera cache-info [--repo <path>]
 ```
 
 `review` prints a summary to stdout and writes a full JSON report to
-`--out` (default `.revera/last-report.json`). Exit codes: 0 complete,
+`--out` (default `.revera/last-report.json`). The report includes a
+`timing` object with per-phase wall-clock breakdowns (indexing, lanes,
+validation, publish). Exit codes: 0 complete,
 2 partial, 1 failed/config error. With `--event <path>` (a
 `pull_request`/`pull_request_target` payload) Revera takes base/head/title
 from the event and, with `--publish comment`, posts an inline review plus a
@@ -94,5 +96,5 @@ validator or scout models, large repositories.
 
 All three strategies (baseline / delegated / panel), GitHub event mode with
 `--publish comment` reviewing the exact PR head, composite action + verified
-release workflow, and a 13-repo eval harness in `eval/`. No release tag has
-been cut yet; see STATUS.md for limitations and docs/EVAL.md for results.
+release workflow, and a 13-repo eval harness in `eval/`. `v0.1.0` is released
+(`@v0` resolves); see STATUS.md for limitations and docs/EVAL.md for results.

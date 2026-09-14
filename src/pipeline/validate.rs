@@ -5,6 +5,7 @@ use crate::diff::DiffSet;
 use crate::findings::{Finding, ValidationStatus, Verdict};
 use crate::prompts;
 use crate::provider::{LedgerHandle, ToolSpec};
+use crate::timing::Recorder;
 use crate::tools::{terminal_submit_verdict_spec, ToolBox};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -41,6 +42,9 @@ pub async fn validate_candidates(
     role: &str,
     recheck: bool,
     deadline: std::time::Instant,
+    timing: &Recorder,
+    wall: std::time::Instant,
+    phase_name: &str,
 ) -> Option<String> {
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
@@ -62,8 +66,10 @@ pub async fn validate_candidates(
         let terminal = terminal.clone();
         let role = role.to_string();
         let cand = c.clone();
+        let cand_id = c.id();
         let excerpt = diff.file_excerpt(&cand.file);
         set.spawn(async move {
+            let start = std::time::Instant::now();
             let _permit = sem.acquire().await.unwrap();
             let agent_budget = match validator_budget_at(
                 budget.agent_max_tool_calls,
@@ -81,13 +87,15 @@ pub async fn validate_candidates(
                             tool_calls: 0,
                             stopped: StopReason::TimeBudget,
                         }),
+                        cand_id,
+                        start,
                     )
                 }
             };
             let client =
                 match make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name) {
                     Ok(c) => c,
-                    Err(e) => return (i, Err(e)),
+                    Err(e) => return (i, Err(e), cand_id, start),
                 };
             let user = if recheck {
                 format!(
@@ -113,11 +121,18 @@ pub async fn validate_candidates(
                 &agent_budget,
             )
             .await;
-            (i, run)
+            (i, run, cand_id, start)
         });
     }
     if let Some(from) = skipped_from {
         for c in candidates.iter_mut().skip(from) {
+            timing.record(
+                phase_name,
+                &c.id(),
+                std::time::Instant::now(),
+                wall,
+                "skipped",
+            );
             c.validation_status = Some(ValidationStatus::Uncertain);
             c.rationale = Some("run time budget exhausted".into());
         }
@@ -125,9 +140,9 @@ pub async fn validate_candidates(
     let mut clean = skipped_from.is_none();
     let mut reason = skipped_from.map(|_| "run time budget exhausted".to_string());
     while let Some(res) = set.join_next().await {
-        let (i, run) = res.expect("validator task panicked");
+        let (i, run, cand_id, start) = res.expect("validator task panicked");
         let cand = &mut candidates[i];
-        match run {
+        let outcome: String = match run {
             Ok(AgentRun {
                 final_call: Some(call),
                 ..
@@ -145,11 +160,17 @@ pub async fn validate_candidates(
                         cand.end_line = Some(l);
                     }
                     cand.rationale = Some(v.rationale);
+                    if v.validation_status == ValidationStatus::Accepted {
+                        "ok:accepted".to_string()
+                    } else {
+                        "ok".to_string()
+                    }
                 }
                 Err(e) => {
                     clean = false;
                     cand.validation_status = Some(ValidationStatus::Uncertain);
                     cand.rationale = Some(format!("validator returned malformed verdict: {e}"));
+                    "error:malformed verdict".to_string()
                 }
             },
             Ok(AgentRun {
@@ -160,18 +181,34 @@ pub async fn validate_candidates(
                 reason = Some("run time budget exhausted".into());
                 cand.validation_status = Some(ValidationStatus::Uncertain);
                 cand.rationale = Some("run time budget exhausted".into());
+                "timeout".to_string()
+            }
+            Ok(AgentRun {
+                stopped: StopReason::ToolBudget,
+                ..
+            }) => {
+                clean = false;
+                cand.validation_status = Some(ValidationStatus::Uncertain);
+                cand.rationale = Some(format!(
+                    "validator unavailable: {:?}",
+                    StopReason::ToolBudget
+                ));
+                "tool_budget".to_string()
             }
             Ok(AgentRun { stopped, .. }) => {
                 clean = false;
                 cand.validation_status = Some(ValidationStatus::Uncertain);
                 cand.rationale = Some(format!("validator unavailable: {stopped:?}"));
+                format!("error:{stopped:?}")
             }
             Err(e) => {
                 clean = false;
                 cand.validation_status = Some(ValidationStatus::Uncertain);
                 cand.rationale = Some(format!("validator unavailable: {e}"));
+                format!("error:{}", crate::text::excerpt_bytes(&e.to_string(), 60))
             }
-        }
+        };
+        timing.record(phase_name, &cand_id, start, wall, &outcome);
     }
     if clean {
         None

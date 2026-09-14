@@ -88,6 +88,7 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
 }
 
 impl ReasoningEffort {
@@ -100,6 +101,7 @@ impl ReasoningEffort {
             Self::Medium => 8192,
             Self::High => 16384,
             Self::Xhigh => 32768,
+            Self::Max => 65536,
         }
     }
     /// Wire spelling (openai has no "xhigh" on non-gpt-5 models — caller maps).
@@ -111,6 +113,7 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -193,6 +196,10 @@ pub struct ModelRoute {
     pub temperature: f64,
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
+    /// Header name sent on every request with a stable per-run session id.
+    /// Defaults to `x-opencode-session` when the base_url host is opencode.ai.
+    #[serde(default)]
+    pub session_header: Option<String>,
     pub script: Option<PathBuf>,
     /// Reasoning/thinking level; on by default (medium). `none` disables.
     #[serde(default)]
@@ -470,6 +477,19 @@ fn expand_route(r: &mut ModelRoute) -> Result<()> {
     for v in r.extra_headers.values_mut() {
         *v = expand_env(v)?;
     }
+    if r.session_header.is_none()
+        && r.base_url.as_deref().is_some_and(|b| {
+            b.split("://")
+                .nth(1)
+                .unwrap_or(b)
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .ends_with("opencode.ai")
+        })
+    {
+        r.session_header = Some("x-opencode-session".into());
+    }
     Ok(())
 }
 
@@ -571,6 +591,58 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Reasoning effort for a ledger route label ("scripted:<role>" or
+    /// "<proto>:<base_url>"), used to render `route:model@effort` in footers.
+    pub fn route_effort(&self, route_label: &str) -> Option<&'static str> {
+        let route_by_role = |role: &str| -> Option<&ModelRoute> {
+            match role {
+                "investigator" => Some(&self.models.investigator),
+                "validator" => Some(&self.models.validator),
+                "lead" => Some(
+                    self.models
+                        .lead
+                        .as_ref()
+                        .unwrap_or(&self.models.investigator),
+                ),
+                "workers" => Some(
+                    self.models
+                        .workers
+                        .as_deref()
+                        .and_then(|ws| ws.first())
+                        .unwrap_or(&self.models.investigator),
+                ),
+                other => self
+                    .models
+                    .scouts
+                    .as_ref()?
+                    .iter()
+                    .find(|s| s.name == other)
+                    .map(|s| &s.route),
+            }
+        };
+        if let Some(role) = route_label.strip_prefix("scripted:") {
+            return route_by_role(role).map(|r| r.reasoning.effort().as_str());
+        }
+        let proto = |p: Protocol| match p {
+            Protocol::OpenaiChat => "openai-chat",
+            Protocol::OpenaiResponses => "openai-responses",
+            Protocol::Anthropic => "anthropic",
+            Protocol::Gemini => "gemini",
+            Protocol::Scripted => "scripted",
+        };
+        std::iter::once(&self.models.investigator)
+            .chain(std::iter::once(&self.models.validator))
+            .chain(self.models.lead.iter())
+            .chain(self.models.workers.iter().flatten())
+            .chain(self.models.scouts.iter().flatten().map(|s| &s.route))
+            .find(|r| {
+                r.base_url
+                    .as_deref()
+                    .is_some_and(|b| route_label == format!("{}:{}", proto(r.protocol), b))
+            })
+            .map(|r| r.reasoning.effort().as_str())
     }
 
     pub fn apply_profile(&mut self, name: &str) -> Result<()> {

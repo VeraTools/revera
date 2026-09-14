@@ -383,6 +383,9 @@ vera: {executable: "true", version: "1.4.1", backend: api}
         "validator",
         false,
         deadline,
+        &revera::timing::Recorder::default(),
+        std::time::Instant::now(),
+        "validate",
     )
     .await;
     assert_eq!(reason.as_deref(), Some("run time budget exhausted"));

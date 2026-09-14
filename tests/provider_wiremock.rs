@@ -43,6 +43,7 @@ fn route(url: &str) -> ModelRoute {
         max_output_tokens: 100,
         temperature: 0.2,
         extra_headers: HashMap::new(),
+        session_header: None,
         script: None,
         reasoning: Default::default(),
     }
@@ -243,6 +244,7 @@ fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
         max_output_tokens: 100,
         temperature: 0.2,
         extra_headers: HashMap::new(),
+        session_header: None,
         script: None,
         reasoning: Default::default(),
     }
@@ -796,6 +798,83 @@ async fn openai_chat_xhigh_clamps_to_high_for_non_gpt5() {
     server.verify().await;
 }
 
+#[tokio::test]
+async fn openai_chat_max_passes_through_on_gpt5() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "max"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "gpt-5.6-terra",
+            spec(ReasoningEffort::Max, None, ReasoningField::Openai),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_chat_max_clamps_to_high_for_non_gpt5() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "glm-5.3",
+            spec(ReasoningEffort::Max, None, ReasoningField::Openai),
+        ),
+        LedgerHandle::new(),
+        10,
+        3,
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn session_header_and_user_agent_sent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .mount(&server)
+        .await;
+    let mut rt = route(&server.uri());
+    rt.session_header = Some("x-opencode-session".into());
+    let c = OpenAiChatClient::new(rt, LedgerHandle::new(), 10, 3).unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    let session = reqs[0]
+        .headers
+        .get("x-opencode-session")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert_eq!(session.len(), 36, "{session}");
+    let ua = reqs[0]
+        .headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert!(ua.starts_with("revera/"), "{ua}");
+}
+
 // ---------- openai-responses reasoning + provider_state ----------
 
 fn resp_adapter(url: &str, r: Reasoning) -> HttpClient<OpenAiResponsesAdapter> {
@@ -829,6 +908,54 @@ async fn responses_reasoning_emits_effort_and_include() {
     resp_adapter(
         &server.uri(),
         spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn responses_max_passes_through_on_gpt5() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning": {"effort": "max"}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = HttpClient {
+        adapter: OpenAiResponsesAdapter::from_route(route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiResponses,
+            "gpt-5.6-terra",
+            spec(ReasoningEffort::Max, None, ReasoningField::Auto),
+        ))
+        .unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+    };
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn responses_max_clamps_to_high_for_non_gpt5() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning": {"effort": "high"}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    resp_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::Max, None, ReasoningField::Auto),
     )
     .complete(&[ChatMessage::user("x")], &[])
     .await

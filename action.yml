@@ -54,13 +54,16 @@ runs:
           exit 1
         fi
 
+    # Cache key is the reviewed head sha; base ref and config hash invalidate
+    # on branch/config change. An older index is restored via the prefix keys
+    # and updated incrementally by `vera update`.
     - name: Restore .vera index cache
       if: inputs.cache == 'true'
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: .vera
-        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.sha }}
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
         restore-keys: |
           revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-
           revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-
@@ -128,4 +131,4 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: .vera
-        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.sha }}
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}

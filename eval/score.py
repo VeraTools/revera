@@ -64,6 +64,12 @@ def main():
     rejected = statuses.count("rejected")
     uncertain = statuses.count("uncertain")
 
+    timing = r.get("timing", {}) or {}
+
+    def _t(key):
+        v = timing.get(key)
+        return v / 1000 if v is not None else None
+
     led = r.get("ledger", {})
     ptok = led.get("prompt_tokens", 0)
     ctok = led.get("completion_tokens", 0)
@@ -87,13 +93,12 @@ def main():
         "reasoning_tokens": rtok,
         "wall_ms": led.get("wall_ms", 0),
         "xf": xf,
+        "first_validated_s": _t("first_validated_ms"),
+        "lanes_s": _t("lanes_ms"),
+        "validate_s": _t("validate_ms"),
+        "incomplete_phases": timing.get("incomplete_phases"),
         "est_cost": ptok * PROMPT_COST + ctok * COMPLETION_COST,
     }
-    timing = r.get("timing") or {}
-    for k in ("first_validated_ms", "lanes_ms", "validate_ms"):
-        v = timing.get(k)
-        out[k.replace("_ms", "_s")] = v / 1000 if v is not None else None
-    out["incomplete_phases"] = timing.get("incomplete_phases")
     print(json.dumps(out))
 
 

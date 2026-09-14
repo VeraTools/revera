@@ -1,7 +1,30 @@
 use super::{ChatMessage, Completion, LedgerEntry, LedgerHandle, ProviderError, ToolSpec, Usage};
+use crate::config::ModelRoute;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+/// Stable id for this process run, used by routes that set `session_header`
+/// (e.g. OpenCode Go's `x-opencode-session`).
+fn run_session_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// Headers shared by all four HTTP adapters: the route's extra_headers plus
+/// its `session_header` carrying the per-run id.
+pub fn route_headers(route: &ModelRoute) -> Vec<(String, String)> {
+    let mut headers: Vec<(String, String)> = route
+        .extra_headers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if let Some(name) = &route.session_header {
+        headers.push((name.clone(), run_session_id().to_string()));
+    }
+    headers
+}
 
 /// Per-request mutable state carried across attempts (retry / same-slot
 /// fallbacks). E.g. openai-chat flips `tokens_key` from `max_tokens` to
@@ -103,6 +126,7 @@ impl HttpTransport {
         retries: u32,
     ) -> Result<Self, ProviderError> {
         let http = reqwest::Client::builder()
+            .user_agent(concat!("revera/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
