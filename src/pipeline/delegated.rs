@@ -92,6 +92,7 @@ async fn delegated_candidates(
     }
     let system =
         prompts::LEAD_PLAN.replace("{max_questions}", &cfg.delegated.max_questions.to_string());
+    let plan_start = std::time::Instant::now();
     let run = run_agent(
         lead.as_ref(),
         &system,
@@ -101,6 +102,14 @@ async fn delegated_candidates(
         &prep.budget(6, cfg.budget.agent_max_seconds),
     )
     .await?;
+    let plan_outcome = match run.stopped {
+        crate::agent::StopReason::Terminal => "ok",
+        crate::agent::StopReason::TimeBudget => "timeout",
+        crate::agent::StopReason::ToolBudget => "tool_budget",
+        _ => "error",
+    };
+    prep.timing
+        .record("plan", "lead", plan_start, prep.wall, plan_outcome);
     let mut questions: Vec<PlanQuestion> = match run.stopped {
         crate::agent::StopReason::Terminal => run
             .final_call
@@ -174,6 +183,8 @@ async fn delegated_candidates(
         let terminal = worker_terminal.clone();
         let budget = lane_budget.clone();
         let ledger = prep.ledger.clone();
+        let timing = prep.timing.clone();
+        let wall = prep.wall;
         let qid = if q.id.is_empty() {
             format!("q{}", i + 1)
         } else {
@@ -190,8 +201,16 @@ async fn delegated_candidates(
             prep.diff.render_truncated(cfg.review.max_diff_bytes),
         );
         async move {
+            let lane_start = std::time::Instant::now();
             if ledger.request_count() >= max_req {
-                return (i, qid, worker_model, None);
+                timing.record(
+                    "lane",
+                    &format!("worker:{qid}"),
+                    lane_start,
+                    wall,
+                    "skipped",
+                );
+                return (i, qid, worker_model, None, lane_start);
             }
             let run = run_agent(
                 client.as_ref(),
@@ -202,18 +221,19 @@ async fn delegated_candidates(
                 &budget,
             )
             .await;
-            (i, qid, worker_model, Some(run))
+            (i, qid, worker_model, Some(run), lane_start)
         }
     });
     let mut lanes =
         futures::stream::iter(lane_futs).buffer_unordered(cfg.review.concurrency.max(1));
     let mut skipped = 0usize;
     let mut reports: Vec<WorkerReport> = Vec::new();
-    while let Some((i, qid, worker_model, run)) = lanes.next().await {
+    while let Some((i, qid, worker_model, run, lane_start)) = lanes.next().await {
         let Some(run) = run else {
             skipped += 1;
             continue;
         };
+        let mut lane_outcome = "ok";
         let report = match run {
             Ok(r) => match r.final_call {
                 Some(call) => {
@@ -229,6 +249,9 @@ async fn delegated_candidates(
                         })
                         .unwrap_or_default();
                     let mut findings = parse_candidate_findings(&a["candidate_findings"]);
+                    if !findings.is_empty() {
+                        lane_outcome = "ok:candidates";
+                    }
                     for f in &mut findings {
                         f.source = format!("delegated:worker:{qid}");
                         f.sources = vec![f.source.clone()];
@@ -242,7 +265,7 @@ async fn delegated_candidates(
                         }
                     };
                     WorkerReport {
-                        question_id: qid,
+                        question_id: qid.clone(),
                         result,
                         answer,
                         raw,
@@ -250,24 +273,41 @@ async fn delegated_candidates(
                         gaps,
                     }
                 }
-                None => WorkerReport {
+                None => {
+                    lane_outcome = match r.stopped {
+                        crate::agent::StopReason::TimeBudget => "timeout",
+                        crate::agent::StopReason::ToolBudget => "tool_budget",
+                        _ => "error",
+                    };
+                    WorkerReport {
+                        question_id: qid.clone(),
+                        result: "blocked".into(),
+                        answer: format!("worker stopped without submitting ({:?})", r.stopped),
+                        raw: String::new(),
+                        findings: vec![],
+                        gaps: vec![format!("question {qid}: worker did not submit")],
+                    }
+                }
+            },
+            Err(e) => {
+                lane_outcome = "error";
+                WorkerReport {
                     question_id: qid.clone(),
                     result: "blocked".into(),
-                    answer: format!("worker stopped without submitting ({:?})", r.stopped),
+                    answer: format!("worker failed: {e}"),
                     raw: String::new(),
                     findings: vec![],
-                    gaps: vec![format!("question {qid}: worker did not submit")],
-                },
-            },
-            Err(e) => WorkerReport {
-                question_id: qid.clone(),
-                result: "blocked".into(),
-                answer: format!("worker failed: {e}"),
-                raw: String::new(),
-                findings: vec![],
-                gaps: vec![format!("question {qid}: worker failed: {e}")],
-            },
+                    gaps: vec![format!("question {qid}: worker failed: {e}")],
+                }
+            }
         };
+        prep.timing.record(
+            "lane",
+            &format!("worker:{qid}"),
+            lane_start,
+            prep.wall,
+            lane_outcome,
+        );
         if report.result == "blocked" {
             prep.partial_reasons
                 .push(worker_failure_reason(i, &worker_model, &report.answer));
@@ -313,6 +353,7 @@ async fn delegated_candidates(
         &synth_terminal.name,
     )?;
     let read_only_tb = std::sync::Arc::new(prep.toolbox.restricted(&["read_file"]));
+    let synth_start = std::time::Instant::now();
     let run = run_agent(
         lead2.as_ref(),
         prompts::LEAD_SYNTHESIZE,
@@ -322,6 +363,14 @@ async fn delegated_candidates(
         &prep.budget(4, cfg.budget.agent_max_seconds),
     )
     .await?;
+    let synth_outcome = match run.stopped {
+        crate::agent::StopReason::Terminal => "ok",
+        crate::agent::StopReason::TimeBudget => "timeout",
+        crate::agent::StopReason::ToolBudget => "tool_budget",
+        _ => "error",
+    };
+    prep.timing
+        .record("synthesis", "lead", synth_start, prep.wall, synth_outcome);
     let mut candidates: Vec<Finding> = vec![];
     match run.stopped {
         crate::agent::StopReason::Terminal => {
@@ -506,6 +555,7 @@ vera: {}
             report_note: None,
             deadline: Instant::now() + Duration::from_secs(60),
             wall: Instant::now(),
+            timing: crate::timing::Recorder::default(),
         };
         if skipped > 0 {
             prep.partial_reasons

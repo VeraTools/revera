@@ -38,6 +38,7 @@ pub(crate) async fn investigate(
     )?;
     let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
     let terminal: ToolSpec = terminal_submit_findings_spec();
+    let lane_start = std::time::Instant::now();
     let run = run_agent(
         investigator.as_ref(),
         prompts::INVESTIGATOR,
@@ -51,7 +52,7 @@ pub(crate) async fn investigate(
     )
     .await?;
     let mut candidates: Vec<Finding> = vec![];
-    match run.stopped {
+    let outcome = match run.stopped {
         crate::agent::StopReason::Terminal => {
             if let Some(call) = &run.final_call {
                 tracing::debug!(args = %call.arguments, "investigator terminal call");
@@ -65,11 +66,29 @@ pub(crate) async fn investigate(
                     c.sources = vec!["investigator".into()];
                 }
             }
+            if candidates.is_empty() {
+                "ok"
+            } else {
+                "ok:candidates"
+            }
+        }
+        crate::agent::StopReason::TimeBudget => {
+            prep.partial_reasons
+                .push("investigator stopped early: TimeBudget".into());
+            "timeout"
+        }
+        crate::agent::StopReason::ToolBudget => {
+            prep.partial_reasons
+                .push("investigator stopped early: ToolBudget".into());
+            "tool_budget"
         }
         other => {
             prep.partial_reasons
                 .push(format!("investigator stopped early: {other:?}"));
+            "error"
         }
-    }
+    };
+    prep.timing
+        .record("lane", "investigator", lane_start, prep.wall, outcome);
     Ok(candidates)
 }
