@@ -18,13 +18,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      # static musl binary runs on older glibc hosts (e.g. Ubuntu 22.04)
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Package
         run: |
-          pkg=revera-x86_64-unknown-linux-gnu.tar.gz
-          tar -czf "$pkg" -C target/release revera
+          pkg=revera-x86_64-unknown-linux-musl.tar.gz
+          tar -czf "$pkg" -C target/x86_64-unknown-linux-musl/release revera
           sha256sum "$pkg" > "$pkg.sha256"
 
       - name: Verify packaged artifact
@@ -39,8 +45,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            revera-x86_64-unknown-linux-gnu.tar.gz
-            revera-x86_64-unknown-linux-gnu.tar.gz.sha256
+            revera-x86_64-unknown-linux-musl.tar.gz
+            revera-x86_64-unknown-linux-musl.tar.gz.sha256
 
       - name: Move major tag
         run: |
