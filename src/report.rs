@@ -2,6 +2,7 @@ use crate::findings::{Finding, ValidationStatus};
 use crate::pipeline::anchor::is_publishable;
 use crate::provider::RunLedger;
 use crate::state::ReviewState;
+use crate::timing::Timing;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +89,8 @@ pub struct RunReport {
     /// Things the run could not check (worker gaps/blocked items).
     #[serde(default)]
     pub coverage_gaps: Vec<String>,
+    #[serde(default)]
+    pub timing: Timing,
 }
 
 pub fn surfaced_ids(report: &RunReport) -> Vec<String> {
@@ -150,6 +153,7 @@ pub fn summary_markdown(
     routes: &[String],
     publish_uncertain: bool,
     note: Option<&str>,
+    timing: Option<&Timing>,
 ) -> String {
     let mut s = String::from("## Revera review\n\n");
     let accepted: Vec<&Finding> = findings
@@ -194,6 +198,9 @@ pub fn summary_markdown(
         s.push_str(&format!("\n_{n}_\n"));
     }
     s.push_str(&format!("\nStatus: {:?}\n", status).to_lowercase());
+    if let Some(t) = timing {
+        s.push_str(&timing_line(t));
+    }
     let routes = {
         let mut r = routes.to_vec();
         r.sort();
@@ -204,6 +211,56 @@ pub fn summary_markdown(
         "\n<sub>revera · strategy {strategy} · models: {routes}</sub>\n"
     ));
     s
+}
+
+/// "62s" for >=10s, "6.2s" below.
+fn fmt_secs(ms: u64) -> String {
+    let s = ms as f64 / 1000.0;
+    if s >= 10.0 {
+        format!("{s:.0}s")
+    } else {
+        format!("{s:.1}s")
+    }
+}
+
+/// Italic summary line of wall-clock phases, e.g.
+/// `_Timing: total 62s · index 4s · lanes 30s · validation 20s (p50 6s, first validated at 41s) · 1 phase incomplete_`
+pub fn timing_line(t: &Timing) -> String {
+    let mut seg = vec![format!("total {}", fmt_secs(t.total_ms))];
+    if let Some(i) = t.vera_index_ms {
+        seg.push(format!("index {}", fmt_secs(i)));
+    }
+    if let Some(l) = t.lanes_ms {
+        seg.push(format!("lanes {}", fmt_secs(l)));
+    }
+    if let Some(v) = t.validate_ms {
+        let mut inner: Vec<String> = vec![];
+        if let Some(p) = t.validate_p50_ms {
+            inner.push(format!("p50 {}", fmt_secs(p)));
+        }
+        if let Some(p) = t.validate_p95_ms {
+            inner.push(format!("p95 {}", fmt_secs(p)));
+        }
+        if let Some(f) = t.first_candidate_ms {
+            inner.push(format!("first candidate at {}", fmt_secs(f)));
+        }
+        if let Some(f) = t.first_validated_ms {
+            inner.push(format!("first validated at {}", fmt_secs(f)));
+        }
+        if inner.is_empty() {
+            seg.push(format!("validation {}", fmt_secs(v)));
+        } else {
+            seg.push(format!("validation {} ({})", fmt_secs(v), inner.join(", ")));
+        }
+    } else {
+        if let Some(f) = t.first_candidate_ms {
+            seg.push(format!("first candidate at {}", fmt_secs(f)));
+        }
+    }
+    if t.incomplete_phases > 0 {
+        seg.push(format!("{} phase(s) incomplete", t.incomplete_phases));
+    }
+    format!("\n_Timing: {}_\n", seg.join(" \u{b7} "))
 }
 
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {

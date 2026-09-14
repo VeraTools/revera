@@ -107,6 +107,7 @@ fn surfaced_ids_only_returns_accepted_findings() {
         },
         publication: Default::default(),
         coverage_gaps: vec![],
+        timing: Default::default(),
     };
     assert_eq!(surfaced_ids(&report), vec![accepted.id()]);
 }

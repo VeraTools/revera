@@ -36,6 +36,7 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
         },
         publication: Default::default(),
         coverage_gaps: vec![],
+        timing: Default::default(),
     }
 }
 
