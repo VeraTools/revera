@@ -1,0 +1,4 @@
+{"defects": [{"file": "crates/printer/src/util.rs", "line_min": 535, "line_max": 552,
+  "keywords": ["crlf", "\\r", "carriage return", "is_crlf", "--crlf", "\\r\\n"],
+  "cross_file_keywords": ["searcher", "line_terminator", "lineterminator", "--crlf", "standard.rs", "replace", "flags", "core"]}],
+ "clean": false}

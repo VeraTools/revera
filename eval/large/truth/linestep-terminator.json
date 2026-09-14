@@ -1,0 +1,4 @@
+{"defects": [{"file": "crates/searcher/src/lines.rs", "line_min": 68, "line_max": 105,
+  "keywords": ["terminator", "caller", "core.rs", "standard.rs", "glue.rs", "line number", "contiguous", "count", "context", "empty range", "sink"],
+  "cross_file_keywords": ["core.rs", "glue.rs", "standard.rs", "caller", "searcher/core", "printer", "sink", "lines::count", "next_match"]}],
+ "clean": false}
