@@ -26,6 +26,8 @@ jobs:
       - name: fixture run (needs Vera + OpenRouter)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
           VERA_HOME: ${{ runner.temp }}/.vera-revera
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
