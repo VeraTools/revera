@@ -44,18 +44,34 @@ pub fn make_client(
             ledger,
             max_requests,
             retries,
+            role,
         )?)),
         Protocol::OpenaiResponses => Ok(Arc::new(HttpClient {
             adapter: OpenAiResponsesAdapter::from_route(route.clone())?,
-            transport: crate::provider::http::HttpTransport::new(ledger, max_requests, retries)?,
+            transport: crate::provider::http::HttpTransport::new(
+                ledger,
+                max_requests,
+                retries,
+                role,
+            )?,
         })),
         Protocol::Anthropic => Ok(Arc::new(HttpClient {
             adapter: AnthropicAdapter::from_route(route.clone())?,
-            transport: crate::provider::http::HttpTransport::new(ledger, max_requests, retries)?,
+            transport: crate::provider::http::HttpTransport::new(
+                ledger,
+                max_requests,
+                retries,
+                role,
+            )?,
         })),
         Protocol::Gemini => Ok(Arc::new(HttpClient {
             adapter: GeminiAdapter::from_route(route.clone())?,
-            transport: crate::provider::http::HttpTransport::new(ledger, max_requests, retries)?,
+            transport: crate::provider::http::HttpTransport::new(
+                ledger,
+                max_requests,
+                retries,
+                role,
+            )?,
         })),
         Protocol::Scripted => {
             let p = route.script.clone().ok_or_else(|| {

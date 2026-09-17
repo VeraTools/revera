@@ -160,8 +160,11 @@ impl ModelClient for ScriptedClient {
             }
         };
         self.ledger.record(LedgerEntry {
+            role: self.role.clone(),
             route: self.route_label(),
             model: "scripted".into(),
+            requested_reasoning: "none".into(),
+            effective_reasoning: "none".into(),
             latency_ms: 0,
             ..Default::default()
         });

@@ -1,5 +1,5 @@
 use super::{ChatMessage, Completion, LedgerEntry, LedgerHandle, ProviderError, ToolSpec, Usage};
-use crate::config::ModelRoute;
+use crate::config::{ModelRoute, ReasoningEffort};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::sync::OnceLock;
@@ -34,6 +34,9 @@ pub struct AttemptState {
     pub tokens_key: String,
     pub drop_temperature: bool,
     pub drop_reasoning: bool,
+    /// After a 400 that rejected the requested effort, cap subsequent
+    /// attempts to this level before falling back to dropping reasoning.
+    pub reasoning_cap: Option<ReasoningEffort>,
 }
 
 impl Default for AttemptState {
@@ -42,7 +45,16 @@ impl Default for AttemptState {
             tokens_key: "max_tokens".into(),
             drop_temperature: false,
             drop_reasoning: false,
+            reasoning_cap: None,
         }
+    }
+}
+
+/// Requested effort after applying `attempt.reasoning_cap`.
+pub fn capped_effort(requested: ReasoningEffort, attempt: &AttemptState) -> ReasoningEffort {
+    match attempt.reasoning_cap {
+        Some(cap) if requested > cap => cap,
+        _ => requested,
     }
 }
 
@@ -67,11 +79,21 @@ pub fn detect_400_fallback(
     body: &str,
     attempt: &mut AttemptState,
     reason_keys: &[&str],
+    requested_effort: ReasoningEffort,
 ) -> Option<Parse> {
     if status != 400 {
         return None;
     }
     if !attempt.drop_reasoning && reason_keys.iter().any(|k| body.contains(k)) {
+        // effort step-down: a provider that rejects xhigh/max often still
+        // accepts high; only fall through to dropping reasoning when we're
+        // already capped or never asked above high.
+        if attempt.reasoning_cap.is_none() && requested_effort > ReasoningEffort::High {
+            attempt.reasoning_cap = Some(ReasoningEffort::High);
+            return Some(Parse::RetrySameSlot(
+                "400: retrying with reasoning effort high".into(),
+            ));
+        }
         attempt.drop_reasoning = true;
         return Some(Parse::RetrySameSlot(
             "400: retrying without reasoning".into(),
@@ -98,6 +120,11 @@ pub struct HttpRequestSpec {
 pub trait ProtocolAdapter: Send + Sync {
     fn label(&self) -> String;
     fn model(&self) -> &str;
+    /// Reasoning effort the route was configured with ("none" when off).
+    fn requested_reasoning(&self) -> String;
+    /// The effort `build()` would emit for this attempt state ("none" when
+    /// reasoning is disabled or dropped).
+    fn effective_reasoning(&self, attempt: &AttemptState) -> String;
     fn build(
         &self,
         messages: &[ChatMessage],
@@ -109,6 +136,13 @@ pub trait ProtocolAdapter: Send + Sync {
 
 const MAX_RETRY_AFTER_SECS: f64 = 60.0;
 
+/// Per-request ledger identity, captured once per `send()` call.
+struct Telemetry {
+    label: String,
+    model: String,
+    requested: String,
+}
+
 /// Shared attempt loop: ledger reservation per attempt, 429/5xx + transient
 /// retry with Retry-After + exponential backoff + jitter, ledger entries for
 /// every attempt (success and failure), latency accounting.
@@ -117,6 +151,8 @@ pub struct HttpTransport {
     pub ledger: LedgerHandle,
     pub max_requests: u32,
     pub retries: u32,
+    /// Pipeline role recorded on every ledger entry.
+    pub role: String,
 }
 
 impl HttpTransport {
@@ -124,6 +160,7 @@ impl HttpTransport {
         ledger: LedgerHandle,
         max_requests: u32,
         retries: u32,
+        role: &str,
     ) -> Result<Self, ProviderError> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("revera/", env!("CARGO_PKG_VERSION")))
@@ -135,14 +172,17 @@ impl HttpTransport {
             ledger,
             max_requests,
             retries,
+            role: role.to_string(),
         })
     }
 
-    fn record(&self, adapter_label: &str, model: &str, e: LedgerEntry) {
-        let _ = (adapter_label, model);
+    fn record(&self, tel: &Telemetry, effective_reasoning: &str, e: LedgerEntry) {
         self.ledger.record(LedgerEntry {
-            route: adapter_label.to_string(),
-            model: model.to_string(),
+            role: self.role.clone(),
+            route: tel.label.clone(),
+            model: tel.model.clone(),
+            requested_reasoning: tel.requested.clone(),
+            effective_reasoning: effective_reasoning.to_string(),
             ..e
         });
     }
@@ -174,8 +214,11 @@ impl HttpTransport {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
-        let label = adapter.label();
-        let model = adapter.model();
+        let tel = Telemetry {
+            label: adapter.label(),
+            model: adapter.model().to_string(),
+            requested: adapter.requested_reasoning(),
+        };
         let mut attempt = AttemptState::default();
         let mut attempts = 0u32;
         let mut retries_used = 0u32;
@@ -192,8 +235,8 @@ impl HttpTransport {
                 Err(e) => {
                     self.ledger.release();
                     self.record(
-                        &label,
-                        model,
+                        &tel,
+                        &adapter.effective_reasoning(&attempt),
                         LedgerEntry {
                             latency_ms: start.elapsed().as_millis() as u64,
                             retries: retries_used,
@@ -204,6 +247,9 @@ impl HttpTransport {
                     return Err(e);
                 }
             };
+            // effort actually sent on this attempt; captured right after
+            // build() so later parse-time mutations don't rewrite history
+            let effective = adapter.effective_reasoning(&attempt);
             let mut req = self.http.post(&spec.url).json(&spec.body);
             for (k, v) in &spec.headers {
                 req = req.header(k.as_str(), v.as_str());
@@ -221,8 +267,8 @@ impl HttpTransport {
                     if status == 429 || status >= 500 {
                         if attempts <= self.retries {
                             self.record(
-                                &label,
-                                model,
+                                &tel,
+                                &effective,
                                 LedgerEntry {
                                     latency_ms: start.elapsed().as_millis() as u64,
                                     error: Some(format!("HTTP {status} (will retry)")),
@@ -240,8 +286,8 @@ impl HttpTransport {
                             crate::text::excerpt_bytes(&text, 400)
                         ));
                         self.record(
-                            &label,
-                            model,
+                            &tel,
+                            &effective,
                             LedgerEntry {
                                 latency_ms: start.elapsed().as_millis() as u64,
                                 retries: retries_used,
@@ -255,8 +301,8 @@ impl HttpTransport {
                         Parse::Ok(message, usage) => {
                             let latency = start.elapsed().as_millis() as u64;
                             self.record(
-                                &label,
-                                model,
+                                &tel,
+                                &effective,
                                 LedgerEntry {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
@@ -268,8 +314,8 @@ impl HttpTransport {
                                 },
                             );
                             tracing::debug!(
-                                route = label,
-                                model,
+                                route = tel.label,
+                                model = tel.model,
                                 prompt_tokens = usage.prompt_tokens,
                                 latency_ms = latency,
                                 "model request"
@@ -277,14 +323,14 @@ impl HttpTransport {
                             return Ok(Completion {
                                 message,
                                 usage,
-                                model: model.to_string(),
+                                model: tel.model.clone(),
                                 latency_ms: latency,
                             });
                         }
                         Parse::RetrySameSlot(reason) => {
                             self.record(
-                                &label,
-                                model,
+                                &tel,
+                                &effective,
                                 LedgerEntry {
                                     latency_ms: start.elapsed().as_millis() as u64,
                                     error: Some(reason),
@@ -295,8 +341,8 @@ impl HttpTransport {
                         }
                         Parse::Err(e) => {
                             self.record(
-                                &label,
-                                model,
+                                &tel,
+                                &effective,
                                 LedgerEntry {
                                     latency_ms: start.elapsed().as_millis() as u64,
                                     retries: retries_used,
@@ -312,8 +358,8 @@ impl HttpTransport {
                     let transient = e.is_timeout() || e.is_connect();
                     if transient && attempts <= self.retries {
                         self.record(
-                            &label,
-                            model,
+                            &tel,
+                            &effective,
                             LedgerEntry {
                                 latency_ms: start.elapsed().as_millis() as u64,
                                 error: Some(format!("{e} (will retry)")),
@@ -326,8 +372,8 @@ impl HttpTransport {
                     }
                     let err = ProviderError::Http(e.to_string());
                     self.record(
-                        &label,
-                        model,
+                        &tel,
+                        &effective,
                         LedgerEntry {
                             latency_ms: start.elapsed().as_millis() as u64,
                             retries: retries_used,

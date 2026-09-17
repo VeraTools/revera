@@ -178,3 +178,47 @@ vera: {backend: local}
     let c = Config::load(f.path()).unwrap();
     assert!(c.models.investigator.session_header.is_none());
 }
+
+#[test]
+fn is_opencode_host_matches_exact_and_subdomain() {
+    use revera::config::is_opencode_host;
+    assert!(is_opencode_host("https://opencode.ai/zen/go/v1"));
+    assert!(is_opencode_host("https://opencode.ai:443/zen/go/v1"));
+    assert!(is_opencode_host("https://OpenCode.AI/x"));
+    assert!(is_opencode_host("https://api.opencode.ai/v1"));
+    assert!(!is_opencode_host("https://evilopencode.ai/v1"));
+    assert!(!is_opencode_host("https://opencode.ai.evil.com/v1"));
+    assert!(!is_opencode_host("https://relay.fast/v1"));
+    assert!(!is_opencode_host("not a url"));
+}
+
+#[test]
+fn session_header_must_be_a_valid_http_header_name() {
+    std::env::set_var("REVERA_TEST_KEY", "sk-test");
+    let yaml = |header: &str| {
+        format!(
+            r#"
+review: {{strategy: baseline}}
+models:
+  investigator: {{protocol: scripted, script: /tmp/s, model: m}}
+  validator:
+    protocol: openai-chat
+    base_url: http://x
+    api_key_env: REVERA_TEST_KEY
+    model: m
+    session_header: "{header}"
+vera: {{backend: local}}
+"#
+        )
+    };
+    for bad in ["", "bad header"] {
+        let f = write_tmp(&yaml(bad));
+        let e = Config::load(f.path()).unwrap_err();
+        assert!(
+            e.to_string().contains("models.validator: session_header"),
+            "{e}"
+        );
+    }
+    let f = write_tmp(&yaml("x-ok"));
+    assert!(Config::load(f.path()).is_ok());
+}
