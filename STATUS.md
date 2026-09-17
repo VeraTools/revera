@@ -53,7 +53,14 @@
   `revera --version`); tags `vX.Y.Z` move `vX`.
 - Per-route `reasoning` levels (default `medium`) across all four HTTP
   adapters; `provider_state` echoes reasoning/thinking items verbatim;
-  400s mentioning the reasoning field drop it and retry on the same slot.
+  400s mentioning the reasoning field step `xhigh`/`max` down to `high`,
+  then drop it, retrying on the same slot; ledger entries carry role and
+  requested vs effective effort (`role=route:model@req[->eff]` in the footer).
+- Timing: validator phases record `queue_ms` (semaphore wait) separately
+  from execution; `skipped` phases stay visible but are excluded from
+  spans and p50/p95 (`skipped_phases` counter); the publish phase measures
+  inline-review publication and the summary timing line is refreshed before
+  the comment is posted, so JSON, stdout and GitHub agree.
 - `action.yml` composite action (vera+revera install with sha256 verify,
   .vera cache restore/save, fail-on), release workflow (tag `v*` → verify
   packaged artifact → release → move `vX`), self-review dogfood workflow

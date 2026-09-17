@@ -64,8 +64,11 @@ Each route independently picks a protocol:
 Every route defaults to `reasoning: medium`; set `reasoning: none` (or a
 long form `{effort, budget_tokens, field}`) to tune or disable. Reasoning
 items/thinking blocks/thoughtSignatures are echoed back verbatim across
-turns via `provider_state`; a 400 mentioning the reasoning field drops it
-and retries once on the same ledger slot.
+turns via `provider_state`. The configured effort is sent as-is (no
+model-name clamp); a 400 mentioning the reasoning field first steps
+`xhigh`/`max` down to `high`, then drops reasoning, each on the same ledger
+slot. Every ledger entry records the role plus requested and effective
+effort; the summary footer renders them as `role=route:model@req[->eff]`.
 
 All HTTP protocols share one transport (retries, Retry-After, request
 budget, ledger) with a per-protocol wire adapter, so routes can mix — e.g.

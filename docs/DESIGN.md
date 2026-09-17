@@ -119,8 +119,13 @@ Every run records wall-clock `PhaseTiming` entries into the report's
 `total_ms`, `vera_index_ms`, `first_candidate_ms` (end of the first lane
 that produced candidates), `first_validated_ms` (end of the first accepted
 validate), `lanes_ms`/`validate_ms` (phase spans), `validate_p50_ms`/
-`validate_p95_ms` (nearest-rank), and `incomplete_phases`. The summary
-markdown footer carries a one-line rendering (`_Timing: total … · lanes …_`).
+`validate_p95_ms` (nearest-rank), `incomplete_phases` and `skipped_phases`.
+Validate phases start when the semaphore permit is acquired and carry the
+wait in `queue_ms`; `skipped` phases are excluded from spans and
+percentiles. The `publish` phase measures inline-review publication only
+(the summary comment cannot time its own upsert) and the footer's one-line
+rendering (`_Timing: total … · lanes …_`) is refreshed before the comment
+is posted so JSON, stdout and GitHub agree.
 
 ## Vera integration
 
