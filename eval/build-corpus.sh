@@ -4,9 +4,9 @@
 # dates so SHAs are stable. Ground truth lives in <name>/truth.json.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/corpus" && pwd)"
-rm -rf "$ROOT"
-mkdir -p "$ROOT"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$HERE/corpus"
+ROOT="$(cd "$HERE/corpus" && pwd)"
 
 export GIT_AUTHOR_NAME="eval" GIT_AUTHOR_EMAIL="eval@example.com"
 export GIT_COMMITTER_NAME="eval" GIT_COMMITTER_EMAIL="eval@example.com"
@@ -14,6 +14,7 @@ export GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:
 
 repo() { # repo <name>; then cd-style ops
     local d="$ROOT/$1"
+    rm -rf "$d"
     mkdir -p "$d"
     git -C "$d" init -q -b main
     echo "$d"
