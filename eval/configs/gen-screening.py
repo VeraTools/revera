@@ -3,8 +3,9 @@
 
 All configs share the same validator (glm-5.3-flash @ high via relay.fast)
 so the comparison isolates the investigator/scout side. Reasoning `max` is
-passed through only for gpt-5* models; other openai-chat models clamp to
-`high` (see src/provider/openai_chat.rs), which is intentional here.
+passed through unchanged to every route; on a provider 400 the adapter
+steps down to `high` (then drops reasoning), and the ledger records
+requested vs effective effort per role.
 """
 import os
 
