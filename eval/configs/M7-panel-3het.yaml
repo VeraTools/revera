@@ -1,0 +1,73 @@
+review:
+  strategy: panel
+  publish: dry-run
+  min_severity: low
+  concurrency: 3
+budget:
+  run_max_seconds: 600
+  agent_max_seconds: 300
+  agent_max_tool_calls: 30
+  run_max_requests: 120
+panel:
+  focuses:
+    - general
+    - cross-file
+    - data
+  scout_max_tool_calls: 30
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://relay.fast/v1
+    api_key_env: RELAY_FAST_API_KEY
+    model: glm-5.3
+    max_output_tokens: 6000
+    temperature: 0.2
+    reasoning: max
+  validator:
+    protocol: openai-chat
+    base_url: https://relay.fast/v1
+    api_key_env: RELAY_FAST_API_KEY
+    model: glm-5.3-flash
+    max_output_tokens: 4000
+    temperature: 0.2
+    reasoning: high
+  scouts:
+    - name: glm
+      focus: general
+      protocol: openai-chat
+      base_url: https://relay.fast/v1
+      api_key_env: RELAY_FAST_API_KEY
+      model: glm-5.3
+      max_output_tokens: 6000
+      temperature: 0.2
+      reasoning: max
+    - name: gemini
+      focus: cross-file
+      protocol: openai-chat
+      base_url: https://relay.fast/v1
+      api_key_env: RELAY_FAST_API_KEY
+      model: gemini-3.8-flash
+      max_output_tokens: 6000
+      temperature: 0.2
+      reasoning: high
+    - name: deepseek
+      focus: data
+      protocol: openai-chat
+      base_url: https://relay.fast/v1
+      api_key_env: RELAY_FAST_API_KEY
+      model: deepseek-v4.1-flash
+      max_output_tokens: 6000
+      temperature: 0.2
+      reasoning: high
+vera:
+  executable: vera
+  version: "1.4.1"
+  backend: api
+  embedding:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-embedding-8b
+    api_key_env: OPENROUTER_API_KEY
+  reranker:
+    base_url: https://openrouter.ai/api/v1
+    model: qwen/qwen3-reranker-8b
+    api_key_env: OPENROUTER_API_KEY
