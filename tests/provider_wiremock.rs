@@ -50,7 +50,7 @@ fn route(url: &str) -> ModelRoute {
 }
 
 fn client(url: &str) -> OpenAiChatClient {
-    OpenAiChatClient::new(route(url), LedgerHandle::new(), 100, 3).unwrap()
+    OpenAiChatClient::new(route(url), LedgerHandle::new(), 100, 3, "test").unwrap()
 }
 
 fn ok_body() -> serde_json::Value {
@@ -220,7 +220,7 @@ async fn run_budget_blocks_second_attempt_on_retry() {
         .expect(1)
         .mount(&server)
         .await;
-    let c = OpenAiChatClient::new(route(&server.uri()), LedgerHandle::new(), 1, 3).unwrap();
+    let c = OpenAiChatClient::new(route(&server.uri()), LedgerHandle::new(), 1, 3, "test").unwrap();
     let r = c.complete(&[ChatMessage::user("hi")], &[]).await;
     assert!(matches!(r, Err(ProviderError::BudgetExhausted)), "{r:?}");
     server.verify().await;
@@ -315,7 +315,7 @@ async fn openai_responses_request_shape() {
             "m-resp",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     let (msgs, tools) = convo();
     let r = c.complete(&msgs, &tools).await.unwrap();
@@ -345,7 +345,7 @@ async fn openai_responses_parses_function_call() {
             "m",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.tool_calls[0].id, "fc_9");
@@ -381,7 +381,7 @@ async fn openai_responses_retries_429() {
             "m",
         ))
         .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.content.as_deref(), Some("ok"));
@@ -438,7 +438,7 @@ async fn anthropic_request_shape_and_tool_result_merge() {
             "claude-x",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     let (.., tools) = convo();
     let r = c.complete(&msgs, &tools).await.unwrap();
@@ -468,7 +468,7 @@ async fn anthropic_parses_tool_use() {
             "claude-x",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.tool_calls[0].name, "vera_grep");
@@ -496,7 +496,7 @@ async fn anthropic_retries_429() {
     let c = HttpClient {
         adapter: AnthropicAdapter::from_route(route_for(&server.uri(), Protocol::Anthropic, "m"))
             .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(ledger.request_count(), 2);
@@ -539,7 +539,7 @@ async fn gemini_request_shape_and_schema_strip() {
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(route_for(&server.uri(), Protocol::Gemini, "gem-x"))
             .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     // schema includes a key Gemini rejects; stripping must remove it
     let (mut msgs, mut tools) = convo();
@@ -569,7 +569,7 @@ async fn gemini_parses_function_call_synth_id() {
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(route_for(&server.uri(), Protocol::Gemini, "gem-x"))
             .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.tool_calls[0].id, "vera_references-0");
@@ -597,7 +597,7 @@ async fn gemini_retries_429() {
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(route_for(&server.uri(), Protocol::Gemini, "gem-x"))
             .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(ledger.request_count(), 2);
@@ -644,6 +644,7 @@ async fn openai_chat_reasoning_effort_high_emitted() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
@@ -669,6 +670,7 @@ async fn openai_chat_reasoning_openrouter_shape() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
@@ -696,6 +698,7 @@ async fn openai_chat_reasoning_budget_becomes_max_tokens() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
@@ -724,6 +727,7 @@ async fn openai_chat_reasoning_none_emits_nothing() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
@@ -761,6 +765,7 @@ async fn openai_chat_reasoning_400_retries_without() {
         ledger.clone(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
@@ -774,10 +779,10 @@ async fn openai_chat_reasoning_400_retries_without() {
 }
 
 #[tokio::test]
-async fn openai_chat_xhigh_clamps_to_high_for_non_gpt5() {
+async fn openai_chat_xhigh_passes_through_for_non_gpt5() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .and(body_partial_json(json!({"reasoning_effort": "xhigh"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
         .expect(1)
         .mount(&server)
@@ -792,6 +797,7 @@ async fn openai_chat_xhigh_clamps_to_high_for_non_gpt5() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
@@ -817,6 +823,7 @@ async fn openai_chat_max_passes_through_on_gpt5() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
@@ -824,10 +831,10 @@ async fn openai_chat_max_passes_through_on_gpt5() {
 }
 
 #[tokio::test]
-async fn openai_chat_max_clamps_to_high_for_non_gpt5() {
+async fn openai_chat_max_passes_through_for_non_gpt5() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .and(body_partial_json(json!({"reasoning_effort": "max"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
         .expect(1)
         .mount(&server)
@@ -842,10 +849,105 @@ async fn openai_chat_max_clamps_to_high_for_non_gpt5() {
         LedgerHandle::new(),
         10,
         3,
+        "test",
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_chat_400_steps_effort_down_to_high() {
+    let server = MockServer::start().await;
+    // first attempt: requested "max" verbatim -> 400 mentions reasoning_effort
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "max"})))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // same-slot retry: capped at "high" -> success
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "glm-5.3",
+            spec(ReasoningEffort::Max, None, ReasoningField::Openai),
+        ),
+        ledger.clone(),
+        10,
+        3,
+        "test",
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let entries = &ledger.0.lock().unwrap().entries;
+    let last = entries.last().unwrap();
+    assert_eq!(last.requested_reasoning, "max");
+    assert_eq!(last.effective_reasoning, "high");
+    assert_eq!(last.role, "test");
+}
+
+#[tokio::test]
+async fn openai_chat_second_400_drops_reasoning() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "max"})))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // capped retry also rejected -> next retry carries no reasoning field
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning_effort": "high"})))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = OpenAiChatClient::new(
+        route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiChat,
+            "glm-5.3",
+            spec(ReasoningEffort::Max, None, ReasoningField::Openai),
+        ),
+        ledger.clone(),
+        10,
+        3,
+        "test",
+    )
+    .unwrap();
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 3);
+    let body3: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert!(body3.get("reasoning_effort").is_none(), "{body3}");
+    assert!(body3.get("reasoning").is_none(), "{body3}");
+    let entries = &ledger.0.lock().unwrap().entries;
+    let last = entries.last().unwrap();
+    assert_eq!(last.requested_reasoning, "max");
+    assert_eq!(last.effective_reasoning, "none");
 }
 
 #[tokio::test]
@@ -857,7 +959,7 @@ async fn session_header_and_user_agent_sent() {
         .await;
     let mut rt = route(&server.uri());
     rt.session_header = Some("x-opencode-session".into());
-    let c = OpenAiChatClient::new(rt, LedgerHandle::new(), 10, 3).unwrap();
+    let c = OpenAiChatClient::new(rt, LedgerHandle::new(), 10, 3, "test").unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 1);
@@ -886,7 +988,7 @@ fn resp_adapter(url: &str, r: Reasoning) -> HttpClient<OpenAiResponsesAdapter> {
             r,
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     }
 }
 
@@ -935,17 +1037,17 @@ async fn responses_max_passes_through_on_gpt5() {
             spec(ReasoningEffort::Max, None, ReasoningField::Auto),
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
 }
 
 #[tokio::test]
-async fn responses_max_clamps_to_high_for_non_gpt5() {
+async fn responses_max_passes_through_for_non_gpt5() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"reasoning": {"effort": "high"}})))
+        .and(body_partial_json(json!({"reasoning": {"effort": "max"}})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
             "usage": {"input_tokens": 1, "output_tokens": 1}
@@ -1016,7 +1118,7 @@ async fn responses_reasoning_400_retries_without() {
             spec(ReasoningEffort::High, None, ReasoningField::Auto),
         ))
         .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -1085,7 +1187,7 @@ fn anth_adapter(url: &str, r: Reasoning, max_out: u32) -> HttpClient<AnthropicAd
     rt.max_output_tokens = max_out;
     HttpClient {
         adapter: AnthropicAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     }
 }
 
@@ -1199,7 +1301,7 @@ async fn anthropic_thinking_400_retries_without() {
     rt.max_output_tokens = 20000;
     let c = HttpClient {
         adapter: AnthropicAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -1266,7 +1368,7 @@ fn gem_adapter(url: &str, model: &str, r: Reasoning) -> HttpClient<GeminiAdapter
     HttpClient {
         adapter: GeminiAdapter::from_route(route_reasoning(url, Protocol::Gemini, model, r))
             .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     }
 }
 
@@ -1296,7 +1398,7 @@ async fn gemini_thinking_budget_emitted() {
         rt.max_output_tokens = 20000;
         let c = HttpClient {
             adapter: GeminiAdapter::from_route(rt).unwrap(),
-            transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+            transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
         };
         c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     }
@@ -1399,7 +1501,7 @@ async fn gemini_thinking_400_retries_without() {
     rt.max_output_tokens = 20000;
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -1488,7 +1590,7 @@ async fn gemini_thinking_budget_reconciles_max_output() {
     rt.max_output_tokens = 4000;
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3).unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -1692,7 +1794,7 @@ async fn ledger_entry_records_reasoning_tokens() {
             spec(ReasoningEffort::High, None, ReasoningField::Auto),
         ))
         .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3).unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;

@@ -1,6 +1,6 @@
 use super::http::{
-    detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec, HttpTransport,
-    Parse, ProtocolAdapter,
+    capped_effort, detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec,
+    HttpTransport, Parse, ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::{ModelRoute, ReasoningEffort};
@@ -32,6 +32,11 @@ impl OpenAiResponsesAdapter {
             base,
         })
     }
+
+    /// Effort `build()` emits for this attempt state.
+    fn effort(&self, attempt: &AttemptState) -> ReasoningEffort {
+        capped_effort(self.route.reasoning.effort(), attempt)
+    }
 }
 
 impl HttpClient<OpenAiResponsesAdapter> {
@@ -40,10 +45,11 @@ impl HttpClient<OpenAiResponsesAdapter> {
         ledger: LedgerHandle,
         max_requests: u32,
         retries: u32,
+        role: &str,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
             adapter: OpenAiResponsesAdapter::from_route(route)?,
-            transport: HttpTransport::new(ledger, max_requests, retries)?,
+            transport: HttpTransport::new(ledger, max_requests, retries, role)?,
         })
     }
 }
@@ -109,6 +115,22 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         &self.route.model
     }
 
+    fn requested_reasoning(&self) -> String {
+        if self.route.reasoning.enabled() {
+            self.route.reasoning.effort().as_str().to_string()
+        } else {
+            "none".into()
+        }
+    }
+
+    fn effective_reasoning(&self, attempt: &AttemptState) -> String {
+        if !self.route.reasoning.enabled() || attempt.drop_reasoning {
+            "none".into()
+        } else {
+            self.effort(attempt).as_str().to_string()
+        }
+    }
+
     fn build(
         &self,
         messages: &[ChatMessage],
@@ -144,13 +166,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         }
         let r = &self.route.reasoning;
         if r.enabled() && !attempt.drop_reasoning {
-            let mut e = r.effort();
-            if matches!(e, ReasoningEffort::Xhigh | ReasoningEffort::Max)
-                && !self.route.model.starts_with("gpt-5")
-            {
-                e = ReasoningEffort::High;
-            }
-            body["reasoning"] = json!({"effort": e.as_str()});
+            body["reasoning"] = json!({"effort": self.effort(attempt).as_str()});
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
         let mut headers = vec![
@@ -170,7 +186,13 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
         // reasoning or temperature 400 -> drop the named field, same slot
-        if let Some(p) = detect_400_fallback(status, body, attempt, &["reasoning"]) {
+        if let Some(p) = detect_400_fallback(
+            status,
+            body,
+            attempt,
+            &["reasoning"],
+            self.route.reasoning.effort(),
+        ) {
             return p;
         }
         if status >= 400 {

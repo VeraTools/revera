@@ -78,7 +78,7 @@ pub struct BudgetConfig {
 }
 
 /// Reasoning effort levels; `none` disables and emits no reasoning fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     None,
@@ -477,20 +477,22 @@ fn expand_route(r: &mut ModelRoute) -> Result<()> {
     for v in r.extra_headers.values_mut() {
         *v = expand_env(v)?;
     }
-    if r.session_header.is_none()
-        && r.base_url.as_deref().is_some_and(|b| {
-            b.split("://")
-                .nth(1)
-                .unwrap_or(b)
-                .split('/')
-                .next()
-                .unwrap_or("")
-                .ends_with("opencode.ai")
-        })
-    {
+    if r.session_header.is_none() && r.base_url.as_deref().is_some_and(is_opencode_host) {
         r.session_header = Some("x-opencode-session".into());
     }
     Ok(())
+}
+
+/// Whether `base_url` points at opencode.ai or a subdomain. Anything that
+/// does not parse as an absolute URL, or has no host, is false.
+pub fn is_opencode_host(base_url: &str) -> bool {
+    let Ok(u) = url::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = u.host_str().map(str::to_lowercase) else {
+        return false;
+    };
+    host == "opencode.ai" || host.ends_with(".opencode.ai")
 }
 
 fn validate_route(name: &str, r: &ModelRoute) -> Result<()> {
@@ -507,6 +509,11 @@ fn validate_route(name: &str, r: &ModelRoute) -> Result<()> {
                 bail!("models.{name}: protocol scripted requires script path");
             }
             return Ok(());
+        }
+    }
+    if let Some(h) = &r.session_header {
+        if h.trim().is_empty() || reqwest::header::HeaderName::from_bytes(h.as_bytes()).is_err() {
+            bail!("models.{name}: session_header {h:?} is not a valid HTTP header name");
         }
     }
     // every HTTP protocol requires api_key_env
@@ -591,58 +598,6 @@ impl Config {
             }
         }
         Ok(())
-    }
-
-    /// Reasoning effort for a ledger route label ("scripted:<role>" or
-    /// "<proto>:<base_url>"), used to render `route:model@effort` in footers.
-    pub fn route_effort(&self, route_label: &str) -> Option<&'static str> {
-        let route_by_role = |role: &str| -> Option<&ModelRoute> {
-            match role {
-                "investigator" => Some(&self.models.investigator),
-                "validator" => Some(&self.models.validator),
-                "lead" => Some(
-                    self.models
-                        .lead
-                        .as_ref()
-                        .unwrap_or(&self.models.investigator),
-                ),
-                "workers" => Some(
-                    self.models
-                        .workers
-                        .as_deref()
-                        .and_then(|ws| ws.first())
-                        .unwrap_or(&self.models.investigator),
-                ),
-                other => self
-                    .models
-                    .scouts
-                    .as_ref()?
-                    .iter()
-                    .find(|s| s.name == other)
-                    .map(|s| &s.route),
-            }
-        };
-        if let Some(role) = route_label.strip_prefix("scripted:") {
-            return route_by_role(role).map(|r| r.reasoning.effort().as_str());
-        }
-        let proto = |p: Protocol| match p {
-            Protocol::OpenaiChat => "openai-chat",
-            Protocol::OpenaiResponses => "openai-responses",
-            Protocol::Anthropic => "anthropic",
-            Protocol::Gemini => "gemini",
-            Protocol::Scripted => "scripted",
-        };
-        std::iter::once(&self.models.investigator)
-            .chain(std::iter::once(&self.models.validator))
-            .chain(self.models.lead.iter())
-            .chain(self.models.workers.iter().flatten())
-            .chain(self.models.scouts.iter().flatten().map(|s| &s.route))
-            .find(|r| {
-                r.base_url
-                    .as_deref()
-                    .is_some_and(|b| route_label == format!("{}:{}", proto(r.protocol), b))
-            })
-            .map(|r| r.reasoning.effort().as_str())
     }
 
     pub fn apply_profile(&mut self, name: &str) -> Result<()> {

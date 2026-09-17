@@ -40,10 +40,11 @@ impl HttpClient<GeminiAdapter> {
         ledger: LedgerHandle,
         max_requests: u32,
         retries: u32,
+        role: &str,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
             adapter: GeminiAdapter::from_route(route)?,
-            transport: HttpTransport::new(ledger, max_requests, retries)?,
+            transport: HttpTransport::new(ledger, max_requests, retries, role)?,
         })
     }
 }
@@ -169,6 +170,14 @@ fn contents(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
     (system, out)
 }
 
+impl GeminiAdapter {
+    /// Effort `build()` maps to a thinking level/budget for this attempt
+    /// state.
+    fn effort(&self, attempt: &AttemptState) -> crate::config::ReasoningEffort {
+        super::http::capped_effort(self.route.reasoning.effort(), attempt)
+    }
+}
+
 impl ProtocolAdapter for GeminiAdapter {
     fn label(&self) -> String {
         format!("gemini:{}", self.base)
@@ -176,6 +185,22 @@ impl ProtocolAdapter for GeminiAdapter {
 
     fn model(&self) -> &str {
         &self.route.model
+    }
+
+    fn requested_reasoning(&self) -> String {
+        if self.route.reasoning.enabled() {
+            self.route.reasoning.effort().as_str().to_string()
+        } else {
+            "none".into()
+        }
+    }
+
+    fn effective_reasoning(&self, attempt: &AttemptState) -> String {
+        if !self.route.reasoning.enabled() || attempt.drop_reasoning {
+            "none".into()
+        } else {
+            self.effort(attempt).as_str().to_string()
+        }
     }
 
     fn build(
@@ -202,7 +227,7 @@ impl ProtocolAdapter for GeminiAdapter {
                 // gemini-3 takes a thinking level, not a token budget;
                 // level models skip the budget/max reconcile
                 if r.enabled() {
-                    let level = match r.effort() {
+                    let level = match self.effort(attempt) {
                         crate::config::ReasoningEffort::Minimal
                         | crate::config::ReasoningEffort::Low => "low",
                         _ => "high",
@@ -213,7 +238,10 @@ impl ProtocolAdapter for GeminiAdapter {
                 // thinking budget counts toward maxOutputTokens — reconcile
                 // like anthropic: clamp to max-1024 headroom, raise the cap
                 // when the budget leaves too little room for the answer
-                let b = r.effective_budget().min(max_out.saturating_sub(1024));
+                let b = r
+                    .budget_tokens()
+                    .unwrap_or_else(|| self.effort(attempt).budget())
+                    .min(max_out.saturating_sub(1024));
                 if max_out <= b + 1024 {
                     effective_max_out = b + max_out;
                 }
@@ -257,7 +285,13 @@ impl ProtocolAdapter for GeminiAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
-        if let Some(p) = detect_400_fallback(status, body, attempt, &["thinking"]) {
+        if let Some(p) = detect_400_fallback(
+            status,
+            body,
+            attempt,
+            &["thinking"],
+            self.route.reasoning.effort(),
+        ) {
             return p;
         }
         if status >= 400 {
