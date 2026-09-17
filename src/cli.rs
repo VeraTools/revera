@@ -331,17 +331,27 @@ async fn review(a: ReviewArgs) -> i32 {
                 .await;
                 let publish_ms = publish_start.elapsed().as_millis() as u64;
                 match publish_result {
+                    // publish() records its own inline-review phase and
+                    // refreshes the summary timing line
                     Ok(_) => {
-                        report
-                            .timing
-                            .append_publish(report.timing.total_ms, publish_ms, "ok");
                         let _ = state.save(&repo);
                     }
                     Err(err) => {
-                        report.timing.append_publish(
-                            report.timing.total_ms,
-                            publish_ms,
-                            &format!("error:{}", crate::text::excerpt_bytes(&err.to_string(), 60)),
+                        // no publish phase recorded yet -> the failure
+                        // happened before step 2 (e.g. head-sha re-check)
+                        if !report.timing.phases.iter().any(|p| p.phase == "publish") {
+                            report.timing.append_publish(
+                                report.timing.total_ms,
+                                publish_ms,
+                                &format!(
+                                    "error:{}",
+                                    crate::text::excerpt_bytes(&err.to_string(), 60)
+                                ),
+                            );
+                        }
+                        report.plan.summary_markdown = crate::report::refresh_timing_line(
+                            &report.plan.summary_markdown,
+                            &report.timing,
                         );
                         eprintln!("error: publish failed: {err:#}");
                         report.status = RunStatus::Partial;
