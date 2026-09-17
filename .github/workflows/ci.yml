@@ -26,6 +26,8 @@ jobs:
       - name: fixture run (needs Vera + a hosted endpoint)
         env:
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+          REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
+          REVERA_INVESTIGATOR_API_KEY: ${{ secrets.REVERA_INVESTIGATOR_API_KEY }}
           VERA_HOME: ${{ runner.temp }}/.vera-revera
         run: |
           if [ -z "$REVERA_EMBEDDING_API_KEY" ]; then

@@ -1,10 +1,6 @@
-# Revera self-review config (dogfood).
-# Topology: Muse Spark only via the investigator endpoint (openai-responses); all other
-# review models via the model gateway; a hosted endpoint is used for Vera
-# embedding/reranker only.
 review:
   strategy: baseline
-  publish: comment
+  publish: dry-run
 models:
   investigator:
     protocol: openai-responses
