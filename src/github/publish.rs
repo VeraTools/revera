@@ -90,6 +90,10 @@ pub async fn publish(
             body: c.body.clone(),
         })
         .collect();
+    // the publish phase measures the inline review publication only; the
+    // summary upsert below is excluded by design (it cannot time itself)
+    let review_start = std::time::Instant::now();
+    let mut review_outcome = "skipped";
     if !comments.is_empty() {
         for c in &comments {
             if let Some(id) = revera_id(&c.body) {
@@ -109,6 +113,7 @@ pub async fn publish(
         match review_result {
             Ok(review_id) => {
                 pubn.review_id = Some(review_id);
+                review_outcome = "ok";
                 // (4) mark posted ids only after a successful post, so the state blob
                 // embedded below carries them
                 state.mark_posted(&posted_ids);
@@ -123,10 +128,31 @@ pub async fn publish(
                     "inline review rejected by GitHub (422); findings listed in summary only"
                         .into(),
                 );
+                review_outcome = "ok:inline-rejected";
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                report.timing.append_publish(
+                    report.timing.total_ms,
+                    review_start.elapsed().as_millis() as u64,
+                    &format!("error:{}", crate::text::excerpt_bytes(&err.to_string(), 60)),
+                );
+                return Err(err);
+            }
         }
     }
+    report.timing.append_publish(
+        report.timing.total_ms,
+        if review_outcome == "skipped" {
+            0
+        } else {
+            review_start.elapsed().as_millis() as u64
+        },
+        review_outcome,
+    );
+    // refresh the timing line so the summary comment and the JSON report
+    // tell the same story
+    report.plan.summary_markdown =
+        crate::report::refresh_timing_line(&report.plan.summary_markdown, &report.timing);
 
     // (3) upsert the managed summary comment
     let mut staged = state.clone();
