@@ -22,7 +22,7 @@ inputs:
     default: failed
   revera-version:
     description: Revera release version to install
-    default: "0.1.0"
+    default: "0.2.0"
   vera-version:
     description: Vera release version to install
     default: "1.4.1"
