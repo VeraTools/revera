@@ -23,8 +23,8 @@ completion.
 
 ## Live probe — crossfile fixture (dry-run)
 
-Config: `fixtures/configs/live-hosted.yaml` (muse-spark all routes, vera api
-via qwen/qwen3-embedding-8b, a hosted endpoint headers HTTP-Referer + X-Title).
+Config: `fixtures/configs/live.yaml` (Muse via the investigator endpoint, glm-5.3-flash
+validator via the model gateway, Vera retrieval via a hosted endpoint).
 
 ### muse-spark runs (authoritative)
 
