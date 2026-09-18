@@ -1,6 +1,6 @@
 use super::http::{
-    detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec, HttpTransport,
-    Parse, ProtocolAdapter,
+    capped_effort, detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec,
+    HttpTransport, Parse, ProtocolAdapter,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::{ModelRoute, ReasoningEffort, ReasoningField};
@@ -23,6 +23,31 @@ impl OpenAiChatAdapter {
             .map_err(|_| ProviderError::Other(format!("api_key_env {env_name} is not set")))?;
         Ok(Self { route, api_key })
     }
+
+    /// Reasoning field spelling for this route (auto -> openrouter host).
+    fn reasoning_field(&self) -> ReasoningField {
+        match self.route.reasoning.field() {
+            ReasoningField::Auto => {
+                if self
+                    .route
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("openrouter.ai")
+                {
+                    ReasoningField::Openrouter
+                } else {
+                    ReasoningField::Openai
+                }
+            }
+            f => f,
+        }
+    }
+
+    /// Effort `build()` emits for this attempt state.
+    fn effort(&self, attempt: &AttemptState) -> ReasoningEffort {
+        capped_effort(self.route.reasoning.effort(), attempt)
+    }
 }
 
 impl OpenAiChatClient {
@@ -31,10 +56,11 @@ impl OpenAiChatClient {
         ledger: LedgerHandle,
         max_requests: u32,
         retries: u32,
+        role: &str,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
             adapter: OpenAiChatAdapter::from_route(route)?,
-            transport: HttpTransport::new(ledger, max_requests, retries)?,
+            transport: HttpTransport::new(ledger, max_requests, retries, role)?,
         })
     }
 }
@@ -49,6 +75,22 @@ impl ProtocolAdapter for OpenAiChatAdapter {
 
     fn model(&self) -> &str {
         &self.route.model
+    }
+
+    fn requested_reasoning(&self) -> String {
+        if self.route.reasoning.enabled() {
+            self.route.reasoning.effort().as_str().to_string()
+        } else {
+            "none".into()
+        }
+    }
+
+    fn effective_reasoning(&self, attempt: &AttemptState) -> String {
+        if !self.route.reasoning.enabled() || attempt.drop_reasoning {
+            "none".into()
+        } else {
+            self.effort(attempt).as_str().to_string()
+        }
     }
 
     fn build(
@@ -122,39 +164,19 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             body["temperature"] = json!(self.route.temperature);
         }
         // reasoning wire field: openai (reasoning_effort) vs openrouter
-        // (reasoning object); auto picks by base_url host
+        // (reasoning object); auto picks by base_url host. The configured
+        // effort is sent as requested; `attempt.reasoning_cap` lowers it
+        // only after a provider 400.
         let r = &self.route.reasoning;
         if r.enabled() && !attempt.drop_reasoning {
-            let field = match r.field() {
-                ReasoningField::Auto => {
-                    if self
-                        .route
-                        .base_url
-                        .as_deref()
-                        .unwrap_or("")
-                        .contains("openrouter.ai")
-                    {
-                        ReasoningField::Openrouter
-                    } else {
-                        ReasoningField::Openai
-                    }
-                }
-                f => f,
-            };
-            match field {
+            match self.reasoning_field() {
                 ReasoningField::Openai => {
-                    let mut e = r.effort();
-                    if matches!(e, ReasoningEffort::Xhigh | ReasoningEffort::Max)
-                        && !self.route.model.starts_with("gpt-5")
-                    {
-                        e = ReasoningEffort::High;
-                    }
-                    body["reasoning_effort"] = json!(e.as_str());
+                    body["reasoning_effort"] = json!(self.effort(attempt).as_str());
                 }
                 ReasoningField::Openrouter => {
                     body["reasoning"] = match r.budget_tokens() {
                         Some(b) => json!({"max_tokens": b}),
-                        None => json!({"effort": r.effort().as_str()}),
+                        None => json!({"effort": self.effort(attempt).as_str()}),
                     };
                 }
                 ReasoningField::Auto => unreachable!(),
@@ -179,9 +201,13 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             attempt.tokens_key = "max_completion_tokens".into();
             return Parse::RetrySameSlot("400: retrying with max_completion_tokens".into());
         }
-        if let Some(p) =
-            detect_400_fallback(status, body, attempt, &["reasoning", "reasoning_effort"])
-        {
+        if let Some(p) = detect_400_fallback(
+            status,
+            body,
+            attempt,
+            &["reasoning", "reasoning_effort"],
+            self.route.reasoning.effort(),
+        ) {
             return p;
         }
         if status >= 400 {

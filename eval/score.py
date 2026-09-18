@@ -28,29 +28,39 @@ def main():
         if f.get("validation_status") == "accepted"
     ]
     tp = fp = 0
-    used = set()
-    for d in truth["defects"]:
+    # defect index -> matched finding index (keeps the association so
+    # per-defect fields like cross_file_keywords stay attributable)
+    matches = {}
+    for di, d in enumerate(truth["defects"]):
         hit = next(
-            (i for i, f in enumerate(accepted) if i not in used and is_tp(f, d)),
+            (
+                i
+                for i, f in enumerate(accepted)
+                if i not in matches.values() and is_tp(f, d)
+            ),
             None,
         )
         if hit is not None:
             tp += 1
-            used.add(hit)
+            matches[di] = hit
     fn = len(truth["defects"]) - tp
-    fp = len(accepted) - len(used)
+    fp = len(accepted) - len(matches)
     tp_high = sum(
-        1 for i in used if accepted[i].get("severity") in ("high", "critical")
+        1
+        for i in matches.values()
+        if accepted[i].get("severity") in ("high", "critical")
     )
     statuses = [f.get("validation_status") for f in r.get("findings", [])]
-    # cross-file evidence: accepted TP whose text mentions a cross_file_keyword
-    xf_kw = [
-        k.lower()
-        for d in truth["defects"]
-        for k in d.get("cross_file_keywords", [])
-    ]
+    # cross-file evidence: a matched finding counts when its text mentions
+    # a keyword from ITS OWN defect's cross_file_keywords
     xf = 0
-    for i in used:
+    for di, i in matches.items():
+        xf_kw = [
+            k.lower()
+            for k in truth["defects"][di].get("cross_file_keywords", [])
+        ]
+        if not xf_kw:
+            continue
         f = accepted[i]
         text = (
             f.get("title", "")

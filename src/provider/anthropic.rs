@@ -42,10 +42,11 @@ impl HttpClient<AnthropicAdapter> {
         ledger: LedgerHandle,
         max_requests: u32,
         retries: u32,
+        role: &str,
     ) -> Result<Self, ProviderError> {
         Ok(Self {
             adapter: AnthropicAdapter::from_route(route)?,
-            transport: HttpTransport::new(ledger, max_requests, retries)?,
+            transport: HttpTransport::new(ledger, max_requests, retries, role)?,
         })
     }
 }
@@ -133,6 +134,19 @@ fn push_role(out: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
     out.push(json!({"role": role, "content": parts}));
 }
 
+impl AnthropicAdapter {
+    /// Thinking budget `build()` emits for this attempt state. Effort is
+    /// mapped to a budget (capped by `attempt.reasoning_cap` like the
+    /// openai adapters); explicit budget_tokens still wins.
+    fn budget(&self, attempt: &AttemptState) -> u64 {
+        let eff = super::http::capped_effort(self.route.reasoning.effort(), attempt);
+        self.route
+            .reasoning
+            .budget_tokens()
+            .unwrap_or_else(|| eff.budget())
+    }
+}
+
 impl ProtocolAdapter for AnthropicAdapter {
     fn label(&self) -> String {
         format!("anthropic:{}", self.base)
@@ -140,6 +154,24 @@ impl ProtocolAdapter for AnthropicAdapter {
 
     fn model(&self) -> &str {
         &self.route.model
+    }
+
+    fn requested_reasoning(&self) -> String {
+        if self.route.reasoning.enabled() {
+            self.route.reasoning.effort().as_str().to_string()
+        } else {
+            "none".into()
+        }
+    }
+
+    fn effective_reasoning(&self, attempt: &AttemptState) -> String {
+        if !self.route.reasoning.enabled() || attempt.drop_reasoning {
+            "none".into()
+        } else {
+            super::http::capped_effort(self.route.reasoning.effort(), attempt)
+                .as_str()
+                .to_string()
+        }
     }
 
     fn build(
@@ -172,7 +204,7 @@ impl ProtocolAdapter for AnthropicAdapter {
         if thinking_on {
             // thinking budget counts toward max_tokens; raise max_tokens
             // when the budget leaves too little headroom for the answer
-            let b = r.effective_budget().min(max_out.saturating_sub(1024));
+            let b = self.budget(attempt).min(max_out.saturating_sub(1024));
             if max_out <= b + 1024 {
                 max_tokens = b + max_out;
             }
@@ -200,7 +232,13 @@ impl ProtocolAdapter for AnthropicAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
-        if let Some(p) = detect_400_fallback(status, body, attempt, &["thinking"]) {
+        if let Some(p) = detect_400_fallback(
+            status,
+            body,
+            attempt,
+            &["thinking"],
+            self.route.reasoning.effort(),
+        ) {
             return p;
         }
         if status >= 400 {

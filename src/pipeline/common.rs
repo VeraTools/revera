@@ -449,10 +449,7 @@ pub async fn finish(
         .unwrap()
         .entries
         .iter()
-        .map(|e| match cfg.route_effort(&e.route) {
-            Some(eff) => format!("{}:{}@{}", e.route, e.model, eff),
-            None => format!("{}:{}", e.route, e.model),
-        })
+        .map(crate::report::ledger_route_label)
         .collect();
     let coverage = if prep.coverage.is_empty() {
         "(none reported)".to_string()

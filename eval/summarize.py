@@ -22,8 +22,14 @@ def is_clean(r):
     return r.get("clean", r["corpus"] in CLEAN)
 
 
-print("| config | TP | TP high/crit | FN | FP | xf | clean-PR commented | rejected | uncertain | incomplete | median wall s | median first-validated s | incomplete phases | mean req | mean tok | total cost |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+HEADER = "| config | TP | TP high/crit | FN | FP | xf | clean-PR commented | rejected | uncertain | incomplete | median wall s | median first-validated s | incomplete phases | mean req | mean tok | total cost |"
+DELIM = "|" + "---|" * 16
+assert len(HEADER.split("|")) == len(DELIM.split("|")), (
+    len(HEADER.split("|")),
+    len(DELIM.split("|")),
+)
+print(HEADER)
+print(DELIM)
 order = ["A-baseline", "B-baseline-novera", "C-baseline-norerank",
          "D-candidate-only", "E-panel-2scouts", "F-delegated"]
 for cfg in order + sorted(set(agg) - set(order)):
@@ -46,12 +52,14 @@ for cfg in order + sorted(set(agg) - set(order)):
     reqs = [r["requests"] for r in rs]
     toks = [r["prompt_tokens"] + r["completion_tokens"] for r in rs]
     cost = sum(r["est_cost"] for r in rs)
-    print(
+    row = (
         f"| {cfg} | {tp} | {tp_high} | {fn} | {fp} | {xf} | {clean_commented} | {rejected} | {uncertain} | {incomplete} | "
         f"{statistics.median(walls):.1f} | {fv_str} | {inc_phases} | "
         f"{statistics.mean(reqs):.1f} | "
         f"{statistics.mean(toks):.0f} | ${cost:.4f} |"
     )
+    assert len(row.split("|")) == len(HEADER.split("|")), row
+    print(row)
 
 fails = [r for r in rows if r["status"] != "complete"]
 if fails:
