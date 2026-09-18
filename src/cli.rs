@@ -414,7 +414,7 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
         Ok(c) => c,
         Err(e) => {
             println!("config: FAIL — {e}");
-            println!("  next: fix revera.toml (see examples/) or pass --config <path>");
+            println!("  next: fix revera.yaml (see revera.example.yaml) or pass --config <path>");
             return 1;
         }
     };

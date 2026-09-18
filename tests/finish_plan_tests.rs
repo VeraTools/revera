@@ -474,3 +474,117 @@ fn ledger_handle_smoke() {
     let l = LedgerHandle::new();
     assert_eq!(l.request_count(), 0);
 }
+
+// ---- presentation: every outcome renders status-first and truthfully -------
+
+fn render(s: &revera::report::Summary<'_>) -> String {
+    revera::report::summary_markdown(s)
+}
+
+#[test]
+fn summary_presentation_complete_clean() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "call sites of parse_config",
+        status: Some(RunStatus::Complete),
+        strategy: "baseline",
+        ..Default::default()
+    });
+    assert!(s.starts_with("## Revera review\n\n**Status: complete**"));
+    assert!(s.contains("no new findings"));
+    assert!(!s.contains("incomplete"));
+}
+
+#[test]
+fn summary_presentation_complete_with_findings() {
+    use revera::report::Summary;
+    let f = finding("src/a.rs", "k", 7);
+    let s = render(&Summary {
+        findings: &[f],
+        coverage: "x",
+        status: Some(RunStatus::Complete),
+        strategy: "baseline",
+        ..Default::default()
+    });
+    assert!(s.contains("**Status: complete**"));
+    assert!(s.contains("1 high"));
+    assert!(s.contains("`src/a.rs`:7"));
+}
+
+#[test]
+fn summary_presentation_partial_zero_findings_is_not_clean() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "nothing",
+        status: Some(RunStatus::Partial),
+        reason: Some("run deadline reached before validation"),
+        strategy: "baseline",
+        ..Default::default()
+    });
+    assert!(s.contains("**Status: partial**"));
+    assert!(s.contains("Review incomplete: run deadline reached before validation"));
+    assert!(s.contains("Absence of findings is not evidence"));
+}
+
+#[test]
+fn summary_presentation_reused_and_carried_forward() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "x",
+        status: Some(RunStatus::Complete),
+        strategy: "baseline",
+        reused: true,
+        carried_open: 2,
+        ..Default::default()
+    });
+    assert!(s.contains("**Status: complete**"));
+    assert!(s.contains("reused completed review of identical content"));
+    assert!(s.contains("2 open findings carried forward"));
+}
+
+#[test]
+fn summary_presentation_resolved_and_reopened() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "x",
+        status: Some(RunStatus::Complete),
+        strategy: "baseline",
+        resolved: &["off-by-one in pager".into()],
+        reopened: &["unchecked unwrap in loader".into()],
+        ..Default::default()
+    });
+    assert!(s.contains("### Resolved since last review\n\n- off-by-one in pager"));
+    assert!(s.contains(
+        "### Reopened (previously resolved, reintroduced)\n\n- unchecked unwrap in loader"
+    ));
+}
+
+#[test]
+fn summary_presentation_retrieval_unavailable_and_provider_timeout() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "x",
+        status: Some(RunStatus::Partial),
+        reason: Some("investigator: provider request timed out"),
+        strategy: "baseline",
+        retrieval_unavailable: Some("vera update timed out after 120s"),
+        ..Default::default()
+    });
+    assert!(s.contains("**Status: partial**"));
+    assert!(s.contains("provider request timed out"));
+    assert!(s.contains("Semantic retrieval unavailable (vera update timed out after 120s)"));
+    assert!(s.contains("lexical search only"));
+}
+
+#[test]
+fn summary_presentation_failed_publication_note() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "x",
+        status: Some(RunStatus::Complete),
+        strategy: "baseline",
+        note: Some("inline review could not be posted (GitHub 422); findings listed here only"),
+        ..Default::default()
+    });
+    assert!(s.contains("inline review could not be posted"));
+}
