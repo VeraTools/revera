@@ -7,6 +7,10 @@ permissions:
   pull-requests: write
   contents: read
 
+concurrency:
+  group: self-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   has-key:
     runs-on: ubuntu-latest
@@ -21,10 +25,15 @@ jobs:
           RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: |
-          if [ -n "$OPENROUTER_API_KEY" ] && [ -n "$RELAY_FAST_API_KEY" ] && [ -n "$OPENCODE_GO_API_KEY" ]; then
+          missing=()
+          [ -n "$OPENROUTER_API_KEY" ] || missing+=(OPENROUTER_API_KEY)
+          [ -n "$RELAY_FAST_API_KEY" ] || missing+=(RELAY_FAST_API_KEY)
+          [ -n "$OPENCODE_GO_API_KEY" ] || missing+=(OPENCODE_GO_API_KEY)
+          if [ ${#missing[@]} -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=live self-review skipped::secrets not available to this run: ${missing[*]} (expected for fork PRs). This is a SKIP, not a passing review; offline proof is action-smoke.yml."
           fi
 
   revera:

@@ -60,6 +60,8 @@ enum Cmd {
     CacheKey {
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        profile: Option<String>,
     },
 }
 
@@ -81,7 +83,7 @@ pub async fn run() -> i32 {
     match cli.cmd {
         Cmd::Doctor { config } => doctor(config).await,
         Cmd::CacheInfo { repo } => cache_info(&repo),
-        Cmd::CacheKey { config } => cache_key(config),
+        Cmd::CacheKey { config, profile } => cache_key(config, profile),
         Cmd::Review {
             repo,
             base,
@@ -547,8 +549,14 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
     }
 }
 
-fn cache_key(config: Option<PathBuf>) -> i32 {
-    match load_cfg(config.as_deref(), None) {
+/// Prints the Vera index cache identity, or `disabled` when Vera is off so
+/// callers (the Action) skip cache restore/save entirely.
+fn cache_key(config: Option<PathBuf>, profile: Option<String>) -> i32 {
+    match load_cfg(config.as_deref(), profile.as_deref()) {
+        Ok(cfg) if !cfg.vera.enabled => {
+            println!("disabled");
+            0
+        }
         Ok(cfg) => {
             use sha2::{Digest, Sha256};
             let id = cfg.vera.index_identity().to_string();
