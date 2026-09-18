@@ -9,6 +9,12 @@ permissions:
   pull-requests: write
   contents: read
 
+# One publisher per PR: a new push cancels the in-flight review so two runs
+# never race to post inline comments / the managed summary.
+concurrency:
+  group: dogfood-released-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   has-key:
     runs-on: ubuntu-latest
@@ -23,10 +29,15 @@ jobs:
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
           REVERA_INVESTIGATOR_API_KEY: ${{ secrets.REVERA_INVESTIGATOR_API_KEY }}
         run: |
-          if [ -n "$REVERA_EMBEDDING_API_KEY" ] && [ -n "$REVERA_MODEL_API_KEY" ] && [ -n "$REVERA_INVESTIGATOR_API_KEY" ]; then
+          missing=()
+          [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
+          [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
+          [ -n "$REVERA_INVESTIGATOR_API_KEY" ] || missing+=(REVERA_INVESTIGATOR_API_KEY)
+          if [ ${#missing[@]} -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=live review skipped::secrets not available to this run: ${missing[*]} (expected for fork PRs). This is a SKIP, not a passing review; offline proof is action-smoke.yml."
           fi
 
   revera:
