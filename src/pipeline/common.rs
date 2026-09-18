@@ -314,10 +314,9 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
                     wall,
                     &format!("error:{}", crate::text::excerpt_bytes(&e.to_string(), 60)),
                 );
-                let r = format!("retrieval unavailable: {e}");
                 tracing::warn!("vera index failed (continuing without retrieval): {e}");
-                partial_reasons.push(r.clone());
-                Some(r)
+                partial_reasons.push("semantic retrieval unavailable".into());
+                Some(crate::text::excerpt_bytes(&e.to_string(), 200))
             }
         }
     };
@@ -336,7 +335,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         toolbox.disable_vera(r);
     }
     let retrieval = if !cfg.vera.enabled {
-        "disabled".to_string()
+        "lexical-only".to_string()
     } else if let Some(r) = &retrieval_unavailable {
         format!("unavailable: {r}")
     } else {
