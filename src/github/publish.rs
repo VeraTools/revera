@@ -1,4 +1,4 @@
-use super::api::{GitHubApi, GitHubHttpError, ReviewComment};
+use super::api::{GhComment, GitHubApi, GitHubHttpError, ReviewComment};
 use super::event::PrEvent;
 use crate::report::{surfaced_ids, Publication, RunReport};
 use crate::state::{FindingState, ReviewState};
@@ -28,6 +28,39 @@ pub fn decode_state(body: &str) -> Option<ReviewState> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Pick the reviewer-owned managed summary comment.
+///
+/// A candidate must *start* with the marker and carry a decodable state
+/// blob — a quoted or copied marker inside someone else's comment does
+/// not qualify. Among candidates: the comment id recorded in prior state
+/// wins; otherwise the author must be the authenticated identity when it
+/// is known, or a bot account (the Actions token cannot name itself and
+/// posts as `github-actions[bot]`). Comments with no author information
+/// (older API shapes, tests) are accepted.
+pub fn find_managed<'a>(
+    comments: &'a [GhComment],
+    marker: &str,
+    expected_id: Option<u64>,
+    viewer: Option<&str>,
+) -> Option<&'a GhComment> {
+    let mut cands = comments
+        .iter()
+        .filter(|c| c.body.trim_start().starts_with(marker) && decode_state(&c.body).is_some());
+    if let Some(id) = expected_id {
+        if let Some(c) = comments
+            .iter()
+            .find(|c| c.id == id && c.body.trim_start().starts_with(marker))
+        {
+            return Some(c);
+        }
+    }
+    cands.find(|c| match (&c.author, viewer) {
+        (None, _) => true,
+        (Some(a), Some(v)) => a == v,
+        (Some(a), None) => c.author_is_bot || a.ends_with("[bot]"),
+    })
+}
+
 fn revera_id(body: &str) -> Option<String> {
     let marker = "<!-- revera-id:";
     let start = body.find(marker)? + marker.len();
@@ -35,13 +68,34 @@ fn revera_id(body: &str) -> Option<String> {
     Some(body[start..end].trim().to_string())
 }
 
+/// All currently open findings (incl. previously posted).
+fn open_section(state: &ReviewState) -> String {
+    let open: Vec<_> = state
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingState::Open)
+        .collect();
+    let mut s = String::new();
+    if !open.is_empty() {
+        s.push_str("\n### Open findings\n\n");
+        for f in &open {
+            s.push_str(&format!(
+                "- `{}`:{} — {}{}\n",
+                f.file,
+                f.start_line,
+                f.title,
+                if f.posted { " (posted)" } else { "" }
+            ));
+        }
+    }
+    s
+}
+
 /// Run the comment-mode publisher against the GitHub API.
 ///
 /// Steps: (1) re-check head sha, (2) post review with unposted inline
 /// comments, (3) upsert the managed summary comment carrying the state blob,
 /// (4) mark posted ids in `state`.
-///
-/// `resolved_titles`: titles of findings resolved by rechecks this run.
 pub async fn publish(
     api: &GitHubApi,
     ev: &PrEvent,
@@ -49,7 +103,6 @@ pub async fn publish(
     state: &mut ReviewState,
     max_findings: usize,
     summary_marker: &str,
-    resolved_titles: &[String],
 ) -> Result<Publication> {
     let (owner, repo) = ev.owner_repo();
     let mut pubn = Publication {
@@ -163,43 +216,44 @@ pub async fn publish(
     let mut staged = state.clone();
     staged.mark_posted(&surfaced_ids(report));
     let mut body = format!("{summary_marker}\n{}", report.plan.summary_markdown);
-    // all currently open findings (incl. previously posted)
-    let open: Vec<_> = staged
-        .findings
-        .iter()
-        .filter(|f| f.status == FindingState::Open)
-        .collect();
-    if !open.is_empty() {
-        body.push_str("\n### Open findings\n\n");
-        for f in &open {
-            body.push_str(&format!(
-                "- `{}`:{} — {}{}\n",
-                f.file,
-                f.start_line,
-                f.title,
-                if f.posted { " (posted)" } else { "" }
-            ));
-        }
-    }
-    if !resolved_titles.is_empty() {
-        body.push_str("\nResolved since last review:\n");
-        for t in resolved_titles {
-            body.push_str(&format!("- {t}\n"));
-        }
-    }
-    body.push('\n');
-    body.push_str(&encode_state(&staged));
-
+    body.push_str(&open_section(&staged));
     let comments = api.list_issue_comments(owner, repo, ev.number).await?;
-    let managed = comments
-        .iter()
-        .find(|c| c.body.contains(summary_marker))
-        .map(|c| c.id);
+    let viewer = api.viewer_login().await;
+    let managed = find_managed(
+        &comments,
+        summary_marker,
+        state.summary_comment_id,
+        viewer.as_deref(),
+    )
+    .map(|c| c.id);
+    // the state blob records which comment is ours so the next run can
+    // find it even if someone copies the marker
     let comment = match managed {
-        Some(id) => api.update_issue_comment(owner, repo, id, &body).await?,
+        Some(id) => {
+            staged.summary_comment_id = Some(id);
+            body.push('\n');
+            body.push_str(&encode_state(&staged));
+            api.update_issue_comment(owner, repo, id, &body).await?
+        }
         None => {
-            api.create_issue_comment(owner, repo, ev.number, &body)
-                .await?
+            body.push('\n');
+            body.push_str(&encode_state(&staged));
+            let created = api
+                .create_issue_comment(owner, repo, ev.number, &body)
+                .await?;
+            if created.id != 0 {
+                staged.summary_comment_id = Some(created.id);
+                let mut b2 = format!("{summary_marker}\n{}", report.plan.summary_markdown);
+                b2.push_str(&open_section(&staged));
+                b2.push('\n');
+                b2.push_str(&encode_state(&staged));
+                // best effort: the id is a convenience, ownership is also
+                // checked by author
+                if let Err(e) = api.update_issue_comment(owner, repo, created.id, &b2).await {
+                    tracing::warn!("could not record summary comment id: {e:#}");
+                }
+            }
+            created
         }
     };
     pubn.summary_comment_id = Some(comment.id);

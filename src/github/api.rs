@@ -16,10 +16,13 @@ impl fmt::Display for GitHubHttpError {
 
 impl std::error::Error for GitHubHttpError {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GhComment {
     pub id: u64,
     pub body: String,
+    /// Author login when the API reported one.
+    pub author: Option<String>,
+    pub author_is_bot: bool,
 }
 
 /// Comment payload for `create_review`: a RIGHT-side inline comment.
@@ -120,6 +123,8 @@ impl GitHubApi {
                 out.push(GhComment {
                     id: c["id"].as_u64().unwrap_or(0),
                     body: c["body"].as_str().unwrap_or("").to_string(),
+                    author: c["user"]["login"].as_str().map(str::to_string),
+                    author_is_bot: c["user"]["type"].as_str() == Some("Bot"),
                 });
             }
             if count < 100 {
@@ -127,6 +132,16 @@ impl GitHubApi {
             }
             page += 1;
         }
+    }
+
+    /// Login of the authenticated identity; `None` when the token cannot
+    /// answer `/user` (e.g. the Actions installation token).
+    pub async fn viewer_login(&self) -> Option<String> {
+        let v = self
+            .send(self.http.get(format!("{}/user", self.base)))
+            .await
+            .ok()?;
+        v["login"].as_str().map(str::to_string)
     }
 
     pub async fn create_issue_comment(
@@ -149,6 +164,7 @@ impl GitHubApi {
         Ok(GhComment {
             id: v["id"].as_u64().unwrap_or(0),
             body: body.to_string(),
+            ..Default::default()
         })
     }
 
@@ -172,6 +188,7 @@ impl GitHubApi {
         Ok(GhComment {
             id: v["id"].as_u64().unwrap_or(comment_id),
             body: body.to_string(),
+            ..Default::default()
         })
     }
 

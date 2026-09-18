@@ -328,6 +328,7 @@ pub struct Config {
     #[serde(default)]
     pub budget: BudgetConfig,
     pub models: ModelsConfig,
+    #[serde(default)]
     pub vera: VeraConfig,
     #[serde(default)]
     pub github: GithubConfig,
@@ -431,6 +432,38 @@ impl Default for PanelConfig {
     }
 }
 
+impl Default for VeraConfig {
+    fn default() -> Self {
+        Self {
+            executable: default_vera_exe(),
+            version: None,
+            enabled: true,
+            backend: VeraBackend::default(),
+            embedding: None,
+            reranker: None,
+            exclude: vec![],
+        }
+    }
+}
+
+impl VeraConfig {
+    /// Stable identity of everything that shapes the on-disk index (not the
+    /// review models): used for cache keys and compatibility checks.
+    pub fn index_identity(&self) -> serde_json::Value {
+        let ep = |e: &Option<VeraEndpoint>| {
+            e.as_ref()
+                .map(|e| serde_json::json!({"base_url": e.base_url, "model": e.model}))
+        };
+        serde_json::json!({
+            "version": self.version,
+            "backend": format!("{:?}", self.backend).to_lowercase(),
+            "embedding": ep(&self.embedding),
+            "reranker": ep(&self.reranker),
+            "exclude": self.exclude,
+        })
+    }
+}
+
 impl Default for GithubConfig {
     fn default() -> Self {
         Self {
@@ -439,6 +472,11 @@ impl Default for GithubConfig {
             allow_forks: false,
         }
     }
+}
+
+/// A credential env var counts as set only when it has a non-blank value.
+pub fn env_is_set(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| !v.trim().is_empty())
 }
 
 /// Expand `${VAR}` occurrences; error names the unset var.
@@ -525,8 +563,8 @@ fn validate_route(name: &str, r: &ModelRoute) -> Result<()> {
                 r.protocol
             );
         }
-        if std::env::var(env).is_err() {
-            bail!("models.{name}: api_key_env {env} is not set in the environment");
+        if !env_is_set(env) {
+            bail!("models.{name}: api_key_env {env} is not set (or empty) in the environment");
         }
     }
     Ok(())
@@ -598,6 +636,52 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Review-affecting configuration, hashed into the review identity so a
+    /// stored result is only reused when the same review would run again.
+    /// Contains no secrets: credential values and their env var names stay out.
+    pub fn review_fingerprint(&self, strategy: &str) -> serde_json::Value {
+        let route = |r: &ModelRoute| {
+            serde_json::json!({
+                "protocol": format!("{:?}", r.protocol).to_lowercase(),
+                "base_url": r.base_url,
+                "model": r.model,
+                "max_output_tokens": r.max_output_tokens,
+                "temperature": r.temperature,
+                "reasoning": r.reasoning.effort().as_str(),
+                "reasoning_budget": r.reasoning.effective_budget(),
+                "script": r.script.as_ref().map(|p| p.to_string_lossy().to_string()),
+            })
+        };
+        serde_json::json!({
+            "engine": env!("CARGO_PKG_VERSION"),
+            "prompts": crate::prompts::prompt_version(),
+            "strategy": strategy,
+            "max_findings": self.review.max_findings,
+            "publish_uncertain": self.review.publish_uncertain,
+            "min_severity": format!("{:?}", self.review.min_severity).to_lowercase(),
+            "validate": self.review.validate,
+            "max_tool_output_bytes": self.review.max_tool_output_bytes,
+            "max_diff_bytes": self.review.max_diff_bytes,
+            "budget": {
+                "agent_max_tool_calls": self.budget.agent_max_tool_calls,
+                "agent_max_seconds": self.budget.agent_max_seconds,
+                "run_max_requests": self.budget.run_max_requests,
+                "run_max_seconds": self.budget.run_max_seconds,
+            },
+            "investigator": route(&self.models.investigator),
+            "validator": route(&self.models.validator),
+            "lead": self.models.lead.as_ref().map(route),
+            "workers": self.models.workers.as_ref().map(|ws| ws.iter().map(route).collect::<Vec<_>>()),
+            "scouts": self.models.scouts.as_ref().map(|ss| {
+                ss.iter().map(|s| serde_json::json!({"name": s.name, "focus": s.focus, "route": route(&s.route)})).collect::<Vec<_>>()
+            }),
+            "vera": {
+                "enabled": self.vera.enabled,
+                "index": self.vera.index_identity(),
+            },
+        })
     }
 
     pub fn apply_profile(&mut self, name: &str) -> Result<()> {

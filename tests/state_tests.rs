@@ -27,23 +27,19 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
 #[test]
 fn state_roundtrip_and_transitions() {
     let dir = tempfile::tempdir().unwrap();
-    let mut s = ReviewState {
-        reviewed_base: "b".into(),
-        reviewed_head: "h".into(),
-        patch_id: "abc".into(),
-        ..Default::default()
-    };
+    let mut s = ReviewState::default();
     let f = finding("src/x.rs", "k", 5);
     s.upsert(&f, FindingState::Open);
     s.mark_posted(&[f.id()]);
+    s.record_outcome("b", "h", "abc", "key-1", RunStatus::Complete);
     s.save(dir.path()).unwrap();
 
     let loaded = ReviewState::load(dir.path()).unwrap().unwrap();
     assert_eq!(loaded.findings.len(), 1);
     assert_eq!(loaded.findings[0].status, FindingState::Open);
     assert!(loaded.findings[0].posted);
-    assert!(loaded.is_unchanged("b", "abc"));
-    assert!(!loaded.is_unchanged("b", "different"));
+    assert!(loaded.can_reuse("key-1"));
+    assert!(!loaded.can_reuse("key-2"));
 
     let mut s = loaded;
     s.mark(&f.id(), FindingState::Resolved);
@@ -97,6 +93,7 @@ fn surfaced_ids_only_returns_accepted_findings() {
             summary_markdown: String::new(),
             state: ReviewState::default(),
         },
+        stats: Default::default(),
         ledger: LedgerReport {
             requests: 0,
             prompt_tokens: 0,

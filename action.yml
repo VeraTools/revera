@@ -35,13 +35,13 @@ inputs:
 outputs:
   status:
     description: Review status (complete | partial | failed)
-    value: ${{ steps.revera.outputs.status }}
+    value: ${{ steps.outcome.outputs.status }}
   report-path:
-    description: Path to the JSON run report
-    value: ${{ steps.revera.outputs.report-path }}
+    description: Path to the JSON run report (empty when the run failed before writing one)
+    value: ${{ steps.outcome.outputs.report-path }}
   findings:
-    description: Number of accepted findings
-    value: ${{ steps.revera.outputs.findings }}
+    description: Number of accepted findings (0 when no trustworthy report exists)
+    value: ${{ steps.outcome.outputs.findings }}
 
 runs:
   using: composite
@@ -54,48 +54,50 @@ runs:
           exit 1
         fi
 
-    # Cache key is the reviewed head sha; base ref and config hash invalidate
-    # on branch/config change. An older index is restored via the prefix keys
-    # and updated incrementally by `vera update`.
-    - name: Restore .vera index cache
-      if: inputs.cache == 'true'
-      id: cache
-      uses: actions/cache/restore@v4
-      with:
-        path: .vera
-        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
-        restore-keys: |
-          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-
-          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-
-
     - name: Install vera
       shell: bash
       run: |
         set -euo pipefail
-        ver="${{ inputs.vera-version }}"
-        base="https://github.com/VeraTools/Vera/releases/download/v${ver}"
-        curl -fsSL "$base/vera-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/vera.tar.gz
-        curl -fsSL "$base/release-manifest.json" -o /tmp/vera-manifest.json
-        want=$(python3 -c "import json;m=json.load(open('/tmp/vera-manifest.json'));a=[x for x in (m.get('assets') or m) if 'x86_64-unknown-linux-gnu' in json.dumps(x)];print(a[0]['sha256'] if isinstance(a[0],dict) else a[0])")
-        got=$(sha256sum /tmp/vera.tar.gz | cut -d' ' -f1)
-        if [ "$want" != "$got" ]; then echo "vera sha256 mismatch: $got != $want" >&2; exit 1; fi
-        mkdir -p /tmp/vera-bin && tar -xzf /tmp/vera.tar.gz -C /tmp/vera-bin
-        find /tmp/vera-bin -name vera -type f -exec install -m755 {} "$RUNNER_TEMP/bin/vera" \; -quit || true
-        if [ ! -x "$RUNNER_TEMP/bin/vera" ]; then
-          mkdir -p "$RUNNER_TEMP/bin"
-          install -m755 "$(find /tmp/vera-bin -name vera -type f | head -1)" "$RUNNER_TEMP/bin/vera"
-        fi
+        mkdir -p "$RUNNER_TEMP/bin"
+        "${{ github.action_path }}/scripts/install-vera.sh" "${{ inputs.vera-version }}" "$RUNNER_TEMP/bin"
         echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-        vera --version
 
     - name: Install revera
       shell: bash
       run: |
         set -euo pipefail
-        ver="${{ inputs.revera-version }}"
         mkdir -p "$RUNNER_TEMP/bin"
-        "${{ github.action_path }}/scripts/install-revera.sh" "$ver" "$RUNNER_TEMP/bin"
+        "${{ github.action_path }}/scripts/install-revera.sh" "${{ inputs.revera-version }}" "$RUNNER_TEMP/bin"
         echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+    # Cache identity covers only what shapes the index (vera version, backend,
+    # embedding/reranker models, excludes) — not investigator/validator
+    # settings — so a model change does not throw away a warm index.
+    - name: Vera cache key
+      id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        args=(cache-key --config "${{ inputs.config }}")
+        if [ -n "${{ inputs.profile }}" ]; then args+=(--profile "${{ inputs.profile }}"); fi
+        if key=$(revera "${args[@]}" 2>/dev/null); then
+          echo "value=$key" >> "$GITHUB_OUTPUT"
+        else
+          # older revera without `cache-key`: fall back to hashing the config
+          echo "value=cfg-${{ hashFiles(inputs.config) }}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Restore .vera index cache
+      if: inputs.cache == 'true' && steps.key.outputs.value != 'disabled'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          .vera
+          .revera/vera-cache.json
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
+        restore-keys: |
+          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref }}-
+          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-
 
     - name: Run revera
       id: revera
@@ -103,32 +105,37 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
-        set +e
+        rm -f .revera/report.json
+        before=$(cat .revera/vera-cache.json 2>/dev/null || true)
         args=(review --event "$GITHUB_EVENT_PATH" --config "${{ inputs.config }}" --publish "${{ inputs.publish }}" --out .revera/report.json)
         if [ -n "${{ inputs.profile }}" ]; then args+=(--profile "${{ inputs.profile }}"); fi
         if [ -n "${{ inputs.strategy }}" ]; then args+=(--strategy "${{ inputs.strategy }}"); fi
+        set +e
         revera "${args[@]}"
         code=$?
         set -e
-        status=failed
-        if [ "$code" -eq 0 ]; then status=complete; elif [ "$code" -eq 2 ]; then status=partial; fi
-        echo "status=$status" >> "$GITHUB_OUTPUT"
-        echo "report-path=.revera/report.json" >> "$GITHUB_OUTPUT"
-        findings=0
-        if [ -f .revera/report.json ]; then
-          findings=$(python3 -c "import json;print(len([f for f in json.load(open('.revera/report.json'))['findings'] if f.get('validation_status')=='accepted']))")
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        # the cache info is rewritten only after a successful index/update
+        after=$(cat .revera/vera-cache.json 2>/dev/null || true)
+        if [ -n "$after" ] && [ "$after" != "$before" ]; then
+          echo "index-ok=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "index-ok=false" >> "$GITHUB_OUTPUT"
         fi
-        echo "findings=$findings" >> "$GITHUB_OUTPUT"
-        case "${{ inputs.fail-on }}" in
-          failed)  [ "$code" -eq 1 ] && exit 1; exit 0 ;;
-          partial) [ "$code" -ne 0 ] && exit "$code"; exit 0 ;;
-          never)   exit 0 ;;
-          *) echo "invalid fail-on: ${{ inputs.fail-on }}" >&2; exit 1 ;;
-        esac
 
+    - name: Review outcome
+      id: outcome
+      shell: bash
+      run: |
+        "${{ github.action_path }}/scripts/action-outcome.sh" "${{ steps.revera.outputs.code }}" .revera/report.json "${{ inputs.fail-on }}"
+
+    # Save only when this run produced a healthy index; a failed index or a
+    # run that never reached Vera must not overwrite/poison the cache.
     - name: Save .vera index cache
-      if: always() && inputs.cache == 'true'
+      if: always() && inputs.cache == 'true' && steps.revera.outputs.index-ok == 'true'
       uses: actions/cache/save@v4
       with:
-        path: .vera
-        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ hashFiles(inputs.config) }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
+        path: |
+          .vera
+          .revera/vera-cache.json
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}

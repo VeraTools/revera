@@ -88,6 +88,7 @@ pub async fn validate_candidates(
                             transcript_len: 0,
                             tool_calls: 0,
                             stopped: StopReason::TimeBudget,
+                            repaired: false,
                         }),
                         cand_id,
                         exec_start,

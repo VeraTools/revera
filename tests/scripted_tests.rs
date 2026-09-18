@@ -92,18 +92,14 @@ fn summary_rendering() {
         rationale: None,
         sources: vec![],
     };
-    let md = revera::report::summary_markdown(
-        &[f],
-        &[],
-        "checked callers",
-        &[],
-        revera::report::RunStatus::Complete,
-        "baseline",
-        &["openai-chat:http://x:m".into()],
-        false,
-        None,
-        None,
-    );
+    let md = revera::report::summary_markdown(&revera::report::Summary {
+        findings: &[f],
+        coverage: "checked callers",
+        status: Some(revera::report::RunStatus::Complete),
+        strategy: "baseline",
+        routes: &["openai-chat:http://x:m".into()],
+        ..Default::default()
+    });
     assert!(md.contains("Revera review"));
     assert!(md.contains("**[high]** `src/a.rs`:12"));
     assert!(md.contains("Not checked: checked callers"));

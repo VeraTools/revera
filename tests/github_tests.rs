@@ -37,6 +37,7 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
         publication: Default::default(),
         coverage_gaps: vec![],
         timing: Default::default(),
+        stats: Default::default(),
     }
 }
 
@@ -138,7 +139,6 @@ async fn head_moved_refuses() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .unwrap();
@@ -206,7 +206,6 @@ async fn happy_path_posts_review_and_summary() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .unwrap();
@@ -300,7 +299,6 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .unwrap();
@@ -353,7 +351,6 @@ async fn summary_only_finding_marked_posted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .unwrap();
@@ -412,7 +409,6 @@ async fn summary_failure_leaves_finding_unposted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .is_err());
@@ -466,7 +462,6 @@ async fn inline_review_422_degrades_to_summary_only() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .unwrap();
@@ -516,7 +511,6 @@ async fn inline_review_500_still_fails_and_leaves_unposted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
-        &[],
     )
     .await
     .is_err());

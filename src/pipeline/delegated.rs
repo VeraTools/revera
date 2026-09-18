@@ -534,6 +534,7 @@ vera: {}
             env: vec![],
             backend: "local".into(),
             exclude: vec![],
+            deadline: None,
         });
         let diff = Arc::new(DiffSet::default());
         let toolbox = Arc::new(ToolBox::new(repo.clone(), diff.clone(), vera.clone(), 1000));
@@ -544,16 +545,21 @@ vera: {}
             strategy_name: "delegated".into(),
             diff,
             patch_id: String::new(),
+            review_key: String::new(),
             vera,
             toolbox,
             ledger: ledger.clone(),
             state: ReviewState::default(),
             rechecks: vec![],
+            resolved_titles: vec![],
             partial_reasons: vec![],
+            retrieval_unavailable: None,
+            stats: Default::default(),
             coverage: String::new(),
             coverage_gaps: vec![],
             report_note: None,
             deadline: Instant::now() + Duration::from_secs(60),
+            reserve: Duration::ZERO,
             wall: Instant::now(),
             timing: crate::timing::Recorder::default(),
         };
