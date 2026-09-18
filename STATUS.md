@@ -53,7 +53,14 @@
   `revera --version`); tags `vX.Y.Z` move `vX`.
 - Per-route `reasoning` levels (default `medium`) across all four HTTP
   adapters; `provider_state` echoes reasoning/thinking items verbatim;
-  400s mentioning the reasoning field drop it and retry on the same slot.
+  400s mentioning the reasoning field step `xhigh`/`max` down to `high`,
+  then drop it, retrying on the same slot; ledger entries carry role and
+  requested vs effective effort (`role=route:model@req[->eff]` in the footer).
+- Timing: validator phases record `queue_ms` (semaphore wait) separately
+  from execution; `skipped` phases stay visible but are excluded from
+  spans and p50/p95 (`skipped_phases` counter); the publish phase measures
+  inline-review publication and the summary timing line is refreshed before
+  the comment is posted, so JSON, stdout and GitHub agree.
 - `action.yml` composite action (vera+revera install with sha256 verify,
   .vera cache restore/save, fail-on), release workflow (tag `v*` → verify
   packaged artifact → release → move `vX`), self-review dogfood workflow
@@ -66,9 +73,16 @@
   `x86_64-unknown-linux-gnu` binary needs glibc >= 2.39, so it fails on
   Ubuntu 22.04 hosts; fixed on main by shipping a static
   `x86_64-unknown-linux-musl` asset in the next release.
-- Eval evidence is muse-spark-only, 2 reps per cell, small repos; Vera's
-  recall effect is still unmeasured (docs/EVAL.md). Strong-model comparisons
-  were not run (user directive).
+- Eval evidence (docs/EVAL.md): Vera on beat Vera off 5/6 vs 4/6 on the
+  ripgrep multi-hop corpus (2 reps, provisional); model screening over
+  relay.fast/OpenCode Go shows single lanes tie on small repos, panels add
+  FPs and cost without recall, glm-5.3-flash degrades on 50k-LOC repos.
+  Provisional defaults: baseline + Vera + validation, investigator Muse Spark
+  or glm-5.3, validator glm-5.3-flash @ high. Cells are 1–2 reps; no
+  validator-model comparison yet.
+- Cold `vera index` of a 50k-LOC repo via the OpenRouter embedding backend
+  took 22 min with a ~15 min idle stall on one connection; warm cache +
+  `vera update` is ~5 s, so the Action cache path matters.
 - The fixture suite needs live OpenRouter embeddings; it passed on this
   branch after one earlier run timed out at the embeddings endpoint.
 
@@ -76,7 +90,9 @@
 
 1. Tag the next release to ship the musl asset, then dogfood the Action on
    the next PR.
-2. Add one large-repo, multi-hop eval case to measure Vera's recall effect.
+2. Per-tool call counters in the report ledger so search efficiency can be
+   compared across configs instead of inferred from tokens.
+3. Tighten panel collapse/validation before panel is recommended anywhere.
 
 ## Exact test-demo command
 

@@ -16,6 +16,10 @@ pub struct PhaseTiming {
     pub label: String,
     pub start_ms: u64,
     pub duration_ms: u64,
+    /// Time spent queued (e.g. waiting on the concurrency semaphore) before
+    /// execution started; 0 for non-validate phases.
+    #[serde(default)]
+    pub queue_ms: u64,
     pub outcome: String,
 }
 
@@ -35,6 +39,9 @@ pub struct Timing {
     pub validate_p95_ms: Option<u64>,
     /// Phases whose outcome is neither ok nor skipped.
     pub incomplete_phases: u32,
+    /// Phases whose outcome is "skipped".
+    #[serde(default)]
+    pub skipped_phases: u32,
     pub phases: Vec<PhaseTiming>,
 }
 
@@ -45,11 +52,15 @@ impl Timing {
         if !is_ok(outcome) && outcome != "skipped" {
             self.incomplete_phases += 1;
         }
+        if outcome == "skipped" {
+            self.skipped_phases += 1;
+        }
         self.phases.push(PhaseTiming {
             phase: "publish".into(),
             label: String::new(),
             start_ms,
             duration_ms,
+            queue_ms: 0,
             outcome: outcome.into(),
         });
         self.total_ms += duration_ms;
@@ -83,11 +94,26 @@ impl Recorder {
     /// Record a phase that began at `start` (relative to run start `wall`,
     /// which is also `Instant::now()` at run start).
     pub fn record(&self, phase: &str, label: &str, start: Instant, wall: Instant, outcome: &str) {
+        self.record_queued(phase, label, start, 0, wall, outcome);
+    }
+
+    /// Record a phase that began executing at `exec_start` after waiting
+    /// `queue_ms` (e.g. on the validate semaphore).
+    pub fn record_queued(
+        &self,
+        phase: &str,
+        label: &str,
+        exec_start: Instant,
+        queue_ms: u64,
+        wall: Instant,
+        outcome: &str,
+    ) {
         let p = PhaseTiming {
             phase: phase.into(),
             label: label.into(),
-            start_ms: start.saturating_duration_since(wall).as_millis() as u64,
-            duration_ms: start.elapsed().as_millis() as u64,
+            start_ms: exec_start.saturating_duration_since(wall).as_millis() as u64,
+            duration_ms: exec_start.elapsed().as_millis() as u64,
+            queue_ms,
             outcome: outcome.into(),
         };
         self.0.lock().unwrap().push(p);
@@ -97,7 +123,10 @@ impl Recorder {
         let mut phases = self.0.lock().unwrap().clone();
         phases.sort_by_key(|p| p.start_ms);
         let span = |name: &str| -> Option<u64> {
-            let ps: Vec<&PhaseTiming> = phases.iter().filter(|p| p.phase == name).collect();
+            let ps: Vec<&PhaseTiming> = phases
+                .iter()
+                .filter(|p| p.phase == name && p.outcome != "skipped")
+                .collect();
             if ps.is_empty() {
                 return None;
             }
@@ -107,7 +136,7 @@ impl Recorder {
         };
         let validate_durations: Vec<u64> = phases
             .iter()
-            .filter(|p| p.phase == "validate")
+            .filter(|p| p.phase == "validate" && p.outcome != "skipped")
             .map(|p| p.duration_ms)
             .collect();
         Timing {
@@ -134,6 +163,7 @@ impl Recorder {
                 .iter()
                 .filter(|p| !is_ok(&p.outcome) && p.outcome != "skipped")
                 .count() as u32,
+            skipped_phases: phases.iter().filter(|p| p.outcome == "skipped").count() as u32,
             phases,
         }
     }
@@ -149,6 +179,7 @@ mod tests {
             label: label.into(),
             start_ms,
             duration_ms: dur,
+            queue_ms: 0,
             outcome: outcome.into(),
         }
     }
@@ -194,11 +225,43 @@ mod tests {
             ));
         }
         v.push(phase("lane", "l", 0, 1000, "timeout"));
-        v.push(phase("lane", "l2", 0, 0, "skipped"));
+        v.push(phase("lane", "l2", 50000, 0, "skipped"));
         let t = timing_of(v);
         assert_eq!(t.validate_p50_ms, Some(3000));
         assert_eq!(t.validate_p95_ms, Some(5000));
         assert_eq!(t.incomplete_phases, 1); // skipped does not count
+        assert_eq!(t.skipped_phases, 1);
+        // the skipped lane extends neither the lane span nor percentiles
+        assert_eq!(t.lanes_ms, Some(1000));
+    }
+
+    #[test]
+    fn skipped_validate_excluded_from_spans_and_percentiles() {
+        let t = timing_of(vec![
+            phase("validate", "c1", 0, 1000, "ok"),
+            phase("validate", "c2", 1000, 2000, "ok"),
+            phase("validate", "c3", 2000, 3000, "ok"),
+            phase("validate", "c4", 9000, 0, "skipped"),
+            phase("validate", "c5", 9500, 0, "skipped"),
+        ]);
+        assert_eq!(t.validate_p50_ms, Some(2000));
+        assert_eq!(t.validate_p95_ms, Some(3000));
+        assert_eq!(t.validate_ms, Some(5000));
+        assert_eq!(t.skipped_phases, 2);
+        assert_eq!(t.incomplete_phases, 0);
+    }
+
+    #[test]
+    fn record_queued_stores_queue_and_exec_start() {
+        let r = Recorder::default();
+        let wall = Instant::now() - std::time::Duration::from_secs(1);
+        let exec = Instant::now();
+        r.record_queued("validate", "c1", exec, 250, wall, "ok");
+        let t = r.finish(wall);
+        let p = &t.phases[0];
+        assert_eq!(p.queue_ms, 250);
+        // start_ms is measured from exec_start, not from when the task queued
+        assert!(p.start_ms >= 1000, "{}", p.start_ms);
     }
 
     #[test]

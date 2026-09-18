@@ -119,8 +119,16 @@ pub enum ProviderError {
 
 #[derive(Debug, Clone, Default)]
 pub struct LedgerEntry {
+    /// Pipeline role this request served ("investigator", "validator",
+    /// "lead", a worker/scout focus name, ...).
+    pub role: String,
     pub route: String,
     pub model: String,
+    /// Reasoning effort the route was configured with ("none" when off).
+    pub requested_reasoning: String,
+    /// Reasoning effort actually sent on the wire after fallbacks
+    /// ("none" when reasoning was dropped or disabled).
+    pub effective_reasoning: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub latency_ms: u64,

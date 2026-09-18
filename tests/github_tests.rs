@@ -148,6 +148,15 @@ async fn head_moved_refuses() {
     );
     assert!(p.review_id.is_none());
     assert_eq!(rep.status, RunStatus::Partial);
+    let pub_phase = rep
+        .timing
+        .phases
+        .iter()
+        .find(|p| p.phase == "publish")
+        .expect("skipped publish phase recorded");
+    assert_eq!(pub_phase.outcome, "skipped");
+    assert_eq!(rep.timing.skipped_phases, 1);
+    assert_eq!(rep.timing.incomplete_phases, 0);
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 1, "only the head re-check may hit the API");
 }
