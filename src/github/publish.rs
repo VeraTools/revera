@@ -68,6 +68,11 @@ pub async fn publish(
             None => reason,
         });
         report.publication = pubn;
+        report
+            .timing
+            .append_publish(report.timing.total_ms, 0, "skipped");
+        report.plan.summary_markdown =
+            crate::report::refresh_timing_line(&report.plan.summary_markdown, &report.timing);
         return Ok(report.publication.clone());
     }
 
