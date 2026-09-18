@@ -1,5 +1,7 @@
-name: self-review
+name: dogfood-released
 
+# Reviews PRs with the *published* Action (@v0 -> musl release asset) instead
+# of a source build; self-review.yml covers the source build (dry-run).
 on:
   pull_request:
 
@@ -30,29 +32,33 @@ jobs:
   revera:
     needs: has-key
     if: needs.has-key.outputs.ok == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install vera
-        run: |
-          set -euo pipefail
-          curl -fsSL https://github.com/VeraTools/Vera/releases/download/v1.4.1/vera-x86_64-unknown-linux-gnu.tar.gz -o /tmp/vera.tar.gz
-          echo "42123fea81972e10afff70eea934d829000e956a946f8b2f59c22a78bbfea406  /tmp/vera.tar.gz" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf /tmp/vera.tar.gz -C /tmp
-          install -m755 "$(find /tmp -name vera -type f | head -1)" "$RUNNER_TEMP/bin/vera"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build and review with the PR's own revera
-        run: |
-          cargo build --release --locked
-          # source build stays dry-run; dogfood-released.yml owns the PR comment
-          target/release/revera review --event "$GITHUB_EVENT_PATH" --config revera.yaml --publish dry-run --out .revera/report.json || [ $? -eq 2 ]
+      - id: rv
+        uses: VeraTools/revera@v0
+        with:
+          config: revera.yaml
+          publish: ${{ matrix.os == 'ubuntu-latest' && 'comment' || 'dry-run' }}
+          fail-on: failed
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+      - name: Action outputs
+        run: |
+          echo "status=${{ steps.rv.outputs.status }}"
+          echo "findings=${{ steps.rv.outputs.findings }}"
+      # musl asset should report "statically linked" on both runners
+      - name: Installed binary sanity
+        run: |
+          revera --version
+          file "$(command -v revera)" || true

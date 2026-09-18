@@ -23,8 +23,8 @@ completion.
 
 ## Live probe — crossfile fixture (dry-run)
 
-Config: `fixtures/configs/live-openrouter.yaml` (muse-spark all routes, vera api
-via qwen/qwen3-embedding-8b, OpenRouter headers HTTP-Referer + X-Title).
+Config: `fixtures/configs/live.yaml` (Muse via OpenCode Go, glm-5.3-flash
+validator via relay.fast, Vera retrieval via OpenRouter).
 
 ### muse-spark runs (authoritative)
 
