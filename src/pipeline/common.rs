@@ -7,9 +7,9 @@ use crate::pipeline::anchor::{anchor, is_publishable, Placement};
 use crate::provider::LedgerHandle;
 use crate::report::{
     finding_body, ledger_report, summary_markdown, InlineComment, PublicationPlan, RunReport,
-    RunStatus,
+    RunStats, RunStatus, Summary,
 };
-use crate::state::{recheck_transition, FindingState, ReviewState};
+use crate::state::{recheck_transition, review_key, FindingState, ReviewState};
 use crate::timing::Recorder;
 use crate::tools::ToolBox;
 use crate::vera::VeraClient;
@@ -37,27 +37,44 @@ pub struct Prepared {
     pub strategy_name: String,
     pub diff: Arc<DiffSet>,
     pub patch_id: String,
+    /// Identity of this review (base, head tree, config); stored in state.
+    pub review_key: String,
     pub vera: Arc<VeraClient>,
     pub toolbox: Arc<ToolBox>,
     pub ledger: LedgerHandle,
     pub state: ReviewState,
     /// Prior open/uncertain findings after recheck verdicts were applied.
     pub rechecks: Vec<Finding>,
+    /// Titles of prior findings resolved by this run's rechecks.
+    pub resolved_titles: Vec<String>,
     pub partial_reasons: Vec<String>,
+    /// Why vera retrieval is unavailable (`None` when it works or is off).
+    pub retrieval_unavailable: Option<String>,
+    pub stats: RunStats,
     pub coverage: String,
     pub coverage_gaps: Vec<String>,
     /// Strategy-specific line appended to the summary (e.g. panel stats).
     pub report_note: Option<String>,
     /// wall-clock deadline for the whole run (start + run_max_seconds).
     pub deadline: Instant,
+    /// Time held back from investigation so validation and the final
+    /// report still fit before `deadline`.
+    pub reserve: std::time::Duration,
     pub wall: Instant,
     pub timing: Recorder,
 }
 
 impl Prepared {
-    /// AgentBudget capped by both the per-agent limit and the run deadline.
+    /// AgentBudget for an investigation lane: capped by the per-agent
+    /// limit and by the run deadline minus the validation reserve.
     pub fn budget(&self, max_tool_calls: u32, max_seconds: u64) -> crate::agent::AgentBudget {
-        clamp_budget(max_tool_calls, max_seconds, self.deadline)
+        clamp_budget(
+            max_tool_calls,
+            max_seconds,
+            self.deadline
+                .checked_sub(self.reserve)
+                .unwrap_or(self.deadline),
+        )
     }
 }
 
@@ -71,6 +88,15 @@ pub fn clamp_budget(
         max_tool_calls,
         max_seconds: max_seconds.min(left.as_secs()),
     }
+}
+
+/// Share of the run budget held back for validation and finalization when
+/// validation is enabled: a quarter of the run, at most two minutes.
+pub fn validation_reserve(run_max_seconds: u64, validate: bool) -> std::time::Duration {
+    if !validate {
+        return std::time::Duration::ZERO;
+    }
+    std::time::Duration::from_secs((run_max_seconds / 4).min(120))
 }
 
 pub enum PrepareOut {
@@ -107,23 +133,64 @@ fn normalize_finding_json(v: &serde_json::Value) -> serde_json::Value {
     v
 }
 
+/// Result of parsing a terminal `findings` submission. A valid empty list
+/// is `Ok` with no findings; a missing/non-array `findings` or malformed
+/// items make the submission incomplete (`problem` is set) while any valid
+/// items are still kept.
+#[derive(Debug, Default)]
+pub struct ParsedFindings {
+    pub findings: Vec<Finding>,
+    pub dropped: usize,
+    pub problem: Option<String>,
+}
+
+pub fn parse_findings_checked(args: &serde_json::Value) -> ParsedFindings {
+    let Some(arr) = args["findings"].as_array() else {
+        return ParsedFindings {
+            problem: Some(if args.get("findings").is_none() {
+                "submission has no `findings` array".into()
+            } else {
+                "`findings` is not an array".into()
+            }),
+            ..Default::default()
+        };
+    };
+    let mut out = ParsedFindings::default();
+    let mut errors: Vec<String> = vec![];
+    for v in arr {
+        match serde_json::from_value::<Finding>(normalize_finding_json(v)) {
+            Ok(f) => out.findings.push(f),
+            Err(e) => {
+                tracing::warn!("dropping malformed finding: {e}");
+                out.dropped += 1;
+                if errors.len() < 3 {
+                    errors.push(e.to_string());
+                }
+            }
+        }
+    }
+    if out.dropped > 0 {
+        out.problem = Some(format!(
+            "{} of {} finding(s) malformed and dropped ({})",
+            out.dropped,
+            arr.len(),
+            errors.join("; ")
+        ));
+    }
+    out
+}
+
+/// Terminal check for `submit_findings`: rejects submissions that would
+/// parse incompletely so the agent gets one repair round.
+pub fn findings_terminal_check(args: &serde_json::Value) -> Result<(), String> {
+    match parse_findings_checked(args).problem {
+        Some(p) => Err(p),
+        None => Ok(()),
+    }
+}
+
 pub fn parse_findings(args: &serde_json::Value) -> Vec<Finding> {
-    args["findings"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| {
-                    match serde_json::from_value::<Finding>(normalize_finding_json(v)) {
-                        Ok(f) => Some(f),
-                        Err(e) => {
-                            tracing::warn!("dropping malformed finding: {e}");
-                            None
-                        }
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    parse_findings_checked(args).findings
 }
 
 /// Parse a worker's `candidate_findings` array (same schema).
@@ -160,36 +227,43 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     let patch_id = git::patch_id(&repo, &req.base, head_rev)
         .await
         .unwrap_or_default();
+    let head_tree = git::tree_id(&repo, head_rev).await?;
+    let key = review_key(
+        &base_sha,
+        &head_tree,
+        &patch_id,
+        &cfg.review_fingerprint(strategy_name),
+    );
     let ledger = LedgerHandle::new();
 
     let mut state = ReviewState::load(&repo)?.unwrap_or_default();
-    let had_prior = !state.findings.is_empty() || !state.patch_id.is_empty();
 
-    // short-circuit: identical patch content already reviewed — but not while
-    // any accepted finding is still unposted (it must publish on this run)
+    // short-circuit: a *completed* review of exactly this content and
+    // configuration — but not while any accepted finding is still unposted
+    // (it must publish on this run). Partial runs, legacy state and any
+    // identity drift fall through to a fresh review.
     let unposted = state
         .findings
         .iter()
         .any(|f| f.status == FindingState::Open && !f.posted);
-    if !req.force && had_prior && !unposted && state.is_unchanged(&base_sha, &patch_id) {
+    if !req.force && !unposted && state.can_reuse(&key) {
         state.reviewed_head = head_sha.clone();
         state.save(&repo)?;
         let plan_state = state.clone();
-        let summary = summary_markdown(
-            &[],
-            &[],
-            "unchanged since last review (identical patch-id)",
-            &[],
-            RunStatus::Complete,
-            strategy_name,
-            &[],
-            cfg.review.publish_uncertain,
-            None,
-            None,
-        );
+        let carried = state.open_findings().len();
+        let reason = "reused completed review of identical content";
+        let summary = summary_markdown(&Summary {
+            coverage: "",
+            status: Some(RunStatus::Complete),
+            strategy: strategy_name,
+            publish_uncertain: cfg.review.publish_uncertain,
+            reused: true,
+            carried_open: carried,
+            ..Default::default()
+        });
         let rep = RunReport {
             status: RunStatus::Complete,
-            reason: Some("unchanged since last review".into()),
+            reason: Some(reason.into()),
             base: base_sha,
             head: head_sha,
             strategy: strategy_name.into(),
@@ -203,12 +277,24 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             publication: Default::default(),
             coverage_gaps: vec![],
             timing: timing.finish(wall),
+            stats: RunStats {
+                reused: true,
+                retrieval: "not needed".into(),
+                ..Default::default()
+            },
         };
         return Ok(PrepareOut::ShortCircuit(Box::new(rep), state));
     }
+    if state.version != 0 && state.version != crate::state::STATE_VERSION {
+        tracing::warn!(
+            "state version {} differs from {}; re-reviewing (publication ids retained)",
+            state.version,
+            crate::state::STATE_VERSION
+        );
+    }
 
     let mut partial_reasons: Vec<String> = Vec::new();
-    let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?);
+    let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?.with_deadline(deadline));
     let vera_err = if !cfg.vera.enabled {
         tracing::info!("vera disabled by config; no index, no retrieval tools");
         timing.record("vera_index", "", Instant::now(), wall, "skipped");
@@ -245,12 +331,21 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         tb.hide_vera_tools();
     }
     let toolbox = Arc::new(tb);
+    let retrieval_unavailable = vera_err.clone();
     if let Some(r) = vera_err {
         toolbox.disable_vera(r);
     }
+    let retrieval = if !cfg.vera.enabled {
+        "disabled".to_string()
+    } else if let Some(r) = &retrieval_unavailable {
+        format!("unavailable: {r}")
+    } else {
+        "vera".to_string()
+    };
 
     // ---- recheck prior open findings ----
     let mut rechecks = recheck_candidates(&state);
+    let mut resolved_titles = vec![];
     if !rechecks.is_empty() {
         let clean = validate_candidates(
             cfg,
@@ -274,11 +369,19 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         for rc in &rechecks {
             if let Some(vs) = rc.validation_status {
                 let st = recheck_transition(vs);
+                if st == FindingState::Resolved {
+                    resolved_titles.push(rc.title.clone());
+                }
                 state.mark(&rc.id(), st);
             }
         }
     }
 
+    let stats = RunStats {
+        retrieval,
+        resolved: resolved_titles.len(),
+        ..Default::default()
+    };
     Ok(PrepareOut::Ready(Box::new(Prepared {
         repo,
         base_sha,
@@ -286,16 +389,21 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         strategy_name: strategy_name.into(),
         diff,
         patch_id,
+        review_key: key,
         vera,
         toolbox,
         ledger,
         state,
         rechecks,
+        resolved_titles,
         partial_reasons,
+        retrieval_unavailable,
+        stats,
         coverage: String::new(),
         coverage_gaps: vec![],
         report_note: None,
         deadline,
+        reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
         wall,
         timing,
     })))
@@ -306,25 +414,7 @@ fn recheck_candidates(state: &ReviewState) -> Vec<Finding> {
     state
         .open_findings()
         .iter()
-        .map(|f| Finding {
-            defect_key: f.defect_key.clone(),
-            severity: crate::findings::Severity::Medium,
-            file: f.file.clone(),
-            start_line: f.start_line,
-            end_line: None,
-            title: f.title.clone(),
-            claim: String::new(),
-            trigger: String::new(),
-            impact: String::new(),
-            introduced_by_change: true,
-            supporting_evidence: vec![],
-            counterevidence_checked: vec![],
-            validation_status: None,
-            suggested_fix: None,
-            source: "prior".into(),
-            rationale: None,
-            sources: vec!["prior".into()],
-        })
+        .map(|f| f.to_finding())
         .collect()
 }
 
@@ -352,15 +442,14 @@ pub async fn finish(
         .cloned()
         .collect();
     let reenter_ids: std::collections::HashSet<String> = reenter.iter().map(|f| f.id()).collect();
-    // dedupe against prior posted/open/uncertain ids
+    // dedupe against findings still tracked as open/uncertain (posted or
+    // awaiting recheck). Resolved/rejected ids are *not* filtered: the same
+    // defect coming back is a reintroduction and must be validated again.
     collapsed.retain(|f| {
         let id = f.id();
-        !(prep.state.has_posted(&id)
-            || (!reenter_ids.contains(&id)
-                && prep.state.findings.iter().any(|p| {
-                    p.id == id && matches!(p.status, FindingState::Open | FindingState::Uncertain)
-                })))
+        !(prep.state.is_tracked_open(&id) && !reenter_ids.contains(&id))
     });
+    prep.stats.candidates = collapsed.len();
 
     // ---- validate ----
     if !cfg.review.validate {
@@ -417,6 +506,7 @@ pub async fn finish(
 
     // ---- state update ----
     let mut state = prep.state.clone();
+    let mut reopened_titles: Vec<String> = vec![];
     for f in &final_findings {
         // `posted` is only ever set by the publisher via mark_posted().
         let st = match f.validation_status {
@@ -424,24 +514,50 @@ pub async fn finish(
             Some(crate::findings::ValidationStatus::Rejected) => FindingState::Rejected,
             _ => FindingState::Uncertain,
         };
-        state.upsert(f, st);
+        if state.upsert(f, st) && st == FindingState::Open {
+            reopened_titles.push(format!("`{}`:{} — {}", f.file, f.start_line, f.title));
+        }
     }
-    state.reviewed_base = prep.base_sha.clone();
-    state.reviewed_head = prep.head_sha.clone();
-    state.patch_id = prep.patch_id.clone();
-    state.save(&prep.repo)?;
-
     let status = if prep.partial_reasons.is_empty() {
         RunStatus::Complete
     } else {
         RunStatus::Partial
     };
+    state.record_outcome(
+        &prep.base_sha,
+        &prep.head_sha,
+        &prep.patch_id,
+        &prep.review_key,
+        status,
+    );
+    state.save(&prep.repo)?;
+
     let reason = if prep.partial_reasons.is_empty() {
         None
     } else {
         Some(prep.partial_reasons.join("; "))
     };
     let timing = prep.timing.finish(prep.wall);
+    let final_ids: std::collections::HashSet<String> =
+        final_findings.iter().map(|f| f.id()).collect();
+    let carried_open = state
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingState::Open && f.posted && !final_ids.contains(&f.id))
+        .count();
+    let mut stats = prep.stats.clone();
+    stats.reopened = reopened_titles.len();
+    stats.accepted = final_findings
+        .iter()
+        .filter(|f| f.validation_status == Some(crate::findings::ValidationStatus::Accepted))
+        .count();
+    stats.rejected = final_findings
+        .iter()
+        .filter(|f| f.validation_status == Some(crate::findings::ValidationStatus::Rejected))
+        .count();
+    stats.uncertain = final_findings.len() - stats.accepted - stats.rejected;
+    stats.files_read = prep.toolbox.files_read();
+    stats.tools = prep.toolbox.tool_stats();
     let routes: Vec<String> = prep
         .ledger
         .0
@@ -456,18 +572,24 @@ pub async fn finish(
     } else {
         prep.coverage.clone()
     };
-    let summary = summary_markdown(
-        &final_findings,
-        &outside,
-        &coverage,
-        &prep.coverage_gaps,
-        status,
-        &prep.strategy_name,
-        &routes,
-        cfg.review.publish_uncertain,
-        prep.report_note.as_deref(),
-        Some(&timing),
-    );
+    let summary = summary_markdown(&Summary {
+        findings: &final_findings,
+        outside_diff: &outside,
+        coverage: &coverage,
+        coverage_gaps: &prep.coverage_gaps,
+        status: Some(status),
+        reason: reason.as_deref(),
+        strategy: &prep.strategy_name,
+        routes: &routes,
+        publish_uncertain: cfg.review.publish_uncertain,
+        note: prep.report_note.as_deref(),
+        timing: Some(&timing),
+        reused: false,
+        carried_open,
+        retrieval_unavailable: prep.retrieval_unavailable.as_deref(),
+        resolved: &prep.resolved_titles,
+        reopened: &reopened_titles,
+    });
     let rep = RunReport {
         status,
         reason,
@@ -487,6 +609,7 @@ pub async fn finish(
         publication: Default::default(),
         coverage_gaps: prep.coverage_gaps.clone(),
         timing,
+        stats,
     };
     Ok((rep, state))
 }
