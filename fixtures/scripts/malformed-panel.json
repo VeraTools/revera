@@ -1,0 +1,16 @@
+{
+  "roles": {
+    "general": [
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {}}]},
+        {"tool_calls": [{"name": "submit_findings", "arguments": {"findings": "not a list", "coverage": "nothing"}}]}
+      ]
+    ],
+    "cross-file": [
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {"findings": [], "coverage": "cross-file lane"}}]}
+      ]
+    ],
+    "validator": []
+  }
+}

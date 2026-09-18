@@ -61,6 +61,15 @@ pub fn find_managed<'a>(
     })
 }
 
+/// Revera ids already present as inline review comments on the PR: the
+/// durable record of what was posted, independent of the summary blob.
+pub fn posted_revera_ids(review_comment_bodies: &[String]) -> Vec<String> {
+    review_comment_bodies
+        .iter()
+        .filter_map(|b| revera_id(b))
+        .collect()
+}
+
 fn revera_id(body: &str) -> Option<String> {
     let marker = "<!-- revera-id:";
     let start = body.find(marker)? + marker.len();
@@ -129,7 +138,19 @@ pub async fn publish(
         return Ok(report.publication.clone());
     }
 
-    // (2) review with inline comments for accepted+Inline, not yet posted
+    // (2) review with inline comments for accepted+Inline, not yet posted.
+    // Inline comments already on the PR count as posted even when a prior
+    // summary upsert failed before it could record them.
+    let already = match api.list_review_comment_bodies(owner, repo, ev.number).await {
+        Ok(bodies) => posted_revera_ids(&bodies),
+        Err(e) => {
+            tracing::warn!("could not list existing review comments: {e:#}");
+            vec![]
+        }
+    };
+    if !already.is_empty() {
+        state.mark_posted(&already);
+    }
     let mut posted_ids: Vec<String> = Vec::new();
     let comments: Vec<ReviewComment> = report
         .plan

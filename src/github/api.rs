@@ -134,6 +134,35 @@ impl GitHubApi {
         }
     }
 
+    /// Bodies of all inline review comments on the PR (paginated).
+    pub async fn list_review_comment_bodies(
+        &self,
+        owner: &str,
+        repo: &str,
+        n: u64,
+    ) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let v = self
+                .send(self.http.get(format!(
+                    "{}/repos/{}/{}/pulls/{}/comments?per_page=100&page={}",
+                    self.base, owner, repo, n, page
+                )))
+                .await?;
+            let arr = v.as_array().cloned().unwrap_or_default();
+            let count = arr.len();
+            out.extend(
+                arr.iter()
+                    .filter_map(|c| c["body"].as_str().map(str::to_string)),
+            );
+            if count < 100 {
+                return Ok(out);
+            }
+            page += 1;
+        }
+    }
+
     /// Login of the authenticated identity; `None` when the token cannot
     /// answer `/user` (e.g. the Actions installation token).
     pub async fn viewer_login(&self) -> Option<String> {

@@ -99,7 +99,8 @@ known bot login), never by marker text alone.
 
 `review_key` = sha256(base sha, exact head tree id, patch id, config
 fingerprint). The fingerprint covers strategy, thresholds, limits, budgets,
-model routes (protocol/base URL/model/reasoning — no key names or values),
+concurrency, retries, delegated/panel settings, model routes (protocol/base
+URL/model/reasoning/extra-header *names* — no key names or values),
 prompt content hash, engine version and Vera index identity. A run is reused
 only when the prior run under the same key was `complete` and left no
 unposted open findings; partial/failed runs are always redone. Corrupt state
@@ -111,8 +112,11 @@ On a new push: prior unresolved findings are handed to the validator as
 marked `resolved`; a resolved finding that is reproduced again is `reopened`
 and published again; findings still valid and already posted are not
 reposted. New candidates are deduplicated against prior ids. Inline and
-summary publication are tracked separately so a summary failure never
-duplicates inline comments on the next run.
+summary publication are tracked separately, and before posting the publisher
+reads the PR's existing inline review comments and treats every
+`<!-- revera-id:… -->` it finds there as posted — so a summary upsert that
+fails after the inline review succeeded never duplicates inline comments on
+the next run, even when the state blob never recorded them.
 
 ## Anchoring
 

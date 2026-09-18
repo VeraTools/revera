@@ -28,6 +28,18 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: doctor fails without publication credentials
+        env:
+          FIXTURE_SCRIPTS: ${{ github.workspace }}/fixtures/scripts
+        run: |
+          set -euo pipefail
+          cfg=$RUNNER_TEMP/doctor.yaml
+          sed 's/publish: dry-run/publish: comment/' fixtures/action/scripted-clean.yaml > "$cfg"
+          echo '  token_env: REVERA_CI_MISSING_TOKEN' >> "$cfg"
+          if env -u REVERA_CI_MISSING_TOKEN cargo run -q -- doctor --config "$cfg"; then
+            echo "doctor must fail when the publish token is missing" >&2; exit 1
+          fi
+          REVERA_CI_MISSING_TOKEN=placeholder cargo run -q -- doctor --config "$cfg"
 
   # Live: scripted models but a real Vera index built through OpenRouter
   # embeddings. Shown as *skipped* (not passed) when the secret is absent,

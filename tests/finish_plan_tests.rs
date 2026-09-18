@@ -206,6 +206,51 @@ async fn second_malformed_submission_is_final() {
     assert!(parsed.problem.is_some());
 }
 
+struct Hang;
+
+#[async_trait::async_trait]
+impl ModelClient for Hang {
+    async fn complete(
+        &self,
+        _m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        std::future::pending().await
+    }
+    fn route_label(&self) -> String {
+        "hang".into()
+    }
+}
+
+/// A stalled provider is cut at the remaining budget, not at budget plus a
+/// grace period; the grace is reserved for the reply to the budget notice.
+#[tokio::test]
+async fn stalled_provider_is_cut_at_the_time_budget() {
+    let tb = toolbox(&std::env::temp_dir());
+    let t0 = std::time::Instant::now();
+    let r = run_agent_checked(
+        &Hang,
+        "s",
+        "u",
+        &tb,
+        &terminal_submit_findings_spec(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 1,
+        },
+        &findings_terminal_check,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::TimeBudget);
+    assert!(r.final_call.is_none());
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        t0.elapsed()
+    );
+}
+
 #[tokio::test]
 async fn bare_text_unrelated_json_is_not_a_submission() {
     // `{}` as text must not count as a terminal call; the nudge then gets a
@@ -316,6 +361,46 @@ vera: {enabled: false}
     assert!(!fp.contains("SOME_KEY_ENV"), "{fp}");
     assert!(!fp.contains("sk-dummy"), "{fp}");
     assert!(fp.contains("baseline"));
+    // every behaviour-shaping knob changes the key, header values do not
+    let base = review_key("b", "t", "p", &c.review_fingerprint("baseline"));
+    let mut c2 = c.clone();
+    c2.review.concurrency += 1;
+    assert_ne!(
+        base,
+        review_key("b", "t", "p", &c2.review_fingerprint("baseline"))
+    );
+    let mut c3 = c.clone();
+    c3.budget.retries += 1;
+    assert_ne!(
+        base,
+        review_key("b", "t", "p", &c3.review_fingerprint("baseline"))
+    );
+    let mut c4 = c.clone();
+    c4.delegated.max_questions += 1;
+    assert_ne!(
+        base,
+        review_key("b", "t", "p", &c4.review_fingerprint("baseline"))
+    );
+    let mut c5 = c.clone();
+    c5.panel.focuses.push("extra".into());
+    assert_ne!(
+        base,
+        review_key("b", "t", "p", &c5.review_fingerprint("baseline"))
+    );
+    let mut c6 = c.clone();
+    c6.models
+        .investigator
+        .extra_headers
+        .insert("X-Secret".into(), "sk-header-value".into());
+    let fp6 = c6.review_fingerprint("baseline").to_string();
+    assert_ne!(
+        base,
+        review_key("b", "t", "p", &c6.review_fingerprint("baseline"))
+    );
+    assert!(
+        fp6.contains("X-Secret") && !fp6.contains("sk-header-value"),
+        "{fp6}"
+    );
 }
 
 // ---------- lifecycle ----------
