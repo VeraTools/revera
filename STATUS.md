@@ -105,6 +105,12 @@ known to be missing, and what to do next.
 - Eval evidence (docs/EVAL.md) is thin: 1–2 reps per cell, small synthetic
   repos, one model family on most routes; no validator-model comparison on
   frozen candidates yet. Treat model recommendations as provisional.
+- `v0.2.0` is released: it ships the static `x86_64-unknown-linux-musl`
+  asset (verified `sha256` + static-pie) and `v0` points at it (the 0.1.0
+  GNU binary needs glibc >= 2.39, so it fails on Ubuntu 22.04 hosts).
+  `dogfood-released.yml` and `self-review.yml` gate on the
+  `OPENROUTER_API_KEY`, `RELAY_FAST_API_KEY` and `OPENCODE_GO_API_KEY` repo
+  secrets and annotate a skip when any is missing.
 - Cold `vera index` of a 50k-LOC repo via the OpenRouter embedding backend
   took 22 min once (idle stall on one connection); warm `vera update` is
   ~5 s, so the Action cache path matters. Runs that hit `run_max_seconds`
@@ -118,12 +124,14 @@ known to be missing, and what to do next.
 
 ## Next
 
-1. Validator comparison on frozen candidates/evidence (docs/EVAL.md plan),
+1. Get a live `dogfood-released.yml` and `self-review.yml` run with the
+   provider secrets set, and record the outcome here.
+2. Validator comparison on frozen candidates/evidence (docs/EVAL.md plan),
    and Vera-on vs lexical-only under equal budgets on the hard corpus.
-2. Presentation fixtures rendered from real runs for every outcome (see
+3. Presentation fixtures rendered from real runs for every outcome (see
    `tests/finish_plan_tests.rs::summary_presentation_*` for the asserted
    text today).
-3. Tighten panel collapse/validation before recommending any multi-lane
+4. Tighten panel collapse/validation before recommending any multi-lane
    strategy.
 
 ## Exact test-demo commands
