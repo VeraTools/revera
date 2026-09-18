@@ -31,11 +31,14 @@ managed summary comment carrying its state blob.
 - uses: VeraTools/revera@v0
   with: { config: revera.yaml }
   env:
-    REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
+    OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
 ```
 
-`@v1` becomes available with the 1.0.0 release; pin `@v0.1.0` for an exact version.
+`@v1` becomes available with the 1.0.0 release; pin `@v0.2.0` for an exact
+version. Releases ship a static musl binary, so the Action runs on
+ubuntu-22.04+ runners.
 
 The checkout must use the PR head SHA so reviewer tools read the exact PR
 tree rather than GitHub's synthetic merge ref.
@@ -99,5 +102,8 @@ validator or scout models, large repositories.
 
 All three strategies (baseline / delegated / panel), GitHub event mode with
 `--publish comment` reviewing the exact PR head, composite action + verified
-release workflow, and a 13-repo eval harness in `eval/`. `v0.1.0` is released
-(`@v0` resolves); see STATUS.md for limitations and docs/EVAL.md for results.
+release workflow, and a 13-repo eval harness in `eval/`. `v0.2.0` is prepared
+on this branch; tagging `v0.2.0` publishes the musl asset and moves `v0`. The
+`dogfood-released.yml` workflow (ubuntu-latest + ubuntu-22.04) exercises the
+published Action while `self-review.yml` covers the source build (dry-run);
+see STATUS.md for limitations and docs/EVAL.md for results.

@@ -68,11 +68,11 @@
 
 ## Current blocker / known limitations
 
-- `v0.1.0` is released and `uses: VeraTools/revera@v0` resolves (`v0` and
-  `v0.1.0` both point at the release commit). Known issue: the 0.1.0
-  `x86_64-unknown-linux-gnu` binary needs glibc >= 2.39, so it fails on
-  Ubuntu 22.04 hosts; fixed on main by shipping a static
-  `x86_64-unknown-linux-musl` asset in the next release.
+- `v0.2.0` is prepared on this branch: tagging `v0.2.0` publishes the
+  static `x86_64-unknown-linux-musl` asset and moves `v0` (the 0.1.0 GNU
+  binary needs glibc >= 2.39, so it fails on Ubuntu 22.04 hosts).
+  `dogfood-released.yml` (ubuntu-latest + ubuntu-22.04) exercises the
+  published Action; `self-review.yml` exercises the source build (dry-run).
 - Eval evidence (docs/EVAL.md): Vera on beat Vera off 5/6 vs 4/6 on the
   ripgrep multi-hop corpus (2 reps, provisional); model screening over
   relay.fast/OpenCode Go shows single lanes tie on small repos, panels add
@@ -88,8 +88,9 @@
 
 ## Next three tasks
 
-1. Tag the next release to ship the musl asset, then dogfood the Action on
-   the next PR.
+1. Tag `v0.2.0` to ship the musl asset and move `v0`; `dogfood-released.yml`
+   then exercises the published Action (ubuntu-latest comment + ubuntu-22.04
+   dry-run) while `self-review.yml` covers the source build.
 2. Per-tool call counters in the report ledger so search efficiency can be
    compared across configs instead of inferred from tokens.
 3. Tighten panel collapse/validation before panel is recommended anywhere.
@@ -99,8 +100,9 @@
 ```sh
 OPENROUTER_API_KEY=... VERA_HOME=$HOME/.vera-revera fixtures/run-fixture.sh
 # live probe:
-VERA_HOME=$HOME/.vera-revera revera review --repo <repo> --base <base> \
-  --head <head> --config fixtures/configs/live-openrouter.yaml
+OPENROUTER_API_KEY=... RELAY_FAST_API_KEY=... OPENCODE_GO_API_KEY=... \
+  VERA_HOME=$HOME/.vera-revera revera review --repo <repo> --base <base> \
+  --head <head> --config fixtures/configs/live.yaml
 ```
 
 ## Expensive-to-reverse decisions

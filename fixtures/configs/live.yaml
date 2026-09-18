@@ -1,10 +1,6 @@
-# Revera self-review config (dogfood).
-# Topology: Muse Spark only via OpenCode Go (openai-responses); all other
-# review models via relay.fast; OpenRouter is used for Vera
-# embedding/reranker only.
 review:
   strategy: baseline
-  publish: comment
+  publish: dry-run
 models:
   investigator:
     protocol: openai-responses
