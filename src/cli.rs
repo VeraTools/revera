@@ -346,6 +346,8 @@ async fn review(a: ReviewArgs) -> i32 {
                         let _ = state.save(&repo);
                     }
                     Err(err) => {
+                        // keep whatever was marked posted before the failure
+                        let _ = state.save(&repo);
                         // no publish phase recorded yet -> the failure
                         // happened before step 2 (e.g. head-sha re-check)
                         if !report.timing.phases.iter().any(|p| p.phase == "publish") {
@@ -530,9 +532,14 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
             println!("github: token env {} set", cfg.github.token_env);
         } else {
             println!(
-                "github: token env {} missing or empty (needed for publish = comment)",
+                "github: FAIL — token env {} missing or empty (needed for publish = comment)",
                 cfg.github.token_env
             );
+            println!(
+                "  next: export {}=<token> or set review.publish = dry-run",
+                cfg.github.token_env
+            );
+            ok = false;
         }
     }
     if crate::git::is_repo(std::path::Path::new(".")).await {

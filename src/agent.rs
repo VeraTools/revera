@@ -101,6 +101,10 @@ pub async fn run_agent(
 /// Minimum time that must remain for a repair round to be attempted.
 const REPAIR_MIN_LEFT: Duration = Duration::from_secs(15);
 
+/// Allowance for the single completion that answers the "budget exhausted"
+/// notice once the time budget is already spent.
+const TERMINAL_GRACE: Duration = Duration::from_secs(20);
+
 /// Like `run_agent`, but the terminal call's arguments are validated with
 /// `check`. On failure (and while time remains) the error is returned to
 /// the model once and it may resubmit; the second submission is final.
@@ -125,13 +129,15 @@ pub async fn run_agent_checked(
     let mut budget_stop = StopReason::ToolBudget;
     let start = Instant::now();
     let total = Duration::from_secs(budget.max_seconds);
-    // hard cap on any single await: remaining budget plus a small grace so
-    // the "budget exhausted" notice can still be answered
-    let left = |start: Instant| {
-        total
-            .saturating_sub(start.elapsed())
-            .max(Duration::from_secs(5))
-            + Duration::from_secs(30)
+    // hard cap on any single await: the remaining budget; only the reply to
+    // a time-budget notice gets a bounded grace allowance
+    let left = |grace: bool| {
+        let rem = total.saturating_sub(start.elapsed());
+        if grace {
+            rem.max(TERMINAL_GRACE)
+        } else {
+            rem.max(Duration::from_secs(1))
+        }
     };
 
     loop {
@@ -150,8 +156,9 @@ pub async fn run_agent_checked(
             )));
         }
 
+        let grace = budget_notice_sent && budget_stop == StopReason::TimeBudget;
         let completion =
-            match tokio::time::timeout(left(start), client.complete(&messages, &specs)).await {
+            match tokio::time::timeout(left(grace), client.complete(&messages, &specs)).await {
                 Ok(Ok(c)) => c,
                 Ok(Err(e)) => {
                     tracing::warn!("model request failed: {e}");
@@ -277,7 +284,7 @@ pub async fn run_agent_checked(
         // tool results so the transcript stays valid for the API
         let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
-        let results = match tokio::time::timeout(left(start), run_tool_calls(toolbox, exec)).await {
+        let results = match tokio::time::timeout(left(false), run_tool_calls(toolbox, exec)).await {
             Ok(r) => r,
             Err(_) => {
                 tracing::warn!("tool batch exceeded the remaining time budget");

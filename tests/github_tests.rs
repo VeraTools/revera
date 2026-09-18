@@ -415,6 +415,103 @@ async fn summary_failure_leaves_finding_unposted() {
     assert!(!st.findings[0].posted);
 }
 
+/// Inline review posted, then the summary upsert fails before the state blob
+/// records it. A retry with a fresh (unrecorded) state must not re-post the
+/// inline comment: the comment already on the PR is the durable record.
+#[tokio::test]
+async fn retry_after_summary_failure_does_not_duplicate_inline() {
+    let server = MockServer::start().await;
+    let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let f = finding("src/x.rs");
+    let body = revera::report::finding_body(&f);
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": head_sha}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    // first run: no inline comments yet
+    let first = Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .up_to_n_times(1)
+        .mount_as_scoped(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 778})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let api = GitHubApi::with_base(&server.uri(), "t");
+    let inline = || {
+        vec![InlineComment {
+            file: f.file.clone(),
+            line: f.start_line,
+            end_line: None,
+            body: body.clone(),
+        }]
+    };
+    let mut rep = report_with_findings(inline(), vec![f.clone()]);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(publish(
+        &api,
+        &event(),
+        &mut rep,
+        &mut st,
+        10,
+        "<!-- revera-summary -->",
+    )
+    .await
+    .is_err());
+    assert!(st.findings[0].posted, "in-memory state records the post");
+    drop(first);
+
+    // retry: GitHub now lists the inline comment, the state blob never
+    // recorded it (summary failed), local state was lost
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1, "body": body}])))
+        .mount(&server)
+        .await;
+    let mut rep2 = report_with_findings(inline(), vec![f.clone()]);
+    let mut st2 = ReviewState::default();
+    st2.upsert(&f, FindingState::Open);
+    let _ = publish(
+        &api,
+        &event(),
+        &mut rep2,
+        &mut st2,
+        10,
+        "<!-- revera-summary -->",
+    )
+    .await;
+    assert!(st2.findings[0].posted, "reconciled from the PR's comments");
+    let reviews = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/repos/acme/widgets/pulls/42/reviews")
+        .count();
+    assert_eq!(
+        reviews, 1,
+        "inline review posted exactly once across both runs"
+    );
+}
+
 #[tokio::test]
 async fn inline_review_422_degrades_to_summary_only() {
     let server = MockServer::start().await;

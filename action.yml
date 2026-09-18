@@ -54,14 +54,6 @@ runs:
           exit 1
         fi
 
-    - name: Install vera
-      shell: bash
-      run: |
-        set -euo pipefail
-        mkdir -p "$RUNNER_TEMP/bin"
-        "${{ github.action_path }}/scripts/install-vera.sh" "${{ inputs.vera-version }}" "$RUNNER_TEMP/bin"
-        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
     - name: Install revera
       shell: bash
       run: |
@@ -86,6 +78,16 @@ runs:
           # older revera without `cache-key`: fall back to hashing the config
           echo "value=cfg-${{ hashFiles(inputs.config) }}" >> "$GITHUB_OUTPUT"
         fi
+
+    # `vera.enabled: false` (key = disabled) runs lexical-only and must not
+    # depend on a Vera release download.
+    - name: Install vera
+      if: steps.key.outputs.value != 'disabled'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/bin"
+        "${{ github.action_path }}/scripts/install-vera.sh" "${{ inputs.vera-version }}" "$RUNNER_TEMP/bin"
 
     - name: Restore .vera index cache
       if: inputs.cache == 'true' && steps.key.outputs.value != 'disabled'

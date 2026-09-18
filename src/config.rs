@@ -643,7 +643,12 @@ impl Config {
     /// Contains no secrets: credential values and their env var names stay out.
     pub fn review_fingerprint(&self, strategy: &str) -> serde_json::Value {
         let route = |r: &ModelRoute| {
+            // header names only: values may be interpolated from env vars
+            let mut headers: Vec<&str> = r.extra_headers.keys().map(String::as_str).collect();
+            headers.sort_unstable();
             serde_json::json!({
+                "extra_headers": headers,
+                "session_header": r.session_header,
                 "protocol": format!("{:?}", r.protocol).to_lowercase(),
                 "base_url": r.base_url,
                 "model": r.model,
@@ -662,6 +667,7 @@ impl Config {
             "publish_uncertain": self.review.publish_uncertain,
             "min_severity": format!("{:?}", self.review.min_severity).to_lowercase(),
             "validate": self.review.validate,
+            "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
             "max_diff_bytes": self.review.max_diff_bytes,
             "budget": {
@@ -669,6 +675,16 @@ impl Config {
                 "agent_max_seconds": self.budget.agent_max_seconds,
                 "run_max_requests": self.budget.run_max_requests,
                 "run_max_seconds": self.budget.run_max_seconds,
+                "retries": self.budget.retries,
+            },
+            "delegated": {
+                "max_questions": self.delegated.max_questions,
+                "worker_max_tool_calls": self.delegated.worker_max_tool_calls,
+                "worker_max_seconds": self.delegated.worker_max_seconds,
+            },
+            "panel": {
+                "focuses": self.panel.focuses,
+                "scout_max_tool_calls": self.panel.scout_max_tool_calls,
             },
             "investigator": route(&self.models.investigator),
             "validator": route(&self.models.validator),
