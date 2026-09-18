@@ -48,6 +48,17 @@ out=${GITHUB_OUTPUT:-/dev/null}
   echo "findings=$findings"
 } >> "$out"
 
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  if [ -n "$report_out" ]; then
+    python3 - "$report_out" <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+import json, sys
+print(json.load(open(sys.argv[1]))["plan"]["summary_markdown"])
+PY
+  else
+    printf '## Revera review\n\n**Status: failed** — revera exited %s before writing a report; see the step log.\n' "$code" >> "$GITHUB_STEP_SUMMARY"
+  fi
+fi
+
 case "$status" in
   complete) echo "revera: complete, $findings finding(s)" ;;
   partial)  echo "revera: partial review (exit 2), $findings finding(s) so far" ;;
