@@ -49,6 +49,12 @@ enum Cmd {
     Doctor {
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        strategy: Option<StrategyArg>,
+        #[arg(long)]
+        publish: Option<PublishArg>,
     },
     CacheInfo {
         #[arg(long, default_value = ".")]
@@ -81,7 +87,12 @@ enum PublishArg {
 pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Doctor { config } => doctor(config).await,
+        Cmd::Doctor {
+            config,
+            profile,
+            strategy,
+            publish,
+        } => doctor(config, profile, strategy, publish).await,
         Cmd::CacheInfo { repo } => cache_info(&repo),
         Cmd::CacheKey { config, profile } => cache_key(config, profile),
         Cmd::Review {
@@ -132,30 +143,55 @@ struct ReviewArgs {
     force: bool,
 }
 
-fn load_cfg(path: Option<&std::path::Path>, profile: Option<&str>) -> Result<Config, String> {
+fn load_cfg_unvalidated(
+    path: Option<&std::path::Path>,
+    profile: Option<&str>,
+) -> Result<(PathBuf, Config), String> {
     let p = Config::find(path).map_err(|e| e.to_string())?;
     let mut c = Config::load(&p).map_err(|e| e.to_string())?;
     if let Some(pr) = profile {
         c.apply_profile(pr).map_err(|e| e.to_string())?;
     }
-    Ok(c)
+    Ok((p, c))
+}
+
+fn load_cfg(
+    path: Option<&std::path::Path>,
+    profile: Option<&str>,
+    strategy_override: Option<Strategy>,
+) -> Result<(PathBuf, Config), String> {
+    let (p, c) = load_cfg_unvalidated(path, profile)?;
+    c.validate_for(strategy_override.unwrap_or(c.review.strategy))
+        .map_err(|e| e.to_string())?;
+    Ok((p, c))
+}
+
+fn strategy_arg(s: StrategyArg) -> Strategy {
+    match s {
+        StrategyArg::Baseline => Strategy::Baseline,
+        StrategyArg::Delegated => Strategy::Delegated,
+        StrategyArg::Panel => Strategy::Panel,
+    }
+}
+
+fn publish_arg(p: PublishArg) -> PublishMode {
+    match p {
+        PublishArg::DryRun => PublishMode::DryRun,
+        PublishArg::Comment => PublishMode::Comment,
+    }
 }
 
 async fn review(a: ReviewArgs) -> i32 {
-    let cfg = match load_cfg(a.config.as_deref(), a.profile.as_deref()) {
+    let strategy = a.strategy.map(strategy_arg);
+    let (_, cfg) = match load_cfg(a.config.as_deref(), a.profile.as_deref(), strategy) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
         }
     };
-    let publish = a
-        .publish
-        .map(|p| match p {
-            PublishArg::DryRun => PublishMode::DryRun,
-            PublishArg::Comment => PublishMode::Comment,
-        })
-        .unwrap_or(cfg.review.publish);
+    let effective_strategy = strategy.unwrap_or(cfg.review.strategy);
+    let publish = a.publish.map(publish_arg).unwrap_or(cfg.review.publish);
     if publish == PublishMode::Comment && a.event.is_none() {
         eprintln!("error: --publish comment requires --event");
         return 1;
@@ -185,7 +221,7 @@ async fn review(a: ReviewArgs) -> i32 {
                 reason: Some(reason.into()),
                 base: e.base_sha.clone(),
                 head: e.head_sha.clone(),
-                strategy: format!("{:?}", cfg.review.strategy).to_lowercase(),
+                strategy: format!("{:?}", effective_strategy).to_lowercase(),
                 findings: vec![],
                 plan: crate::report::PublicationPlan {
                     inline: vec![],
@@ -228,11 +264,6 @@ async fn review(a: ReviewArgs) -> i32 {
             return 2;
         }
     }
-    let strategy = a.strategy.map(|s| match s {
-        StrategyArg::Baseline => Strategy::Baseline,
-        StrategyArg::Delegated => Strategy::Delegated,
-        StrategyArg::Panel => Strategy::Panel,
-    });
     let body = a
         .body_file
         .as_ref()
@@ -414,29 +445,57 @@ async fn review(a: ReviewArgs) -> i32 {
 /// Checks exactly what a review with this config would need: the routes
 /// the configured strategy uses, Vera only when enabled, and the git repo.
 /// Never prints credential values.
-async fn doctor(config: Option<PathBuf>) -> i32 {
+async fn doctor(
+    config: Option<PathBuf>,
+    profile: Option<String>,
+    strategy: Option<StrategyArg>,
+    publish: Option<PublishArg>,
+) -> i32 {
     let mut ok = true;
-    let cfg = match load_cfg(config.as_deref(), None) {
+    let strategy_override = strategy.map(strategy_arg);
+    let overridden = strategy_override.is_some();
+    let (path, cfg) = match load_cfg(config.as_deref(), profile.as_deref(), strategy_override) {
         Ok(c) => c,
         Err(e) => {
             println!("config: FAIL — {e}");
-            println!("  next: fix revera.yaml (see revera.example.yaml) or pass --config <path>");
+            println!(
+                "  next: fix the config (see revera.example.yaml and docs/configuration.md) or pass --config <path>"
+            );
             return 1;
         }
     };
+    println!("config: ok ({})", path.display());
+
+    let strategy = strategy_override.unwrap_or(cfg.review.strategy);
+    let mut notes = String::new();
+    if overridden {
+        notes.push_str(" (--strategy override)");
+    }
+    if let Some(p) = &profile {
+        notes.push_str(&format!(" (profile {p})"));
+    }
     println!(
-        "config: ok (strategy {}, publish {:?}, validate {})",
-        format!("{:?}", cfg.review.strategy).to_lowercase(),
-        cfg.review.publish,
-        cfg.review.validate
+        "strategy: {}{}",
+        format!("{:?}", strategy).to_lowercase(),
+        notes
     );
+    if strategy != Strategy::Baseline {
+        println!(
+            "strategy: {:?} is advanced/experimental; baseline is the supported default",
+            strategy
+        );
+    }
 
     let mut routes: Vec<(String, &crate::config::ModelRoute)> =
-        vec![("models.investigator".into(), &cfg.models.investigator)];
-    if cfg.review.validate {
-        routes.push(("models.validator".into(), &cfg.models.validator));
+        vec![("investigator".into(), &cfg.models.investigator)];
+    if !cfg.review.validate {
+        println!("validator: DISABLED (review.validate=false; eval-only)");
+    } else if cfg.validator_inherited() {
+        println!("validator: inherited from investigator (same route, fresh context)");
+    } else {
+        routes.push(("validator".into(), cfg.effective_validator()));
     }
-    match cfg.review.strategy {
+    match strategy {
         Strategy::Baseline => {}
         Strategy::Delegated => {
             if let Some(l) = &cfg.models.lead {
@@ -451,12 +510,6 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
                 routes.push((format!("models.scouts.{}", s.name), &s.route));
             }
         }
-    }
-    if cfg.review.strategy != Strategy::Baseline {
-        println!(
-            "strategy: {:?} is advanced/experimental; baseline is the supported default",
-            cfg.review.strategy
-        );
     }
     for (name, r) in routes {
         if r.protocol.is_http() {
@@ -501,7 +554,7 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
     }
 
     if !cfg.vera.enabled {
-        println!("vera: disabled (repository-wide lookups use lexical search only)");
+        println!("vera: disabled (repository search is lexical-only; set vera.enabled: true with an embedding endpoint to enable)");
     } else {
         match crate::vera::VeraClient::from_config(&cfg.vera, std::path::Path::new(".")) {
             Ok(v) => match v.version().await {
@@ -531,20 +584,25 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
             println!(".vera index: absent (built on first review)");
         }
     }
-    if cfg.review.publish == PublishMode::Comment {
-        if crate::config::env_is_set(&cfg.github.token_env) {
-            println!("github: token env {} set", cfg.github.token_env);
-        } else {
-            println!(
-                "github: FAIL — token env {} missing or empty (needed for publish = comment)",
-                cfg.github.token_env
-            );
-            println!(
-                "  next: export {}=<token> or set review.publish = dry-run",
-                cfg.github.token_env
-            );
-            ok = false;
-        }
+    let publish = publish.map(publish_arg).unwrap_or(cfg.review.publish);
+    println!("publish: {}", format!("{:?}", publish).to_lowercase());
+    if crate::config::env_is_set(&cfg.github.token_env) {
+        println!("github: token env {} set", cfg.github.token_env);
+    } else if publish == PublishMode::Comment {
+        println!(
+            "github: FAIL — token env {} missing or empty (needed for publish = comment)",
+            cfg.github.token_env
+        );
+        println!(
+            "  next: export {}=<token> or set review.publish = dry-run",
+            cfg.github.token_env
+        );
+        ok = false;
+    } else {
+        println!(
+            "github: token env {} not needed for dry-run",
+            cfg.github.token_env
+        );
     }
     if crate::git::is_repo(std::path::Path::new(".")).await {
         println!("git repo: yes");
@@ -563,12 +621,12 @@ async fn doctor(config: Option<PathBuf>) -> i32 {
 /// Prints the Vera index cache identity, or `disabled` when Vera is off so
 /// callers (the Action) skip cache restore/save entirely.
 fn cache_key(config: Option<PathBuf>, profile: Option<String>) -> i32 {
-    match load_cfg(config.as_deref(), profile.as_deref()) {
-        Ok(cfg) if !cfg.vera.enabled => {
+    match load_cfg_unvalidated(config.as_deref(), profile.as_deref()) {
+        Ok((_, cfg)) if !cfg.vera.enabled => {
             println!("disabled");
             0
         }
-        Ok(cfg) => {
+        Ok((_, cfg)) => {
             use sha2::{Digest, Sha256};
             let id = cfg.vera.index_identity().to_string();
             let h = Sha256::digest(id.as_bytes());
