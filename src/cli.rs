@@ -587,7 +587,11 @@ async fn doctor(
         }
     }
     let publish = publish.map(publish_arg).unwrap_or(cfg.review.publish);
-    println!("publish: {}", format!("{:?}", publish).to_lowercase());
+    let publish_name = match publish {
+        PublishMode::DryRun => "dry-run",
+        PublishMode::Comment => "comment",
+    };
+    println!("publish: {publish_name}");
     if crate::config::env_is_set(&cfg.github.token_env) {
         println!("github: token env {} set", cfg.github.token_env);
     } else if publish == PublishMode::Comment {

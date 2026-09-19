@@ -23,12 +23,10 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: |
           missing=()
           [ -n "$OPENROUTER_API_KEY" ] || missing+=(OPENROUTER_API_KEY)
           [ -n "$RELAY_FAST_API_KEY" ] || missing+=(RELAY_FAST_API_KEY)
-          [ -n "$OPENCODE_GO_API_KEY" ] || missing+=(OPENCODE_GO_API_KEY)
           if [ ${#missing[@]} -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
@@ -49,19 +47,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install vera
         run: |
-          set -euo pipefail
-          curl -fsSL https://github.com/VeraTools/Vera/releases/download/v1.4.1/vera-x86_64-unknown-linux-gnu.tar.gz -o /tmp/vera.tar.gz
-          echo "42123fea81972e10afff70eea934d829000e956a946f8b2f59c22a78bbfea406  /tmp/vera.tar.gz" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf /tmp/vera.tar.gz -C /tmp
-          install -m755 "$(find /tmp -name vera -type f | head -1)" "$RUNNER_TEMP/bin/vera"
+          mkdir -p "$RUNNER_TEMP/bin"
+          scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build and review with the PR's own revera
         run: |
           cargo build --release --locked
           # source build stays dry-run; dogfood-released.yml owns the PR comment
-          target/release/revera review --event "$GITHUB_EVENT_PATH" --config revera.yaml --publish dry-run --out .revera/report.json || [ $? -eq 2 ]
+          target/release/revera review --event "$GITHUB_EVENT_PATH" --config .github/revera-self-review.yaml --publish dry-run --out .revera/report.json || [ $? -eq 2 ]
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}

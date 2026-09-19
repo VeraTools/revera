@@ -1,182 +1,196 @@
 # Revera
 
-Provider-independent PR reviewer. Deterministic Rust owns diffing, review
-identity, state and publication; configurable OpenAI-compatible models do the
-reasoning (an **investigator** finds candidates, a **fresh-context validator**
-re-derives each one); [Vera](https://github.com/VeraTools/Vera) optionally
-adds semantic repository retrieval on top of the built-in lexical search.
+Provider-agnostic AI code review for GitHub pull requests, with independent
+validation and optional repository-aware retrieval.
+
+[![ci](https://github.com/VeraTools/revera/actions/workflows/ci.yml/badge.svg)](https://github.com/VeraTools/revera/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Revera runs as a GitHub Action (or a local CLI). Deterministic Rust owns the
+diff, review identity, state and publication; the models you configure do
+the reasoning:
+
+- **Bring your own model.** Any OpenAI-compatible chat endpoint, plus native
+  Anthropic, Google Gemini and OpenAI Responses protocols. One route is
+  enough to start.
+- **Nothing is published unvalidated.** An *investigator* proposes candidate
+  findings; a *fresh-context validator* re-derives each one from the code
+  before it can appear on the PR.
+- **Repository-aware.** Built-in lexical search over the exact PR head, and
+  optional semantic search and reference lookup through
+  [Vera](https://github.com/VeraTools/Vera).
+- **Truthful status.** A run is `complete`, `partial` or `failed`; budget
+  breaches and provider errors are reported, never presented as a clean
+  review. Findings are tracked across pushes (resolved, reopened) without
+  duplicate comments.
 
 ## Quickstart (GitHub Action)
 
-1. Copy `revera.example.yaml` to `revera.yaml` in your repo root and set the
-   two model routes (`models.investigator`, `models.validator`). Keys are
-   read from the env names you put in `api_key_env`; values never appear in
-   config, state or reports.
-2. Add the workflow:
+1. Create `revera.yaml` in your repository root with one model route:
 
-```yaml
-name: revera
-on: pull_request
-permissions:
-  pull-requests: write
-  contents: read
-concurrency:                      # one publisher per PR; a new push cancels the old run
-  group: revera-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-jobs:
-  review:
-    runs-on: ubuntu-latest        # any ubuntu-22.04+ runner (static musl binary)
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}   # exact PR tree, not the merge ref
-      - uses: VeraTools/revera@v0
-        with:
-          config: revera.yaml
-          publish: comment        # dry-run to only print the summary
-          fail-on: failed         # failed | partial | never
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}    # Vera embeddings/reranker
-          RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}    # validator (and other) routes
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}  # investigator route
+   ```yaml
+   models:
+     investigator:
+       protocol: openai-chat
+       base_url: https://api.example.com/v1
+       api_key_env: REVIEW_API_KEY
+       model: your-model-id
+   ```
+
+   That is a full configuration: baseline strategy, fresh validation using
+   the same route, Vera off. [`revera.example.yaml`](revera.example.yaml)
+   shows the optional validator and Vera blocks.
+
+2. Add the API key as a repository secret (`REVIEW_API_KEY` here) and a
+   workflow:
+
+   ```yaml
+   name: revera
+   on: pull_request
+   permissions:
+     contents: read
+     pull-requests: write
+   jobs:
+     review:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+           with:
+             fetch-depth: 0
+             ref: ${{ github.event.pull_request.head.sha }}
+         - uses: VeraTools/revera@v0
+           env:
+             REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
+   ```
+
+3. Open a pull request. Accepted findings are posted as inline comments plus
+   one managed summary comment; later pushes update them instead of
+   re-posting.
+
+`@v0` follows the latest 0.x release; pin `@vX.Y.Z` for an exact version.
+Check a configuration before the first run with
+`revera doctor --config revera.yaml`; it validates only what the effective
+configuration uses and prints a `next:` hint for every failure.
+
+## How it works
+
+```text
+diff (base…head)  →  investigator  →  candidates  →  fresh validator  →  anchor / dedupe / publish
+                        │ tools                          │ tools
+                  lexical search (+ Vera)          lexical search (+ Vera)
 ```
 
-3. Run `revera doctor --config revera.yaml` locally (or in a workflow step)
-   to check config, key env vars, Vera and the GitHub token before the first
-   review. It validates only what the config enables and prints a `next:`
-   hint for every failure.
+1. Revera diffs base and head (the checked-out tree must be exactly the PR
+   head) and, if Vera is enabled, refreshes the repository index.
+2. The investigator explores the change with read-only tools and submits
+   structured candidate findings.
+3. Each candidate is handed to a validator that starts from an empty context
+   and must re-establish the claim from the code. This is what makes the
+   default safe with a single model: the validator inherits the
+   investigator's route but never its conversation.
+4. Rust anchors accepted findings to diff lines, reconciles them with the
+   previous review (resolved / reopened / still open) and publishes.
 
-Pin `@v0.2.0` for an exact version; `@v0` follows the latest 0.x release.
-Fork PRs are skipped (`github.allow_forks: false`) because secrets are not
-available to them; the run is reported as `partial`, not as clean.
+Models never post to GitHub directly, run shell commands, or write files.
+Details: [docs/how-it-works.md](docs/how-it-works.md).
+
+## Configuration at a glance
+
+| key | default | notes |
+|---|---|---|
+| `models.investigator` | required | protocol, `base_url`, `api_key_env`, `model`, optional `reasoning` |
+| `models.validator` | investigator route | set to validate with a different (e.g. stronger) model |
+| `review.strategy` | `baseline` | `delegated` / `panel` are advanced multi-lane strategies |
+| `review.publish` | `dry-run` (the Action passes `comment`) | |
+| `review.min_severity` | `low` | |
+| `vera` | off | add a `vera:` block with an embedding endpoint to enable |
+| `budget.*` | 25 tool calls / 300 s per agent, 120 requests / 900 s per run | hard limits; breaches make the run `partial` |
+
+`${VAR}` in string values expands from the environment. Full reference:
+[docs/configuration.md](docs/configuration.md).
+
+### Providers
+
+| protocol | endpoint | examples |
+|---|---|---|
+| `openai-chat` | `{base_url}/chat/completions` | OpenAI, OpenRouter, Z.ai, DeepSeek, most self-hosted servers |
+| `openai-responses` | `{base_url}/responses` | OpenAI Responses API and compatible hosts |
+| `anthropic` | `{base_url}/v1/messages` | Anthropic Claude |
+| `gemini` | `{base_url}/v1beta/models/{model}:generateContent` | Google Gemini |
+
+Routes can mix protocols and providers. Reasoning/thinking is on (`medium`)
+by default for every route and degrades automatically on providers that
+reject the field.
+
+## Strategies
+
+`baseline` (one investigator, one validator) is the default and the
+recommended setting. `delegated` (lead plans questions, workers answer,
+lead synthesises) and `panel` (independent scouts, findings unioned) are
+available through `review.strategy` or the Action's `strategy` input. In
+our evaluation they cost 1.5–2× more and did not improve recall; panels
+produced more false positives. See [docs/strategies.md](docs/strategies.md).
+
+## Evidence
+
+Measured on synthetic corpora with hand-written truth files, 1–2 runs per
+cell (small samples; treat as provisional):
+
+- Baseline with validation produced **zero false positives** across 13
+  small corpora (four clean-control PRs included) with the same model on
+  both routes.
+- On a ~50k LOC repository (ripgrep) with cross-crate defects, Vera
+  retrieval found 5/6 defects vs 4/6 lexical-only at ~17 % more time.
+- Across eight investigator models (Meta Muse Spark, Z.ai GLM, OpenAI GPT,
+  Google Gemini, DeepSeek, xAI Grok and others), recall did not separate
+  single-model configurations on small repositories; false positives and
+  cost did.
+
+Method, tables and caveats: [docs/evaluation.md](docs/evaluation.md).
+
+## Supported environment and limitations
+
+- Action: Linux x86_64 runners (`ubuntu-22.04`, `ubuntu-24.04`/`latest`).
+  The binary is a static `x86_64-unknown-linux-musl` build.
+- Fork PRs are skipped by default (secrets are unavailable to them) and
+  reported as `partial`, not clean.
+- Inline comments require the finding to sit on a diff line; other accepted
+  findings appear in the summary under "Findings outside the diff".
+- Vera indexing of a large repository is slow on first run; the Action caches
+  the index and updates it incrementally.
 
 ### Action outputs and exit codes
 
 | revera exit | Action `status` | meaning |
 |---|---|---|
 | 0 | `complete` | every stage finished; `findings: 0` means "reviewed, nothing found" |
-| 2 | `partial` | something was not checked (budget, provider, retrieval, malformed model output). **Zero findings here is not a clean verdict.** |
-| other | `failed` | config/setup error or crash; `report-path` is empty and `findings` is `0` because no trustworthy report exists |
+| 2 | `partial` | something was not checked (budget, provider, retrieval, malformed model output) — zero findings is not a clean verdict |
+| other | `failed` | config/setup error or crash; no trustworthy report |
 
-A report that is missing, unparseable, or lacks `findings[]` /
-`plan.summary_markdown` is also normalised to `failed`, regardless of the
-exit code.
-
-`fail-on` is applied to that normalised status. Stale reports from a previous
-step are removed before each run, so a failed run can never expose an old
-report as current. Every run also writes the summary to the job summary /
-PR comment with the status on the first line.
+`fail-on: failed | partial | never` (default `failed`) decides which of
+these fail the step.
 
 ## CLI
 
 ```sh
-revera review --repo <path> --base <rev> [--head <rev>] --config revera.yaml [--profile deep] [--force]
-revera review --event "$GITHUB_EVENT_PATH" --config revera.yaml --publish comment
-revera doctor [--config revera.yaml]
-revera cache-key [--config revera.yaml] [--profile <name>]   # Vera index identity, or "disabled"
-revera cache-info [--repo <path>]
+revera review --repo . --base origin/main --config revera.yaml      # local dry-run
+revera review --event "$GITHUB_EVENT_PATH" --publish comment        # inside Actions
+revera doctor [--config revera.yaml] [--profile deep] [--strategy panel]
+revera cache-key [--config revera.yaml]                              # Vera index identity, or "disabled"
 ```
 
-`review` prints the summary to stdout and writes the JSON report to `--out`
-(default `.revera/last-report.json`). The report carries `status`, `reason`,
-`findings`, `coverage_gaps`, `timing` (per-phase wall clock), `ledger`
-(requests/tokens per route) and `stats` (candidates before/after validation,
-resolved/reopened, retrieval mode, tool call counts/errors/latency, files
-read, malformed-output repairs, reuse). Exit codes match the table above.
+Prebuilt binaries are attached to
+[releases](https://github.com/VeraTools/revera/releases); or
+`cargo install --git https://github.com/VeraTools/revera`.
 
-## How a review runs
+## Documentation
 
-1. Diff base…head (merge-base; two-dot fallback on shallow clones). The
-   checked-out tree must be exactly `head`; dirty or mismatched trees are
-   refused rather than reviewed approximately.
-2. Retrieval: `vera update` on the exact head (cached between runs, only
-   when the cache matches backend + embedding model and passed a health
-   check). If Vera is disabled, missing or fails, the run continues with
-   lexical tools only (`grep_repo`, `find_files`, `read_file`, tracked files,
-   `.git`/`.vera`/`.revera` excluded) and the summary says so.
-3. Investigator agent loop → candidate findings via `submit_findings`. A
-   malformed submission gets exactly one repair round; still-malformed output
-   makes the run `partial`, and valid findings in a mixed list are kept.
-4. Fresh-context validator per candidate (accept / reject / uncertain).
-5. Deterministic anchoring to diff lines, state reconciliation (open →
-   resolved when a finding disappears, reopened when it reappears), and
-   publication: inline comments for new accepted findings + one managed
-   summary comment that carries the state blob. Inline and summary
-   publication are reconciled separately so a summary failure never
-   duplicates inline comments on retry.
+- [How it works](docs/how-it-works.md) — architecture, boundaries, state and re-review
+- [Configuration](docs/configuration.md) — every key with defaults
+- [Strategies](docs/strategies.md) — baseline, delegated, panel
+- [Evaluation](docs/evaluation.md) — what was measured and how to reproduce it
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
-State is versioned and bounded. A prior review is reused only when it was
-`complete`, has no unposted open findings, and the exact head tree, base,
-and review-affecting config/prompt/engine version all match; partial and
-failed runs are always redone. Corrupt state is quarantined to
-`state.json.corrupt`; state written by an older engine is re-reviewed but
-keeps its publication ids so nothing is re-posted.
+## License
 
-## Configuration
-
-See `revera.example.yaml` (every key, commented) and `docs/DESIGN.md`.
-Highlights:
-
-- `review.strategy`: `baseline` (default, recommended). `delegated` and
-  `panel` are **advanced/experimental** multi-lane strategies — they cost
-  1.8–2× and did not improve recall in our evals (docs/EVAL.md).
-- `budget.run_max_seconds` is a hard run deadline: provider requests, tool
-  calls and Vera subprocesses are bounded by the remaining time, with a
-  reserve kept for validation and the final report. `run_max_requests` counts
-  every HTTP attempt including retries.
-- `vera.enabled: false` runs lexical-only with no Vera binary, key or index
-  required.
-- `${VAR}` in string values expands from the environment; a referenced but
-  missing/empty variable is a config error (`doctor` reports it).
-
-### Providers
-
-Each route independently picks a protocol:
-
-| protocol | wire format | base_url | reasoning |
-|---|---|---|---|
-| `openai-chat` | POST `{base}/chat/completions` | required (e.g. OpenRouter, relay.fast) | `reasoning_effort` or `reasoning` (openrouter) |
-| `openai-responses` | POST `{base}/responses` | required (e.g. OpenCode Go) | `reasoning.effort` + encrypted echo-back |
-| `anthropic` | POST `{base}/v1/messages` | optional (default `https://api.anthropic.com`) | `thinking.budget_tokens` |
-| `gemini` | POST `{base}/v1beta/models/{model}:generateContent` | optional | `thinkingConfig` (level/budget) |
-| `scripted` | offline JSON script (tests, Action smoke) | — | ignored |
-
-Every route defaults to `reasoning: medium`; set `reasoning: none` (or a
-long form `{effort, budget_tokens, field}`) to tune or disable. Reasoning
-items/thinking blocks are echoed back verbatim across turns. A 400 on the
-reasoning field first steps `xhigh`/`max` down to `high`, then drops
-reasoning, on the same ledger slot. All HTTP protocols share one transport
-(retries, Retry-After, request budget, deadline, ledger), so routes can mix.
-
-## Verification
-
-Offline (no credentials; what CI and the `action-smoke` workflow run):
-
-```sh
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-scripts/test-install-revera.sh && scripts/test-install-vera.sh && scripts/test-action-outcome.sh
-```
-
-`action-smoke.yml` runs the composite Action itself (`uses: ./`) on
-ubuntu-22.04 and ubuntu-24.04 against scripted models with Vera disabled,
-asserting the complete / partial / failed outcomes and `fail-on` behaviour.
-
-Live (needs `OPENROUTER_API_KEY` for Vera embeddings): `fixtures/run-fixture.sh`
-(break → fix → clean → delegated → panel with scripted models and a real
-Vera index) and the `live-fixtures` CI job. Live jobs are **skipped**, not
-passed, when secrets are unavailable (fork PRs); the skip is annotated on the
-run.
-
-## Evaluation
-
-`eval/` holds a synthetic corpus plus scoring scripts (not in CI; requires
-provider keys). See docs/EVAL.md for results and for what is and is not
-measured; headline: baseline + Vera + validation has zero false positives
-and the lowest cost on the corpus, so it is the default. Model-selection
-evidence is 1–2 reps per cell and labelled provisional.
-
-## Status
-
-`v0.2.0` is released (static `x86_64-unknown-linux-musl` asset, `v0` tag).
-See STATUS.md for what works, known limitations and next steps.
+[MIT](LICENSE).

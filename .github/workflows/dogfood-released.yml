@@ -27,12 +27,10 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: |
           missing=()
           [ -n "$OPENROUTER_API_KEY" ] || missing+=(OPENROUTER_API_KEY)
           [ -n "$RELAY_FAST_API_KEY" ] || missing+=(RELAY_FAST_API_KEY)
-          [ -n "$OPENCODE_GO_API_KEY" ] || missing+=(OPENCODE_GO_API_KEY)
           if [ ${#missing[@]} -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
@@ -56,14 +54,13 @@ jobs:
       - id: rv
         uses: VeraTools/revera@v0
         with:
-          config: revera.yaml
+          config: .github/revera-self-review.yaml
           publish: ${{ matrix.os == 'ubuntu-latest' && 'comment' || 'dry-run' }}
           fail-on: failed
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RELAY_FAST_API_KEY: ${{ secrets.RELAY_FAST_API_KEY }}
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
       - name: Action outputs
         run: |
           echo "status=${{ steps.rv.outputs.status }}"
