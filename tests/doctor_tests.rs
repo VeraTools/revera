@@ -44,6 +44,19 @@ fn doctor_minimal_config_inherited_validator() {
 }
 
 #[test]
+fn doctor_missing_investigator_key_fails_with_next_hint() {
+    let yaml = "models:\n  investigator: {protocol: openai-chat, base_url: http://x, model: m, api_key_env: REVERA_T_UNSET_DOCTOR_INV}\n";
+    let f = write_tmp(yaml);
+    let repo = git_dir();
+    let out = doctor(&["--config", f.path().to_str().unwrap()], repo.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("config: ok"), "{stdout}");
+    assert!(stdout.contains("REVERA_T_UNSET_DOCTOR_INV"), "{stdout}");
+    assert!(stdout.contains("next:"), "{stdout}");
+}
+
+#[test]
 fn doctor_strategy_override_validates_lead() {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/scripts/clean.json");
     let yaml = format!(
