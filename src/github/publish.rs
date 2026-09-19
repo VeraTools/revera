@@ -28,20 +28,46 @@ pub fn decode_state(body: &str) -> Option<ReviewState> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Who Revera is on GitHub: the authenticated login when `/user` answers
+/// (a PAT), otherwise the configured bot login the token posts as
+/// (`github-actions[bot]` for the Actions installation token).
+#[derive(Debug, Clone)]
+pub struct Identity {
+    pub viewer: Option<String>,
+    pub bot_login: String,
+}
+
+impl Identity {
+    pub async fn resolve(api: &GitHubApi, bot_login: &str) -> Self {
+        Self {
+            viewer: api.viewer_login().await,
+            bot_login: bot_login.to_string(),
+        }
+    }
+
+    /// A comment is ours only when its author is exactly our identity.
+    /// Comments with no author information (older API shapes, tests) are
+    /// accepted; any other author — human or another bot — is not.
+    pub fn owns(&self, c: &GhComment) -> bool {
+        match (&c.author, &self.viewer) {
+            (None, _) => true,
+            (Some(a), Some(v)) => a == v,
+            (Some(a), None) => a == &self.bot_login,
+        }
+    }
+}
+
 /// Pick the reviewer-owned managed summary comment.
 ///
 /// A candidate must *start* with the marker and carry a decodable state
 /// blob — a quoted or copied marker inside someone else's comment does
 /// not qualify. Among candidates: the comment id recorded in prior state
-/// wins; otherwise the author must be the authenticated identity when it
-/// is known, or a bot account (the Actions token cannot name itself and
-/// posts as `github-actions[bot]`). Comments with no author information
-/// (older API shapes, tests) are accepted.
+/// wins; otherwise the author must be [`Identity::owns`].
 pub fn find_managed<'a>(
     comments: &'a [GhComment],
     marker: &str,
     expected_id: Option<u64>,
-    viewer: Option<&str>,
+    me: &Identity,
 ) -> Option<&'a GhComment> {
     let mut cands = comments
         .iter()
@@ -54,19 +80,18 @@ pub fn find_managed<'a>(
             return Some(c);
         }
     }
-    cands.find(|c| match (&c.author, viewer) {
-        (None, _) => true,
-        (Some(a), Some(v)) => a == v,
-        (Some(a), None) => c.author_is_bot || a.ends_with("[bot]"),
-    })
+    cands.find(|c| me.owns(c))
 }
 
-/// Revera ids already present as inline review comments on the PR: the
-/// durable record of what was posted, independent of the summary blob.
-pub fn posted_revera_ids(review_comment_bodies: &[String]) -> Vec<String> {
-    review_comment_bodies
+/// Revera ids already present as inline review comments *we* posted on the
+/// PR: the durable record of what was published, independent of the
+/// summary blob. Markers in other authors' comments are ignored so nobody
+/// can suppress a finding by posting its id first.
+pub fn posted_revera_ids(review_comments: &[GhComment], me: &Identity) -> Vec<String> {
+    review_comments
         .iter()
-        .filter_map(|b| revera_id(b))
+        .filter(|c| me.owns(c))
+        .filter_map(|c| revera_id(&c.body))
         .collect()
 }
 
@@ -112,6 +137,7 @@ pub async fn publish(
     state: &mut ReviewState,
     max_findings: usize,
     summary_marker: &str,
+    bot_login: &str,
 ) -> Result<Publication> {
     let (owner, repo) = ev.owner_repo();
     let mut pubn = Publication {
@@ -125,6 +151,7 @@ pub async fn publish(
         let reason = format!("head moved {} -> {}", report.head, live_head);
         pubn.skipped_reason = Some(reason.clone());
         report.status = crate::report::RunStatus::Partial;
+        state.mark_publication_incomplete();
         report.reason = Some(match report.reason.take() {
             Some(r) => format!("{r}; {reason}"),
             None => reason,
@@ -141,8 +168,9 @@ pub async fn publish(
     // (2) review with inline comments for accepted+Inline, not yet posted.
     // Inline comments already on the PR count as posted even when a prior
     // summary upsert failed before it could record them.
-    let already = match api.list_review_comment_bodies(owner, repo, ev.number).await {
-        Ok(bodies) => posted_revera_ids(&bodies),
+    let me = Identity::resolve(api, bot_login).await;
+    let already = match api.list_review_comments(owner, repo, ev.number).await {
+        Ok(comments) => posted_revera_ids(&comments, &me),
         Err(e) => {
             tracing::warn!("could not list existing review comments: {e:#}");
             vec![]
@@ -239,14 +267,8 @@ pub async fn publish(
     let mut body = format!("{summary_marker}\n{}", report.plan.summary_markdown);
     body.push_str(&open_section(&staged));
     let comments = api.list_issue_comments(owner, repo, ev.number).await?;
-    let viewer = api.viewer_login().await;
-    let managed = find_managed(
-        &comments,
-        summary_marker,
-        state.summary_comment_id,
-        viewer.as_deref(),
-    )
-    .map(|c| c.id);
+    let managed =
+        find_managed(&comments, summary_marker, state.summary_comment_id, &me).map(|c| c.id);
     // the state blob records which comment is ours so the next run can
     // find it even if someone copies the marker
     let comment = match managed {

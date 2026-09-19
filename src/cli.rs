@@ -279,12 +279,13 @@ async fn review(a: ReviewArgs) -> i32 {
             let (owner, rname) = e.owner_repo();
             let seeded = match api.list_issue_comments(owner, rname, e.number).await {
                 Ok(comments) => {
-                    let viewer = api.viewer_login().await;
+                    let me =
+                        crate::github::publish::Identity::resolve(api, &cfg.github.bot_login).await;
                     crate::github::publish::find_managed(
                         &comments,
                         &cfg.github.summary_marker,
                         None,
-                        viewer.as_deref(),
+                        &me,
                     )
                     .and_then(|c| {
                         let mut s = crate::github::publish::decode_state(&c.body)?;
@@ -336,6 +337,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     &mut state,
                     cfg.review.max_findings,
                     &cfg.github.summary_marker,
+                    &cfg.github.bot_login,
                 )
                 .await;
                 let publish_ms = publish_start.elapsed().as_millis() as u64;
@@ -346,7 +348,9 @@ async fn review(a: ReviewArgs) -> i32 {
                         let _ = state.save(&repo);
                     }
                     Err(err) => {
-                        // keep whatever was marked posted before the failure
+                        // keep whatever was marked posted before the failure,
+                        // but never leave a reusable "complete" outcome behind
+                        state.mark_publication_incomplete();
                         let _ = state.save(&repo);
                         // no publish phase recorded yet -> the failure
                         // happened before step 2 (e.g. head-sha re-check)

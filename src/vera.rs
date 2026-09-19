@@ -264,8 +264,25 @@ impl VeraClient {
                 index_dir.display()
             );
         }
+        if let Err(e) = self.check_health().await {
+            let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
+            return Err(e.context(format!("vera {verb} left an unhealthy index")));
+        }
         self.write_cache_info().await.ok();
         Ok(summary)
+    }
+
+    /// Health probe: the index must open via `vera stats --json` and hold
+    /// at least one chunk. Runs after every index/update so the cache info
+    /// (and the Action cache save keyed on it) only ever describe an index
+    /// that answered a query.
+    pub async fn check_health(&self) -> Result<Value> {
+        let stats = self.run_json(&["stats", "--json"]).await?;
+        let chunks = stats["chunk_count"].as_u64().unwrap_or(0);
+        if chunks == 0 {
+            bail!("vera stats reports an empty index (0 chunks)");
+        }
+        Ok(stats)
     }
 
     pub async fn write_cache_info(&self) -> Result<()> {

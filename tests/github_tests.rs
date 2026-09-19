@@ -139,6 +139,7 @@ async fn head_moved_refuses() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .unwrap();
@@ -206,6 +207,7 @@ async fn happy_path_posts_review_and_summary() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .unwrap();
@@ -299,6 +301,7 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .unwrap();
@@ -351,6 +354,7 @@ async fn summary_only_finding_marked_posted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .unwrap();
@@ -409,6 +413,7 @@ async fn summary_failure_leaves_finding_unposted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .is_err());
@@ -473,6 +478,7 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .is_err());
@@ -483,7 +489,11 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
     // recorded it (summary failed), local state was lost
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42/comments"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 1, "body": body}])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "id": 1,
+            "body": body,
+            "user": {"login": "github-actions[bot]", "type": "Bot"}
+        }])))
         .mount(&server)
         .await;
     let mut rep2 = report_with_findings(inline(), vec![f.clone()]);
@@ -496,6 +506,7 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
         &mut st2,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await;
     assert!(st2.findings[0].posted, "reconciled from the PR's comments");
@@ -510,6 +521,74 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
         reviews, 1,
         "inline review posted exactly once across both runs"
     );
+}
+
+/// A contributor who posts a predicted `revera-id` marker before Revera runs
+/// must not suppress the real inline comment: only our own comments count.
+#[tokio::test]
+async fn forged_inline_marker_by_other_author_is_ignored() {
+    let server = MockServer::start().await;
+    let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let f = finding("src/x.rs");
+    let body = revera::report::finding_body(&f);
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": head_sha}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 1, "body": body, "user": {"login": "mallory", "type": "User"}},
+            {"id": 2, "body": body, "user": {"login": "other-app[bot]", "type": "Bot"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 778})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 900})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/widgets/issues/comments/900"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 900})))
+        .mount(&server)
+        .await;
+
+    let api = GitHubApi::with_base(&server.uri(), "t");
+    let inline = vec![InlineComment {
+        file: f.file.clone(),
+        line: f.start_line,
+        end_line: None,
+        body: body.clone(),
+    }];
+    let mut rep = report_with_findings(inline, vec![f.clone()]);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    let p = publish(
+        &api,
+        &event(),
+        &mut rep,
+        &mut st,
+        10,
+        "<!-- revera-summary -->",
+        "github-actions[bot]",
+    )
+    .await
+    .unwrap();
+    assert_eq!(p.review_id, Some(778), "inline review still posted");
 }
 
 #[tokio::test]
@@ -559,6 +638,7 @@ async fn inline_review_422_degrades_to_summary_only() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .unwrap();
@@ -608,6 +688,7 @@ async fn inline_review_500_still_fails_and_leaves_unposted() {
         &mut st,
         10,
         "<!-- revera-summary -->",
+        "github-actions[bot]",
     )
     .await
     .is_err());

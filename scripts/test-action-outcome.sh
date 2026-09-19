@@ -9,7 +9,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 good="$tmp/good.json"
 cat > "$good" <<'EOF'
-{"status":"complete","findings":[
+{"status":"complete","plan":{"summary_markdown":"## Revera review\n"},"findings":[
   {"validation_status":"accepted"},
   {"validation_status":"rejected"},
   {"validation_status":"accepted"}
@@ -67,8 +67,13 @@ run 0 "$good" sometimes; [ "$rc" = 1 ] || { echo "FAIL: invalid fail-on accepted
 run 0 "$missing" failed; expect "0/no-report" 1 failed 0 ""
 run 2 "$missing" never;  expect "2/no-report" 0 failed 0 ""
 
-# corrupt report: status stands, findings unknown -> 0, path still exposed
-run 0 "$corrupt" failed; expect "0/corrupt" 0 complete 0 "$corrupt"
+# corrupt or shape-less report: the outcome cannot be verified -> failed,
+# no findings, no report path
+run 0 "$corrupt" failed; expect "0/corrupt" 1 failed 0 ""
+run 2 "$corrupt" never;  expect "2/corrupt" 0 failed 0 ""
+shapeless="$tmp/shapeless.json"
+echo '{"findings": "nope"}' > "$shapeless"
+run 0 "$shapeless" failed; expect "0/shapeless" 1 failed 0 ""
 
 if [ "$fails" -ne 0 ]; then
     echo "action-outcome.sh: $fails failure(s)" >&2

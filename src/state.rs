@@ -202,6 +202,15 @@ impl ReviewState {
         self.prune();
     }
 
+    /// Downgrade the recorded outcome when publication did not finish:
+    /// the review may have completed, but the PR does not carry it, so the
+    /// next run must redo (not reuse) it.
+    pub fn mark_publication_incomplete(&mut self) {
+        if self.last_status == Some(RunStatus::Complete) {
+            self.last_status = Some(RunStatus::Partial);
+        }
+    }
+
     fn prune(&mut self) {
         while self.findings.len() > MAX_STATE_FINDINGS {
             match self
