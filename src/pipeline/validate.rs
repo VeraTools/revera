@@ -68,6 +68,9 @@ pub async fn validate_candidates(
         let cand = c.clone();
         let cand_id = c.id();
         let excerpt = diff.file_excerpt(&cand.file);
+        // create the client in candidate order (before the semaphore race)
+        // so scripted validators are matched to candidates deterministically
+        let client = make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name);
         set.spawn(async move {
             let queued_at = std::time::Instant::now();
             let _permit = sem.acquire().await.unwrap();
@@ -97,11 +100,10 @@ pub async fn validate_candidates(
                     )
                 }
             };
-            let client =
-                match make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name) {
-                    Ok(c) => c,
-                    Err(e) => return (i, Err(e), cand_id, exec_start, queue_ms, false),
-                };
+            let client = match client {
+                Ok(c) => c,
+                Err(e) => return (i, Err(e), cand_id, exec_start, queue_ms, false),
+            };
             let user = if recheck {
                 format!(
                     "PR diff for {}:\n\n{}\n\nPrior finding to recheck:\n{}",

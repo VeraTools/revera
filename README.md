@@ -59,6 +59,10 @@ available to them; the run is reported as `partial`, not as clean.
 | 2 | `partial` | something was not checked (budget, provider, retrieval, malformed model output). **Zero findings here is not a clean verdict.** |
 | other | `failed` | config/setup error or crash; `report-path` is empty and `findings` is `0` because no trustworthy report exists |
 
+A report that is missing, unparseable, or lacks `findings[]` /
+`plan.summary_markdown` is also normalised to `failed`, regardless of the
+exit code.
+
 `fail-on` is applied to that normalised status. Stale reports from a previous
 step are removed before each run, so a failed run can never expose an old
 report as current. Every run also writes the summary to the job summary /

@@ -5,7 +5,7 @@ use revera::agent::{run_agent_checked, AgentBudget, StopReason};
 use revera::diff::DiffSet;
 use revera::findings::{Finding, Severity, ValidationStatus};
 use revera::github::api::GhComment;
-use revera::github::publish::{encode_state, find_managed};
+use revera::github::publish::{encode_state, find_managed, Identity};
 use revera::pipeline::common::{findings_terminal_check, parse_findings_checked};
 use revera::provider::{
     ChatMessage, Completion, LedgerHandle, ModelClient, ProviderError, Role, ToolCall, ToolSpec,
@@ -478,16 +478,26 @@ fn spoofed_marker_comment_is_not_selected() {
         comment(2, &format!("{marker}\nfake"), Some("mallory"), false),
         // marker + blob but a human author while the viewer is known
         comment(3, &real, Some("mallory"), false),
+        // another bot seeding a state blob
+        comment(5, &real, Some("other-app[bot]"), true),
         comment(4, &real, Some("github-actions[bot]"), true),
     ];
-    let got = find_managed(&comments, marker, None, Some("revera-bot")).map(|c| c.id);
+    let me = |viewer: Option<&str>| Identity {
+        viewer: viewer.map(Into::into),
+        bot_login: "github-actions[bot]".into(),
+    };
+    let got = find_managed(&comments, marker, None, &me(Some("revera-bot"))).map(|c| c.id);
     assert_eq!(got, None, "unknown human author must not be trusted");
-    let got = find_managed(&comments, marker, None, None).map(|c| c.id);
-    assert_eq!(got, Some(4), "bot author accepted when viewer unknown");
-    let got = find_managed(&comments, marker, None, Some("mallory")).map(|c| c.id);
+    let got = find_managed(&comments, marker, None, &me(None)).map(|c| c.id);
+    assert_eq!(
+        got,
+        Some(4),
+        "only the configured bot login is accepted when viewer unknown"
+    );
+    let got = find_managed(&comments, marker, None, &me(Some("mallory"))).map(|c| c.id);
     assert_eq!(got, Some(3));
     // a recorded comment id wins outright
-    let got = find_managed(&comments, marker, Some(4), Some("revera-bot")).map(|c| c.id);
+    let got = find_managed(&comments, marker, Some(4), &me(Some("revera-bot"))).map(|c| c.id);
     assert_eq!(got, Some(4));
 }
 
@@ -552,6 +562,47 @@ async fn grep_repo_finds_untouched_caller_and_respects_tracking() {
     };
     assert!(specs.iter().any(|n| n == "grep_repo"));
     assert!(!specs.iter().any(|n| n.starts_with("vera_")));
+}
+
+/// Delegated workers get the same Vera-independent discovery as baseline:
+/// with Vera disabled a worker can still locate an untouched caller.
+#[tokio::test]
+async fn delegated_worker_can_discover_untouched_caller_without_vera() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    git(repo, &["init", "-q"]);
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/pricing.rs"), "pub fn discount() {}\n").unwrap();
+    std::fs::write(repo.join("src/checkout.rs"), "fn total() { discount(); }\n").unwrap();
+    git(repo, &["add", "src"]);
+    git(repo, &["commit", "-qm", "init"]);
+
+    let mut full = toolbox(repo);
+    full.hide_vera_tools();
+    let worker = full.restricted(revera::pipeline::delegated::WORKER_TOOLS);
+    let specs: Vec<String> = worker.specs().into_iter().map(|s| s.name).collect();
+    assert!(specs.iter().any(|n| n == "grep_repo"), "{specs:?}");
+    assert!(specs.iter().any(|n| n == "find_files"), "{specs:?}");
+    assert!(!specs.iter().any(|n| n.starts_with("vera_")));
+    let out = worker
+        .call(
+            "grep_repo",
+            json!({"pattern": "discount\\(", "path_glob": "src/**"}),
+        )
+        .await;
+    assert!(out.contains("src/checkout.rs:1:"), "{out}");
+}
+
+#[test]
+fn publication_failure_downgrades_reusable_outcome() {
+    let mut st = ReviewState::default();
+    st.record_outcome("b", "h", "p", "key", RunStatus::Complete);
+    assert!(st.can_reuse("key"));
+    st.mark_publication_incomplete();
+    assert!(
+        !st.can_reuse("key"),
+        "a completed review that never reached the PR must be redone"
+    );
 }
 
 #[test]

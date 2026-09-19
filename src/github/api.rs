@@ -134,13 +134,13 @@ impl GitHubApi {
         }
     }
 
-    /// Bodies of all inline review comments on the PR (paginated).
-    pub async fn list_review_comment_bodies(
+    /// All inline review comments on the PR (paginated), with authors.
+    pub async fn list_review_comments(
         &self,
         owner: &str,
         repo: &str,
         n: u64,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<GhComment>> {
         let mut out = Vec::new();
         let mut page = 1u32;
         loop {
@@ -152,10 +152,14 @@ impl GitHubApi {
                 .await?;
             let arr = v.as_array().cloned().unwrap_or_default();
             let count = arr.len();
-            out.extend(
-                arr.iter()
-                    .filter_map(|c| c["body"].as_str().map(str::to_string)),
-            );
+            for c in &arr {
+                out.push(GhComment {
+                    id: c["id"].as_u64().unwrap_or(0),
+                    body: c["body"].as_str().unwrap_or("").to_string(),
+                    author: c["user"]["login"].as_str().map(str::to_string),
+                    author_is_bot: c["user"]["type"].as_str() == Some("Bot"),
+                });
+            }
             if count < 100 {
                 return Ok(out);
             }

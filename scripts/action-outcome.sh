@@ -10,6 +10,8 @@
 #   (101 = Rust panic, 127 = binary missing, 137 = SIGKILL, ...)
 # The report is only trusted for complete/partial runs; a failed process
 # never gets findings counted from whatever file happens to be on disk.
+# A complete/partial exit whose report is missing or unreadable is
+# classified failed: the outcome cannot be verified, so it is not reported.
 set -euo pipefail
 
 code=${1:?usage: action-outcome.sh CODE REPORT_PATH FAIL_ON}
@@ -25,17 +27,24 @@ esac
 report_out=""
 findings=0
 if [ "$status" != failed ] && [ -f "$report" ]; then
-  report_out="$report"
-  findings=$(python3 - "$report" <<'PY'
+  if findings=$(python3 - "$report" <<'PY'
 import json, sys
 try:
     rep = json.load(open(sys.argv[1]))
-    print(len([f for f in rep.get("findings", []) if f.get("validation_status") == "accepted"]))
-except Exception as e:  # corrupt report -> no trustworthy count
-    print(0)
+    if not isinstance(rep.get("findings"), list) or not isinstance(rep.get("plan", {}).get("summary_markdown"), str):
+        raise ValueError("missing findings/plan.summary_markdown")
+    print(len([f for f in rep["findings"] if f.get("validation_status") == "accepted"]))
+except Exception as e:
     sys.stderr.write(f"revera: cannot read report: {e}\n")
+    sys.exit(1)
 PY
-)
+  ); then
+    report_out="$report"
+  else
+    echo "revera: process exited $code but the report at $report is unreadable" >&2
+    status=failed
+    findings=0
+  fi
 elif [ "$status" != failed ]; then
   echo "revera: process exited $code but no report at $report" >&2
   status=failed

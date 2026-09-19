@@ -16,6 +16,21 @@ use anyhow::Result;
 use futures::stream::StreamExt;
 use serde::Deserialize;
 
+/// Tools a delegated worker may call: read-only inspection plus both
+/// retrieval families, so a lexical-only run (Vera disabled or degraded)
+/// can still discover untouched files.
+pub const WORKER_TOOLS: &[&str] = &[
+    "read_file",
+    "list_changed_files",
+    "diff_context",
+    "grep_repo",
+    "find_files",
+    "vera_search",
+    "vera_references",
+    "vera_grep",
+    "vera_overview",
+];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanQuestion {
     #[serde(default)]
@@ -143,15 +158,7 @@ async fn delegated_candidates(
     // ---- 2. workers concurrently ----
     let worker_routes = cfg.models.workers.as_deref().unwrap_or(&[]);
     let worker_terminal = terminal_submit_worker_result_spec();
-    let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(&[
-        "read_file",
-        "list_changed_files",
-        "diff_context",
-        "vera_search",
-        "vera_references",
-        "vera_grep",
-        "vera_overview",
-    ]));
+    let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(WORKER_TOOLS));
     let lane_budget = prep.budget(
         cfg.delegated.worker_max_tool_calls,
         cfg.delegated.worker_max_seconds,

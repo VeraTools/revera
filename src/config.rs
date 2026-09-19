@@ -266,6 +266,10 @@ pub struct GithubConfig {
     pub token_env: String,
     #[serde(default = "default_marker")]
     pub summary_marker: String,
+    /// Login the token posts as when `/user` cannot name it (installation
+    /// tokens). Only comments by this author are treated as Revera's own.
+    #[serde(default = "default_bot_login")]
+    pub bot_login: String,
     /// Allow publishing comments on forked-PR events (default false).
     #[serde(default)]
     pub allow_forks: bool,
@@ -385,6 +389,9 @@ fn default_token_env() -> String {
 fn default_marker() -> String {
     "<!-- revera-summary -->".into()
 }
+fn default_bot_login() -> String {
+    "github-actions[bot]".into()
+}
 fn default_max_questions() -> usize {
     4
 }
@@ -469,6 +476,7 @@ impl Default for GithubConfig {
         Self {
             token_env: default_token_env(),
             summary_marker: default_marker(),
+            bot_login: default_bot_login(),
             allow_forks: false,
         }
     }
