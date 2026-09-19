@@ -1,0 +1,30 @@
+# Offline: one panel scout never produces a valid `findings` list (even after
+# the repair round); the run must be `partial`, never a clean `complete`.
+review:
+  strategy: panel
+  publish: dry-run
+  concurrency: 1
+models:
+  investigator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed-panel.json
+    model: scripted-investigator
+  validator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed-panel.json
+    model: scripted-validator
+  scouts:
+    - name: general
+      protocol: scripted
+      script: ${FIXTURE_SCRIPTS}/malformed-panel.json
+      model: scripted-general
+    - name: cross-file
+      protocol: scripted
+      script: ${FIXTURE_SCRIPTS}/malformed-panel.json
+      model: scripted-cross-file
+panel:
+  focuses: [general, cross-file]
+vera:
+  enabled: false
+github:
+  summary_marker: "<!-- revera-smoke-summary -->"

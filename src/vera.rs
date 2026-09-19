@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
+
+/// Per-invocation cap for query subcommands (search/grep/references).
+const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct VeraClient {
@@ -13,6 +17,9 @@ pub struct VeraClient {
     pub env: Vec<(String, String)>,
     pub backend: String,
     pub exclude: Vec<String>,
+    /// Every subprocess is bounded by the remaining time to this deadline;
+    /// a timed-out child is killed and reaped.
+    pub deadline: Option<Instant>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,7 +32,30 @@ pub struct VeraCacheInfo {
 }
 
 impl VeraClient {
+    /// A client for `vera.enabled = false`: no credentials are resolved and
+    /// no executable is required; every call fails fast.
+    pub fn disabled(repo_root: &Path) -> Self {
+        Self {
+            exe: PathBuf::from("vera"),
+            repo_root: repo_root.to_path_buf(),
+            env: vec![],
+            backend: "disabled".into(),
+            exclude: vec![],
+            deadline: None,
+        }
+    }
+
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
     pub fn from_config(cfg: &VeraConfig, repo_root: &Path) -> Result<Self> {
+        if !cfg.enabled {
+            let mut c = Self::disabled(repo_root);
+            c.exclude = cfg.exclude.clone();
+            return Ok(c);
+        }
         let mut env: Vec<(String, String)> = vec![
             ("VERA_NO_UPDATE_CHECK".into(), "1".into()),
             (
@@ -45,17 +75,23 @@ impl VeraClient {
             if let Some(e) = &cfg.embedding {
                 env.push(("EMBEDDING_MODEL_BASE_URL".into(), e.base_url.clone()));
                 env.push(("EMBEDDING_MODEL_ID".into(), e.model.clone()));
-                let key = std::env::var(&e.api_key_env).with_context(|| {
-                    format!("vera.embedding.api_key_env {} is not set", e.api_key_env)
-                })?;
+                let key = std::env::var(&e.api_key_env)
+                    .ok()
+                    .filter(|k| !k.trim().is_empty())
+                    .with_context(|| {
+                        format!("vera.embedding.api_key_env {} is not set", e.api_key_env)
+                    })?;
                 env.push(("EMBEDDING_MODEL_API_KEY".into(), key));
             }
             if let Some(r) = &cfg.reranker {
                 env.push(("RERANKER_MODEL_BASE_URL".into(), r.base_url.clone()));
                 env.push(("RERANKER_MODEL_ID".into(), r.model.clone()));
-                let key = std::env::var(&r.api_key_env).with_context(|| {
-                    format!("vera.reranker.api_key_env {} is not set", r.api_key_env)
-                })?;
+                let key = std::env::var(&r.api_key_env)
+                    .ok()
+                    .filter(|k| !k.trim().is_empty())
+                    .with_context(|| {
+                        format!("vera.reranker.api_key_env {} is not set", r.api_key_env)
+                    })?;
                 env.push(("RERANKER_MODEL_API_KEY".into(), key));
             }
         }
@@ -65,22 +101,55 @@ impl VeraClient {
             env,
             backend,
             exclude: cfg.exclude.clone(),
+            deadline: None,
         })
     }
 
-    async fn run(&self, args: &[&str]) -> Result<String> {
+    /// Time left before the run deadline, capped by `cap`. `None` when the
+    /// deadline has already passed.
+    fn time_left(&self, cap: Option<Duration>) -> Option<Duration> {
+        let left = match self.deadline {
+            Some(d) => d.checked_duration_since(Instant::now())?,
+            None => Duration::from_secs(24 * 3600),
+        };
+        Some(match cap {
+            Some(c) => left.min(c),
+            None => left,
+        })
+    }
+
+    async fn run_bounded(&self, args: &[&str], cap: Option<Duration>) -> Result<String> {
+        if self.backend == "disabled" {
+            bail!("vera is disabled by config");
+        }
+        let Some(limit) = self.time_left(cap) else {
+            bail!("vera {}: run time budget exhausted", args.join(" "));
+        };
         let mut cmd = Command::new(&self.exe);
         cmd.args(args)
             .current_dir(&self.repo_root)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
-        let out = cmd
-            .output()
-            .await
+        let child = cmd
+            .spawn()
             .with_context(|| format!("failed to run {} {}", self.exe.display(), args.join(" ")))?;
+        let out = match tokio::time::timeout(limit, child.wait_with_output()).await {
+            Ok(r) => r.with_context(|| format!("vera {} failed", args.join(" ")))?,
+            Err(_) => {
+                // the child is killed and reaped by `kill_on_drop` when the
+                // dropped future releases it
+                bail!(
+                    "vera {} timed out after {}s",
+                    args.join(" "),
+                    limit.as_secs()
+                );
+            }
+        };
         if !out.status.success() {
             let tail = String::from_utf8_lossy(&out.stderr);
             let tail: String = tail
@@ -96,42 +165,124 @@ impl VeraClient {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Query subcommand: bounded by the deadline and `QUERY_TIMEOUT`.
+    async fn run(&self, args: &[&str]) -> Result<String> {
+        self.run_bounded(args, Some(QUERY_TIMEOUT)).await
+    }
+
     async fn run_json(&self, args: &[&str]) -> Result<Value> {
         let out = self.run(args).await?;
         serde_json::from_str(&out)
             .with_context(|| format!("vera {}: invalid JSON output", args.join(" ")))
     }
 
+    async fn run_json_index(&self, args: &[&str]) -> Result<Value> {
+        let out = self.run_bounded(args, None).await?;
+        serde_json::from_str(&out)
+            .with_context(|| format!("vera {}: invalid JSON output", args.join(" ")))
+    }
+
     pub async fn version(&self) -> Result<String> {
-        let out = Command::new(&self.exe)
-            .arg("--version")
-            .output()
-            .await
-            .context("vera not found")?;
+        if self.backend == "disabled" {
+            bail!("vera is disabled by config");
+        }
+        let out = tokio::time::timeout(
+            Duration::from_secs(20),
+            Command::new(&self.exe)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("vera --version timed out"))?
+        .context("vera not found")?;
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
         // "vera 1.4.1" -> "1.4.1"
         Ok(s.split_whitespace().last().unwrap_or(&s).to_string())
     }
 
-    pub async fn ensure_index(&self) -> Result<Value> {
-        let indexed = self.repo_root.join(".vera").exists();
-        let summary = if indexed {
-            let mut args = vec!["update", ".", "--json"];
-            for e in &self.exclude {
-                args.push("--exclude");
-                args.push(e);
-            }
-            self.run_json(&args).await?
-        } else {
-            let mut args = vec!["index", ".", "--json"];
-            for e in &self.exclude {
-                args.push("--exclude");
-                args.push(e);
-            }
-            self.run_json(&args).await?
+    fn embedding_model(&self) -> String {
+        self.env
+            .iter()
+            .find(|(k, _)| k == "EMBEDDING_MODEL_ID")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "local".into())
+    }
+
+    /// Why an existing `.vera` index cannot be reused with this
+    /// configuration, if it cannot. Missing cache info (legacy index) is
+    /// tolerated; a mismatching backend or embedding model is not.
+    pub fn cache_incompatibility(&self) -> Option<String> {
+        let p = Self::cache_info_path(&self.repo_root);
+        let text = std::fs::read_to_string(&p).ok()?;
+        let info: VeraCacheInfo = match serde_json::from_str(&text) {
+            Ok(i) => i,
+            Err(e) => return Some(format!("unreadable vera-cache.json: {e}")),
         };
+        if info.backend != self.backend {
+            return Some(format!(
+                "backend changed {} -> {}",
+                info.backend, self.backend
+            ));
+        }
+        let want = self.embedding_model();
+        if info.embedding_model != want {
+            return Some(format!(
+                "embedding model changed {} -> {}",
+                info.embedding_model, want
+            ));
+        }
+        None
+    }
+
+    /// Index (or incrementally update) the repository. An existing index
+    /// built with a different backend/embedding model is discarded first;
+    /// cache info is written only after a successful index.
+    pub async fn ensure_index(&self) -> Result<Value> {
+        let index_dir = self.repo_root.join(".vera");
+        let mut indexed = index_dir.exists();
+        if indexed {
+            if let Some(why) = self.cache_incompatibility() {
+                tracing::warn!("discarding incompatible vera index: {why}");
+                std::fs::remove_dir_all(&index_dir)
+                    .with_context(|| format!("remove {}", index_dir.display()))?;
+                let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
+                indexed = false;
+            }
+        }
+        let verb = if indexed { "update" } else { "index" };
+        let mut args = vec![verb, ".", "--json"];
+        for e in &self.exclude {
+            args.push("--exclude");
+            args.push(e);
+        }
+        let summary = self.run_json_index(&args).await?;
+        if !index_dir.exists() {
+            bail!(
+                "vera {verb} reported success but {} is missing",
+                index_dir.display()
+            );
+        }
+        if let Err(e) = self.check_health().await {
+            let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
+            return Err(e.context(format!("vera {verb} left an unhealthy index")));
+        }
         self.write_cache_info().await.ok();
         Ok(summary)
+    }
+
+    /// Health probe: the index must open via `vera stats --json` and hold
+    /// at least one chunk. Runs after every index/update so the cache info
+    /// (and the Action cache save keyed on it) only ever describe an index
+    /// that answered a query.
+    pub async fn check_health(&self) -> Result<Value> {
+        let stats = self.run_json(&["stats", "--json"]).await?;
+        let chunks = stats["chunk_count"].as_u64().unwrap_or(0);
+        if chunks == 0 {
+            bail!("vera stats reports an empty index (0 chunks)");
+        }
+        Ok(stats)
     }
 
     pub async fn write_cache_info(&self) -> Result<()> {
@@ -147,12 +298,7 @@ impl VeraClient {
                         .find_map(|tok| tok.strip_prefix("dim=").and_then(|n| n.parse().ok()))
                 })
         });
-        let embedding_model = self
-            .env
-            .iter()
-            .find(|(k, _)| k == "EMBEDDING_MODEL_ID")
-            .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| "local".into());
+        let embedding_model = self.embedding_model();
         let info = VeraCacheInfo {
             vera_version: version,
             backend: self.backend.clone(),

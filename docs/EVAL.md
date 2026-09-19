@@ -1,5 +1,63 @@
 # Revera model evaluation log
 
+## How to read this document
+
+Everything below is **historical evidence gathered while building Revera**,
+not a benchmark. Read each section with its own "what this does and does not
+show" notes and these global caveats:
+
+- Cells are 1–2 reps on small synthetic repos; single-run differences of one
+  finding are noise. No confidence intervals are reported because the sample
+  sizes do not support them.
+- Most cells used one model family (Muse Spark) on every route; the model
+  screening section is the only cross-model comparison and it is 1–2 reps.
+- "TP" is scored by `eval/score.py` against a hand-written truth file per
+  corpus (file + defect key). Every accepted finding in the tables was also
+  read by a human once; borderline ones are listed in the section text. There
+  is no independent second adjudicator.
+- The engine changed between sections (terminal handling, retrieval fallback,
+  identity/reuse). Numbers from different sections are **not** comparable to
+  each other and none of them were re-run on the current engine.
+- Token and latency figures come from the run ledger and exclude Vera
+  indexing unless a section says otherwise (`run-all.sh` warm-indexes first).
+
+### What a fair evaluation of the current engine looks like
+
+The next measurement should **not** be another broad investigator-model
+tournament (the last one did not separate single models on small repos).
+In order of value:
+
+1. **Validator comparison on frozen candidates.** Record the investigator's
+   candidate list and evidence once per corpus (the `stats.candidates` /
+   `findings[]` in the run report), then run only the validator with
+   different models against the *same* candidates. Score: accepted true
+   defects, rejected false claims, incorrectly rejected true defects,
+   uncertain verdicts, validator latency and tokens. This isolates the stage
+   that decides false positives from investigator variance.
+2. **Vera on vs lexical-only under equal budgets** (`A-baseline` vs
+   `B-baseline-novera`, same `agent_max_tool_calls`/`agent_max_seconds`/
+   `run_max_seconds`), reporting cold and warm indexing time separately from
+   review wall time (`timing.vera_index_ms` vs `timing.total_ms`). The engine now
+   degrades to lexical-only automatically, so this also measures what a user
+   gets when Vera is unavailable.
+3. Large repos (>20k LOC) only after 1–2; that is where recall separated.
+
+Manual adjudication rule for all of the above: every accepted finding is
+read by a person and labelled TP / FP / duplicate-of-TP before it counts; an
+"uncertain" verdict is neither and is reported in its own column.
+
+### Live evaluation status for the current engine
+
+No live evaluation was run on the current engine (v0.2.x with checked
+terminal handling, exact review identity, deadline-bounded runtime and
+lexical fallback). The offline evidence for it is `cargo test`
+(`tests/finish_plan_tests.rs` covers terminal parsing/repair, reuse
+identity, lifecycle, owned summary comments, lexical fallback and the
+summary presentation of every outcome), `fixtures/run-fixture.sh` (scripted
+models, real Vera index) and `action-smoke.yml` (the composite Action with
+scripted models, Vera disabled). Treat the model recommendations below as
+provisional until item 1 above has been run.
+
 ## Model selection (2026-09-13, openrouter.ai/api/v1/models)
 
 Cheap candidates (tools supported, prompt <= $0.30/M, completion <= $1.0/M):

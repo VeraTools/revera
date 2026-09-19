@@ -1,9 +1,9 @@
 use super::common::{
-    finish, investigator_user, parse_candidate_findings, parse_findings, prepare, PrepareOut,
-    ReviewRequest,
+    findings_terminal_check, finish, investigator_user, parse_candidate_findings,
+    parse_findings_checked, prepare, PrepareOut, ReviewRequest,
 };
 use super::make_client;
-use crate::agent::run_agent;
+use crate::agent::{run_agent, run_agent_checked};
 use crate::config::Config;
 use crate::findings::Finding;
 use crate::prompts;
@@ -15,6 +15,21 @@ use crate::tools::{
 use anyhow::Result;
 use futures::stream::StreamExt;
 use serde::Deserialize;
+
+/// Tools a delegated worker may call: read-only inspection plus both
+/// retrieval families, so a lexical-only run (Vera disabled or degraded)
+/// can still discover untouched files.
+pub const WORKER_TOOLS: &[&str] = &[
+    "read_file",
+    "list_changed_files",
+    "diff_context",
+    "grep_repo",
+    "find_files",
+    "vera_search",
+    "vera_references",
+    "vera_grep",
+    "vera_overview",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanQuestion {
@@ -143,15 +158,7 @@ async fn delegated_candidates(
     // ---- 2. workers concurrently ----
     let worker_routes = cfg.models.workers.as_deref().unwrap_or(&[]);
     let worker_terminal = terminal_submit_worker_result_spec();
-    let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(&[
-        "read_file",
-        "list_changed_files",
-        "diff_context",
-        "vera_search",
-        "vera_references",
-        "vera_grep",
-        "vera_overview",
-    ]));
+    let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(WORKER_TOOLS));
     let lane_budget = prep.budget(
         cfg.delegated.worker_max_tool_calls,
         cfg.delegated.worker_max_seconds,
@@ -354,16 +361,19 @@ async fn delegated_candidates(
     )?;
     let read_only_tb = std::sync::Arc::new(prep.toolbox.restricted(&["read_file"]));
     let synth_start = std::time::Instant::now();
-    let run = run_agent(
+    let run = run_agent_checked(
         lead2.as_ref(),
         prompts::LEAD_SYNTHESIZE,
         &synth_user,
         &read_only_tb,
         &synth_terminal,
         &prep.budget(4, cfg.budget.agent_max_seconds),
+        &findings_terminal_check,
     )
     .await?;
+    prep.stats.repaired |= run.repaired;
     let synth_outcome = match run.stopped {
+        crate::agent::StopReason::Terminal if run.final_call.is_none() => "error",
         crate::agent::StopReason::Terminal => "ok",
         crate::agent::StopReason::TimeBudget => "timeout",
         crate::agent::StopReason::ToolBudget => "tool_budget",
@@ -388,7 +398,13 @@ async fn delegated_candidates(
                         prep.coverage_gaps.push(s.to_string());
                     }
                 }
-                candidates = parse_findings(&call.arguments);
+                let parsed = parse_findings_checked(&call.arguments);
+                prep.stats.malformed_findings += parsed.dropped;
+                if let Some(p) = parsed.problem {
+                    prep.partial_reasons
+                        .push(format!("lead synthesis submission incomplete: {p}"));
+                }
+                candidates = parsed.findings;
                 for c in &mut candidates {
                     // attribute to the worker whose candidate matches, else lead
                     let origin = reports.iter().find_map(|r| {
@@ -399,6 +415,12 @@ async fn delegated_candidates(
                     });
                     c.source = origin.unwrap_or_else(|| "delegated:lead".into());
                     c.sources = vec![c.source.clone()];
+                }
+            } else {
+                prep.partial_reasons
+                    .push("lead synthesis ended without a submission".into());
+                for r in reports {
+                    candidates.extend(r.findings);
                 }
             }
         }
@@ -534,6 +556,7 @@ vera: {}
             env: vec![],
             backend: "local".into(),
             exclude: vec![],
+            deadline: None,
         });
         let diff = Arc::new(DiffSet::default());
         let toolbox = Arc::new(ToolBox::new(repo.clone(), diff.clone(), vera.clone(), 1000));
@@ -544,16 +567,21 @@ vera: {}
             strategy_name: "delegated".into(),
             diff,
             patch_id: String::new(),
+            review_key: String::new(),
             vera,
             toolbox,
             ledger: ledger.clone(),
             state: ReviewState::default(),
             rechecks: vec![],
+            resolved_titles: vec![],
             partial_reasons: vec![],
+            retrieval_unavailable: None,
+            stats: Default::default(),
             coverage: String::new(),
             coverage_gaps: vec![],
             report_note: None,
             deadline: Instant::now() + Duration::from_secs(60),
+            reserve: Duration::ZERO,
             wall: Instant::now(),
             timing: crate::timing::Recorder::default(),
         };

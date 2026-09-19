@@ -1,0 +1,11 @@
+{
+  "roles": {
+    "investigator": [
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {}}]},
+        {"tool_calls": [{"name": "submit_findings", "arguments": {"findings": "not a list", "coverage": "nothing"}}]}
+      ]
+    ],
+    "validator": []
+  }
+}
