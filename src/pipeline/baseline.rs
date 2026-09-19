@@ -1,8 +1,9 @@
 use super::common::{
-    finish, investigator_user, parse_findings, prepare, PrepareOut, Prepared, ReviewRequest,
+    findings_terminal_check, finish, investigator_user, parse_findings_checked, prepare,
+    PrepareOut, Prepared, ReviewRequest,
 };
 use super::make_client;
-use crate::agent::run_agent;
+use crate::agent::run_agent_checked;
 use crate::config::Config;
 use crate::findings::Finding;
 use crate::prompts;
@@ -39,7 +40,7 @@ pub(crate) async fn investigate(
     let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
     let terminal: ToolSpec = terminal_submit_findings_spec();
     let lane_start = std::time::Instant::now();
-    let run = run_agent(
+    let run = run_agent_checked(
         investigator.as_ref(),
         prompts::INVESTIGATOR,
         &user,
@@ -49,27 +50,41 @@ pub(crate) async fn investigate(
             cfg.budget.agent_max_tool_calls,
             cfg.budget.agent_max_seconds,
         ),
+        &findings_terminal_check,
     )
     .await?;
+    prep.stats.repaired |= run.repaired;
     let mut candidates: Vec<Finding> = vec![];
     let outcome = match run.stopped {
+        crate::agent::StopReason::Terminal if run.final_call.is_none() => {
+            prep.partial_reasons
+                .push("investigator ended without a submission".into());
+            "error"
+        }
         crate::agent::StopReason::Terminal => {
-            if let Some(call) = &run.final_call {
-                tracing::debug!(args = %call.arguments, "investigator terminal call");
-                prep.coverage = call.arguments["coverage"]
-                    .as_str()
-                    .unwrap_or("(none)")
-                    .to_string();
-                candidates = parse_findings(&call.arguments);
-                for c in &mut candidates {
-                    c.source = "investigator".into();
-                    c.sources = vec!["investigator".into()];
-                }
+            let call = run.final_call.as_ref().expect("checked above");
+            tracing::debug!(args = %call.arguments, "investigator terminal call");
+            prep.coverage = call.arguments["coverage"]
+                .as_str()
+                .unwrap_or("(none)")
+                .to_string();
+            // a valid empty list is a complete clean result; a missing or
+            // malformed list is not — keep what parsed, mark the run partial
+            let parsed = parse_findings_checked(&call.arguments);
+            candidates = parsed.findings;
+            prep.stats.malformed_findings += parsed.dropped;
+            for c in &mut candidates {
+                c.source = "investigator".into();
+                c.sources = vec!["investigator".into()];
             }
-            if candidates.is_empty() {
-                "ok"
-            } else {
-                "ok:candidates"
+            match parsed.problem {
+                Some(p) => {
+                    prep.partial_reasons
+                        .push(format!("investigator submission incomplete: {p}"));
+                    "ok:malformed"
+                }
+                None if candidates.is_empty() => "ok",
+                None => "ok:candidates",
             }
         }
         crate::agent::StopReason::TimeBudget => {

@@ -1,123 +1,160 @@
 # Status
 
+`v0.2.0` is released: static `x86_64-unknown-linux-musl` asset, `v0` tag,
+`dogfood-released.yml` exercises the published Action on ubuntu-latest and
+ubuntu-22.04. This document tracks what the code on `main` does, what is
+known to be missing, and what to do next.
+
 ## What works
 
-- `revera review --base <rev> [--head <rev>]` baseline strategy end to end:
-  merge-base diff collection (two-dot fallback on shallow clones), Vera
-  indexing, investigator agent loop, candidate collapse, per-candidate
-  fresh-context validation, diff anchoring, summary markdown + JSON report,
-  `.revera/state.json` with open/uncertain/resolved tracking and patch-id
-  short-circuit (`--force` bypasses).
-- `revera review --event <path>` GitHub event mode: base/head/title from the
-  payload, base-sha fetch on shallow clones, state seeded from the managed
-  summary comment's `<!-- revera-state:... -->` blob.
-- `revera review --event ... --publish comment`: head-SHA recheck (refuses on
-  head moved), inline COMMENT review for unposted accepted findings, managed
-  summary comment upsert, `posted` marking after successful posts, fork guard
-  (`github.allow_forks`, default false).
-- `revera doctor`, `revera cache-info`.
-- Providers via a shared `HttpTransport` (ledger reservation per attempt,
-  429/5xx + transient retry, Retry-After, backoff+jitter) + per-protocol
-  `ProtocolAdapter`: `openai-chat`, `openai-responses`, `anthropic`,
-  `gemini` (no call ids — synthesized `name-idx`), and offline `scripted`.
-- `delegated` strategy: lead plans bounded questions (`submit_plan`), workers
-  answer them concurrently on a restricted toolbox (`submit_worker_result`),
-  lead synthesizes final candidates (`submit_findings`); blocked/gaps surface
-  as coverage_gaps under "Not checked"; 0-question plans degrade to baseline.
-- `panel` strategy: concurrent scout lanes (investigator prompt + focus
-  addendum parsed from prompts/scout_focus.md `## <focus>` sections), union +
-  collapse, "panel: N scouts, M raw candidates → K unique" in the summary.
-- Run-wide controls: wall-clock deadline (run_max_seconds) caps every agent
-  call and marks unvalidated candidates uncertain; request reservations count
-  every HTTP attempt (incl. retries); lanes past the request budget are
-  skipped with a partial_reason.
-- Fixture suite: `fixtures/run-fixture.sh` exercises break → fix → clean →
-  delegated → panel (all scripted).
-- Eval harness in `eval/`: 6 synthetic corpus repos + 7 hard repos
-  (`build-corpus-hard.sh`: historical Revera regressions, multi-hop trait
-  contract, two clean controls with FP traps), 7 configs; scoring counts TP by
-  severity, validator rejections and clean-PR noise. Results in
-  `eval/results.jsonl` / docs/EVAL.md.
-- Event mode reviews the exact PR head: `prepare` refuses when HEAD != the
-  requested head or tracked files are dirty; `--event` checks out
-  `pull_request.head.sha` (detached) before indexing. Empty `models.workers`
-  falls back to the investigator. Summary-only and local/dry-run findings are
-  marked posted after the summary/report is written, so identical reruns
-  short-circuit. One run deadline spans rechecks, agents and validators.
-  GitHub 422 on the inline review degrades to summary-only. Retry-After
-  accepts HTTP-dates; backoff is capped at 60s. Empty length-truncated
-  provider replies are errors, not silent no-ops.
-- Release path: `scripts/check-versions.sh` (CI) keeps `action.yml`'s
-  `revera-version` equal to Cargo's version; `scripts/install-revera.sh` is
-  shared by the Action and the release workflow's verify step (`sha256sum -c`,
-  `revera --version`); tags `vX.Y.Z` move `vX`.
-- Per-route `reasoning` levels (default `medium`) across all four HTTP
-  adapters; `provider_state` echoes reasoning/thinking items verbatim;
-  400s mentioning the reasoning field step `xhigh`/`max` down to `high`,
-  then drop it, retrying on the same slot; ledger entries carry role and
-  requested vs effective effort (`role=route:model@req[->eff]` in the footer).
-- Timing: validator phases record `queue_ms` (semaphore wait) separately
-  from execution; `skipped` phases stay visible but are excluded from
-  spans and p50/p95 (`skipped_phases` counter); the publish phase measures
-  inline-review publication and the summary timing line is refreshed before
-  the comment is posted, so JSON, stdout and GitHub agree.
-- `action.yml` composite action (vera+revera install with sha256 verify,
-  .vera cache restore/save, fail-on), release workflow (tag `v*` → verify
-  packaged artifact → release → move `vX`), self-review dogfood workflow
-  (checks out `pull_request.head.sha`).
+### Review flow
+- `revera review --base <rev> [--head <rev>]` (local) and `--event <path>`
+  (GitHub `pull_request`/`pull_request_target` payload): merge-base diff
+  (two-dot fallback on shallow clones), exact-head enforcement (refuses on
+  HEAD mismatch or dirty tracked files; `--event` checks out
+  `pull_request.head.sha` detached first).
+- Investigator → fresh-context validator per candidate → deterministic diff
+  anchoring → state reconciliation → publication. `baseline` is the default;
+  `delegated` (lead/workers) and `panel` (scout lanes) are advanced and
+  experimental.
+- Truthful terminal handling: the investigator's `submit_findings` call is
+  schema-checked. `findings: []` is a valid clean result; `{}`, a
+  non-array `findings`, or invalid entries get exactly one repair round
+  (when time remains); still-invalid output makes the run `partial` and any
+  valid findings from a mixed list are kept and validated.
+- Outcomes: exit `0 complete`, `2 partial`, `1` failed/config error; the
+  JSON report, stdout summary, Action outputs and GitHub summary all derive
+  from the same `RunStatus`. A partial run with zero findings says so
+  explicitly ("absence of findings is not evidence the change is clean").
 
-## Current blocker / known limitations
+### State, identity, reuse
+- `.revera/state.json` is versioned (`STATE_VERSION = 2`), bounded (200
+  findings, pruned oldest-resolved first) and records the outcome of the
+  last run per review key.
+- Review identity = base sha + exact head tree id + patch id (informational)
+  + fingerprint of review-affecting config (strategy, thresholds, limits,
+  budgets, model routes without secrets, prompt content hash, engine version,
+  Vera index identity). Reuse requires a prior `complete` run under the same
+  key with no unposted open findings; partial/failed runs are never reused.
+- Corrupt state → quarantined to `state.json.corrupt`, fresh review. Legacy
+  (pre-v2) state → fresh review, publication ids retained (no re-posting).
+- Finding lifecycle: open → resolved when it stops being reproduced,
+  reopened (and re-published) when it comes back; canonical finding detail
+  (file/line/title/severity/claim/trigger/impact/evidence refs) is retained.
+- In event mode the state blob lives in the managed summary comment; that
+  comment is selected by marker + decodable state + ownership (recorded id,
+  authenticated viewer or known bot), never by marker text alone.
+  Inline and summary publication are reconciled separately.
 
+### Runtime and retrieval
+- `budget.run_max_seconds` bounds every provider request, retry, tool batch
+  and Vera subprocess by the remaining deadline, with a reserve for
+  validation and report generation. Timed-out Vera children are killed and
+  reaped.
+- `vera.enabled: false` runs lexical-only with no Vera binary, key or index.
+  Vera failures (missing binary, missing key, index/API error, timeout)
+  degrade to lexical-only, mark the run partial with "semantic retrieval
+  unavailable", and are visible in `stats.retrieval` and the summary.
+- Lexical tools (`grep_repo`, `find_files`, `read_file`) operate on tracked
+  files of the exact head, honour excludes, skip `.git`/`.vera`/`.revera`,
+  return numbered lines, and are bounded in output and count. No shell
+  execution, no second semantic index.
+- Vera cache: compatibility (backend + embedding model) and health are
+  checked before reuse; cache metadata is rewritten only after a successful
+  index/update; the Action saves the cache only when that happened.
+  `revera cache-key` exposes the index identity (independent of
+  investigator/validator settings) or `disabled`.
+
+### Providers
+- Shared `HttpTransport` (ledger reservation per attempt, 429/5xx + transient
+  retry, Retry-After incl. HTTP-dates, capped backoff, deadline) with
+  adapters for `openai-chat`, `openai-responses`, `anthropic`, `gemini`, and
+  offline `scripted`. Per-route `reasoning` with 400-driven step-down.
+
+### Action, CI, release
+- `action.yml`: installs Vera and Revera into `$RUNNER_TEMP/bin` (checksum
+  verified, absolute-path invocation, directory created first), computes the
+  Vera cache key, restores/saves the index cache only when healthy, removes
+  stale reports, captures the exit code and normalises it through
+  `scripts/action-outcome.sh` (`fail-on`, truthful `status`/`report-path`/
+  `findings` outputs, job summary).
+- `ci.yml` offline job: version check, installer tests, outcome test, fmt,
+  clippy, tests. `action-smoke.yml`: the composite Action itself on
+  ubuntu-22.04 and ubuntu-24.04 with scripted models and Vera disabled,
+  asserting complete / partial / failed and `fail-on`. Live jobs
+  (`live-fixtures`, `self-review`, `dogfood-released`) are separate, run
+  only when secrets exist, and annotate a skip when they don't — a skip is
+  never shown as a pass. Publishing workflows use per-PR `concurrency`.
+- Release: `scripts/check-versions.sh` keeps `action.yml` and Cargo in step;
+  `scripts/install-revera.sh` is shared by the Action and the release verify
+  step; tags `vX.Y.Z` move `vX`.
+
+### Diagnostics
+- `revera doctor` checks config, each enabled route (protocol, base URL,
+  key env set and non-empty, script path for scripted routes), Vera only
+  when enabled (binary, version, key env), the `.vera` index, the GitHub
+  token when `publish: comment`, and the git repo. Never prints secret
+  values; every failure has a `next:` line.
+- Reports carry `stats`: candidates, accepted/rejected/uncertain,
+  resolved/reopened, reuse, retrieval mode, files read, per-tool
+  calls/errors/latency, malformed findings, repair used. No full transcripts
+  or source dumps.
+
+## Known limitations
+
+- Eval evidence (docs/EVAL.md) is thin: 1–2 reps per cell, small synthetic
+  repos, one model family on most routes; no validator-model comparison on
+  frozen candidates yet. Treat model recommendations as provisional.
 - `v0.2.0` is released: it ships the static `x86_64-unknown-linux-musl`
   asset (verified `sha256` + static-pie) and `v0` points at it (the 0.1.0
   GNU binary needs glibc >= 2.39, so it fails on Ubuntu 22.04 hosts).
-  `dogfood-released.yml` (ubuntu-latest + ubuntu-22.04) exercises the
-  published Action; `self-review.yml` exercises the source build (dry-run).
-  Both gate on the `OPENROUTER_API_KEY`, `RELAY_FAST_API_KEY` and
-  `OPENCODE_GO_API_KEY` repo secrets and skip when any is missing.
-- Eval evidence (docs/EVAL.md): Vera on beat Vera off 5/6 vs 4/6 on the
-  ripgrep multi-hop corpus (2 reps, provisional); model screening over
-  relay.fast/OpenCode Go shows single lanes tie on small repos, panels add
-  FPs and cost without recall, glm-5.3-flash degrades on 50k-LOC repos.
-  Provisional defaults: baseline + Vera + validation, investigator Muse Spark
-  or glm-5.3, validator glm-5.3-flash @ high. Cells are 1–2 reps; no
-  validator-model comparison yet.
+  `dogfood-released.yml` and `self-review.yml` gate on the
+  `OPENROUTER_API_KEY`, `RELAY_FAST_API_KEY` and `OPENCODE_GO_API_KEY` repo
+  secrets and annotate a skip when any is missing.
 - Cold `vera index` of a 50k-LOC repo via the OpenRouter embedding backend
-  took 22 min with a ~15 min idle stall on one connection; warm cache +
-  `vera update` is ~5 s, so the Action cache path matters.
-- The fixture suite needs live OpenRouter embeddings; it passed on this
-  branch after one earlier run timed out at the embeddings endpoint.
+  took 22 min once (idle stall on one connection); warm `vera update` is
+  ~5 s, so the Action cache path matters. Runs that hit `run_max_seconds`
+  during indexing degrade to lexical-only and are reported partial.
+- `fixtures/run-fixture.sh` needs live OpenRouter embeddings (real Vera
+  index); the offline equivalent is `action-smoke.yml` + `cargo test`.
+- Fork PRs are skipped in `comment` mode (no secrets); there is no
+  `pull_request_target` recipe yet because it would run untrusted code with
+  secrets.
+- Linux x86_64 only.
 
-## Next three tasks
+## Next
 
-1. Get a live `dogfood-released.yml` run (ubuntu-latest comment +
-   ubuntu-22.04 dry-run) and `self-review.yml` run with the provider secrets
-   set, and record the outcome here.
-2. Per-tool call counters in the report ledger so search efficiency can be
-   compared across configs instead of inferred from tokens.
-3. Tighten panel collapse/validation before panel is recommended anywhere.
+1. Get a live `dogfood-released.yml` and `self-review.yml` run with the
+   provider secrets set, and record the outcome here.
+2. Validator comparison on frozen candidates/evidence (docs/EVAL.md plan),
+   and Vera-on vs lexical-only under equal budgets on the hard corpus.
+3. Presentation fixtures rendered from real runs for every outcome (see
+   `tests/finish_plan_tests.rs::summary_presentation_*` for the asserted
+   text today).
+4. Tighten panel collapse/validation before recommending any multi-lane
+   strategy.
 
-## Exact test-demo command
+## Exact test-demo commands
 
 ```sh
+# offline
+cargo test && scripts/test-install-revera.sh && scripts/test-install-vera.sh && scripts/test-action-outcome.sh
+# live fixtures (real Vera index; scripted models)
 OPENROUTER_API_KEY=... VERA_HOME=$HOME/.vera-revera fixtures/run-fixture.sh
-# live probe:
+# live review
 OPENROUTER_API_KEY=... RELAY_FAST_API_KEY=... OPENCODE_GO_API_KEY=... \
-  VERA_HOME=$HOME/.vera-revera revera review --repo <repo> --base <base> \
-  --head <head> --config fixtures/configs/live.yaml
+  revera review --repo <repo> --base <base> --head <head> --config revera.yaml --publish dry-run
 ```
 
 ## Expensive-to-reverse decisions
 
-- Vera invoked as an external pinned executable, not linked (`vera-core`/
-  ONNX/tree-sitter builds stay out of Revera).
-- Review state keyed on `finding_id = sha256(file + defect_key)`; defect_key
-  wording is part of the durable state format. In event mode the state blob
-  lives inside the managed summary comment (`<!-- revera-state:base64 -->`).
+- Vera is an external pinned executable, not linked.
+- `finding_id = sha256(file + defect_key)`; the state format (v2) and the
+  `<!-- revera-state:base64 -->` blob in the summary comment are durable.
 - Model output contract is the `submit_findings`/`submit_verdict` tool-call
-  schema; prompt files in `prompts/` are the interface contract.
-- `posted` is set only after a successful surface: the GitHub publisher
-  after inline post/summary upsert, and the local/dry-run path after the
-  report is written — never before.
-- All model routes default to `meta/muse-spark-1.3-contributor` (user
-  directive); see docs/EVAL.md.
+  schema; `prompts/` is the interface contract and its hash is part of the
+  review identity.
+- `posted` is set only after a successful surface, never before.
+- Default routes: Muse Spark 1.3 Contributor via OpenCode Go for the
+  investigator, relay.fast for other models, OpenRouter for Vera
+  embeddings/reranker (see `revera.yaml`).

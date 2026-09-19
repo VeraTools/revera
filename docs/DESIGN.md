@@ -37,12 +37,19 @@ measured need appears.
 
 1. Models return structured findings through a `submit_findings` /
    `submit_verdict` tool. They never post comments.
-2. Model tools are read-only: `read_file`, `vera_search`, `vera_references`,
-   `vera_grep`, `vera_overview`, `diff_context`, `list_changed_files`. No shell.
+2. Model tools are read-only: `read_file`, `grep_repo`, `find_files`,
+   `diff_context`, `list_changed_files`, plus `vera_search`, `vera_references`,
+   `vera_grep`, `vera_overview` when Vera is enabled and healthy. Lexical
+   tools see only tracked files of the exact head (excludes honoured;
+   `.git`/`.vera`/`.revera` skipped). No shell.
 3. Provider/model/credentials come from trusted config only.
 4. Indexing is controller-owned: Revera runs `vera update .` once before any
-   model call; a model cannot rebuild the index.
+   model call; a model cannot rebuild the index. If Vera is disabled or the
+   update fails/times out, the run continues lexical-only and is marked
+   partial with "semantic retrieval unavailable".
 5. Publisher re-fetches the PR head SHA and refuses to publish if it moved.
+6. Everything provider- or subprocess-facing is bounded by the run deadline
+   (`budget.run_max_seconds`) with a reserve for validation and reporting.
 
 ## Latency and strong-model economy
 
@@ -81,14 +88,35 @@ off) and are always kept in the run report.
 
 ## Re-review
 
-State = `{ reviewed_head, reviewed_base, findings: [{id, status, file, start_line, title, posted}] }`.
-Stored in `.revera/state.json` locally and, on GitHub, embedded in the managed
-summary comment as `<!-- revera-state:<base64 json> -->`.
+State (`version: 2`) = `{ reviewed_head, reviewed_base, review_key, last_status,
+findings: [{id, status, file, start_line, title, defect_key, severity, claim,
+trigger, impact, evidence[], posted, ...}] }`, bounded to 200 findings
+(resolved/rejected pruned first). Stored in `.revera/state.json` locally and,
+on GitHub, embedded in the managed summary comment as
+`<!-- revera-state:<base64 json> -->`. That comment is selected by marker +
+decodable state + ownership (recorded comment id, authenticated viewer or
+known bot login), never by marker text alone.
+
+`review_key` = sha256(base sha, exact head tree id, patch id, config
+fingerprint). The fingerprint covers strategy, thresholds, limits, budgets,
+concurrency, retries, delegated/panel settings, model routes (protocol/base
+URL/model/reasoning/extra-header *names* — no key names or values),
+prompt content hash, engine version and Vera index identity. A run is reused
+only when the prior run under the same key was `complete` and left no
+unposted open findings; partial/failed runs are always redone. Corrupt state
+is quarantined (`state.json.corrupt`); pre-v2 state triggers a fresh review
+but keeps publication ids.
 
 On a new push: prior unresolved findings are handed to the validator as
 "recheck" candidates against the new head; findings that no longer hold are
-marked `resolved`; findings still valid and already posted are not reposted.
-New candidates are deduplicated against prior ids.
+marked `resolved`; a resolved finding that is reproduced again is `reopened`
+and published again; findings still valid and already posted are not
+reposted. New candidates are deduplicated against prior ids. Inline and
+summary publication are tracked separately, and before posting the publisher
+reads the PR's existing inline review comments and treats every
+`<!-- revera-id:… -->` it finds there as posted — so a summary upsert that
+fails after the inline review succeeded never duplicates inline comments on
+the next run, even when the state blob never recorded them.
 
 ## Anchoring
 
@@ -132,5 +160,10 @@ is posted so JSON, stdout and GitHub agree.
 Environment for `vera` subprocesses is built from `vera:` config
 (`backend: api` sets `VERA_BACKEND=api` + `EMBEDDING_*`/`RERANKER_*` from the
 configured env names). `.revera/vera-cache.json` records `vera_version`,
-`embedding_model`, `dim` (from `.vera/vectors.manifest`) so the Action cache
-key invalidates when the embedding space changes.
+`backend`, `embedding_model`, `dim` (from `.vera/vectors.manifest`) and is
+rewritten only after a successful, health-checked index/update; a restored
+cache that does not match is discarded before `vera update`. `revera
+cache-key` hashes the index-shaping config (backend, embedding model,
+excludes, Vera version) — not investigator/validator settings — so the
+Action cache survives model changes. `vera.enabled: false` needs no binary,
+key or index. Vera subprocesses are deadline-bounded and killed on timeout.
