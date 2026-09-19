@@ -55,7 +55,7 @@ pub async fn validate_candidates(
             break;
         }
         let sem = sem.clone();
-        let cfg_models = cfg.models.validator.clone();
+        let cfg_models = cfg.effective_validator().clone();
         let ledger = ledger.clone();
         let tb = toolbox.clone();
         let diff = diff.clone();
