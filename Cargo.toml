@@ -1,8 +1,8 @@
 [package]
 name = "revera"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Provider-independent PR reviewer with Vera retrieval"
+description = "Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval."
 license = "MIT"
 rust-version = "1.85"
 

@@ -1,8 +1,12 @@
 name: release
 
+# Runs for release tags only. A stable vX.Y.Z tag publishes a release and
+# moves the vX major tag; vX.Y.Z-<pre> publishes a pre-release and leaves the
+# major tag alone; anything else (including the moving v0 tag itself) fails
+# fast before building.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
 
 permissions:
   contents: write
@@ -14,6 +18,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Validate tag against Cargo.toml
+        id: tag
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::$tag is not a vX.Y.Z or vX.Y.Z-<pre> tag"; exit 1
+          fi
+          version=$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::tag $tag does not match Cargo.toml version $version"; exit 1
+          fi
+          scripts/check-versions.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -44,16 +65,19 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            Static `x86_64-unknown-linux-musl` binary. Verify with
+            `sha256sum -c revera-x86_64-unknown-linux-musl.tar.gz.sha256`
+            or install through `scripts/install-revera.sh <X.Y.Z> <dir>`.
           files: |
             revera-x86_64-unknown-linux-musl.tar.gz
             revera-x86_64-unknown-linux-musl.tar.gz.sha256
 
       - name: Move major tag
+        if: steps.tag.outputs.prerelease == 'false'
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "not a stable vX.Y.Z tag; skipping major tag move"
-            exit 0
-          fi
           major="${GITHUB_REF_NAME%%.*}"
           git tag -f "$major" "$GITHUB_SHA"
           git push -f origin "$major"

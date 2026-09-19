@@ -10,7 +10,7 @@ use crate::prompts;
 use crate::report::RunReport;
 use crate::state::ReviewState;
 use crate::tools::terminal_submit_findings_spec;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use futures::stream::StreamExt;
 
 /// Parse `## <focus>` sections out of prompts/scout_focus.md.
@@ -54,13 +54,7 @@ pub fn scout_lanes(
             .map(|f| (f.clone(), scouts[0].clone()))
             .collect());
     }
-    if scouts.len() != focuses.len() {
-        bail!(
-            "panel: {} focuses but {} scouts (must be equal, or use a single scout)",
-            focuses.len(),
-            scouts.len()
-        );
-    }
+    crate::config::check_lane_cardinality(focuses.len(), scouts.len())?;
     Ok(focuses
         .iter()
         .cloned()

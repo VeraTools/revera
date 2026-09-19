@@ -1,116 +1,34 @@
-# Revera configuration. Copy to revera.yaml (repo root) or pass --config.
-# ${VAR} in string values is expanded from the environment at load time.
-
-review:
-  strategy: baseline          # baseline | delegated | panel
-  max_findings: 10            # published inline comments cap; the rest go to the summary
-  publish: dry-run            # dry-run | comment
-  publish_uncertain: false    # list validator-"uncertain" findings in the summary
-  concurrency: 4              # parallel model lanes (scouts/workers/validations)
-  max_tool_output_bytes: 12000
-  max_diff_bytes: 200000      # PR diffs larger than this are truncated per file with a note
-  min_severity: low           # low | medium | high  (below this is dropped before validation)
-  # validate: false           # eval-only: skip validation, treat candidates as accepted
-
-budget:
-  agent_max_tool_calls: 25    # per agent loop
-  agent_max_seconds: 300
-  run_max_requests: 120       # total model HTTP requests per run
-  run_max_seconds: 900
-  retries: 3                  # on 429/5xx/timeouts, exponential backoff
+# Revera starter configuration. Copy to revera.yaml in your repository root
+# (or point the Action's `config` input at it). Everything not listed here has
+# a default: baseline strategy, fresh validation on, Vera retrieval off.
+# Full reference: docs/configuration.md
 
 models:
-  # Role slots. Each may point to a different endpoint; several may share one.
+  # Reads the diff and repository and proposes candidate findings. Any
+  # OpenAI-compatible chat endpoint works; `anthropic`, `gemini` and
+  # `openai-responses` protocols are also supported.
   investigator:
-    protocol: openai-chat     # openai-chat | scripted
-    base_url: ${REVIEW_BASE_URL}
-    api_key_env: REVIEW_API_KEY
-    model: cheap-review-model
-    max_output_tokens: 4000
-    temperature: 0.2
-    reasoning: medium          # none|minimal|low|medium|high|xhigh|max (default medium)
-    # extra_headers: {X-Custom: value}   # extra headers on every request
-    # session_header: x-opencode-session # header carrying a stable per-run id;
-                                         # auto-set for base_url host opencode.ai
-    # long form:
-    # reasoning:
-    #   effort: high           # effort level
-    #   budget_tokens: 16384   # wins over the effort->budget map
-    #   field: auto            # openai-chat only: auto|openai|openrouter
-    #                          # (auto = openrouter iff base_url host is openrouter.ai)
-  validator:
     protocol: openai-chat
-    base_url: ${REVIEW_BASE_URL}
-    api_key_env: REVIEW_API_KEY
-    model: strong-validator-model
-    max_output_tokens: 3000
-  # lead: (optional; delegated mode) defaults to investigator
-  # workers: (optional; delegated mode) list, defaults to [investigator]
-  scouts:                     # panel mode lanes; also used as delegated workers if `workers` is unset
-    - name: general
-      protocol: openai-chat
-      base_url: ${REVIEW_BASE_URL}
-      api_key_env: REVIEW_API_KEY
-      model: cheap-model-a
-      focus: general          # general | cross-file | security | concurrency | data
-    - name: cross-file
-      protocol: openai-chat
-      base_url: ${REVIEW_BASE_URL}
-      api_key_env: REVIEW_API_KEY
-      model: cheap-model-b
-      focus: cross-file
+    base_url: https://api.example.com/v1
+    api_key_env: REVIEW_API_KEY   # env var / Actions secret holding the key
+    model: your-model-id
+    # reasoning: medium           # none | minimal | low | medium | high | xhigh | max
 
-vera:
-  enabled: true               # false: skip indexing, no vera_* tools
-  executable: vera            # name on PATH or absolute path
-  version: "1.4.1"            # doctor warns on mismatch
-  backend: api                # api | local
-  embedding:
-    base_url: https://openrouter.ai/api/v1
-    model: qwen/qwen3-embedding-8b
-    api_key_env: OPENROUTER_API_KEY
-  reranker:                   # optional; omit to disable reranking
-    base_url: https://openrouter.ai/api/v1
-    model: qwen/qwen3-reranker-8b
-    api_key_env: OPENROUTER_API_KEY
-  exclude: []                 # extra globs passed to `vera update --exclude`
-
-  # --- alternative protocols (uncomment + set key envs to use) ---
+  # Re-derives every candidate in a fresh context before anything is
+  # published. When omitted it uses the investigator route; set it to use a
+  # different model for validation.
   # validator:
-  #   protocol: anthropic        # POST {base}/v1/messages; default base https://api.anthropic.com
+  #   protocol: anthropic
   #   api_key_env: ANTHROPIC_API_KEY
   #   model: claude-sonnet-4-6
-  #   max_output_tokens: 3000
-  # investigator:
-  #   protocol: openai-responses # POST {base}/responses (OpenAI Responses API)
-  #   base_url: https://api.openai.com/v1
-  #   api_key_env: OPENAI_API_KEY
-  #   model: gpt-5.4
-  # validator:
-  #   protocol: gemini           # POST {base}/v1beta/models/{model}:generateContent
-  #   base_url: https://generativelanguage.googleapis.com
-  #   api_key_env: GEMINI_API_KEY
-  #   model: gemini-2.5-pro
 
-delegated:                   # strategy: delegated
-  max_questions: 4            # lead's plan is capped here
-  worker_max_tool_calls: 12
-  worker_max_seconds: 120
-
-panel:                       # strategy: panel
-  focuses: [general, cross-file]
-  scout_max_tool_calls: 15
-
-github:
-  token_env: GITHUB_TOKEN
-  summary_marker: "<!-- revera-summary -->"
-  allow_forks: false          # publish comments on forked-PR events
-
-# Named partial overrides selectable with `--profile <name>`.
-profiles:
-  fast: {}                    # the defaults
-  deep:
-    budget:
-      agent_max_tool_calls: 60
-      run_max_requests: 400
-      run_max_seconds: 2400
+# Optional: semantic repository retrieval through Vera, on top of the
+# built-in lexical search. Needs the `vera` binary (the Action installs it)
+# and an embedding endpoint. Worth enabling for repositories above a few
+# thousand lines.
+# vera:
+#   backend: api
+#   embedding:
+#     base_url: https://api.example.com/v1
+#     model: your-embedding-model
+#     api_key_env: EMBEDDING_API_KEY

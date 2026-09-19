@@ -1,6 +1,6 @@
 name: Revera
 # Consumers must check out pull_request.head.sha so reviewer tools read the PR head tree.
-description: Provider-independent PR reviewer with Vera retrieval
+description: Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval.
 branding:
   icon: search
   color: purple
@@ -22,7 +22,7 @@ inputs:
     default: failed
   revera-version:
     description: Revera release version to install
-    default: "0.2.0"
+    default: "0.3.0"
   vera-version:
     description: Vera release version to install
     default: "1.4.1"
