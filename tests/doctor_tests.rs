@@ -78,3 +78,25 @@ fn doctor_strategy_override_validates_lead() {
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("models.lead"), "{stdout}");
 }
+
+#[test]
+fn doctor_panel_cardinality_fails() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/scripts/clean.json");
+    let yaml = format!(
+        "models:\n  investigator: {{protocol: scripted, script: {script}, model: m}}\n  scouts:\n    - {{name: a, protocol: scripted, script: {script}, model: m}}\n    - {{name: b, protocol: scripted, script: {script}, model: m}}\npanel: {{focuses: [general, cross-file, concurrency]}}\n"
+    );
+    let f = write_tmp(&yaml);
+    let repo = git_dir();
+    let out = doctor(
+        &[
+            "--config",
+            f.path().to_str().unwrap(),
+            "--strategy",
+            "panel",
+        ],
+        repo.path(),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("panel: FAIL"), "{stdout}");
+}

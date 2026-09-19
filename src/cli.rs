@@ -155,17 +155,6 @@ fn load_cfg_unvalidated(
     Ok((p, c))
 }
 
-fn load_cfg(
-    path: Option<&std::path::Path>,
-    profile: Option<&str>,
-    strategy_override: Option<Strategy>,
-) -> Result<(PathBuf, Config), String> {
-    let (p, c) = load_cfg_unvalidated(path, profile)?;
-    c.validate_for(strategy_override.unwrap_or(c.review.strategy))
-        .map_err(|e| e.to_string())?;
-    Ok((p, c))
-}
-
 fn strategy_arg(s: StrategyArg) -> Strategy {
     match s {
         StrategyArg::Baseline => Strategy::Baseline,
@@ -183,7 +172,9 @@ fn publish_arg(p: PublishArg) -> PublishMode {
 
 async fn review(a: ReviewArgs) -> i32 {
     let strategy = a.strategy.map(strategy_arg);
-    let (_, cfg) = match load_cfg(a.config.as_deref(), a.profile.as_deref(), strategy) {
+    // unvalidated here: the fork guard must run (and emit its partial
+    // report) before any credential check can abort the run
+    let (_, cfg) = match load_cfg_unvalidated(a.config.as_deref(), a.profile.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
@@ -263,6 +254,10 @@ async fn review(a: ReviewArgs) -> i32 {
             eprintln!("report: {}", out.display());
             return 2;
         }
+    }
+    if let Err(e) = cfg.validate_for(effective_strategy) {
+        eprintln!("error: {e}");
+        return 1;
     }
     let body = a
         .body_file
@@ -508,6 +503,11 @@ async fn doctor(
             }
         }
         Strategy::Panel => {
+            if let Err(e) = cfg.check_panel_lanes() {
+                println!("panel: FAIL — {e}");
+                println!("  next: configure one scout per panel.focuses entry (or a single scout)");
+                ok = false;
+            }
             for s in cfg.models.scouts.iter().flatten() {
                 routes.push((format!("models.scouts.{}", s.name), &s.route));
             }

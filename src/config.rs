@@ -596,6 +596,16 @@ fn check_route_shape(name: &str, r: &ModelRoute) -> Result<()> {
     Ok(())
 }
 
+/// >1 configured scouts requires one `panel.focuses` entry per scout.
+pub(crate) fn check_lane_cardinality(focuses: usize, scouts: usize) -> Result<()> {
+    if scouts > 1 && scouts != focuses {
+        bail!(
+            "panel: {focuses} focuses but {scouts} scouts (must be equal, or use a single scout)"
+        );
+    }
+    Ok(())
+}
+
 /// Credential check: HTTP routes need their api_key_env populated.
 fn check_route_credentials(name: &str, r: &ModelRoute) -> Result<()> {
     if r.protocol.is_http() {
@@ -691,6 +701,12 @@ impl Config {
     /// True when no explicit validator is configured (inherits investigator).
     pub fn validator_inherited(&self) -> bool {
         self.models.validator.is_none()
+    }
+
+    /// Panel cardinality rule used by `doctor` and the panel pipeline.
+    pub fn check_panel_lanes(&self) -> Result<()> {
+        let n = self.models.scouts.as_ref().map_or(0, |s| s.len());
+        check_lane_cardinality(self.panel.focuses.len(), n)
     }
 
     /// Credential check for only the routes `strategy` would actually use:
