@@ -149,6 +149,76 @@ pub async fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<St
     Ok(out.lines().map(|l| l.to_string()).collect())
 }
 
+/// Tree object id of `rev` — identifies exact content regardless of
+/// commit metadata.
+pub async fn tree_id(repo: &Path, rev: &str) -> Result<String> {
+    rev_parse(repo, &format!("{rev}^{{tree}}")).await
+}
+
+fn exclude_pathspecs(exclude: &[String]) -> Vec<String> {
+    exclude
+        .iter()
+        .filter(|g| !g.trim().is_empty())
+        .map(|g| format!(":(exclude,glob){g}"))
+        .collect()
+}
+
+/// `git grep -n -I -E` over tracked files at the checked-out head, honouring
+/// exclusion globs. Output lines are `path:line:text`. A non-matching pattern
+/// yields an empty string; an invalid pattern is an error.
+pub async fn grep(
+    repo: &Path,
+    pattern: &str,
+    path_glob: Option<&str>,
+    exclude: &[String],
+) -> Result<String> {
+    let mut args: Vec<String> = vec![
+        "grep".into(),
+        "-n".into(),
+        "-I".into(),
+        "-E".into(),
+        "--no-color".into(),
+        "-e".into(),
+        pattern.to_string(),
+        "--".into(),
+    ];
+    match path_glob {
+        Some(g) if !g.trim().is_empty() => args.push(format!(":(glob){g}")),
+        _ => args.push(".".into()),
+    }
+    args.extend(exclude_pathspecs(exclude));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = Command::new("git")
+        .args(&argv)
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to run git grep")?;
+    match out.status.code() {
+        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => bail!(
+            "git grep failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+}
+
+/// Tracked files at the checked-out head matching an optional glob, honouring
+/// exclusion globs.
+pub async fn ls_files(repo: &Path, glob: Option<&str>, exclude: &[String]) -> Result<Vec<String>> {
+    let mut args: Vec<String> = vec!["ls-files".into(), "--".into()];
+    match glob {
+        Some(g) if !g.trim().is_empty() => args.push(format!(":(glob){g}")),
+        _ => args.push(".".into()),
+    }
+    args.extend(exclude_pathspecs(exclude));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = git(repo, &argv).await?;
+    Ok(out.lines().map(|l| l.to_string()).collect())
+}
+
 pub fn repo_root(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }

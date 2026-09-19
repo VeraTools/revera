@@ -1,20 +1,43 @@
 use crate::diff::DiffSet;
 use crate::provider::ToolSpec;
 use crate::vera::VeraClient;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// Per-call cap for local git-backed tools.
+const LOCAL_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Lightweight per-tool telemetry: counts, errors, and cumulative latency.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolStat {
+    pub name: String,
+    pub calls: u64,
+    pub errors: u64,
+    pub latency_ms: u64,
+}
+
+#[derive(Default)]
+struct Stats {
+    by_tool: BTreeMap<String, ToolStat>,
+    /// distinct repository files read via `read_file`
+    files_read: std::collections::BTreeSet<String>,
+}
 
 pub struct ToolBox {
     pub repo_root: PathBuf,
     pub diff: Arc<DiffSet>,
     pub vera: Arc<VeraClient>,
     pub max_output_bytes: usize,
-    vera_disabled: std::sync::Mutex<Option<String>>,
+    vera_disabled: Mutex<Option<String>>,
     /// vera.enabled=false: vera_* tools are not offered at all.
     hide_vera: bool,
     /// When set, only these tool names are exposed/callable.
     allowed: Option<Vec<String>>,
+    stats: Arc<Mutex<Stats>>,
 }
 
 fn obj_schema(props: Value, required: &[&str]) -> Value {
@@ -137,10 +160,35 @@ impl ToolBox {
             diff,
             vera,
             max_output_bytes,
-            vera_disabled: std::sync::Mutex::new(None),
+            vera_disabled: Mutex::new(None),
             hide_vera: false,
             allowed: None,
+            stats: Arc::new(Mutex::new(Stats::default())),
         }
+    }
+
+    /// Snapshot of per-tool telemetry, sorted by tool name.
+    pub fn tool_stats(&self) -> Vec<ToolStat> {
+        self.stats
+            .lock()
+            .unwrap()
+            .by_tool
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Number of distinct files read with `read_file`.
+    pub fn files_read(&self) -> usize {
+        self.stats.lock().unwrap().files_read.len()
+    }
+
+    /// Reason vera_* tools are currently unavailable, if any.
+    pub fn vera_unavailable(&self) -> Option<String> {
+        if self.hide_vera {
+            return Some("vera disabled by config".into());
+        }
+        self.vera_disabled.lock().unwrap().clone()
     }
 
     /// A toolbox exposing only the named tools (e.g. synthesis gets read-only
@@ -151,9 +199,10 @@ impl ToolBox {
             diff: self.diff.clone(),
             vera: self.vera.clone(),
             max_output_bytes: self.max_output_bytes,
-            vera_disabled: std::sync::Mutex::new(self.vera_disabled.lock().unwrap().clone()),
+            vera_disabled: Mutex::new(self.vera_disabled.lock().unwrap().clone()),
             hide_vera: self.hide_vera,
             allowed: Some(names.iter().map(|s| s.to_string()).collect()),
+            stats: self.stats.clone(),
         }
     }
 
@@ -198,6 +247,28 @@ impl ToolBox {
                         "line": {"type": "integer"},
                     }),
                     &["path", "line"],
+                ),
+            },
+            ToolSpec {
+                name: "grep_repo".into(),
+                description: "Regex (ERE) search over all tracked files at the PR head, independent of the semantic index. Use to find callers, usages and definitions anywhere in the repository. Output: path:line:text.".into(),
+                parameters: obj_schema(
+                    json!({
+                        "pattern": {"type": "string"},
+                        "path_glob": {"type": "string", "description": "optional glob, e.g. src/**/*.rs"},
+                        "limit": {"type": "integer", "description": "max matching lines (default 40, max 200)"},
+                    }),
+                    &["pattern"],
+                ),
+            },
+            ToolSpec {
+                name: "find_files".into(),
+                description: "List tracked files at the PR head matching a glob (e.g. **/*handler*.go). Max 200 results.".into(),
+                parameters: obj_schema(
+                    json!({
+                        "glob": {"type": "string"},
+                    }),
+                    &["glob"],
                 ),
             },
             ToolSpec {
@@ -286,6 +357,11 @@ impl ToolBox {
         let path = args["path"].as_str().ok_or("missing path")?;
         let canon = self.resolve_path(path)?;
         let text = std::fs::read_to_string(&canon).map_err(|e| format!("read {path}: {e}"))?;
+        self.stats
+            .lock()
+            .unwrap()
+            .files_read
+            .insert(path.to_string());
         let start = args["start_line"].as_u64().unwrap_or(1).max(1) as usize;
         let end = args["end_line"].as_u64().map(|e| e as usize);
         let lines: Vec<&str> = text.lines().collect();
@@ -311,9 +387,81 @@ impl ToolBox {
         Ok(out)
     }
 
+    fn is_internal_path(p: &str) -> bool {
+        p.split('/')
+            .any(|c| c == ".git" || c == ".vera" || c == ".revera")
+    }
+
+    async fn grep_repo(&self, args: &Value) -> Result<String, String> {
+        let pat = args["pattern"].as_str().ok_or("missing pattern")?;
+        if pat.trim().is_empty() {
+            return Err("pattern must not be empty".into());
+        }
+        let limit = args["limit"].as_u64().unwrap_or(40).clamp(1, 200) as usize;
+        let out = tokio::time::timeout(
+            LOCAL_TOOL_TIMEOUT,
+            crate::git::grep(
+                &self.repo_root,
+                pat,
+                args["path_glob"].as_str(),
+                &self.vera.exclude,
+            ),
+        )
+        .await
+        .map_err(|_| "grep_repo timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+        let mut lines: Vec<&str> = out
+            .lines()
+            .filter(|l| !Self::is_internal_path(l.split(':').next().unwrap_or("")))
+            .collect();
+        let total = lines.len();
+        lines.truncate(limit);
+        if lines.is_empty() {
+            return Ok("no matches".into());
+        }
+        let mut s = lines.join("\n");
+        s.push('\n');
+        if total > limit {
+            s.push_str(&format!(
+                "...[{} more matching lines; narrow the pattern or path_glob]\n",
+                total - limit
+            ));
+        }
+        Ok(s)
+    }
+
+    async fn find_files(&self, args: &Value) -> Result<String, String> {
+        let glob = args["glob"].as_str().ok_or("missing glob")?;
+        let files = tokio::time::timeout(
+            LOCAL_TOOL_TIMEOUT,
+            crate::git::ls_files(&self.repo_root, Some(glob), &self.vera.exclude),
+        )
+        .await
+        .map_err(|_| "find_files timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+        let files: Vec<&String> = files
+            .iter()
+            .filter(|f| !Self::is_internal_path(f))
+            .collect();
+        if files.is_empty() {
+            return Ok("no files match".into());
+        }
+        let total = files.len();
+        let mut s: String = files.iter().take(200).map(|f| format!("{f}\n")).collect();
+        if total > 200 {
+            s.push_str(&format!(
+                "...[{} more files; narrow the glob]\n",
+                total - 200
+            ));
+        }
+        Ok(s)
+    }
+
     async fn call_inner(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
             "read_file" => self.read_file(args).await,
+            "grep_repo" => self.grep_repo(args).await,
+            "find_files" => self.find_files(args).await,
             "list_changed_files" => {
                 let mut s = String::new();
                 for f in &self.diff.files {
@@ -391,23 +539,44 @@ impl ToolBox {
 
     /// Errors are returned to the model as a JSON tool result.
     pub async fn call(&self, name: &str, args: Value) -> String {
+        let t0 = Instant::now();
+        let (out, err) = self.call_checked(name, &args).await;
+        {
+            let mut st = self.stats.lock().unwrap();
+            let e = st
+                .by_tool
+                .entry(name.to_string())
+                .or_insert_with(|| ToolStat {
+                    name: name.to_string(),
+                    ..Default::default()
+                });
+            e.calls += 1;
+            if err {
+                e.errors += 1;
+            }
+            e.latency_ms += t0.elapsed().as_millis() as u64;
+        }
+        out
+    }
+
+    async fn call_checked(&self, name: &str, args: &Value) -> (String, bool) {
         if let Some(names) = &self.allowed {
             if !names.iter().any(|n| n == name) {
-                return json!({"error": format!("tool {name} not available in this step")})
-                    .to_string();
+                return (
+                    json!({"error": format!("tool {name} not available in this step")}).to_string(),
+                    true,
+                );
             }
         }
         if name.starts_with("vera_") {
             if let Some(r) = self.vera_disabled.lock().unwrap().clone() {
-                return json!({"error": r}).to_string();
+                return (json!({"error": r}).to_string(), true);
             }
         }
-        let res = self.call_inner(name, &args).await;
-        let s = match res {
-            Ok(s) => s,
-            Err(e) => json!({"error": e}).to_string(),
-        };
-        self.truncate(s)
+        match self.call_inner(name, args).await {
+            Ok(s) => (self.truncate(s), false),
+            Err(e) => (json!({"error": e}).to_string(), true),
+        }
     }
 }
 

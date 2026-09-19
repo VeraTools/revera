@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Classifies a `revera review` process exit into the Action's outcome and
+# applies the fail-on policy. Used by action.yml; testable offline.
+#
+#   action-outcome.sh CODE REPORT_PATH FAIL_ON
+#
+# Writes status / report-path / findings to $GITHUB_OUTPUT (when set) and
+# exits 0 or 1 according to FAIL_ON.
+#   CODE 0 -> complete, 2 -> partial, anything else -> failed
+#   (101 = Rust panic, 127 = binary missing, 137 = SIGKILL, ...)
+# The report is only trusted for complete/partial runs; a failed process
+# never gets findings counted from whatever file happens to be on disk.
+# A complete/partial exit whose report is missing or unreadable is
+# classified failed: the outcome cannot be verified, so it is not reported.
+set -euo pipefail
+
+code=${1:?usage: action-outcome.sh CODE REPORT_PATH FAIL_ON}
+report=${2:?usage: action-outcome.sh CODE REPORT_PATH FAIL_ON}
+fail_on=${3:?usage: action-outcome.sh CODE REPORT_PATH FAIL_ON}
+
+case "$code" in
+  0) status=complete ;;
+  2) status=partial ;;
+  *) status=failed ;;
+esac
+
+report_out=""
+findings=0
+if [ "$status" != failed ] && [ -f "$report" ]; then
+  if findings=$(python3 - "$report" <<'PY'
+import json, sys
+try:
+    rep = json.load(open(sys.argv[1]))
+    if not isinstance(rep.get("findings"), list) or not isinstance(rep.get("plan", {}).get("summary_markdown"), str):
+        raise ValueError("missing findings/plan.summary_markdown")
+    print(len([f for f in rep["findings"] if f.get("validation_status") == "accepted"]))
+except Exception as e:
+    sys.stderr.write(f"revera: cannot read report: {e}\n")
+    sys.exit(1)
+PY
+  ); then
+    report_out="$report"
+  else
+    echo "revera: process exited $code but the report at $report is unreadable" >&2
+    status=failed
+    findings=0
+  fi
+elif [ "$status" != failed ]; then
+  echo "revera: process exited $code but no report at $report" >&2
+  status=failed
+fi
+
+out=${GITHUB_OUTPUT:-/dev/null}
+{
+  echo "status=$status"
+  echo "report-path=$report_out"
+  echo "findings=$findings"
+} >> "$out"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  if [ -n "$report_out" ]; then
+    python3 - "$report_out" <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+import json, sys
+print(json.load(open(sys.argv[1]))["plan"]["summary_markdown"])
+PY
+  else
+    printf '## Revera review\n\n**Status: failed** — revera exited %s before writing a report; see the step log.\n' "$code" >> "$GITHUB_STEP_SUMMARY"
+  fi
+fi
+
+case "$status" in
+  complete) echo "revera: complete, $findings finding(s)" ;;
+  partial)  echo "revera: partial review (exit 2), $findings finding(s) so far" ;;
+  failed)   echo "revera: review FAILED (exit $code)" >&2 ;;
+esac
+
+case "$fail_on" in
+  failed)  [ "$status" = failed ] && exit 1; exit 0 ;;
+  partial) [ "$status" != complete ] && exit 1; exit 0 ;;
+  never)   exit 0 ;;
+  *) echo "invalid fail-on: $fail_on (expected failed | partial | never)" >&2; exit 1 ;;
+esac

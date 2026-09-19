@@ -1,0 +1,36 @@
+{
+  "roles": {
+    "lead": [
+      [
+        {"tool_calls": [{"name": "submit_plan", "arguments": {
+          "questions": [
+            {
+              "id": "q1",
+              "question": "Does anything in the change break a caller?",
+              "symbols": [],
+              "expected_evidence": "callers checked",
+              "stop_condition": "after 3 tool calls",
+              "files_hint": []
+            }
+          ]
+        }}]}
+      ],
+      [
+        {"tool_calls": [{"name": "submit_findings", "arguments": {}}]},
+        {"tool_calls": [{"name": "submit_findings", "arguments": {"findings": "not a list", "coverage": "nothing"}}]}
+      ]
+    ],
+    "workers": [
+      [
+        {"tool_calls": [{"name": "submit_worker_result", "arguments": {
+          "result": "no_issue",
+          "answer": "no caller affected",
+          "evidence": [],
+          "candidate_findings": [],
+          "gaps": []
+        }}]}
+      ]
+    ],
+    "validator": []
+  }
+}

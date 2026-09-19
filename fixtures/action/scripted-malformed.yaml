@@ -1,0 +1,19 @@
+# Offline config for the composite-Action smoke: the investigator never
+# produces a valid `findings` list (even after the one repair round), so the
+# run must be reported as `partial`, never as a clean `complete`.
+review:
+  strategy: baseline
+  publish: dry-run
+models:
+  investigator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed.json
+    model: scripted-investigator
+  validator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed.json
+    model: scripted-validator
+vera:
+  enabled: false
+github:
+  summary_marker: "<!-- revera-smoke-summary -->"

@@ -3,6 +3,7 @@ use crate::pipeline::anchor::is_publishable;
 use crate::provider::RunLedger;
 use crate::state::ReviewState;
 use crate::timing::Timing;
+use crate::tools::ToolStat;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +82,30 @@ impl Default for Publication {
     }
 }
 
+/// Lightweight run telemetry (no transcripts, no source, no secrets).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunStats {
+    /// Candidates after collapse/dedupe, before validation.
+    pub candidates: usize,
+    pub accepted: usize,
+    pub rejected: usize,
+    pub uncertain: usize,
+    /// Prior open findings resolved / reopened by this run.
+    pub resolved: usize,
+    pub reopened: usize,
+    /// Completed prior review of identical content was reused.
+    pub reused: bool,
+    /// "vera" | "disabled" | "unavailable: <why>"
+    pub retrieval: String,
+    /// Distinct files read with `read_file` across all agents.
+    pub files_read: usize,
+    pub tools: Vec<ToolStat>,
+    /// Malformed items dropped from terminal submissions.
+    pub malformed_findings: usize,
+    /// A terminal repair round was attempted.
+    pub repaired: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
     pub status: RunStatus,
@@ -99,6 +124,8 @@ pub struct RunReport {
     pub coverage_gaps: Vec<String>,
     #[serde(default)]
     pub timing: Timing,
+    #[serde(default)]
+    pub stats: RunStats,
 }
 
 pub fn surfaced_ids(report: &RunReport) -> Vec<String> {
@@ -150,27 +177,117 @@ pub fn finding_body(f: &Finding) -> String {
     b
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn summary_markdown(
-    findings: &[Finding],
-    outside_diff: &[&Finding],
-    coverage: &str,
-    coverage_gaps: &[String],
-    status: RunStatus,
-    strategy: &str,
-    routes: &[String],
-    publish_uncertain: bool,
-    note: Option<&str>,
-    timing: Option<&Timing>,
-) -> String {
+/// Inputs for the human-facing summary.
+#[derive(Default)]
+pub struct Summary<'a> {
+    pub findings: &'a [Finding],
+    pub outside_diff: &'a [&'a Finding],
+    pub coverage: &'a str,
+    pub coverage_gaps: &'a [String],
+    pub status: Option<RunStatus>,
+    /// Why the run is partial/failed.
+    pub reason: Option<&'a str>,
+    pub strategy: &'a str,
+    pub routes: &'a [String],
+    pub publish_uncertain: bool,
+    pub note: Option<&'a str>,
+    pub timing: Option<&'a Timing>,
+    /// Completed prior review of identical content reused.
+    pub reused: bool,
+    /// Open findings carried over from prior runs (already published).
+    pub carried_open: usize,
+    /// Retrieval degradation to surface (`None` when Vera worked or is off).
+    pub retrieval_unavailable: Option<&'a str>,
+    pub resolved: &'a [String],
+    pub reopened: &'a [String],
+}
+
+fn plural(n: usize, one: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {one}s")
+    }
+}
+
+pub fn summary_markdown(inp: &Summary<'_>) -> String {
+    let status = inp.status.unwrap_or(RunStatus::Complete);
     let mut s = String::from("## Revera review\n\n");
-    let accepted: Vec<&Finding> = findings
+    let accepted: Vec<&Finding> = inp
+        .findings
         .iter()
         .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
         .collect();
-    if accepted.is_empty() {
-        s.push_str("No findings.\n");
+    let uncertain = inp
+        .findings
+        .iter()
+        .filter(|f| f.validation_status == Some(ValidationStatus::Uncertain))
+        .count();
+    // headline: status first, so a partial run with zero findings can never
+    // read like a clean pass
+    let status_word = format!("{status:?}").to_lowercase();
+    let count = if inp.reused {
+        format!(
+            "reused completed review of identical content; {} carried forward",
+            plural(inp.carried_open, "open finding")
+        )
     } else {
+        let mut c = if accepted.is_empty() {
+            "no new findings".to_string()
+        } else {
+            let high = accepted
+                .iter()
+                .filter(|f| f.severity == crate::findings::Severity::High)
+                .count();
+            let med = accepted
+                .iter()
+                .filter(|f| f.severity == crate::findings::Severity::Medium)
+                .count();
+            let low = accepted.len() - high - med;
+            let mut parts = vec![];
+            if high > 0 {
+                parts.push(format!("{high} high"));
+            }
+            if med > 0 {
+                parts.push(format!("{med} medium"));
+            }
+            if low > 0 {
+                parts.push(format!("{low} low"));
+            }
+            format!(
+                "{} ({})",
+                plural(accepted.len(), "new finding"),
+                parts.join(", ")
+            )
+        };
+        if uncertain > 0 {
+            c.push_str(&format!(", {} unconfirmed", uncertain));
+        }
+        if inp.carried_open > 0 {
+            c.push_str(&format!(
+                ", {} still open from earlier runs",
+                inp.carried_open
+            ));
+        }
+        c
+    };
+    s.push_str(&format!("**Status: {status_word}** \u{2014} {count}\n"));
+    if status != RunStatus::Complete {
+        s.push_str(&format!(
+            "\n> Review incomplete{}. Absence of findings is not evidence the change is clean; rerun or inspect the parts listed as not checked.\n",
+            inp.reason
+                .filter(|r| !r.is_empty())
+                .map(|r| format!(": {r}"))
+                .unwrap_or_default()
+        ));
+    }
+    if let Some(r) = inp.retrieval_unavailable {
+        s.push_str(&format!(
+            "\n> Semantic retrieval unavailable ({r}); repository-wide lookups used lexical search only.\n"
+        ));
+    }
+    s.push('\n');
+    if !accepted.is_empty() {
         for f in &accepted {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
@@ -178,8 +295,9 @@ pub fn summary_markdown(
             ));
         }
     }
-    if publish_uncertain {
-        for f in findings
+    if inp.publish_uncertain {
+        for f in inp
+            .findings
             .iter()
             .filter(|f| f.validation_status == Some(ValidationStatus::Uncertain))
         {
@@ -189,34 +307,49 @@ pub fn summary_markdown(
             ));
         }
     }
-    if !outside_diff.is_empty() {
+    if !inp.outside_diff.is_empty() {
         s.push_str("\n### Findings outside the diff\n\n");
-        for f in outside_diff {
+        for f in inp.outside_diff {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
                 f.severity, f.file, f.start_line, f.title
             ));
         }
     }
-    s.push_str(&format!("\nNot checked: {}\n", coverage));
-    for g in coverage_gaps {
-        s.push_str(&format!("- not checked: {g}\n"));
+    if !inp.reopened.is_empty() {
+        s.push_str("\n### Reopened (previously resolved, reintroduced)\n\n");
+        for t in inp.reopened {
+            s.push_str(&format!("- {t}\n"));
+        }
     }
-    if let Some(n) = note {
+    if !inp.resolved.is_empty() {
+        s.push_str("\n### Resolved since last review\n\n");
+        for t in inp.resolved {
+            s.push_str(&format!("- {t}\n"));
+        }
+    }
+    if !inp.reused {
+        s.push_str(&format!("\nNot checked: {}\n", inp.coverage));
+        for g in inp.coverage_gaps {
+            s.push_str(&format!("- not checked: {g}\n"));
+        }
+    }
+    if let Some(n) = inp.note {
         s.push_str(&format!("\n_{n}_\n"));
     }
-    s.push_str(&format!("\nStatus: {:?}\n", status).to_lowercase());
-    if let Some(t) = timing {
+    if let Some(t) = inp.timing {
+        s.push('\n');
         s.push_str(&timing_line(t));
     }
     let routes = {
-        let mut r = routes.to_vec();
+        let mut r = inp.routes.to_vec();
         r.sort();
         r.dedup();
         r.join(", ")
     };
     s.push_str(&format!(
-        "\n<sub>revera · strategy {strategy} · models: {routes}</sub>\n"
+        "\n<sub>revera · strategy {} · models: {routes}</sub>\n",
+        inp.strategy
     ));
     s
 }
@@ -406,18 +539,13 @@ mod tests {
             total_ms: 1000,
             ..Default::default()
         };
-        let mut summary = summary_markdown(
-            &[],
-            &[],
-            "nothing",
-            &[],
-            RunStatus::Complete,
-            "baseline",
-            &[],
-            false,
-            None,
-            Some(&t0),
-        );
+        let mut summary = summary_markdown(&Summary {
+            coverage: "nothing",
+            status: Some(RunStatus::Complete),
+            strategy: "baseline",
+            timing: Some(&t0),
+            ..Default::default()
+        });
         assert!(summary.contains("_Timing: total 1.0s_"));
         let t1 = Timing {
             total_ms: 2000,
@@ -431,7 +559,7 @@ mod tests {
         );
         assert!(!summary.contains("total 1.0s"));
         // untouched text stays
-        assert!(summary.contains("status: complete"));
+        assert!(summary.contains("**Status: complete**"));
         // no timing line -> unchanged
         let plain = "## Revera review\n\nNo findings.\n";
         assert_eq!(refresh_timing_line(plain, &t1), plain);

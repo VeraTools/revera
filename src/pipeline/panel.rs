@@ -1,8 +1,9 @@
 use super::common::{
-    finish, investigator_user, parse_findings, prepare, PrepareOut, ReviewRequest,
+    findings_terminal_check, finish, investigator_user, parse_findings_checked, prepare,
+    PrepareOut, ReviewRequest,
 };
 use super::make_client;
-use crate::agent::run_agent;
+use crate::agent::run_agent_checked;
 use crate::config::{Config, ModelRoute};
 use crate::findings::Finding;
 use crate::prompts;
@@ -126,7 +127,16 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 focus,
                 addendum
             );
-            let run = run_agent(client.as_ref(), &system, &user, &tb, &terminal, &budget).await;
+            let run = run_agent_checked(
+                client.as_ref(),
+                &system,
+                &user,
+                &tb,
+                &terminal,
+                &budget,
+                &findings_terminal_check,
+            )
+            .await;
             (focus, Some(run), lane_start)
         }
     });
@@ -143,17 +153,37 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         let outcome = match run {
             Ok(r) => match r.stopped {
                 crate::agent::StopReason::Terminal => {
-                    let mut n = 0usize;
-                    if let Some(call) = &r.final_call {
-                        let mut fs = parse_findings(&call.arguments);
-                        n = fs.len();
-                        for f in &mut fs {
-                            f.source = format!("panel:{focus}");
-                            f.sources = vec![f.source.clone()];
-                        }
-                        raw.extend(fs);
+                    prep.stats.repaired |= r.repaired;
+                    let Some(call) = &r.final_call else {
+                        prep.partial_reasons
+                            .push(format!("scout {focus} ended without a submission"));
+                        prep.timing.record(
+                            "lane",
+                            &format!("panel:{focus}"),
+                            lane_start,
+                            prep.wall,
+                            "error",
+                        );
+                        continue;
+                    };
+                    let parsed = parse_findings_checked(&call.arguments);
+                    prep.stats.malformed_findings += parsed.dropped;
+                    let mut fs = parsed.findings;
+                    let n = fs.len();
+                    for f in &mut fs {
+                        f.source = format!("panel:{focus}");
+                        f.sources = vec![f.source.clone()];
                     }
-                    if n > 0 { "ok:candidates" } else { "ok" }.to_string()
+                    raw.extend(fs);
+                    match parsed.problem {
+                        Some(p) => {
+                            prep.partial_reasons
+                                .push(format!("scout {focus} submission incomplete: {p}"));
+                            "ok:malformed".to_string()
+                        }
+                        None if n > 0 => "ok:candidates".to_string(),
+                        None => "ok".to_string(),
+                    }
                 }
                 crate::agent::StopReason::TimeBudget => {
                     prep.partial_reasons

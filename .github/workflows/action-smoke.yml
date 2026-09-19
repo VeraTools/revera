@@ -1,0 +1,199 @@
+name: action-smoke
+
+# Exercises the composite Action itself (`uses: ./`) end to end without any
+# provider credentials: the PR's own revera build is served to the Action's
+# installer over file://, Vera is a stub (the configs disable it), and the
+# models are scripted. Every outcome the Action can report is asserted:
+# complete / partial / failed, `fail-on` policy, and the report-path contract.
+# Live provider proof lives in self-review.yml and dogfood-released.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-smoke-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      REVERA_DOWNLOAD_BASE: file://${{ github.workspace }}/.smoke/revera
+      VERA_DOWNLOAD_BASE: file://${{ github.workspace }}/.smoke/vera
+      FIXTURE_SCRIPTS: ${{ github.workspace }}/fixtures/scripts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build revera and stage fake releases for the Action's installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked
+          ver=$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          echo "version=$ver" >> "$GITHUB_ENV"
+          # revera: the installer expects <base>/<archive> and <archive>.sha256
+          rel=.smoke/revera; mkdir -p "$rel/pkg"
+          cp target/release/revera "$rel/pkg/revera"
+          tar -czf "$rel/revera-x86_64-unknown-linux-musl.tar.gz" -C "$rel/pkg" revera
+          (cd "$rel" && sha256sum revera-x86_64-unknown-linux-musl.tar.gz > revera-x86_64-unknown-linux-musl.tar.gz.sha256)
+          # vera: stub binary + release manifest; never invoked (vera.enabled=false)
+          vrel=.smoke/vera; mkdir -p "$vrel/pkg"
+          printf '#!/usr/bin/env bash\necho "vera 0.0.0-stub"\n' > "$vrel/pkg/vera"
+          chmod +x "$vrel/pkg/vera"
+          tar -czf "$vrel/vera-x86_64-unknown-linux-gnu.tar.gz" -C "$vrel/pkg" vera
+          sum=$(sha256sum "$vrel/vera-x86_64-unknown-linux-gnu.tar.gz" | cut -d' ' -f1)
+          printf '{"assets":{"x86_64-unknown-linux-gnu":{"sha256":"%s"}}}\n' "$sum" > "$vrel/release-manifest.json"
+
+      - name: Fetch the PR base so the Action can diff against it
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags origin "${{ github.event.pull_request.base.sha }}"
+
+      # ---- complete: valid empty submission ---------------------------------
+      # vera.enabled=false: the Action must not even try to download Vera
+      - name: Action — complete (clean scripted review)
+        id: complete
+        if: github.event_name == 'pull_request'
+        uses: ./
+        env:
+          VERA_DOWNLOAD_BASE: file://${{ github.workspace }}/.smoke/does-not-exist
+        with:
+          config: fixtures/action/scripted-clean.yaml
+          publish: dry-run
+          fail-on: partial
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Assert complete
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "${{ steps.complete.outputs.status }}" = complete ]
+          [ "${{ steps.complete.outputs.findings }}" = 0 ]
+          [ ! -e "$RUNNER_TEMP/bin/vera" ]
+          test -s "${{ steps.complete.outputs.report-path }}"
+          python3 - "${{ steps.complete.outputs.report-path }}" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          assert r["status"] == "complete", r["status"]
+          assert r["stats"]["retrieval"] == "lexical-only", r["stats"]
+          PY
+
+      # ---- partial: malformed terminal output, one repair, still invalid ----
+      - name: Action — partial (malformed scripted submission)
+        id: partial
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          config: fixtures/action/scripted-malformed.yaml
+          publish: dry-run
+          fail-on: failed
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Assert partial is never presented as clean
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "${{ steps.partial.outputs.status }}" = partial ]
+          python3 - "${{ steps.partial.outputs.report-path }}" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          assert r["status"] == "partial", r["status"]
+          assert r["stats"]["repaired"] is True, r["stats"]
+          assert "Status: partial" in r["plan"]["summary_markdown"]
+          assert "incomplete" in r["plan"]["summary_markdown"]
+          PY
+      # the advanced strategies validate their terminal submissions too
+      - name: Action — partial (malformed panel scout submission)
+        id: partial_panel
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          config: fixtures/action/scripted-panel-malformed.yaml
+          publish: dry-run
+          fail-on: failed
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Action — partial (malformed delegated synthesis)
+        id: partial_delegated
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          config: fixtures/action/scripted-delegated-malformed.yaml
+          publish: dry-run
+          fail-on: failed
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Assert panel/delegated malformed submissions are partial
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "${{ steps.partial_panel.outputs.status }}" = partial ]
+          [ "${{ steps.partial_delegated.outputs.status }}" = partial ]
+          python3 - "${{ steps.partial_delegated.outputs.report-path }}" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          assert r["status"] == "partial", r["status"]
+          assert r["stats"]["repaired"] is True, r["stats"]
+          assert "incomplete" in (r["reason"] or ""), r["reason"]
+          PY
+      - name: Action — partial fails the step under fail-on=partial
+        id: partial_strict
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: ./
+        with:
+          config: fixtures/action/scripted-malformed.yaml
+          publish: dry-run
+          fail-on: partial
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Assert fail-on=partial failed
+        if: github.event_name == 'pull_request'
+        run: |
+          [ "${{ steps.partial_strict.outcome }}" = failure ]
+          [ "${{ steps.partial_strict.outputs.status }}" = partial ]
+
+      # ---- failed: bad config -> non-zero exit, no trustworthy report -------
+      - name: Action — failed (missing config) with fail-on=never
+        id: failed
+        if: github.event_name == 'pull_request'
+        uses: ./
+        with:
+          config: fixtures/action/does-not-exist.yaml
+          publish: dry-run
+          fail-on: never
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Assert failed outcome is truthful
+        if: github.event_name == 'pull_request'
+        run: |
+          [ "${{ steps.failed.outputs.status }}" = failed ]
+          [ -z "${{ steps.failed.outputs.report-path }}" ]
+          [ "${{ steps.failed.outputs.findings }}" = 0 ]
+
+      # push events have no PR to diff; still prove the installers + cache-key
+      - name: Installer and cache-key smoke (push)
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          scripts/install-vera.sh 0.0.0 "$RUNNER_TEMP/bin"
+          scripts/install-revera.sh "$version" "$RUNNER_TEMP/bin"
+          [ "$("$RUNNER_TEMP/bin/revera" cache-key --config fixtures/action/scripted-clean.yaml)" = disabled ]

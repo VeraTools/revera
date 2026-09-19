@@ -1,0 +1,29 @@
+# Offline: the delegated lead's synthesis never produces a valid `findings`
+# list (even after the repair round); the run must be `partial`.
+review:
+  strategy: delegated
+  publish: dry-run
+  concurrency: 1
+models:
+  investigator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed-delegated.json
+    model: scripted-investigator
+  validator:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed-delegated.json
+    model: scripted-validator
+  lead:
+    protocol: scripted
+    script: ${FIXTURE_SCRIPTS}/malformed-delegated.json
+    model: scripted-lead
+  workers:
+    - protocol: scripted
+      script: ${FIXTURE_SCRIPTS}/malformed-delegated.json
+      model: scripted-worker
+delegated:
+  max_questions: 2
+vera:
+  enabled: false
+github:
+  summary_marker: "<!-- revera-smoke-summary -->"
