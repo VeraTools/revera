@@ -454,7 +454,9 @@ async fn doctor(
     let mut ok = true;
     let strategy_override = strategy.map(strategy_arg);
     let overridden = strategy_override.is_some();
-    let (path, cfg) = match load_cfg(config.as_deref(), profile.as_deref(), strategy_override) {
+    // credentials are reported per-route below with `next:` hints; only
+    // parse/shape/profile failures are config: FAIL
+    let (path, cfg) = match load_cfg_unvalidated(config.as_deref(), profile.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             println!("config: FAIL — {e}");
@@ -554,7 +556,7 @@ async fn doctor(
     }
 
     if !cfg.vera.enabled {
-        println!("vera: disabled (repository search is lexical-only; set vera.enabled: true with an embedding endpoint to enable)");
+        println!("vera: disabled (repository search is lexical-only; add a vera: block with an embedding endpoint to enable)");
     } else {
         match crate::vera::VeraClient::from_config(&cfg.vera, std::path::Path::new(".")) {
             Ok(v) => match v.version().await {
