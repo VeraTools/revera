@@ -492,7 +492,7 @@ mod tests {
     fn entry(role: &str, requested: &str, effective: &str) -> LedgerEntry {
         LedgerEntry {
             role: role.into(),
-            route: "openai-chat:https://relay.fast/v1".into(),
+            route: "openai-chat:https://api.example.com/v1".into(),
             model: "m".into(),
             requested_reasoning: requested.into(),
             effective_reasoning: effective.into(),
@@ -513,8 +513,8 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "investigator=openai-chat:https://relay.fast/v1:m@max",
-                "validator=openai-chat:https://relay.fast/v1:m@high",
+                "investigator=openai-chat:https://api.example.com/v1:m@max",
+                "validator=openai-chat:https://api.example.com/v1:m@high",
             ]
         );
     }
@@ -524,7 +524,7 @@ mod tests {
         let e = entry("investigator", "max", "high");
         assert_eq!(
             ledger_route_label(&e),
-            "investigator=openai-chat:https://relay.fast/v1:m@max->high"
+            "investigator=openai-chat:https://api.example.com/v1:m@max->high"
         );
         let mut l = RunLedger::default();
         l.entries.push(e);

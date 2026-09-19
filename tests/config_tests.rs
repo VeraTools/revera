@@ -32,7 +32,11 @@ models:
 vera: {backend: local}
 "#;
     let f = write_tmp(yaml);
-    let e = Config::load(f.path()).unwrap_err();
+    // load only checks shape; credential checks live in validate_for
+    let c = Config::load(f.path()).unwrap();
+    let e = c
+        .validate_for(revera::config::Strategy::Baseline)
+        .unwrap_err();
     assert!(
         e.to_string().contains("REVERA_DEFINITELY_UNSET_KEY_123"),
         "{e}"
@@ -101,13 +105,11 @@ vera: {backend: local}
         ReasoningEffort::High
     );
     assert_eq!(c.models.investigator.reasoning.effective_budget(), 16384);
-    assert_eq!(c.models.validator.reasoning.effort(), ReasoningEffort::Low);
-    assert_eq!(c.models.validator.reasoning.budget_tokens(), Some(4096));
-    assert_eq!(c.models.validator.reasoning.effective_budget(), 4096);
-    assert_eq!(
-        c.models.validator.reasoning.field(),
-        ReasoningField::Openrouter
-    );
+    let v = c.models.validator.as_ref().unwrap();
+    assert_eq!(v.reasoning.effort(), ReasoningEffort::Low);
+    assert_eq!(v.reasoning.budget_tokens(), Some(4096));
+    assert_eq!(v.reasoning.effective_budget(), 4096);
+    assert_eq!(v.reasoning.field(), ReasoningField::Openrouter);
 }
 
 #[test]
@@ -188,7 +190,7 @@ fn is_opencode_host_matches_exact_and_subdomain() {
     assert!(is_opencode_host("https://api.opencode.ai/v1"));
     assert!(!is_opencode_host("https://evilopencode.ai/v1"));
     assert!(!is_opencode_host("https://opencode.ai.evil.com/v1"));
-    assert!(!is_opencode_host("https://relay.fast/v1"));
+    assert!(!is_opencode_host("https://example.com/v1"));
     assert!(!is_opencode_host("not a url"));
 }
 
@@ -221,4 +223,162 @@ vera: {{backend: local}}
     }
     let f = write_tmp(&yaml("x-ok"));
     assert!(Config::load(f.path()).is_ok());
+}
+
+use revera::config::{PublishMode, Strategy};
+
+#[test]
+fn minimal_config_loads_with_defaults() {
+    let yaml = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: inv-m}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert_eq!(c.review.strategy, Strategy::Baseline);
+    assert!(c.review.validate);
+    assert_eq!(c.review.publish, PublishMode::DryRun);
+    assert!(!c.vera.enabled);
+    assert!(c.validator_inherited());
+    assert_eq!(c.effective_validator().model, "inv-m");
+    c.validate_for(Strategy::Baseline).unwrap();
+}
+
+#[test]
+fn explicit_validator_overrides_inheritance() {
+    let yaml = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: inv-m}
+  validator: {protocol: scripted, script: /tmp/s2, model: val-m}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert!(!c.validator_inherited());
+    assert_eq!(c.effective_validator().model, "val-m");
+}
+
+#[test]
+fn vera_opt_in_only_when_section_present() {
+    let no_vera = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+"#;
+    let f = write_tmp(no_vera);
+    assert!(!Config::load(f.path()).unwrap().vera.enabled);
+
+    let present = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {backend: local}
+"#;
+    let f = write_tmp(present);
+    assert!(Config::load(f.path()).unwrap().vera.enabled);
+
+    let off = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {enabled: false}
+"#;
+    let f = write_tmp(off);
+    assert!(!Config::load(f.path()).unwrap().vera.enabled);
+}
+
+#[test]
+fn baseline_ignores_unused_route_credentials() {
+    let yaml = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+  lead: {protocol: openai-chat, base_url: http://x, model: l, api_key_env: REVERA_T_UNSET_LEAD}
+  workers:
+    - {protocol: openai-chat, base_url: http://x, model: w, api_key_env: REVERA_T_UNSET_WORKER}
+  scouts:
+    - {name: general, protocol: openai-chat, base_url: http://x, model: s, api_key_env: REVERA_T_UNSET_SCOUT}
+vera: {enabled: false}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    c.validate_for(Strategy::Baseline).unwrap();
+    let e = c.validate_for(Strategy::Delegated).unwrap_err();
+    assert!(e.to_string().contains("models.lead"), "{e}");
+    let e = c.validate_for(Strategy::Panel).unwrap_err();
+    assert!(e.to_string().contains("models.scouts.general"), "{e}");
+}
+
+#[test]
+fn shape_errors_fail_at_load() {
+    // openai-chat without base_url
+    let yaml = r#"
+models:
+  investigator: {protocol: openai-chat, model: m, api_key_env: REVERA_T_UNSET_SHAPE}
+"#;
+    let f = write_tmp(yaml);
+    let e = Config::load(f.path()).unwrap_err();
+    assert!(e.to_string().contains("requires base_url"), "{e}");
+
+    // scripted without script
+    let yaml = r#"
+models:
+  investigator: {protocol: scripted, model: m}
+"#;
+    let f = write_tmp(yaml);
+    let e = Config::load(f.path()).unwrap_err();
+    assert!(e.to_string().contains("requires script path"), "{e}");
+}
+
+#[test]
+fn profile_strategy_checked_after_apply() {
+    let yaml = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+  lead: {protocol: openai-chat, base_url: http://x, model: l, api_key_env: REVERA_T_UNSET_PROFLEAD}
+vera: {enabled: false}
+profiles:
+  deep:
+    review: {strategy: delegated}
+"#;
+    let f = write_tmp(yaml);
+    let mut c = Config::load(f.path()).unwrap();
+    c.apply_profile("deep").unwrap();
+    assert_eq!(c.review.strategy, Strategy::Delegated);
+    let e = c.validate_for(c.review.strategy).unwrap_err();
+    assert!(e.to_string().contains("models.lead"), "{e}");
+    // a CLI --strategy baseline override validates only baseline routes
+    c.validate_for(Strategy::Baseline).unwrap();
+}
+
+#[test]
+fn fingerprint_same_for_inherited_and_identical_validator() {
+    let inherited = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {enabled: false}
+"#;
+    let explicit = r#"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+  validator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {enabled: false}
+"#;
+    let f1 = write_tmp(inherited);
+    let c1 = Config::load(f1.path()).unwrap();
+    let f2 = write_tmp(explicit);
+    let c2 = Config::load(f2.path()).unwrap();
+    assert_eq!(
+        c1.review_fingerprint("baseline"),
+        c2.review_fingerprint("baseline")
+    );
+    let different = explicit.replace("model: m}", "model: other}");
+    let f3 = write_tmp(&different);
+    let c3 = Config::load(f3.path()).unwrap();
+    assert_ne!(
+        c1.review_fingerprint("baseline"),
+        c3.review_fingerprint("baseline")
+    );
+}
+
+#[test]
+fn example_config_loads() {
+    std::env::set_var("REVIEW_BASE_URL", "https://api.example.com/v1");
+    let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/revera.example.yaml"));
+    Config::load(p).unwrap();
 }

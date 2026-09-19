@@ -4,9 +4,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Strategy {
+    #[default]
     Baseline,
     Delegated,
     Panel,
@@ -41,6 +42,7 @@ impl Protocol {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewConfig {
+    #[serde(default)]
     pub strategy: Strategy,
     #[serde(default = "default_max_findings")]
     pub max_findings: usize,
@@ -219,7 +221,8 @@ pub struct ScoutRoute {
 #[serde(deny_unknown_fields)]
 pub struct ModelsConfig {
     pub investigator: ModelRoute,
-    pub validator: ModelRoute,
+    /// Omitted validator inherits the investigator route (fresh context).
+    pub validator: Option<ModelRoute>,
     pub lead: Option<ModelRoute>,
     pub workers: Option<Vec<ModelRoute>>,
     pub scouts: Option<Vec<ScoutRoute>>,
@@ -249,6 +252,8 @@ pub struct VeraConfig {
     pub executable: String,
     pub version: Option<String>,
     /// When false: skip indexing and remove the vera_* tools entirely.
+    /// A present `vera:` section opts in (default true); an absent one means
+    /// disabled (see `impl Default for VeraConfig`).
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -328,6 +333,7 @@ pub struct BudgetOverride {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
     pub review: ReviewConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
@@ -408,6 +414,22 @@ fn default_scout_tool_calls() -> u32 {
     15
 }
 
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            strategy: Strategy::default(),
+            max_findings: default_max_findings(),
+            publish: PublishMode::default(),
+            publish_uncertain: false,
+            concurrency: default_concurrency(),
+            max_tool_output_bytes: default_tool_output(),
+            max_diff_bytes: default_diff_bytes(),
+            min_severity: Severity::default(),
+            validate: default_true(),
+        }
+    }
+}
+
 impl Default for BudgetConfig {
     fn default() -> Self {
         Self {
@@ -444,7 +466,7 @@ impl Default for VeraConfig {
         Self {
             executable: default_vera_exe(),
             version: None,
-            enabled: true,
+            enabled: false,
             backend: VeraBackend::default(),
             embedding: None,
             reranker: None,
@@ -541,14 +563,17 @@ pub fn is_opencode_host(base_url: &str) -> bool {
     host == "opencode.ai" || host.ends_with(".opencode.ai")
 }
 
-fn validate_route(name: &str, r: &ModelRoute) -> Result<()> {
+/// Syntactic shape of a route: required fields present, header names valid.
+/// Runs for every route at load time; credentials are checked separately by
+/// `validate_for` so an unused route cannot block a run.
+fn check_route_shape(name: &str, r: &ModelRoute) -> Result<()> {
     match r.protocol {
         Protocol::OpenaiChat | Protocol::OpenaiResponses => {
             if r.base_url.as_deref().is_none_or(|s| s.is_empty()) {
                 bail!("models.{name}: protocol {:?} requires base_url", r.protocol);
             }
         }
-        // anthropic/gemini have default base_urls; api key still required
+        // anthropic/gemini have default base_urls
         Protocol::Anthropic | Protocol::Gemini => {}
         Protocol::Scripted => {
             if r.script.is_none() {
@@ -562,16 +587,20 @@ fn validate_route(name: &str, r: &ModelRoute) -> Result<()> {
             bail!("models.{name}: session_header {h:?} is not a valid HTTP header name");
         }
     }
-    // every HTTP protocol requires api_key_env
+    if r.protocol.is_http() && r.api_key_env.as_deref().unwrap_or_default().is_empty() {
+        bail!(
+            "models.{name}: protocol {:?} requires api_key_env",
+            r.protocol
+        );
+    }
+    Ok(())
+}
+
+/// Credential check: HTTP routes need their api_key_env populated.
+fn check_route_credentials(name: &str, r: &ModelRoute) -> Result<()> {
     if r.protocol.is_http() {
         let env = r.api_key_env.as_deref().unwrap_or_default();
-        if env.is_empty() {
-            bail!(
-                "models.{name}: protocol {:?} requires api_key_env",
-                r.protocol
-            );
-        }
-        if !env_is_set(env) {
+        if !env.is_empty() && !env_is_set(env) {
             bail!("models.{name}: api_key_env {env} is not set (or empty) in the environment");
         }
     }
@@ -614,7 +643,9 @@ impl Config {
             self.models.scouts = None;
         }
         expand_route(&mut self.models.investigator)?;
-        expand_route(&mut self.models.validator)?;
+        if let Some(v) = &mut self.models.validator {
+            expand_route(v)?;
+        }
         if let Some(l) = &mut self.models.lead {
             expand_route(l)?;
         }
@@ -628,19 +659,66 @@ impl Config {
                 expand_route(&mut s.route)?;
             }
         }
-        validate_route("investigator", &self.models.investigator)?;
-        validate_route("validator", &self.models.validator)?;
+        check_route_shape("investigator", &self.models.investigator)?;
+        if let Some(v) = &self.models.validator {
+            check_route_shape("validator", v)?;
+        }
         if let Some(l) = &self.models.lead {
-            validate_route("lead", l)?;
+            check_route_shape("lead", l)?;
         }
         if let Some(ws) = &self.models.workers {
             for (i, w) in ws.iter().enumerate() {
-                validate_route(&format!("workers[{i}]"), w)?;
+                check_route_shape(&format!("workers[{i}]"), w)?;
             }
         }
         if let Some(ss) = &self.models.scouts {
             for s in ss.iter() {
-                validate_route(&format!("scouts.{}", s.name), &s.route)?;
+                check_route_shape(&format!("scouts.{}", s.name), &s.route)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The validator route a run would use: explicit validator, else the
+    /// investigator route re-run in a fresh context.
+    pub fn effective_validator(&self) -> &ModelRoute {
+        self.models
+            .validator
+            .as_ref()
+            .unwrap_or(&self.models.investigator)
+    }
+
+    /// True when no explicit validator is configured (inherits investigator).
+    pub fn validator_inherited(&self) -> bool {
+        self.models.validator.is_none()
+    }
+
+    /// Credential check for only the routes `strategy` would actually use:
+    /// always the investigator, plus the effective validator when
+    /// `review.validate`, plus the strategy's extra routes.
+    pub fn validate_for(&self, strategy: Strategy) -> Result<()> {
+        check_route_credentials("investigator", &self.models.investigator)?;
+        if self.review.validate {
+            check_route_credentials("validator", self.effective_validator())?;
+        }
+        match strategy {
+            Strategy::Baseline => {}
+            Strategy::Delegated => {
+                if let Some(l) = &self.models.lead {
+                    check_route_credentials("lead", l)?;
+                }
+                if let Some(ws) = &self.models.workers {
+                    for (i, w) in ws.iter().enumerate() {
+                        check_route_credentials(&format!("workers[{i}]"), w)?;
+                    }
+                }
+            }
+            Strategy::Panel => {
+                if let Some(ss) = &self.models.scouts {
+                    for s in ss.iter() {
+                        check_route_credentials(&format!("scouts.{}", s.name), &s.route)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -695,7 +773,7 @@ impl Config {
                 "scout_max_tool_calls": self.panel.scout_max_tool_calls,
             },
             "investigator": route(&self.models.investigator),
-            "validator": route(&self.models.validator),
+            "validator": route(self.effective_validator()),
             "lead": self.models.lead.as_ref().map(route),
             "workers": self.models.workers.as_ref().map(|ws| ws.iter().map(route).collect::<Vec<_>>()),
             "scouts": self.models.scouts.as_ref().map(|ss| {
