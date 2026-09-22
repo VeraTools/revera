@@ -6,3 +6,5 @@
 eval/corpus/
 eval/tmp/
 eval/reports/
+
+.planning/
