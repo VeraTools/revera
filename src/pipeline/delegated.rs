@@ -98,7 +98,13 @@ async fn delegated_candidates(
         cfg.budget.retries,
         &plan_terminal.name,
     )?;
-    let mut user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
+    let mut user = investigator_user(
+        req,
+        &prep.diff,
+        cfg.review.max_diff_bytes,
+        &cfg.review.path_instructions,
+        &cfg.review.knowledge_base,
+    );
     if !prep.rechecks.is_empty() {
         user.push_str("\n\nPrior findings under recheck:\n");
         for r in &prep.rechecks {

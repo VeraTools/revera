@@ -112,9 +112,34 @@ pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
     }
 }
 
-/// `git patch-id --stable` of the base...head diff.
-pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
-    let diff_text = diff(repo, base, head).await?;
+/// Determine default base branch (tries main, then master).
+pub async fn default_branch(repo: &Path) -> Result<String> {
+    if git(repo, &["rev-parse", "--verify", "main"]).await.is_ok() {
+        Ok("main".into())
+    } else if git(repo, &["rev-parse", "--verify", "master"]).await.is_ok() {
+        Ok("master".into())
+    } else {
+        bail!("could not determine default branch (neither main nor master found)")
+    }
+}
+
+/// `git diff --no-color --unified=3 HEAD` (uncommitted working tree diff against HEAD).
+pub async fn diff_uncommitted(repo: &Path) -> Result<String> {
+    git(
+        repo,
+        &[
+            "diff",
+            "--no-color",
+            "--unified=3",
+            "--end-of-options",
+            "HEAD",
+        ],
+    )
+    .await
+}
+
+/// Compute patch-id from a raw diff string.
+pub async fn patch_id_from_diff(repo: &Path, diff_text: &str) -> Result<String> {
     let mut child = Command::new("git")
         .args(["patch-id", "--stable"])
         .current_dir(repo)
@@ -144,6 +169,12 @@ pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
         .next()
         .unwrap_or("")
         .to_string())
+}
+
+/// `git patch-id --stable` of the base...head diff.
+pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
+    let diff_text = diff(repo, base, head).await?;
+    patch_id_from_diff(repo, &diff_text).await
 }
 
 /// Files changed between base...head, one `path status` per line.

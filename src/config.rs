@@ -1,6 +1,6 @@
 use crate::findings::Severity;
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +39,42 @@ impl Protocol {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathInstruction {
+    pub path: String,
+    pub instructions: String,
+}
+
+impl PathInstruction {
+    pub fn matches(&self, path: &str) -> bool {
+        if let Ok(glob) = globset::Glob::new(&self.path) {
+            let matcher = glob.compile_matcher();
+            matcher.is_match(path)
+        } else {
+            false
+        }
+    }
+}
+
+/// Review profiles governing sensitivity and publication severity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewProfile {
+    Quiet,
+    Chill,
+    Assertive,
+}
+
+impl ReviewProfile {
+    pub fn default_min_severity(self) -> Severity {
+        match self {
+            Self::Quiet => Severity::High,
+            Self::Chill => Severity::Medium,
+            Self::Assertive => Severity::Low,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewConfig {
@@ -62,6 +98,14 @@ pub struct ReviewConfig {
     /// accepted (warns in the log). Default true.
     #[serde(default = "default_true")]
     pub validate: bool,
+    #[serde(default)]
+    pub review_profile: Option<ReviewProfile>,
+    #[serde(default)]
+    pub path_instructions: Vec<PathInstruction>,
+    #[serde(default)]
+    pub fail_on_severity: Option<Severity>,
+    #[serde(default)]
+    pub knowledge_base: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -414,6 +458,10 @@ pub struct ReviewOverride {
     pub max_tool_output_bytes: Option<usize>,
     pub max_diff_bytes: Option<usize>,
     pub min_severity: Option<Severity>,
+    pub review_profile: Option<ReviewProfile>,
+    pub path_instructions: Option<Vec<PathInstruction>>,
+    pub fail_on_severity: Option<Severity>,
+    pub knowledge_base: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -524,6 +572,10 @@ impl Default for ReviewConfig {
             max_diff_bytes: default_diff_bytes(),
             min_severity: Severity::default(),
             validate: default_true(),
+            review_profile: None,
+            path_instructions: Vec::new(),
+            fail_on_severity: None,
+            knowledge_base: Vec::new(),
         }
     }
 }
@@ -739,6 +791,11 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self) -> Result<()> {
+        if let Some(rp) = self.review.review_profile {
+            if self.review.min_severity == Severity::Low {
+                self.review.min_severity = rp.default_min_severity();
+            }
+        }
         let m = &self.github.summary_marker;
         if !(m.starts_with("<!-- revera") && m.trim_end().ends_with("-->")) {
             bail!(
@@ -893,6 +950,12 @@ impl Config {
             "max_findings": self.review.max_findings,
             "publish_uncertain": self.review.publish_uncertain,
             "min_severity": format!("{:?}", self.review.min_severity).to_lowercase(),
+            "review_profile": self.review.review_profile.map(|p| match p {
+                ReviewProfile::Quiet => "quiet",
+                ReviewProfile::Chill => "chill",
+                ReviewProfile::Assertive => "assertive",
+            }),
+            "path_instructions": self.review.path_instructions.len(),
             "validate": self.review.validate,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
@@ -972,6 +1035,21 @@ impl Config {
             }
             if let Some(v) = r.min_severity {
                 self.review.min_severity = v;
+            }
+            if let Some(rp) = r.review_profile {
+                self.review.review_profile = Some(rp);
+                if r.min_severity.is_none() {
+                    self.review.min_severity = rp.default_min_severity();
+                }
+            }
+            if let Some(v) = &r.path_instructions {
+                self.review.path_instructions = v.clone();
+            }
+            if let Some(v) = r.fail_on_severity {
+                self.review.fail_on_severity = Some(v);
+            }
+            if let Some(v) = &r.knowledge_base {
+                self.review.knowledge_base = v.clone();
             }
         }
         if let Some(b) = &p.budget {

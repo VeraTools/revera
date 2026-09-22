@@ -1,4 +1,4 @@
-use crate::findings::{Finding, ValidationStatus};
+use crate::findings::{Finding, Severity, ValidationStatus};
 use crate::pipeline::anchor::is_publishable;
 use crate::provider::RunLedger;
 use crate::state::ReviewState;
@@ -48,7 +48,7 @@ pub struct RouteLedger {
     pub reasoning_tokens: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LedgerReport {
     pub requests: u64,
     pub prompt_tokens: u64,
@@ -556,6 +556,94 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     }
 }
 
+/// Generate OASIS SARIF 2.1.0 JSON representation of the run findings.
+pub fn to_sarif(report: &RunReport) -> serde_json::Value {
+    let rules: Vec<serde_json::Value> = report
+        .findings
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "id": f.source,
+                "name": f.title,
+                "shortDescription": {
+                    "text": f.title
+                },
+                "fullDescription": {
+                    "text": f.claim
+                },
+                "defaultConfiguration": {
+                    "level": match f.severity {
+                        Severity::High => "error",
+                        Severity::Medium => "warning",
+                        Severity::Low => "note",
+                    }
+                }
+            })
+        })
+        .collect();
+
+    let results: Vec<serde_json::Value> = report
+        .findings
+        .iter()
+        .map(|f| {
+            let mut result = serde_json::json!({
+                "ruleId": f.source,
+                "level": match f.severity {
+                    Severity::High => "error",
+                    Severity::Medium => "warning",
+                    Severity::Low => "note",
+                },
+                "message": {
+                    "text": format!("{}\n\nTrigger: {}", f.claim, f.trigger)
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": f.file,
+                                "uriBaseId": "%SRCROOT%"
+                            },
+                            "region": {
+                                "startLine": f.start_line,
+                                "endLine": f.end_line.unwrap_or(f.start_line)
+                            }
+                        }
+                    }
+                ]
+            });
+            if let Some(fix) = &f.suggested_fix {
+                result["fixes"] = serde_json::json!([
+                    {
+                        "description": {
+                            "text": "Suggested fix"
+                        },
+                        "replacement": fix
+                    }
+                ]);
+            }
+            result
+        })
+        .collect();
+
+    serde_json::json!({
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "revera",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "informationUri": "https://github.com/citron07r/revera",
+                        "rules": rules
+                    }
+                },
+                "results": results
+            }
+        ]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +723,58 @@ mod tests {
         // no timing line -> unchanged
         let plain = "## Revera review\n\nNo findings.\n";
         assert_eq!(refresh_timing_line(plain, &t1), plain);
+    }
+
+    #[test]
+    fn sarif_export_generates_valid_schema() {
+        let f = Finding {
+            defect_key: "k".into(),
+            severity: Severity::High,
+            file: "src/lib.rs".into(),
+            start_line: 10,
+            end_line: Some(15),
+            title: "Test Title".into(),
+            claim: "Test Claim".into(),
+            trigger: "Test Trigger".into(),
+            impact: "Test Impact".into(),
+            introduced_by_change: true,
+            supporting_evidence: vec![],
+            counterevidence_checked: vec![],
+            validation_status: None,
+            suggested_fix: Some("let x = 1;".into()),
+            source: "test-rule".into(),
+            rationale: None,
+            sources: vec!["test-rule".into()],
+            assurance: None,
+        };
+
+        let rep = RunReport {
+            status: RunStatus::Complete,
+            reason: None,
+            base: "base".into(),
+            head: "head".into(),
+            strategy: "baseline".into(),
+            findings: vec![f],
+            plan: PublicationPlan {
+                inline: vec![],
+                summary_markdown: String::new(),
+                state: Default::default(),
+            },
+            ledger: Default::default(),
+            publication: Default::default(),
+            coverage_gaps: vec![],
+            timing: Default::default(),
+            stats: Default::default(),
+        };
+
+        let sarif = to_sarif(&rep);
+        assert_eq!(sarif["version"], "2.1.0");
+        assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "revera");
+        assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
+        assert_eq!(
+            sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/lib.rs"
+        );
     }
 }

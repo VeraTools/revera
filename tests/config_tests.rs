@@ -426,3 +426,92 @@ fn example_config_loads() {
     let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/revera.example.yaml"));
     Config::load(p).unwrap();
 }
+
+#[test]
+fn path_instructions_and_review_profiles_work() {
+    let yaml = r#"
+review:
+  strategy: baseline
+  review_profile: chill
+  path_instructions:
+    - path: "src/api/**/*.rs"
+      instructions: "Validate all request bodies and query parameters."
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {enabled: false}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert_eq!(c.review.min_severity, revera::findings::Severity::Medium);
+    assert_eq!(c.review.path_instructions.len(), 1);
+    assert!(c.review.path_instructions[0].matches("src/api/auth/login.rs"));
+    assert!(!c.review.path_instructions[0].matches("tests/auth_tests.rs"));
+
+    // Quiet profile sets High severity
+    let quiet_yaml = yaml.replace("review_profile: chill", "review_profile: quiet");
+    let f_quiet = write_tmp(&quiet_yaml);
+    let c_quiet = Config::load(f_quiet.path()).unwrap();
+    assert_eq!(c_quiet.review.min_severity, revera::findings::Severity::High);
+
+    // Assertive profile sets Low severity
+    let assertive_yaml = yaml.replace("review_profile: chill", "review_profile: assertive");
+    let f_assertive = write_tmp(&assertive_yaml);
+    let c_assertive = Config::load(f_assertive.path()).unwrap();
+    assert_eq!(c_assertive.review.min_severity, revera::findings::Severity::Low);
+}
+
+#[test]
+fn investigator_user_appends_targeted_path_guidance() {
+    use revera::config::PathInstruction;
+    use revera::diff::parse_unified;
+    use revera::pipeline::common::{investigator_user, ReviewRequest};
+
+    let diff_text = r#"diff --git a/src/api/handler.rs b/src/api/handler.rs
+index 0000000..1111111 100644
+--- a/src/api/handler.rs
++++ b/src/api/handler.rs
+@@ -1,1 +1,2 @@
++pub async fn handle() {}
+"#;
+    let diff = parse_unified(diff_text);
+    let req = ReviewRequest {
+        repo: std::path::PathBuf::from("."),
+        base: "main".into(),
+        head: Some("feature".into()),
+        title: Some("New API Handler".into()),
+        body: "Adding handler".into(),
+        strategy_override: None,
+        force: false,
+        uncommitted: false,
+    };
+    let instructions = vec![PathInstruction {
+        path: "src/api/**/*.rs".into(),
+        instructions: "Verify endpoint rate limiting and authentication.".into(),
+    }];
+
+    let prompt = investigator_user(&req, &diff, 100_000, &instructions, &[]);
+    assert!(prompt.contains("Targeted Path Guidance:"));
+    assert!(prompt.contains("- [src/api/**/*.rs] Verify endpoint rate limiting and authentication."));
+}
+
+#[test]
+fn knowledge_base_and_fail_on_severity_config_loads() {
+    let yaml = r#"
+review:
+  strategy: baseline
+  fail_on_severity: high
+  knowledge_base:
+    - "README.md"
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: m}
+vera: {enabled: false}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert_eq!(
+        c.review.fail_on_severity,
+        Some(revera::findings::Severity::High)
+    );
+    assert_eq!(c.review.knowledge_base, vec!["README.md"]);
+}
+

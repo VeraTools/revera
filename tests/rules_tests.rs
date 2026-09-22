@@ -123,11 +123,11 @@ fn sql_interpolation_detector_flags_formatted_sql() {
 #[test]
 fn custom_rules_glob_and_regex_match() {
     let custom = vec![RuleConfig {
-        id: "no-todo-in-code".into(),
-        pattern: r"TODO|FIXME".into(),
+        id: "no-hack-in-code".into(),
+        pattern: r"HACK|TEMP".into(),
         files: vec!["src/**/*.rs".into()],
         severity: Severity::Low,
-        message: "Unresolved TODO in source code".into(),
+        message: "Unresolved HACK in source code".into(),
     }];
 
     // Matched file
@@ -135,19 +135,37 @@ fn custom_rules_glob_and_regex_match() {
         "src/parser.rs",
         vec![
             (DiffLineKind::Ctx, "fn parse() {"),
-            (DiffLineKind::Add, "    // TODO: implement edge case"),
+            (DiffLineKind::Add, "    // HACK: workaround for upstream bug"),
             (DiffLineKind::Ctx, "}"),
         ],
     );
     let findings_match = scan_diff(&diff_match, Some(&custom));
     assert_eq!(findings_match.len(), 1);
-    assert_eq!(findings_match[0].source, "static:no-todo-in-code");
+    assert_eq!(findings_match[0].source, "static:no-hack-in-code");
 
     // File excluded by glob
     let diff_nomatch = make_diff(
-        "docs/todo.md",
-        vec![(DiffLineKind::Add, "- TODO: document architecture")],
+        "docs/notes.md",
+        vec![(DiffLineKind::Add, "- HACK: workaround notes")],
     );
     let findings_nomatch = scan_diff(&diff_nomatch, Some(&custom));
     assert!(findings_nomatch.is_empty());
+}
+
+#[test]
+fn slop_detector_catches_unimplemented_stubs() {
+    let diff = make_diff(
+        "src/service.rs",
+        vec![
+            (DiffLineKind::Add, "    todo!(\"implement process\");"),
+            (DiffLineKind::Add, "    // TODO: implement caching"),
+            (DiffLineKind::Add, "    unimplemented!();"),
+        ],
+    );
+    let findings = scan_diff(&diff, None);
+    assert_eq!(findings.len(), 3);
+    for f in findings {
+        assert_eq!(f.source, "static:slop-placeholder");
+        assert_eq!(f.severity, Severity::Medium);
+    }
 }

@@ -32,6 +32,13 @@ static SQL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)format!\s*\(\s*"[^"]*\b(SELECT|INSERT|UPDATE|DELETE)\b[^"]*\{"#).unwrap()
 });
 
+static SLOP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?x)
+        \b(?:todo!|unimplemented!)\s*\( |
+        (?i)(?://|\#|/\*)\s*(?:TODO|FIXME|XXX)\s*:\s*(?:implement|fill\s+in|add\s+logic|placeholder)
+    "#).unwrap()
+});
+
 /// Evaluates static regex patterns against added lines in a diff.
 pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -133,7 +140,22 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                     }));
                 }
 
-                // 5. Custom rules evaluation
+                // 5. Unimplemented slop / placeholder detection
+                if SLOP_REGEX.is_match(text) {
+                    findings.push(make_finding(StaticMatch {
+                        rule_id: "slop-placeholder",
+                        severity: Severity::Medium,
+                        file: &file.new_path,
+                        line_no,
+                        title: "Unimplemented placeholder or stub introduced",
+                        claim: "An unimplemented placeholder stub (e.g. todo!, unimplemented!, or TODO: implement) was introduced in added code. Leaving placeholder stubs can lead to runtime crashes or incomplete logic.",
+                        trigger: "Unimplemented stub pattern matched on added line.",
+                        line_preview: text,
+                        suggested_fix: Some("Implement the required logic or replace the stub before merging."),
+                    }));
+                }
+
+                // 6. Custom rules evaluation
                 for (rule, globs, re) in &compiled_custom {
                     if let Some(gs) = globs {
                         if !gs.is_match(&file.new_path) {

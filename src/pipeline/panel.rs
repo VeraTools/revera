@@ -88,7 +88,13 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let n_scouts = lanes.len();
 
     let terminal = terminal_submit_findings_spec();
-    let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
+    let user = investigator_user(
+        req,
+        &prep.diff,
+        cfg.review.max_diff_bytes,
+        &cfg.review.path_instructions,
+        &cfg.review.knowledge_base,
+    );
     let max_req = cfg.budget.run_max_requests;
     let ledger0 = prep.ledger.clone();
     let tb0 = prep.toolbox.clone();
