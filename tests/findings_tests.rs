@@ -21,6 +21,7 @@ fn finding(file: &str, key: &str, line: u32, sev: Severity) -> Finding {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
     }
 }
 
@@ -62,6 +63,25 @@ fn collapse_overlapping_lines_similar_titles() {
     b.title = "parse has null pointer dereference".into();
     let out = collapse(vec![a, b]);
     assert_eq!(out.len(), 1);
+}
+
+#[test]
+fn assurance_case_renders_in_finding_body() {
+    let mut f = finding("src/lib.rs", "key_sec", 15, Severity::High);
+    f.assurance = Some(revera::findings::AssuranceCase {
+        rule_id: Some("secrets".into()),
+        trigger: "Hardcoded API key detected".into(),
+        rationale: "Leaked secret in source code".into(),
+        counterevidence_checked: vec!["no env var fallback".into()],
+        validator_rederivation: Some("Confirmed AWS key regex match".into()),
+        confidence: 1.0,
+    });
+    let body = revera::report::finding_body(&f);
+    assert!(body.contains("<details>"));
+    assert!(body.contains("<summary>Assurance Trace</summary>"));
+    assert!(body.contains("Static Rule `secrets`"));
+    assert!(body.contains("**Trigger**: Hardcoded API key detected"));
+    assert!(body.contains("**Validator Re-derivation**: Confirmed AWS key regex match"));
 }
 
 #[test]

@@ -384,6 +384,18 @@ impl PanelConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuleConfig {
+    pub id: String,
+    pub pattern: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub severity: Severity,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileOverride {
@@ -430,6 +442,8 @@ pub struct Config {
     pub delegated: DelegatedConfig,
     #[serde(default)]
     pub panel: PanelConfig,
+    #[serde(default)]
+    pub rules: Option<Vec<RuleConfig>>,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileOverride>,
 }
@@ -907,6 +921,15 @@ impl Config {
                     })).collect::<Vec<_>>()
                 }),
             },
+            "rules": self.rules.as_ref().map(|rs| {
+                rs.iter().map(|r| serde_json::json!({
+                    "id": r.id,
+                    "pattern": r.pattern,
+                    "files": r.files,
+                    "severity": r.severity.to_string(),
+                    "message": r.message,
+                })).collect::<Vec<_>>()
+            }),
             "investigator": route(&self.models.investigator),
             "validator": route(self.effective_validator()),
             "lead": self.models.lead.as_ref().map(route),

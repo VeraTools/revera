@@ -21,6 +21,7 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
     }
 }
 

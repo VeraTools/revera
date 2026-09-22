@@ -186,6 +186,32 @@ pub fn finding_body(f: &Finding) -> String {
             sources
         ));
     }
+    let assurance = f.effective_assurance();
+    b.push_str("\n<details>\n<summary>Assurance Trace</summary>\n\n");
+    if let Some(rule) = &assurance.rule_id {
+        b.push_str(&format!("- **Origin**: Static Rule `{}`\n", sanitize(rule)));
+    } else {
+        b.push_str(&format!("- **Origin**: Lens `{}`\n", sanitize(&f.source)));
+    }
+    if !assurance.trigger.is_empty() {
+        b.push_str(&format!("- **Trigger**: {}\n", sanitize(&assurance.trigger)));
+    }
+    if !assurance.rationale.is_empty() {
+        b.push_str(&format!("- **Rationale**: {}\n", sanitize(&assurance.rationale)));
+    }
+    if !assurance.counterevidence_checked.is_empty() {
+        let ce = assurance
+            .counterevidence_checked
+            .iter()
+            .map(|c| sanitize(c))
+            .collect::<Vec<_>>()
+            .join("; ");
+        b.push_str(&format!("- **Counter-evidence Checked**: {}\n", ce));
+    }
+    if let Some(rederivation) = &assurance.validator_rederivation {
+        b.push_str(&format!("- **Validator Re-derivation**: {}\n", sanitize(rederivation)));
+    }
+    b.push_str("\n</details>\n");
     b.push_str(&format!("\n<!-- revera-id:{} -->", f.id()));
     b
 }

@@ -64,6 +64,7 @@ fn finding(id_body_file: &str) -> Finding {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
     }
 }
 

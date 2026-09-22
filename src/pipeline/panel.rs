@@ -94,6 +94,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let tb0 = prep.toolbox.clone();
     let timing0 = prep.timing.clone();
     let wall = prep.wall;
+    let progress0 = prep.progress.clone();
     let lane_budget = prep.budget(cfg.panel.scout_max_tool_calls, cfg.budget.agent_max_seconds);
     let lane_futs = lanes.iter().map(|lane| {
         let ledger = ledger0.clone();
@@ -105,9 +106,14 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         let budget = lane_budget.clone();
         let retries = cfg.budget.retries;
         let timing = timing0.clone();
+        let progress = progress0.clone();
         let addendum = lane_addendum(lane);
         async move {
             let lane_start = std::time::Instant::now();
+            progress.emit(crate::progress::ProgressEvent::ScoutDispatched {
+                lane: lane_name.clone(),
+                model: route.model.clone(),
+            });
             if ledger.request_count() >= max_req {
                 timing.record(
                     "lane",
@@ -156,6 +162,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
             skipped += 1;
             continue;
         };
+        let mut candidates_count = 0usize;
         let outcome = match run {
             Ok(r) => match r.stopped {
                 crate::agent::StopReason::Terminal => {
@@ -176,6 +183,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                     prep.stats.malformed_findings += parsed.dropped;
                     let mut fs = parsed.findings;
                     let n = fs.len();
+                    candidates_count = n;
                     for f in &mut fs {
                         f.source = format!("panel:{lane_name}");
                         f.sources = vec![f.source.clone()];
@@ -220,6 +228,12 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
             prep.wall,
             &outcome,
         );
+        prep.progress
+            .emit(crate::progress::ProgressEvent::LaneCompleted {
+                lane: lane_name.clone(),
+                candidates: candidates_count,
+                status: outcome.clone(),
+            });
     }
     if skipped > 0 {
         prep.partial_reasons

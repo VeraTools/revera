@@ -140,6 +140,7 @@ impl StateFinding {
             source: "prior".into(),
             rationale: None,
             sources: vec!["prior".into()],
+            assurance: None,
         }
     }
 }

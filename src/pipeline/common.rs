@@ -62,6 +62,7 @@ pub struct Prepared {
     pub reserve: std::time::Duration,
     pub wall: Instant,
     pub timing: Recorder,
+    pub progress: Arc<crate::progress::ProgressBroadcaster>,
 }
 
 impl Prepared {
@@ -381,6 +382,11 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         resolved: resolved_titles.len(),
         ..Default::default()
     };
+    let progress = Arc::new(crate::progress::ProgressBroadcaster::default());
+    progress.emit(crate::progress::ProgressEvent::DiffParsed {
+        files_changed: diff.files.len(),
+        bytes: raw_diff.len(),
+    });
     Ok(PrepareOut::Ready(Box::new(Prepared {
         repo,
         base_sha,
@@ -405,6 +411,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
         wall,
         timing,
+        progress,
     })))
 }
 
@@ -426,9 +433,25 @@ pub async fn finish(
     candidates: Vec<Finding>,
     _lane_labels: &[String],
 ) -> Result<(RunReport, ReviewState)> {
+    // ---- static rules pre-filter ----
+    let static_findings = crate::rules::scan_diff(&prep.diff, cfg.rules.as_deref());
+    prep.progress
+        .emit(crate::progress::ProgressEvent::StaticRulesChecked {
+            matches_found: static_findings.len(),
+        });
+    let mut all_candidates = candidates;
+    all_candidates.extend(static_findings);
+
     // ---- collapse + severity gate ----
-    let mut collapsed = collapse(candidates);
+    let mut collapsed = collapse(all_candidates);
     collapsed = crate::findings::rank_candidates(collapsed);
+    let n_consensus = collapsed.iter().filter(|f| f.sources.len() > 1).count();
+    prep.progress
+        .emit(crate::progress::ProgressEvent::CandidatesAggregated {
+            raw: collapsed.len(),
+            unique: collapsed.len(),
+            consensus: n_consensus,
+        });
     collapsed.retain(|f| f.severity >= cfg.review.min_severity);
     // accepted rechecks that were never posted re-enter the final set so
     // they anchor and publish on this run
@@ -459,6 +482,10 @@ pub async fn finish(
             c.validation_status = Some(crate::findings::ValidationStatus::Accepted);
         }
     } else if !collapsed.is_empty() {
+        prep.progress
+            .emit(crate::progress::ProgressEvent::ValidationStarted {
+                count: collapsed.len(),
+            });
         let clean = validate_candidates(
             cfg,
             prep.ledger.clone(),
@@ -478,6 +505,21 @@ pub async fn finish(
         if let Some(r) = clean {
             prep.partial_reasons.push(r);
         }
+        let accepted = collapsed
+            .iter()
+            .filter(|f| f.validation_status == Some(crate::findings::ValidationStatus::Accepted))
+            .count();
+        let rejected = collapsed
+            .iter()
+            .filter(|f| f.validation_status == Some(crate::findings::ValidationStatus::Rejected))
+            .count();
+        let uncertain = collapsed.len() - accepted - rejected;
+        prep.progress
+            .emit(crate::progress::ProgressEvent::ValidationFinished {
+                accepted,
+                rejected,
+                uncertain,
+            });
     }
 
     collapsed.extend(reenter);
@@ -590,6 +632,7 @@ pub async fn finish(
         resolved: &prep.resolved_titles,
         reopened: &reopened_titles,
     });
+    let published_count = inline.len() + outside.len();
     let rep = RunReport {
         status,
         reason,
@@ -611,6 +654,12 @@ pub async fn finish(
         timing,
         stats,
     };
+    prep.progress
+        .emit(crate::progress::ProgressEvent::ReviewComplete {
+            status: format!("{:?}", rep.status).to_lowercase(),
+            duration_ms: prep.wall.elapsed().as_millis() as u64,
+            published: published_count,
+        });
     Ok((rep, state))
 }
 

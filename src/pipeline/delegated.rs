@@ -584,6 +584,7 @@ vera: {}
             reserve: Duration::ZERO,
             wall: Instant::now(),
             timing: crate::timing::Recorder::default(),
+            progress: Arc::new(crate::progress::ProgressBroadcaster::default()),
         };
         if skipped > 0 {
             prep.partial_reasons

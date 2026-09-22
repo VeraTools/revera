@@ -40,6 +40,24 @@ pub struct Evidence {
     pub note: String,
 }
 
+fn default_confidence() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssuranceCase {
+    #[serde(default)]
+    pub rule_id: Option<String>,
+    pub trigger: String,
+    pub rationale: String,
+    #[serde(default)]
+    pub counterevidence_checked: Vec<String>,
+    #[serde(default)]
+    pub validator_rederivation: Option<String>,
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub defect_key: String,
@@ -70,6 +88,8 @@ pub struct Finding {
     pub rationale: Option<String>,
     #[serde(default)]
     pub sources: Vec<String>,
+    #[serde(default)]
+    pub assurance: Option<AssuranceCase>,
 }
 
 impl Finding {
@@ -81,6 +101,26 @@ impl Finding {
     /// Number of distinct review lenses or scouts that flagged this defect.
     pub fn consensus_count(&self) -> usize {
         self.sources.len().max(1)
+    }
+
+    /// Returns the effective assurance case or constructs a baseline one from finding fields.
+    pub fn effective_assurance(&self) -> AssuranceCase {
+        if let Some(a) = &self.assurance {
+            a.clone()
+        } else {
+            AssuranceCase {
+                rule_id: if self.source.starts_with("static:") {
+                    Some(self.source.trim_start_matches("static:").to_string())
+                } else {
+                    None
+                },
+                trigger: self.trigger.clone(),
+                rationale: self.rationale.clone().unwrap_or_else(|| self.claim.clone()),
+                counterevidence_checked: self.counterevidence_checked.clone(),
+                validator_rederivation: None,
+                confidence: 1.0,
+            }
+        }
     }
 }
 
