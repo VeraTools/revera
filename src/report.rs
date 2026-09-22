@@ -173,6 +173,19 @@ pub fn finding_body(f: &Finding) -> String {
         let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
         b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
     }
+    if f.sources.len() > 1 {
+        let sources = f
+            .sources
+            .iter()
+            .map(|s| sanitize(s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        b.push_str(&format!(
+            "\n> **Consensus**: Flagged independently by {} review lenses: {}.\n",
+            f.sources.len(),
+            sources
+        ));
+    }
     b.push_str(&format!("\n<!-- revera-id:{} -->", f.id()));
     b
 }

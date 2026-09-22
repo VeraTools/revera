@@ -57,6 +57,50 @@ vera: {backend: local}
 }
 
 #[test]
+fn panel_with_personas_configuration() {
+    let yaml = r#"
+review: {strategy: panel}
+models:
+  investigator: {protocol: scripted, script: /tmp/s, model: inv}
+  validator: {protocol: scripted, script: /tmp/s, model: val}
+panel:
+  personas:
+    - name: security_specialist
+      focus: security
+    - name: custom_api
+      prompt: "Check all public API changes for breaking changes and documentation."
+      route:
+        protocol: scripted
+        script: /tmp/s
+        model: api_model
+vera: {enabled: false}
+"#;
+    let f = write_tmp(yaml);
+    let c = Config::load(f.path()).unwrap();
+    assert!(c.panel.personas.is_some());
+    let personas = c.panel.personas.as_ref().unwrap();
+    assert_eq!(personas.len(), 2);
+    assert_eq!(personas[0].name, "security_specialist");
+    assert_eq!(personas[0].focus.as_deref(), Some("security"));
+    assert_eq!(personas[1].name, "custom_api");
+    assert_eq!(
+        personas[1].prompt.as_deref(),
+        Some("Check all public API changes for breaking changes and documentation.")
+    );
+    assert_eq!(personas[1].route.as_ref().unwrap().model, "api_model");
+
+    let lanes = c
+        .panel
+        .effective_lanes(&c.models.investigator, c.models.scouts.as_deref())
+        .unwrap();
+    assert_eq!(lanes.len(), 2);
+    assert_eq!(lanes[0].name, "security_specialist");
+    assert_eq!(lanes[0].route.model, "inv");
+    assert_eq!(lanes[1].name, "custom_api");
+    assert_eq!(lanes[1].route.model, "api_model");
+}
+
+#[test]
 fn profile_override_applies() {
     let yaml = r#"
 review: {strategy: baseline}

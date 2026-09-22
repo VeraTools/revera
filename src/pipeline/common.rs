@@ -428,6 +428,7 @@ pub async fn finish(
 ) -> Result<(RunReport, ReviewState)> {
     // ---- collapse + severity gate ----
     let mut collapsed = collapse(candidates);
+    collapsed = crate::findings::rank_candidates(collapsed);
     collapsed.retain(|f| f.severity >= cfg.review.min_severity);
     // accepted rechecks that were never posted re-enter the final set so
     // they anchor and publish on this run

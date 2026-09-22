@@ -77,6 +77,11 @@ impl Finding {
     pub fn id(&self) -> String {
         finding_id(&self.file, &self.defect_key)
     }
+
+    /// Number of distinct review lenses or scouts that flagged this defect.
+    pub fn consensus_count(&self) -> usize {
+        self.sources.len().max(1)
+    }
 }
 
 pub fn finding_id(file: &str, defect_key: &str) -> String {
@@ -125,6 +130,24 @@ fn titles_similar(a: &str, b: &str) -> bool {
     let shared = ta.iter().filter(|w| tb.contains(w)).count();
     let denom = ta.len().max(tb.len()) as f64;
     (shared as f64 / denom) >= 0.6
+}
+
+/// Rank candidate findings prior to validation or publication.
+/// Order priority:
+/// 1. `consensus_count()` descending (corroborated by multiple independent scouts)
+/// 2. `severity` descending (High > Medium > Low)
+/// 3. `supporting_evidence.len()` descending (grounded in more code references)
+/// 4. `file` and `start_line` ascending for deterministic tie-breaking.
+pub fn rank_candidates(mut candidates: Vec<Finding>) -> Vec<Finding> {
+    candidates.sort_by(|a, b| {
+        b.consensus_count()
+            .cmp(&a.consensus_count())
+            .then_with(|| b.severity.cmp(&a.severity))
+            .then_with(|| b.supporting_evidence.len().cmp(&a.supporting_evidence.len()))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.start_line.cmp(&b.start_line))
+    });
+    candidates
 }
 
 /// Merge candidates: same file and (same defect_key OR overlapping line ranges

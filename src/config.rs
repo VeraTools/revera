@@ -293,11 +293,95 @@ pub struct DelegatedConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PersonaConfig {
+    pub name: String,
+    #[serde(default)]
+    pub focus: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub route: Option<ModelRoute>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectiveLane {
+    pub name: String,
+    pub focus: Option<String>,
+    pub custom_prompt: Option<String>,
+    pub route: ModelRoute,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PanelConfig {
     #[serde(default = "default_focuses")]
     pub focuses: Vec<String>,
     #[serde(default = "default_scout_tool_calls")]
     pub scout_max_tool_calls: u32,
+    #[serde(default)]
+    pub personas: Option<Vec<PersonaConfig>>,
+}
+
+impl PanelConfig {
+    /// Resolve the list of effective scout lanes:
+    /// (lane_name, focus_or_prompt_key, optional_custom_prompt, route).
+    pub fn effective_lanes(
+        &self,
+        default_route: &ModelRoute,
+        scouts: Option<&[ScoutRoute]>,
+    ) -> Result<Vec<EffectiveLane>> {
+        if let Some(personas) = &self.personas {
+            if !personas.is_empty() {
+                let mut lanes = Vec::with_capacity(personas.len());
+                for p in personas {
+                    let route = if let Some(r) = &p.route {
+                        r.clone()
+                    } else if let Some(scouts_list) = scouts {
+                        if let Some(s) = scouts_list.iter().find(|s| {
+                            s.name == p.name
+                                || p.focus.as_deref() == Some(&s.name)
+                                || p.focus.as_deref() == s.focus.as_deref()
+                        }) {
+                            s.route.clone()
+                        } else if scouts_list.len() == 1 {
+                            scouts_list[0].route.clone()
+                        } else {
+                            default_route.clone()
+                        }
+                    } else {
+                        default_route.clone()
+                    };
+                    lanes.push(EffectiveLane {
+                        name: p.name.clone(),
+                        focus: p.focus.clone(),
+                        custom_prompt: p.prompt.clone(),
+                        route,
+                    });
+                }
+                return Ok(lanes);
+            }
+        }
+        let routes = match scouts {
+            None | Some([]) => vec![default_route.clone(); self.focuses.len()],
+            Some([single]) => vec![single.route.clone(); self.focuses.len()],
+            Some(many) => {
+                check_lane_cardinality(self.focuses.len(), many.len())?;
+                many.iter().map(|s| s.route.clone()).collect()
+            }
+        };
+        Ok(self
+            .focuses
+            .iter()
+            .cloned()
+            .zip(routes)
+            .map(|(focus, route)| EffectiveLane {
+                name: focus.clone(),
+                focus: Some(focus),
+                custom_prompt: None,
+                route,
+            })
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -457,6 +541,7 @@ impl Default for PanelConfig {
         Self {
             focuses: default_focuses(),
             scout_max_tool_calls: default_scout_tool_calls(),
+            personas: None,
         }
     }
 }
@@ -669,6 +754,13 @@ impl Config {
                 expand_route(&mut s.route)?;
             }
         }
+        if let Some(ps) = &mut self.panel.personas {
+            for p in ps.iter_mut() {
+                if let Some(r) = &mut p.route {
+                    expand_route(r)?;
+                }
+            }
+        }
         check_route_shape("investigator", &self.models.investigator)?;
         if let Some(v) = &self.models.validator {
             check_route_shape("validator", v)?;
@@ -684,6 +776,13 @@ impl Config {
         if let Some(ss) = &self.models.scouts {
             for s in ss.iter() {
                 check_route_shape(&format!("scouts.{}", s.name), &s.route)?;
+            }
+        }
+        if let Some(ps) = &self.panel.personas {
+            for p in ps.iter() {
+                if let Some(r) = &p.route {
+                    check_route_shape(&format!("panel.personas.{}", p.name), r)?;
+                }
             }
         }
         Ok(())
@@ -705,6 +804,11 @@ impl Config {
 
     /// Panel cardinality rule used by `doctor` and the panel pipeline.
     pub fn check_panel_lanes(&self) -> Result<()> {
+        if let Some(ps) = &self.panel.personas {
+            if !ps.is_empty() {
+                return Ok(());
+            }
+        }
         let n = self.models.scouts.as_ref().map_or(0, |s| s.len());
         check_lane_cardinality(self.panel.focuses.len(), n)
     }
@@ -733,6 +837,13 @@ impl Config {
                 if let Some(ss) = &self.models.scouts {
                     for s in ss.iter() {
                         check_route_credentials(&format!("scouts.{}", s.name), &s.route)?;
+                    }
+                }
+                if let Some(ps) = &self.panel.personas {
+                    for p in ps.iter() {
+                        if let Some(r) = &p.route {
+                            check_route_credentials(&format!("panel.personas.{}", p.name), r)?;
+                        }
                     }
                 }
             }
@@ -787,6 +898,14 @@ impl Config {
             "panel": {
                 "focuses": self.panel.focuses,
                 "scout_max_tool_calls": self.panel.scout_max_tool_calls,
+                "personas": self.panel.personas.as_ref().map(|ps| {
+                    ps.iter().map(|p| serde_json::json!({
+                        "name": p.name,
+                        "focus": p.focus,
+                        "prompt": p.prompt,
+                        "route": p.route.as_ref().map(route),
+                    })).collect::<Vec<_>>()
+                }),
             },
             "investigator": route(&self.models.investigator),
             "validator": route(self.effective_validator()),
