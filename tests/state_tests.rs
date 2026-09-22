@@ -26,6 +26,29 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
 }
 
 #[test]
+fn corrupt_state_quarantined_as_corrupt_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_file = dir.path().join(".revera/state.json");
+    std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    std::fs::write(&state_file, "{ malformed json bytes").unwrap();
+
+    // Loading should quarantine corrupt file and return None
+    let loaded = ReviewState::load(dir.path()).unwrap();
+    assert!(loaded.is_none());
+    assert!(!state_file.exists());
+    assert!(dir.path().join(".revera/state.json.corrupt").exists());
+
+    // Save should atomically write new state
+    let mut s = ReviewState::default();
+    let f = finding("src/x.rs", "k", 5);
+    s.upsert(&f, FindingState::Open);
+    s.save(dir.path()).unwrap();
+    assert!(state_file.exists());
+    let reloaded = ReviewState::load(dir.path()).unwrap().unwrap();
+    assert_eq!(reloaded.findings.len(), 1);
+}
+
+#[test]
 fn state_roundtrip_and_transitions() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = ReviewState::default();

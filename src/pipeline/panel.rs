@@ -288,6 +288,8 @@ mod tests {
         assert!(arch.contains("architectural layers"));
         let reg = focus_addendum("regression").expect("regression section");
         assert!(reg.contains("backward compatibility"));
+        let tq = focus_addendum("test-quality").expect("test-quality section");
+        assert!(tq.contains("Vacuous assertions"));
         assert!(focus_addendum("nonexistent-focus").is_none());
     }
 

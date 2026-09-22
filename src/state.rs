@@ -171,7 +171,11 @@ impl ReviewState {
     pub fn save(&self, repo_root: &Path) -> Result<()> {
         let dir = repo_root.join(".revera");
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(Self::path(repo_root), serde_json::to_string_pretty(self)?)?;
+        let target = Self::path(repo_root);
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        serde_json::to_writer_pretty(tmp.as_file_mut(), self)?;
+        tmp.as_file_mut().sync_all()?;
+        tmp.persist(&target).map_err(|e| e.error)?;
         Ok(())
     }
 
