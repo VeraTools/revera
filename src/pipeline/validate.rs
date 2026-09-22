@@ -27,10 +27,27 @@ fn validator_budget_at(
     })
 }
 
+/// Strict EVAL validation gate: verifies candidate finding has legitimate,
+/// bounded code-level evidence within the diff before dispatching a validator agent.
+pub fn has_verifiable_evidence(finding: &Finding, diff: &DiffSet) -> bool {
+    if finding.file.trim().is_empty() || finding.start_line == 0 {
+        return false;
+    }
+    if diff.file(&finding.file).is_none() {
+        return false;
+    }
+    for e in &finding.supporting_evidence {
+        if e.path.contains("..") || e.path.starts_with('/') {
+            return false;
+        }
+    }
+    true
+}
+
 /// Run one fresh-context validator agent per candidate, bounded by a
 /// concurrency semaphore. Failures mark the candidate uncertain; returns
 /// Some(partial_reason) when any candidate could not be conclusively validated.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 pub async fn validate_candidates(
     cfg: &Config,
     ledger: LedgerHandle,
@@ -49,7 +66,7 @@ pub async fn validate_candidates(
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_from = None;
-    for (i, c) in candidates.iter().enumerate() {
+    for i in 0..candidates.len() {
         if std::time::Instant::now() >= deadline {
             skipped_from = Some(i);
             break;
@@ -65,9 +82,22 @@ pub async fn validate_candidates(
         let system = system_prompt.to_string();
         let terminal = terminal.clone();
         let role = role.to_string();
-        let cand = c.clone();
-        let cand_id = c.id();
+        let cand = candidates[i].clone();
+        let cand_id = cand.id();
         let excerpt = diff.file_excerpt(&cand.file);
+        if !has_verifiable_evidence(&cand, &diff) {
+            candidates[i].validation_status = Some(ValidationStatus::Rejected);
+            candidates[i].rationale =
+                Some("failed EVAL gate: missing or ungrounded code evidence".into());
+            timing.record(
+                phase_name,
+                &format!("validator:{}", cand_id),
+                std::time::Instant::now(),
+                wall,
+                "eval_gate:rejected",
+            );
+            continue;
+        }
         // create the client in candidate order (before the semaphore race)
         // so scripted validators are matched to candidates deterministically
         let client = make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name);

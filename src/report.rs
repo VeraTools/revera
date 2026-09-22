@@ -147,18 +147,42 @@ fn backtick_run(s: &str) -> usize {
     s.split(|c| c != '`').map(str::len).max().unwrap_or(0)
 }
 
+static SECRET_REDACT_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r#"(?x)
+        \bAKIA[0-9A-Z]{16}\b |
+        \bgh[pousr]_[A-Za-z0-9_]{36,255}\b |
+        \bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b |
+        -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----
+    "#).unwrap()
+});
+
+/// Redact detected credentials and secrets from text.
+pub fn redact_secrets(input: &str) -> String {
+    SECRET_REDACT_REGEX
+        .replace_all(input, "[REDACTED_CREDENTIAL]")
+        .into_owned()
+}
+
 pub fn finding_body(f: &Finding) -> String {
+    let clean_title = redact_secrets(&sanitize(&f.title));
+    let clean_claim = redact_secrets(&sanitize(&f.claim));
     let mut b = format!(
         "**[{}] {}**\n\n{}\n",
         f.severity,
-        sanitize(&f.title),
-        sanitize(&f.claim)
+        clean_title,
+        clean_claim
     );
     if !f.trigger.is_empty() {
-        b.push_str(&format!("\nTrigger: {}\n", sanitize(&f.trigger)));
+        b.push_str(&format!(
+            "\nTrigger: {}\n",
+            redact_secrets(&sanitize(&f.trigger))
+        ));
     }
     if !f.impact.is_empty() {
-        b.push_str(&format!("Impact: {}\n", sanitize(&f.impact)));
+        b.push_str(&format!(
+            "Impact: {}\n",
+            redact_secrets(&sanitize(&f.impact))
+        ));
     }
     if !f.supporting_evidence.is_empty() {
         let ev: Vec<String> = f
@@ -169,7 +193,7 @@ pub fn finding_body(f: &Finding) -> String {
         b.push_str(&format!("Evidence: {}\n", ev.join(", ")));
     }
     if let Some(fix) = &f.suggested_fix {
-        let fix = sanitize(fix);
+        let fix = redact_secrets(&sanitize(fix));
         let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
         b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
     }
@@ -194,22 +218,31 @@ pub fn finding_body(f: &Finding) -> String {
         b.push_str(&format!("- **Origin**: Lens `{}`\n", sanitize(&f.source)));
     }
     if !assurance.trigger.is_empty() {
-        b.push_str(&format!("- **Trigger**: {}\n", sanitize(&assurance.trigger)));
+        b.push_str(&format!(
+            "- **Trigger**: {}\n",
+            redact_secrets(&sanitize(&assurance.trigger))
+        ));
     }
     if !assurance.rationale.is_empty() {
-        b.push_str(&format!("- **Rationale**: {}\n", sanitize(&assurance.rationale)));
+        b.push_str(&format!(
+            "- **Rationale**: {}\n",
+            redact_secrets(&sanitize(&assurance.rationale))
+        ));
     }
     if !assurance.counterevidence_checked.is_empty() {
         let ce = assurance
             .counterevidence_checked
             .iter()
-            .map(|c| sanitize(c))
+            .map(|c| redact_secrets(&sanitize(c)))
             .collect::<Vec<_>>()
             .join("; ");
         b.push_str(&format!("- **Counter-evidence Checked**: {}\n", ce));
     }
     if let Some(rederivation) = &assurance.validator_rederivation {
-        b.push_str(&format!("- **Validator Re-derivation**: {}\n", sanitize(rederivation)));
+        b.push_str(&format!(
+            "- **Validator Re-derivation**: {}\n",
+            redact_secrets(&sanitize(rederivation))
+        ));
     }
     b.push_str("\n</details>\n");
     b.push_str(&format!("\n<!-- revera-id:{} -->", f.id()));

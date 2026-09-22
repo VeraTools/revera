@@ -4,7 +4,7 @@ use crate::vera::VeraClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -332,25 +332,43 @@ impl ToolBox {
         crate::text::truncate_bytes(&s, self.max_output_bytes)
     }
 
-    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+    /// Validate that a path resides strictly within the repository root
+    /// and does not target internal or sensitive credential files.
+    pub fn is_safe_repo_path(repo_root: &Path, path: &str) -> Result<PathBuf, String> {
         let p = PathBuf::from(path);
         if p.is_absolute() || path.contains("..") {
             return Err("path must be relative to the repo root".into());
         }
-        let joined = self.repo_root.join(&p);
+        let lower = path.to_lowercase();
+        if lower.starts_with(".env")
+            || lower.contains("/.env")
+            || lower.contains("id_rsa")
+            || lower.contains("id_ed25519")
+            || lower.contains(".aws/credentials")
+        {
+            return Err("access to sensitive credential files is blocked".into());
+        }
+        let joined = repo_root.join(&p);
         let canon = joined
             .canonicalize()
             .map_err(|e| format!("cannot resolve {path}: {e}"))?;
-        if !canon.starts_with(&self.repo_root) {
+        let canon_root = repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.to_path_buf());
+        if !canon.starts_with(&canon_root) {
             return Err("path escapes repo root".into());
         }
-        for comp in canon.strip_prefix(&self.repo_root).unwrap().components() {
+        for comp in canon.strip_prefix(&canon_root).unwrap().components() {
             let s = comp.as_os_str().to_string_lossy();
             if s == ".git" || s == ".vera" || s == ".revera" {
                 return Err(format!("path under {s} is not readable"));
             }
         }
         Ok(canon)
+    }
+
+    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+        Self::is_safe_repo_path(&self.repo_root, path)
     }
 
     async fn read_file(&self, args: &Value) -> Result<String, String> {
@@ -388,6 +406,14 @@ impl ToolBox {
     }
 
     fn is_internal_path(p: &str) -> bool {
+        let lower = p.to_lowercase();
+        if lower.starts_with(".env")
+            || lower.contains("/.env")
+            || lower.contains("id_rsa")
+            || lower.contains(".aws/")
+        {
+            return true;
+        }
         p.split('/')
             .any(|c| c == ".git" || c == ".vera" || c == ".revera")
     }
