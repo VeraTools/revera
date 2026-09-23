@@ -110,6 +110,9 @@ pub struct ReviewConfig {
     /// from the base revision to reviewer prompts.
     #[serde(default = "default_true")]
     pub instruction_files: bool,
+    /// Add the built-in defect checklists for the changed file types.
+    #[serde(default = "default_true")]
+    pub checklists: bool,
     /// Investigator passes for the baseline strategy (1-3); later passes
     /// look for defects the earlier ones did not report.
     #[serde(default = "default_recall_rounds")]
@@ -597,6 +600,7 @@ impl Default for ReviewConfig {
             fail_on_severity: None,
             knowledge_base: Vec::new(),
             instruction_files: true,
+            checklists: true,
             recall_rounds: default_recall_rounds(),
         }
     }
@@ -995,6 +999,7 @@ impl Config {
             "path_instructions": self.review.path_instructions,
             "knowledge_base": self.review.knowledge_base,
             "instruction_files": self.review.instruction_files,
+            "checklists": self.review.checklists,
             "recall_rounds": self.review.recall_rounds,
             "validate": self.review.validate,
             "concurrency": self.review.concurrency,

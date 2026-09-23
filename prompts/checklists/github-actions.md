@@ -1,0 +1,5 @@
+- `${{ github.event.* }}` values (titles, bodies, branch names, commit messages) interpolated directly into `run:` scripts: script injection; pass them through `env:` instead
+- `pull_request_target` or `workflow_run` workflows that check out and execute the PR head with repository secrets or a write token
+- `permissions:` broader than the job needs, or missing so the default token applies
+- third-party actions pinned to a mutable tag or branch instead of a commit SHA
+- secrets echoed to logs, written to artifacts or passed to untrusted steps

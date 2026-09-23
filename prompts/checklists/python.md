@@ -1,0 +1,6 @@
+- `None` reaching attribute access, indexing or arithmetic; `dict[key]` on keys that may be missing
+- mutable default arguments; shared state mutated across calls or threads
+- exceptions caught too broadly (`except Exception`, bare `except`) or swallowed so the caller cannot tell failure from success
+- `subprocess` with `shell=True` or string-built commands, `eval`/`exec`/`pickle`/`yaml.load` on untrusted input, SQL built with f-strings or `%`
+- async functions called without `await`, blocking calls inside `async def`
+- off-by-one in slicing/ranges; integer vs float division; timezone-naive datetimes compared with aware ones

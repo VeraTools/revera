@@ -1,0 +1,4 @@
+- unquoted variable expansions (word splitting and globbing on paths with spaces), `rm -rf "$VAR/"` with a possibly empty variable
+- missing `set -euo pipefail` semantics the script relies on; pipelines that hide a failing command
+- untrusted input reaching `eval`, command substitution or file paths
+- `cd` without checking failure; temporary files created predictably instead of with `mktemp`

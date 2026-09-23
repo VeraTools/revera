@@ -118,7 +118,7 @@ async fn guidance_for(cfg_yaml: &str) -> String {
         progress: None,
     };
     match prepare(&cfg, &req, "baseline").await.unwrap() {
-        PrepareOut::Ready(p) => p.repo_guidance,
+        PrepareOut::Ready(p) => p.review_context,
         PrepareOut::ShortCircuit(..) => panic!("unexpected short circuit"),
     }
 }
@@ -129,5 +129,21 @@ async fn prepare_attaches_guidance_unless_disabled() {
     let on = guidance_for(models).await;
     assert!(on.contains("API RULE") && !on.contains("INJECTED"), "{on}");
     let off = guidance_for(&format!("review: {{instruction_files: false}}\n{models}")).await;
+    assert!(
+        !off.contains("API RULE") && !off.contains("Repository guidance"),
+        "{off}"
+    );
+}
+
+#[tokio::test]
+async fn prepare_adds_the_checklist_for_changed_file_types() {
+    let models = "models:\n  investigator: {protocol: scripted, script: /tmp/s.json, model: m}\n";
+    // the fixture changes src/api/h.rs and AGENTS.md
+    let on = guidance_for(models).await;
+    assert!(on.contains("\nrust:\n"), "{on}");
+    let off = guidance_for(&format!(
+        "review: {{checklists: false, instruction_files: false}}\n{models}"
+    ))
+    .await;
     assert_eq!(off, "");
 }

@@ -130,7 +130,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         cfg.review.max_diff_bytes,
         &cfg.review.path_instructions,
         &cfg.review.knowledge_base,
-        &prep.repo_guidance,
+        &prep.review_context,
     );
     let max_req = cfg.budget.run_max_requests;
     let ledger0 = prep.ledger.clone();

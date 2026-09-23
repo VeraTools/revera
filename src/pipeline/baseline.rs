@@ -102,7 +102,7 @@ pub(crate) async fn investigate(
         cfg.review.max_diff_bytes,
         &cfg.review.path_instructions,
         &cfg.review.knowledge_base,
-        &prep.repo_guidance,
+        &prep.review_context,
     );
     let user = if round {
         let listed: Vec<String> = already
