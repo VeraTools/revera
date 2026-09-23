@@ -159,6 +159,34 @@ to cache `.vera` between runs.
 | `delegated.worker_max_seconds` | `120` | |
 | `panel.focuses` | `[general, cross-file]` | focus labels assigned to scouts without an explicit `focus` |
 | `panel.scout_max_tool_calls` | `15` | |
+| `panel.lens_router` | off | optional TypeSafe lens selection, below |
+
+### `panel.lens_router` (optional, TypeSafe)
+
+Before the scouts start, one request to a [TypeSafe](https://docs.typesafe.ai)
+System One model asks, for every lane, how likely the diff holds changes that
+lane's focus covers (a `noul` question per lane, batched in one call). Lanes
+below `min_probability` are not run; the most relevant lane always runs. The
+router only chooses scouts: every candidate still goes through fresh-context
+validation. Changes touching a security-sensitive path (see `triage`) bypass
+the router and run every lane.
+
+The router fails open: a missing key, HTTP error, timeout, malformed or
+missing answer runs every lane, and the summary note says why. Skipped lanes
+and their probabilities are listed in the summary note.
+
+**Data boundary:** when enabled, up to `max_state_bytes` of the reviewed diff
+is sent to `base_url`. Leave it unset for repositories whose code must not
+reach that service.
+
+| key | default | notes |
+|---|---|---|
+| `api_key_env` | required | *name* of the environment variable holding the TypeSafe key; required for `panel` runs, checked by `revera doctor` |
+| `base_url` | `https://api.typesafe.ai/v1` | requests go to `{base_url}/systemone` |
+| `model` | `jev-latest` | TypeSafe model id |
+| `min_probability` | `0.2` | lanes below this relevance probability are skipped |
+| `timeout_seconds` | `15` | per request, also bounded by the run deadline |
+| `max_state_bytes` | `60000` | cap on the diff text sent |
 
 ## `triage`
 

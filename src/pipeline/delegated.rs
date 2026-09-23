@@ -595,6 +595,7 @@ vera: {}
             timing: crate::timing::Recorder::default(),
             progress: Arc::new(crate::progress::ProgressBroadcaster::default()),
             risk_tier: None,
+            sensitive_change: false,
         };
         if skipped > 0 {
             prep.partial_reasons

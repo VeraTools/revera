@@ -597,6 +597,22 @@ async fn doctor(
             for s in cfg.models.scouts.iter().flatten() {
                 routes.push((format!("models.scouts.{}", s.name), &s.route));
             }
+            if let Some(r) = &cfg.panel.lens_router {
+                match r.check_credentials() {
+                    Ok(()) => println!(
+                        "panel.lens_router: {} via {} (key env {} set; diff text is sent there)",
+                        r.model, r.base_url, r.api_key_env
+                    ),
+                    Err(e) => {
+                        println!("panel.lens_router: FAIL — {e}");
+                        println!(
+                            "  next: export {}=<your TypeSafe key>, or remove panel.lens_router",
+                            r.api_key_env
+                        );
+                        ok = false;
+                    }
+                }
+            }
         }
     }
     for (name, r) in routes {

@@ -2,6 +2,7 @@ use super::common::{
     findings_terminal_check, finish, investigator_user, parse_findings_checked, prepare,
     PrepareOut, ReviewRequest,
 };
+use super::lens_router::select_lanes;
 use super::make_client;
 use crate::agent::run_agent_checked;
 use crate::config::{Config, ModelRoute};
@@ -88,6 +89,30 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let mut lanes = cfg
         .panel
         .effective_lanes(&cfg.models.investigator, cfg.models.scouts.as_deref())?;
+    // security-sensitive changes always get every lane
+    let mut router_note = String::new();
+    if let (Some(rc), false) = (&cfg.panel.lens_router, prep.sensitive_change) {
+        let t0 = std::time::Instant::now();
+        let d = select_lanes(
+            rc,
+            &prep.diff.render_truncated(rc.max_state_bytes),
+            &lanes,
+            prep.deadline,
+        )
+        .await;
+        let outcome = if d.keep.iter().all(|k| *k) {
+            "ok"
+        } else {
+            "narrowed"
+        };
+        prep.timing
+            .record("lens_router", "", t0, prep.wall, outcome);
+        let mut keep = d.keep.into_iter();
+        lanes.retain(|_| keep.next().unwrap_or(true));
+        if let Some(n) = d.note {
+            router_note = format!("; {n}");
+        }
+    }
     let tier_note =
         if prep.risk_tier == Some(RiskTier::Lite) && lanes.len() > cfg.triage.lite_max_lanes {
             let dropped = lanes.len() - cfg.triage.lite_max_lanes;
@@ -261,7 +286,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let n_unique = collapsed.len();
     let n_consensus = collapsed.iter().filter(|f| f.sources.len() > 1).count();
     prep.report_note = Some(format!(
-        "panel: {n_scouts} scouts, {n_raw} raw candidates → {n_unique} unique ({n_consensus} multi-lens consensus){tier_note}"
+        "panel: {n_scouts} scouts, {n_raw} raw candidates → {n_unique} unique ({n_consensus} multi-lens consensus){router_note}{tier_note}"
     ));
     let lane_names: Vec<String> = lanes.iter().map(|l| l.name.clone()).collect();
     prep.coverage = format!(

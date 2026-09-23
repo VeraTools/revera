@@ -67,6 +67,8 @@ pub struct Prepared {
     /// Risk tier sizing the reviewer swarm; `None` when `triage.risk_tiers`
     /// is off or the strategy was overridden on the command line.
     pub risk_tier: Option<crate::triage::RiskTier>,
+    /// The reviewed diff touches a security-sensitive path.
+    pub sensitive_change: bool,
 }
 
 impl Prepared {
@@ -273,6 +275,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             triaged.sensitive
         );
     }
+    let sensitive_change = !triaged.sensitive.is_empty();
     let diff: Arc<DiffSet> = Arc::new(triaged.diff);
     let key = review_key(
         &base_sha,
@@ -460,6 +463,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         timing,
         progress,
         risk_tier,
+        sensitive_change,
     })))
 }
 

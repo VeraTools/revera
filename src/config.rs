@@ -364,6 +364,9 @@ pub struct PanelConfig {
     pub scout_max_tool_calls: u32,
     #[serde(default)]
     pub personas: Option<Vec<PersonaConfig>>,
+    /// Optional TypeSafe-backed selection of which lanes run per diff.
+    #[serde(default)]
+    pub lens_router: Option<crate::pipeline::lens_router::LensRouterConfig>,
 }
 
 impl PanelConfig {
@@ -610,6 +613,7 @@ impl Default for PanelConfig {
             focuses: default_focuses(),
             scout_max_tool_calls: default_scout_tool_calls(),
             personas: None,
+            lens_router: None,
         }
     }
 }
@@ -794,6 +798,9 @@ impl Config {
 
     fn expand_and_validate(&mut self) -> Result<()> {
         self.triage.validate()?;
+        if let Some(r) = &self.panel.lens_router {
+            r.validate()?;
+        }
         if let Some(rp) = self.review.review_profile {
             if self.review.min_severity == Severity::Low {
                 self.review.min_severity = rp.default_min_severity();
@@ -920,6 +927,9 @@ impl Config {
                         }
                     }
                 }
+                if let Some(r) = &self.panel.lens_router {
+                    r.check_credentials()?;
+                }
             }
         }
         Ok(())
@@ -979,6 +989,7 @@ impl Config {
             "panel": {
                 "focuses": self.panel.focuses,
                 "scout_max_tool_calls": self.panel.scout_max_tool_calls,
+                "lens_router": self.panel.lens_router.as_ref().map(|r| r.fingerprint()),
                 "personas": self.panel.personas.as_ref().map(|ps| {
                     ps.iter().map(|p| serde_json::json!({
                         "name": p.name,
