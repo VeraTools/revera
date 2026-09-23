@@ -23,6 +23,10 @@ pub struct GhComment {
     /// Author login when the API reported one.
     pub author: Option<String>,
     pub author_is_bot: bool,
+    /// Review comments only: the comment this one replies to.
+    pub in_reply_to: Option<u64>,
+    /// Review comments only: 👎 reactions.
+    pub thumbs_down: u64,
 }
 
 /// Comment payload for `create_review`: a RIGHT-side inline comment.
@@ -139,6 +143,8 @@ impl GitHubApi {
                     body: c["body"].as_str().unwrap_or("").to_string(),
                     author: c["user"]["login"].as_str().map(str::to_string),
                     author_is_bot: c["user"]["type"].as_str() == Some("Bot"),
+                    in_reply_to: None,
+                    thumbs_down: 0,
                 });
             }
             if count < 100 {
@@ -172,6 +178,8 @@ impl GitHubApi {
                     body: c["body"].as_str().unwrap_or("").to_string(),
                     author: c["user"]["login"].as_str().map(str::to_string),
                     author_is_bot: c["user"]["type"].as_str() == Some("Bot"),
+                    in_reply_to: c["in_reply_to_id"].as_u64(),
+                    thumbs_down: c["reactions"]["-1"].as_u64().unwrap_or(0),
                 });
             }
             if count < 100 {
@@ -383,6 +391,8 @@ impl GitHubApi {
                                     body: c["body"].as_str().unwrap_or("").to_string(),
                                     author,
                                     author_is_bot: is_bot,
+                                    in_reply_to: None,
+                                    thumbs_down: 0,
                                 }
                             })
                             .collect()

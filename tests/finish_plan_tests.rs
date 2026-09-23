@@ -472,6 +472,7 @@ fn comment(id: u64, body: &str, author: Option<&str>, bot: bool) -> GhComment {
         body: body.into(),
         author: author.map(Into::into),
         author_is_bot: bot,
+        ..Default::default()
     }
 }
 

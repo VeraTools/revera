@@ -162,6 +162,13 @@ to cache `.vera` between runs.
 | `allow_forks` | `false` | publish on fork PRs (secrets are normally unavailable there; the run is reported `partial`) |
 | `resolve_threads` | `true` | resolve Revera's own review thread when the recheck validator marks its finding resolved. A thread is left open when a human replied, when its root comment is not authored by Revera's identity or lacks the finding's marker, or when not all of its comments could be read; at most 50 per run. Failures are recorded in the report, never fatal |
 
+When people react with 👎 or reply to Revera's inline comments, the summary
+comment lists that feedback (at most five entries, quoted as untrusted text
+with secrets redacted). Revera does not learn from it by itself and never
+hides a validated finding because of it; to change what it flags, record the
+convention in `REVIEW.md` or `AGENTS.md` on the base branch, which Revera reads
+as review guidance (`review.instruction_files`).
+
 ## `delegated` and `panel`
 
 | key | default | notes |

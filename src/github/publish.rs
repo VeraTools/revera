@@ -200,6 +200,75 @@ async fn resolve_fixed_threads(
     Ok(n)
 }
 
+/// Most feedback entries shown in the summary.
+const MAX_FEEDBACK_ENTRIES: usize = 5;
+
+/// One line of untrusted human text, safe to quote in our comment.
+fn quote_line(text: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let safe = crate::report::redact_secrets(&one_line.replace("<!--", "<!\u{200b}--"));
+    crate::text::excerpt_bytes(&safe, 200)
+}
+
+/// Summary section listing 👎 reactions and replies from others on Revera's
+/// own inline comments. It informs; it never suppresses a finding. Teams
+/// change what Revera flags through the instruction files it reads from the
+/// base branch.
+pub fn feedback_digest(
+    review_comments: &[GhComment],
+    me: &Identity,
+    state: &ReviewState,
+) -> String {
+    let mut entries = vec![];
+    for c in review_comments
+        .iter()
+        .filter(|c| c.in_reply_to.is_none() && c.author.is_some() && me.owns(c))
+    {
+        let Some(id) = revera_id(&c.body) else {
+            continue;
+        };
+        let replies: Vec<&GhComment> = review_comments
+            .iter()
+            .filter(|r| r.in_reply_to == Some(c.id) && r.author != c.author)
+            .collect();
+        if c.thumbs_down == 0 && replies.is_empty() {
+            continue;
+        }
+        let what = state
+            .findings
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| format!("`{}`:{} — {}", f.file, f.start_line, quote_line(&f.title)))
+            .unwrap_or_else(|| format!("finding {id}"));
+        let mut line = format!("- {what}");
+        if c.thumbs_down > 0 {
+            line.push_str(&format!(": 👎 {}", c.thumbs_down));
+        }
+        for r in replies.iter().take(2) {
+            line.push_str(&format!(
+                "\n  > @{}: {}",
+                r.author.as_deref().unwrap_or("unknown"),
+                quote_line(&r.body)
+            ));
+        }
+        entries.push(line);
+    }
+    if entries.is_empty() {
+        return String::new();
+    }
+    let total = entries.len();
+    let mut s = String::from("\n### Feedback on Revera findings\n\n");
+    for e in entries.iter().take(MAX_FEEDBACK_ENTRIES) {
+        s.push_str(e);
+        s.push('\n');
+    }
+    if total > MAX_FEEDBACK_ENTRIES {
+        s.push_str(&format!("- and {} more\n", total - MAX_FEEDBACK_ENTRIES));
+    }
+    s.push_str("\nRevera does not learn from reactions by itself. To change what it flags, record the convention in `REVIEW.md` or `AGENTS.md` on the base branch; Revera reads those files from there.\n");
+    s
+}
+
 /// All currently open findings (incl. previously posted).
 fn open_section(state: &ReviewState) -> String {
     let open: Vec<_> = state
@@ -267,13 +336,14 @@ pub async fn publish(
     // Inline comments already on the PR count as posted even when a prior
     // summary upsert failed before it could record them.
     let me = Identity::resolve(api, &gh.bot_login).await;
-    let already = match api.list_review_comments(owner, repo, ev.number).await {
-        Ok(comments) => posted_revera_ids(&comments, &me),
+    let review_comments = match api.list_review_comments(owner, repo, ev.number).await {
+        Ok(comments) => comments,
         Err(e) => {
             tracing::warn!("could not list existing review comments: {e:#}");
             vec![]
         }
     };
+    let already = posted_revera_ids(&review_comments, &me);
     if !already.is_empty() {
         state.mark_posted(&already);
     }
@@ -434,8 +504,10 @@ pub async fn publish(
     // (3) upsert the managed summary comment
     let mut staged = state.clone();
     staged.mark_posted(&surfaced_ids(report));
+    let feedback = feedback_digest(&review_comments, &me, &staged);
     let mut body = format!("{summary_marker}\n{}", report.plan.summary_markdown);
     body.push_str(&open_section(&staged));
+    body.push_str(&feedback);
     let comments = api.list_issue_comments(owner, repo, ev.number).await?;
     let managed =
         find_managed(&comments, summary_marker, state.summary_comment_id, &me).map(|c| c.id);
@@ -458,6 +530,7 @@ pub async fn publish(
                 staged.summary_comment_id = Some(created.id);
                 let mut b2 = format!("{summary_marker}\n{}", report.plan.summary_markdown);
                 b2.push_str(&open_section(&staged));
+                b2.push_str(&feedback);
                 b2.push('\n');
                 b2.push_str(&encode_state(&staged));
                 // best effort: the id is a convenience, ownership is also
