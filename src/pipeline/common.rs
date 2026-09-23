@@ -64,6 +64,9 @@ pub struct Prepared {
     pub wall: Instant,
     pub timing: Recorder,
     pub progress: Arc<crate::progress::ProgressBroadcaster>,
+    /// Risk tier sizing the reviewer swarm; `None` when `triage.risk_tiers`
+    /// is off or the strategy was overridden on the command line.
+    pub risk_tier: Option<crate::triage::RiskTier>,
 }
 
 impl Prepared {
@@ -247,7 +250,30 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         (base_sha, head_sha, raw_diff, patch_id, head_tree)
     };
 
-    let diff: Arc<DiffSet> = Arc::new(parse_unified(&raw_diff));
+    let triaged = crate::triage::triage(parse_unified(&raw_diff), &cfg.triage)?;
+    let skipped_gaps: Vec<String> = triaged
+        .skipped
+        .iter()
+        .map(|s| {
+            format!(
+                "`{}` ({}; filtered before review)",
+                s.path,
+                s.reason.as_str()
+            )
+        })
+        .collect();
+    let risk_tier =
+        (cfg.triage.risk_tiers && req.strategy_override.is_none()).then_some(triaged.tier);
+    if let Some(t) = risk_tier {
+        tracing::info!(
+            "risk tier {} ({} changed lines, {} files, sensitive: {:?})",
+            t.as_str(),
+            triaged.changed_lines,
+            triaged.diff.files.len(),
+            triaged.sensitive
+        );
+    }
+    let diff: Arc<DiffSet> = Arc::new(triaged.diff);
     let key = review_key(
         &base_sha,
         &head_tree,
@@ -399,6 +425,8 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     let stats = RunStats {
         retrieval,
         resolved: resolved_titles.len(),
+        filtered_files: skipped_gaps.len(),
+        risk_tier: risk_tier.map(|t| t.as_str().to_string()),
         ..Default::default()
     };
     let progress = Arc::new(crate::progress::ProgressBroadcaster::default());
@@ -424,13 +452,14 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         retrieval_unavailable,
         stats,
         coverage: String::new(),
-        coverage_gaps: vec![],
+        coverage_gaps: skipped_gaps,
         report_note: None,
         deadline,
         reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
         wall,
         timing,
         progress,
+        risk_tier,
     })))
 }
 

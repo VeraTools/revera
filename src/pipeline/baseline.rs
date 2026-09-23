@@ -23,6 +23,21 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     finish(cfg, prep, candidates, &["investigator".to_string()]).await
 }
 
+/// Risk-tier downgrade for the swarm strategies: a trivial change gets one
+/// investigator instead of the configured `swarm`.
+pub(crate) async fn run_trivial(
+    cfg: &Config,
+    req: &ReviewRequest,
+    mut prep: Box<Prepared>,
+    swarm: &str,
+) -> Result<(RunReport, ReviewState)> {
+    prep.report_note = Some(format!(
+        "risk tier trivial: single investigator instead of the {swarm} swarm"
+    ));
+    let candidates = investigate(cfg, req, &mut prep).await?;
+    finish(cfg, prep, candidates, &["investigator".to_string()]).await
+}
+
 /// Run the investigator agent and return parsed candidate findings.
 pub(crate) async fn investigate(
     cfg: &Config,

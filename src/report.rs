@@ -104,6 +104,12 @@ pub struct RunStats {
     pub malformed_findings: usize,
     /// A terminal repair round was attempted.
     pub repaired: bool,
+    /// Files dropped by diff triage before review (lockfiles, generated, ...).
+    #[serde(default)]
+    pub filtered_files: usize,
+    /// Risk tier that sized the reviewer swarm (`None` when tiers are off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

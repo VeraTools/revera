@@ -15,4 +15,5 @@ pub mod state;
 pub mod text;
 pub mod timing;
 pub mod tools;
+pub mod triage;
 pub mod vera;

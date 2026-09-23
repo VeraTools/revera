@@ -10,6 +10,7 @@ use crate::prompts;
 use crate::report::RunReport;
 use crate::state::ReviewState;
 use crate::tools::terminal_submit_findings_spec;
+use crate::triage::RiskTier;
 use anyhow::Result;
 use futures::stream::StreamExt;
 
@@ -80,10 +81,21 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         PrepareOut::Ready(p) => p,
         PrepareOut::ShortCircuit(rep, st) => return Ok((*rep, st)),
     };
+    if prep.risk_tier == Some(RiskTier::Trivial) {
+        return super::baseline::run_trivial(cfg, req, prep, "panel").await;
+    }
 
-    let lanes = cfg
+    let mut lanes = cfg
         .panel
         .effective_lanes(&cfg.models.investigator, cfg.models.scouts.as_deref())?;
+    let tier_note =
+        if prep.risk_tier == Some(RiskTier::Lite) && lanes.len() > cfg.triage.lite_max_lanes {
+            let dropped = lanes.len() - cfg.triage.lite_max_lanes;
+            lanes.truncate(cfg.triage.lite_max_lanes);
+            format!("; risk tier lite: {dropped} lane(s) not run")
+        } else {
+            String::new()
+        };
     let n_scouts = lanes.len();
 
     let terminal = terminal_submit_findings_spec();
@@ -249,7 +261,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let n_unique = collapsed.len();
     let n_consensus = collapsed.iter().filter(|f| f.sources.len() > 1).count();
     prep.report_note = Some(format!(
-        "panel: {n_scouts} scouts, {n_raw} raw candidates → {n_unique} unique ({n_consensus} multi-lens consensus)"
+        "panel: {n_scouts} scouts, {n_raw} raw candidates → {n_unique} unique ({n_consensus} multi-lens consensus){tier_note}"
     ));
     let lane_names: Vec<String> = lanes.iter().map(|l| l.name.clone()).collect();
     prep.coverage = format!(

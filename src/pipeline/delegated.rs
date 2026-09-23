@@ -68,6 +68,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         PrepareOut::Ready(p) => p,
         PrepareOut::ShortCircuit(rep, st) => return Ok((*rep, st)),
     };
+    if prep.risk_tier == Some(crate::triage::RiskTier::Trivial) {
+        return super::baseline::run_trivial(cfg, req, prep, "delegated").await;
+    }
     let labels = vec![
         "lead".to_string(),
         "workers".to_string(),
@@ -591,6 +594,7 @@ vera: {}
             wall: Instant::now(),
             timing: crate::timing::Recorder::default(),
             progress: Arc::new(crate::progress::ProgressBroadcaster::default()),
+            risk_tier: None,
         };
         if skipped > 0 {
             prep.partial_reasons

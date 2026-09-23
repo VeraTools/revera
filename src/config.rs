@@ -493,6 +493,8 @@ pub struct Config {
     #[serde(default)]
     pub rules: Option<Vec<RuleConfig>>,
     #[serde(default)]
+    pub triage: crate::triage::TriageConfig,
+    #[serde(default)]
     pub profiles: HashMap<String, ProfileOverride>,
 }
 
@@ -791,6 +793,7 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self) -> Result<()> {
+        self.triage.validate()?;
         if let Some(rp) = self.review.review_profile {
             if self.review.min_severity == Severity::Low {
                 self.review.min_severity = rp.default_min_severity();
@@ -993,6 +996,7 @@ impl Config {
                     "message": r.message,
                 })).collect::<Vec<_>>()
             }),
+            "triage": self.triage,
             "investigator": route(&self.models.investigator),
             "validator": route(self.effective_validator()),
             "lead": self.models.lead.as_ref().map(route),
