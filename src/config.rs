@@ -384,7 +384,7 @@ impl PanelConfig {
                         if let Some(s) = scouts_list.iter().find(|s| {
                             s.name == p.name
                                 || p.focus.as_deref() == Some(&s.name)
-                                || p.focus.as_deref() == s.focus.as_deref()
+                                || (p.focus.is_some() && p.focus == s.focus)
                         }) {
                             s.route.clone()
                         } else if scouts_list.len() == 1 {
@@ -958,7 +958,8 @@ impl Config {
                 ReviewProfile::Chill => "chill",
                 ReviewProfile::Assertive => "assertive",
             }),
-            "path_instructions": self.review.path_instructions.len(),
+            "path_instructions": self.review.path_instructions,
+            "knowledge_base": self.review.knowledge_base,
             "validate": self.review.validate,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,

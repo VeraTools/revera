@@ -158,8 +158,9 @@ static SECRET_REDACT_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyL
         r#"(?x)
         \bAKIA[0-9A-Z]{16}\b |
         \bgh[pousr]_[A-Za-z0-9_]{36,255}\b |
+        \bgithub_pat_[A-Za-z0-9_]{22,255}\b |
         \bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b |
-        -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----
+        -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----(?:[\s\S]*?-----END[A-Z\x20]*PRIVATE\x20KEY-----)?
     "#,
     )
     .unwrap()
@@ -170,6 +171,11 @@ pub fn redact_secrets(input: &str) -> String {
     SECRET_REDACT_REGEX
         .replace_all(input, "[REDACTED_CREDENTIAL]")
         .into_owned()
+}
+
+/// Model text made safe to publish: no forged markers, no credentials.
+fn clean(t: &str) -> String {
+    redact_secrets(&sanitize(t))
 }
 
 pub fn finding_body(f: &Finding) -> String {
@@ -367,7 +373,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         for f in &accepted {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                f.file,
+                f.start_line,
+                clean(&f.title)
             ));
         }
     }
@@ -379,7 +388,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         {
             s.push_str(&format!(
                 "- _(unconfirmed)_ **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                f.file,
+                f.start_line,
+                clean(&f.title)
             ));
         }
     }
@@ -388,7 +400,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         for f in inp.outside_diff {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                f.file,
+                f.start_line,
+                clean(&f.title)
             ));
         }
     }
@@ -561,44 +576,57 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
 }
 
 /// Generate OASIS SARIF 2.1.0 JSON representation of the run findings.
-pub fn to_sarif(report: &RunReport) -> serde_json::Value {
-    let rules: Vec<serde_json::Value> = report
+/// `--fail-on` gate: true when the review stands behind a finding at or above
+/// `thresh`, i.e. an accepted finding of this run or one still open in state
+/// (a reused review carries its findings there, not in the report). Rejected
+/// and uncertain candidates never fail CI.
+pub fn fails_severity_gate(
+    report: &RunReport,
+    state: &crate::state::ReviewState,
+    thresh: Severity,
+) -> bool {
+    report
         .findings
         .iter()
-        .map(|f| {
-            serde_json::json!({
-                "id": f.source,
-                "name": f.title,
-                "shortDescription": {
-                    "text": f.title
-                },
-                "fullDescription": {
-                    "text": f.claim
-                },
-                "defaultConfiguration": {
-                    "level": match f.severity {
-                        Severity::High => "error",
-                        Severity::Medium => "warning",
-                        Severity::Low => "note",
-                    }
-                }
-            })
-        })
-        .collect();
+        .any(|f| crate::pipeline::anchor::is_publishable(f) && f.severity >= thresh)
+        || state
+            .findings
+            .iter()
+            .any(|f| f.status == crate::state::FindingState::Open && f.severity >= thresh)
+}
 
-    let results: Vec<serde_json::Value> = report
+pub fn to_sarif(report: &RunReport) -> serde_json::Value {
+    let level = |sev: Severity| match sev {
+        Severity::High => "error",
+        Severity::Medium => "warning",
+        Severity::Low => "note",
+    };
+    // only what the review would publish: rejected and uncertain candidates
+    // are not alerts
+    let published: Vec<&Finding> = report
         .findings
+        .iter()
+        .filter(|f| crate::pipeline::anchor::is_publishable(f))
+        .collect();
+    let mut rules: Vec<serde_json::Value> = vec![];
+    let mut rule_ids = std::collections::BTreeSet::new();
+    for f in &published {
+        if rule_ids.insert(f.source.as_str()) {
+            rules.push(serde_json::json!({
+                "id": f.source,
+                "shortDescription": { "text": f.source },
+                "defaultConfiguration": { "level": level(f.severity) }
+            }));
+        }
+    }
+    let results: Vec<serde_json::Value> = published
         .iter()
         .map(|f| {
             let mut result = serde_json::json!({
                 "ruleId": f.source,
-                "level": match f.severity {
-                    Severity::High => "error",
-                    Severity::Medium => "warning",
-                    Severity::Low => "note",
-                },
+                "level": level(f.severity),
                 "message": {
-                    "text": format!("{}\n\nTrigger: {}", f.claim, f.trigger)
+                    "text": format!("{}\n\n{}\n\nTrigger: {}", clean(&f.title), clean(&f.claim), clean(&f.trigger))
                 },
                 "locations": [
                     {
@@ -615,15 +643,10 @@ pub fn to_sarif(report: &RunReport) -> serde_json::Value {
                     }
                 ]
             });
+            // a prose suggestion is not a SARIF `fix` (which needs exact
+            // artifact replacements), so it travels as a property
             if let Some(fix) = &f.suggested_fix {
-                result["fixes"] = serde_json::json!([
-                    {
-                        "description": {
-                            "text": "Suggested fix"
-                        },
-                        "replacement": fix
-                    }
-                ]);
+                result["properties"] = serde_json::json!({ "suggestedFix": clean(fix) });
             }
             result
         })
@@ -638,7 +661,7 @@ pub fn to_sarif(report: &RunReport) -> serde_json::Value {
                     "driver": {
                         "name": "revera",
                         "version": env!("CARGO_PKG_VERSION"),
-                        "informationUri": "https://github.com/citron07r/revera",
+                        "informationUri": "https://github.com/VeraTools/revera",
                         "rules": rules
                     }
                 },
@@ -744,7 +767,7 @@ mod tests {
             introduced_by_change: true,
             supporting_evidence: vec![],
             counterevidence_checked: vec![],
-            validation_status: None,
+            validation_status: Some(ValidationStatus::Accepted),
             suggested_fix: Some("let x = 1;".into()),
             source: "test-rule".into(),
             rationale: None,
@@ -758,7 +781,18 @@ mod tests {
             base: "base".into(),
             head: "head".into(),
             strategy: "baseline".into(),
-            findings: vec![f],
+            findings: vec![
+                f.clone(),
+                Finding {
+                    start_line: 30,
+                    title: "leaks AKIAIOSFODNN7EXAMPLE".into(),
+                    ..f.clone()
+                },
+                Finding {
+                    validation_status: Some(ValidationStatus::Rejected),
+                    ..f
+                },
+            ],
             plan: PublicationPlan {
                 inline: vec![],
                 summary_markdown: String::new(),
@@ -774,7 +808,22 @@ mod tests {
         let sarif = to_sarif(&rep);
         assert_eq!(sarif["version"], "2.1.0");
         assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "revera");
-        assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
+        // the rejected candidate is not exported; one rule for both results
+        assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            sarif["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let text = sarif.to_string();
+        assert!(!text.contains("AKIAIOSFODNN7EXAMPLE"), "{text}");
+        assert!(sarif["runs"][0]["results"][0].get("fixes").is_none());
+        assert_eq!(
+            sarif["runs"][0]["results"][0]["properties"]["suggestedFix"],
+            "let x = 1;"
+        );
         assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
         assert_eq!(
             sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]

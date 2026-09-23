@@ -7,6 +7,7 @@ use crate::prompts;
 use crate::provider::{LedgerHandle, ToolSpec};
 use crate::timing::Recorder;
 use crate::tools::{terminal_submit_verdict_spec, ToolBox};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -27,13 +28,17 @@ fn validator_budget_at(
     })
 }
 
-/// Strict EVAL validation gate: verifies candidate finding has legitimate,
-/// bounded code-level evidence within the diff before dispatching a validator agent.
-pub fn has_verifiable_evidence(finding: &Finding, diff: &DiffSet) -> bool {
+/// Strict EVAL validation gate: verifies a candidate names a real location
+/// before dispatching a validator agent. The file must be in the diff or be
+/// a readable file of the reviewed tree: cross-file findings outside the diff
+/// are legitimate and are published in the summary.
+pub fn has_verifiable_evidence(finding: &Finding, diff: &DiffSet, repo_root: &Path) -> bool {
     if finding.file.trim().is_empty() || finding.start_line == 0 {
         return false;
     }
-    if diff.file(&finding.file).is_none() {
+    if diff.file(&finding.file).is_none()
+        && !ToolBox::is_safe_repo_path(repo_root, &finding.file).is_ok_and(|p| p.is_file())
+    {
         return false;
     }
     for e in &finding.supporting_evidence {
@@ -85,7 +90,9 @@ pub async fn validate_candidates(
         let cand = candidates[i].clone();
         let cand_id = cand.id();
         let excerpt = diff.file_excerpt(&cand.file);
-        if !has_verifiable_evidence(&cand, &diff) {
+        // rechecks re-validate findings already published; only the
+        // validator may resolve them, never this pre-filter
+        if !recheck && !has_verifiable_evidence(&cand, &diff, &tb.repo_root) {
             candidates[i].validation_status = Some(ValidationStatus::Rejected);
             candidates[i].rationale =
                 Some("failed EVAL gate: missing or ungrounded code evidence".into());

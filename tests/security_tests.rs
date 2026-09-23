@@ -66,18 +66,20 @@ fn secret_redaction_replaces_credentials_in_finding_body() {
 #[test]
 fn eval_gate_rejects_empty_or_non_existent_file() {
     let diff = make_test_diff("src/valid.rs");
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
 
     // Empty file path -> rejected
     let f1 = finding("", 3, vec![]);
-    assert!(!has_verifiable_evidence(&f1, &diff));
+    assert!(!has_verifiable_evidence(&f1, &diff, root));
 
     // Zero start line -> rejected
     let f2 = finding("src/valid.rs", 0, vec![]);
-    assert!(!has_verifiable_evidence(&f2, &diff));
+    assert!(!has_verifiable_evidence(&f2, &diff, root));
 
     // Non-existent file not in diff -> rejected
     let f3 = finding("src/phantom.rs", 3, vec![]);
-    assert!(!has_verifiable_evidence(&f3, &diff));
+    assert!(!has_verifiable_evidence(&f3, &diff, root));
 
     // Path traversal in supporting evidence -> rejected
     let f4 = finding(
@@ -90,7 +92,7 @@ fn eval_gate_rejects_empty_or_non_existent_file() {
             note: "".into(),
         }],
     );
-    assert!(!has_verifiable_evidence(&f4, &diff));
+    assert!(!has_verifiable_evidence(&f4, &diff, root));
 
     // Absolute path in supporting evidence -> rejected
     let f5 = finding(
@@ -103,11 +105,27 @@ fn eval_gate_rejects_empty_or_non_existent_file() {
             note: "".into(),
         }],
     );
-    assert!(!has_verifiable_evidence(&f5, &diff));
+    assert!(!has_verifiable_evidence(&f5, &diff, root));
 
     // Valid evidence on actual diff file -> accepted by EVAL gate
     let f_valid = finding("src/valid.rs", 3, vec![]);
-    assert!(has_verifiable_evidence(&f_valid, &diff));
+    assert!(has_verifiable_evidence(&f_valid, &diff, root));
+}
+
+#[test]
+fn eval_gate_keeps_cross_file_findings_outside_the_diff() {
+    let diff = make_test_diff("src/valid.rs");
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join("src")).unwrap();
+    std::fs::write(repo.path().join("src/caller.rs"), "fn caller() {}\n").unwrap();
+    std::fs::write(repo.path().join(".env"), "KEY=1\n").unwrap();
+
+    // an existing file untouched by the diff is a valid (summary) location
+    let cross = finding("src/caller.rs", 1, vec![]);
+    assert!(has_verifiable_evidence(&cross, &diff, repo.path()));
+    // a sensitive file is never a valid location even though it exists
+    let secret = finding(".env", 1, vec![]);
+    assert!(!has_verifiable_evidence(&secret, &diff, repo.path()));
 }
 
 #[test]

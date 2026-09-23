@@ -97,7 +97,6 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                         title: "Hardcoded credential or API key pattern detected",
                         claim: "A secret pattern (API key, token, or private key) was found in added code. Committing credentials to source control risks immediate exposure.",
                         trigger: "Secret key regex pattern matched in added diff line.",
-                        line_preview: text,
                         suggested_fix: Some("Remove the credential immediately and store it in an environment variable or secrets manager."),
                     }));
                 }
@@ -112,7 +111,6 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                         title: "Lingering debug statement introduced",
                         claim: "A debugging statement (such as dbg!, console.log, or breakpoint) was added. Debug prints pollute production logs and should be removed before merge.",
                         trigger: "Debug statement matched on added line.",
-                        line_preview: text,
                         suggested_fix: Some("Remove the debug statement before merging."),
                     }));
                 }
@@ -127,7 +125,6 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                         title: "Unsafe block introduced",
                         claim: "An unsafe block was introduced. Memory safety guarantees are suspended inside unsafe blocks; ensure invariants are documented and validated.",
                         trigger: "Unsafe block added in Rust source.",
-                        line_preview: text,
                         suggested_fix: Some("Document why unsafe is required and state the safety invariant."),
                     }));
                 }
@@ -142,7 +139,6 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                         title: "Potential SQL string interpolation",
                         claim: "Direct string formatting into a SQL query string risks SQL injection if query inputs are untrusted. Use parameterized query bindings instead.",
                         trigger: "SQL keyword formatted with variable interpolation.",
-                        line_preview: text,
                         suggested_fix: Some("Replace direct format! string interpolation with parameterized SQL query arguments."),
                     }));
                 }
@@ -157,7 +153,6 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                         title: "Unimplemented placeholder or stub introduced",
                         claim: "An unimplemented placeholder stub (e.g. todo!, unimplemented!, or TODO: implement) was introduced in added code. Leaving placeholder stubs can lead to runtime crashes or incomplete logic.",
                         trigger: "Unimplemented stub pattern matched on added line.",
-                        line_preview: text,
                         suggested_fix: Some("Implement the required logic or replace the stub before merging."),
                     }));
                 }
@@ -178,7 +173,6 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                             title: &rule.message,
                             claim: &format!("Static rule '{}' triggered on added line.", rule.id),
                             trigger: &format!("Regex pattern '{}' matched line.", rule.pattern),
-                            line_preview: text,
                             suggested_fix: None,
                         }));
                     }
@@ -198,17 +192,10 @@ struct StaticMatch<'a> {
     title: &'a str,
     claim: &'a str,
     trigger: &'a str,
-    line_preview: &'a str,
     suggested_fix: Option<&'a str>,
 }
 
 fn make_finding(m: StaticMatch<'_>) -> Finding {
-    let preview = if m.line_preview.len() > 80 {
-        format!("{}...", &m.line_preview[..80])
-    } else {
-        m.line_preview.to_string()
-    };
-
     Finding {
         defect_key: format!("{}:{}", m.rule_id, m.file),
         severity: m.severity,
@@ -224,7 +211,9 @@ fn make_finding(m: StaticMatch<'_>) -> Finding {
             path: m.file.to_string(),
             start_line: m.line_no,
             end_line: m.line_no,
-            note: format!("matched static rule [{}]: `{preview}`", m.rule_id),
+            // the matched line may be the very secret the rule detected:
+            // point at it, never copy it into state, prompts or reports
+            note: format!("matched static rule [{}]", m.rule_id),
         }],
         counterevidence_checked: vec!["static rule matched directly on added diff line".to_string()],
         validation_status: None,

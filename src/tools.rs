@@ -27,6 +27,19 @@ struct Stats {
     files_read: std::collections::BTreeSet<String>,
 }
 
+/// Credential files no tool may read or list: env files, SSH keys and
+/// directories, AWS credentials.
+fn is_sensitive_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.starts_with(".env")
+        || lower.contains("/.env")
+        || lower.contains("id_rsa")
+        || lower.contains("id_ed25519")
+        || lower.contains("id_ecdsa")
+        || lower.contains(".aws/")
+        || lower.split('/').any(|c| c == ".ssh")
+}
+
 pub struct ToolBox {
     pub repo_root: PathBuf,
     pub diff: Arc<DiffSet>,
@@ -339,13 +352,7 @@ impl ToolBox {
         if p.is_absolute() || path.contains("..") {
             return Err("path must be relative to the repo root".into());
         }
-        let lower = path.to_lowercase();
-        if lower.starts_with(".env")
-            || lower.contains("/.env")
-            || lower.contains("id_rsa")
-            || lower.contains("id_ed25519")
-            || lower.contains(".aws/credentials")
-        {
+        if is_sensitive_path(path) {
             return Err("access to sensitive credential files is blocked".into());
         }
         let joined = repo_root.join(&p);
@@ -358,7 +365,12 @@ impl ToolBox {
         if !canon.starts_with(&canon_root) {
             return Err("path escapes repo root".into());
         }
-        for comp in canon.strip_prefix(&canon_root).unwrap().components() {
+        let rel = canon.strip_prefix(&canon_root).unwrap();
+        // a symlink inside the repo can point at a credential file
+        if is_sensitive_path(&rel.to_string_lossy()) {
+            return Err("access to sensitive credential files is blocked".into());
+        }
+        for comp in rel.components() {
             let s = comp.as_os_str().to_string_lossy();
             if s == ".git" || s == ".vera" || s == ".revera" {
                 return Err(format!("path under {s} is not readable"));
@@ -406,12 +418,7 @@ impl ToolBox {
     }
 
     fn is_internal_path(p: &str) -> bool {
-        let lower = p.to_lowercase();
-        if lower.starts_with(".env")
-            || lower.contains("/.env")
-            || lower.contains("id_rsa")
-            || lower.contains(".aws/")
-        {
+        if is_sensitive_path(p) {
             return true;
         }
         p.split('/')
