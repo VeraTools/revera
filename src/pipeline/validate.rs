@@ -212,6 +212,9 @@ pub async fn validate_candidates(
                         if let Some(l) = v.end_line {
                             cand.end_line = Some(l);
                         }
+                        if let Some(q) = v.quoted_code {
+                            cand.quoted_code = Some(q);
+                        }
                         cand.rationale = Some(v.rationale);
                         if v.validation_status == ValidationStatus::Accepted {
                             "ok:accepted".to_string()

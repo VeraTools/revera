@@ -90,6 +90,18 @@ pub struct Finding {
     pub sources: Vec<String>,
     #[serde(default)]
     pub assurance: Option<AssuranceCase>,
+    /// Verbatim head-side lines the finding is about. Anchoring derives the
+    /// line range from a unique match in the diff instead of trusting counted
+    /// line numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted_code: Option<String>,
+    /// Exact replacement text for `quoted_code`; published as a GitHub
+    /// suggestion only when the quote anchored uniquely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_replacement: Option<String>,
+    /// Set by anchoring when `quoted_code` matched exactly once in the diff.
+    #[serde(skip)]
+    pub quote_anchored: bool,
 }
 
 impl Finding {
@@ -143,6 +155,9 @@ pub struct Verdict {
     pub start_line: Option<u32>,
     #[serde(default)]
     pub end_line: Option<u32>,
+    /// Corrected quote of the head-side lines, when the anchor should move.
+    #[serde(default)]
+    pub quoted_code: Option<String>,
     #[serde(default)]
     pub rationale: String,
 }

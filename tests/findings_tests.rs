@@ -22,6 +22,9 @@ fn finding(file: &str, key: &str, line: u32, sev: Severity) -> Finding {
         rationale: None,
         sources: vec![],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 

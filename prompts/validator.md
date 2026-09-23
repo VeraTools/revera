@@ -15,4 +15,4 @@ Verdicts:
 
 Do not accept because the claim sounds plausible; accept because you saw the code. Do not reject because you could not find the evidence quickly; look with the tools first, then mark `uncertain`.
 
-Call `submit_verdict` exactly once with: `validation_status`, `counterevidence_checked` (one short line per check you did, including the file:line you read), an optional corrected `severity`, an optional corrected `start_line`/`end_line` if the inline anchor should move to a more honest line within the changed code, and a one-sentence `rationale`. Keep it terse; the rationale may be quoted to the PR author.
+Call `submit_verdict` exactly once with: `validation_status`, `counterevidence_checked` (one short line per check you did, including the file:line you read), an optional corrected `severity`, an optional corrected `quoted_code` (verbatim head-side lines of the diff) if the inline anchor should move to a more honest place within the changed code, and a one-sentence `rationale`. Keep it terse; the rationale may be quoted to the PR author.

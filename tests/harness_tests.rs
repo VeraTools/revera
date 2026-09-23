@@ -23,6 +23,9 @@ fn make_finding(file: &str, defect_key: &str, line: u32) -> Finding {
         rationale: None,
         sources: vec!["panel:security".into(), "panel:concurrency".into()],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 

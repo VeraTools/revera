@@ -237,5 +237,8 @@ fn make_finding(m: StaticMatch<'_>) -> Finding {
             validator_rederivation: None,
             confidence: 1.0,
         }),
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }

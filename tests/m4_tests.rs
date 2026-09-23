@@ -55,6 +55,9 @@ fn anchor_drops_invalid_end_line() {
         rationale: None,
         sources: vec![],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     };
     // end < start -> dropped
     let r = anchor(&diff, vec![mk(Some(1))], 10);
@@ -91,6 +94,9 @@ fn finding_body_sanitizes_markers_and_fences() {
         rationale: None,
         sources: vec![],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     };
     let b = finding_body(&f);
     // forged marker neutralized
@@ -165,6 +171,9 @@ fn panel_union_preserves_minority() {
         rationale: None,
         sources: vec![],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     };
     // scout A: bug X; scout B: duplicate of X (same defect_key) + unique Y
     let mut all = vec![mk("bug_x"), mk("bug_x"), mk("bug_y")];
@@ -350,6 +359,9 @@ vera: {executable: "true", version: "1.4.1", backend: api}
             rationale: None,
             sources: vec![],
             assurance: None,
+            quoted_code: None,
+            suggested_replacement: None,
+            quote_anchored: false,
         },
         Finding {
             defect_key: "b".into(),
@@ -370,6 +382,9 @@ vera: {executable: "true", version: "1.4.1", backend: api}
             rationale: None,
             sources: vec![],
             assurance: None,
+            quoted_code: None,
+            suggested_replacement: None,
+            quote_anchored: false,
         },
     ];
     let term = ToolSpec {

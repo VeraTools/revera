@@ -45,6 +45,9 @@ fn finding(file: &str, line: u32, evidence: Vec<Evidence>) -> Finding {
         rationale: None,
         sources: vec!["scout:test".into()],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 

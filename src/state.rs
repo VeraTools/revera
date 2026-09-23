@@ -141,6 +141,9 @@ impl StateFinding {
             rationale: None,
             sources: vec!["prior".into()],
             assurance: None,
+            quoted_code: None,
+            suggested_replacement: None,
+            quote_anchored: false,
         }
     }
 }

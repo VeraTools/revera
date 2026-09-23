@@ -207,6 +207,20 @@ pub fn finding_body(f: &Finding) -> String {
         let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
         b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
     }
+    if let Some(repl) = &f.suggested_replacement {
+        // a GitHub suggestion replaces exactly the commented lines, so it is
+        // only offered when those lines came from a unique quote match, and
+        // never with text that sanitizing or redaction had to alter
+        let cleaned = clean(repl);
+        let fence = "`".repeat(3.max(backtick_run(&cleaned) + 1));
+        if f.quote_anchored && cleaned == *repl {
+            b.push_str(&format!("\n{fence}suggestion\n{repl}\n{fence}\n"));
+        } else {
+            b.push_str(&format!(
+                "\nSuggested replacement:\n{fence}\n{cleaned}\n{fence}\n"
+            ));
+        }
+    }
     if f.sources.len() > 1 {
         let sources = f
             .sources
@@ -773,6 +787,9 @@ mod tests {
             rationale: None,
             sources: vec!["test-rule".into()],
             assurance: None,
+            quoted_code: None,
+            suggested_replacement: None,
+            quote_anchored: false,
         };
 
         let rep = RunReport {

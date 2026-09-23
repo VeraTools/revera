@@ -65,6 +65,9 @@ fn finding(id_body_file: &str) -> Finding {
         rationale: None,
         sources: vec![],
         assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 
