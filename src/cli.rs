@@ -278,6 +278,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     reasoning_tokens: 0,
+                    cached_tokens: 0,
                     by_route: vec![],
                     wall_ms: 0,
                 },

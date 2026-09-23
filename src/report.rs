@@ -46,6 +46,9 @@ pub struct RouteLedger {
     pub completion_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
+    /// Prompt tokens served from the provider's cache (part of prompt_tokens).
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -55,6 +58,8 @@ pub struct LedgerReport {
     pub completion_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
+    #[serde(default)]
+    pub cached_tokens: u64,
     pub by_route: Vec<RouteLedger>,
     pub wall_ms: u64,
 }
@@ -558,7 +563,7 @@ pub fn ledger_route_label(e: &crate::provider::LedgerEntry) -> String {
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     use std::collections::BTreeMap;
     let mut by: BTreeMap<(String, String, String, String, String), RouteLedger> = BTreeMap::new();
-    let (mut pr, mut cr, mut rr) = (0u64, 0u64, 0u64);
+    let (mut pr, mut cr, mut rr, mut cached) = (0u64, 0u64, 0u64, 0u64);
     for e in &ledger.entries {
         let key = (
             e.role.clone(),
@@ -577,8 +582,11 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
+            cached_tokens: 0,
         });
         r.requests += 1;
+        r.cached_tokens += e.cached_tokens;
+        cached += e.cached_tokens;
         r.prompt_tokens += e.prompt_tokens;
         r.completion_tokens += e.completion_tokens;
         r.reasoning_tokens += e.reasoning_tokens;
@@ -591,6 +599,7 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
         prompt_tokens: pr,
         completion_tokens: cr,
         reasoning_tokens: rr,
+        cached_tokens: cached,
         by_route: by.into_values().collect(),
         wall_ms,
     }

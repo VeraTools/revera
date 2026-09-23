@@ -78,6 +78,14 @@ Protocol wire formats:
 All HTTP protocols share one transport: retries with `Retry-After`, the run
 request budget, the run deadline and the ledger. Routes can mix protocols.
 
+Prompt caching needs no configuration. On `anthropic` routes Revera marks two
+cache breakpoints: the system block (caching the tools and system prompt every
+validator and lane of a run shares) and the newest turn (so each step of an
+agent loop reads the conversation the previous step wrote). OpenAI and Gemini
+cache long prefixes automatically. Every protocol reports cache hits, which
+the run report's ledger lists as `cached_tokens` (a subset of
+`prompt_tokens`, per route and in total).
+
 ## `review`
 
 | key | default | notes |

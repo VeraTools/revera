@@ -31,6 +31,7 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
+            cached_tokens: 0,
             by_route: vec![],
             wall_ms: 1,
         },

@@ -93,6 +93,9 @@ pub struct Usage {
     pub completion_tokens: u64,
     /// Reasoning/thinking tokens, where the provider reports them.
     pub reasoning_tokens: u64,
+    /// Prompt tokens served from the provider's prompt cache (a subset of
+    /// `prompt_tokens`).
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +138,7 @@ pub struct LedgerEntry {
     pub retries: u32,
     pub error: Option<String>,
     pub reasoning_tokens: u64,
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Default)]

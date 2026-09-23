@@ -126,6 +126,7 @@ fn surfaced_ids_only_returns_accepted_findings() {
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
+            cached_tokens: 0,
             by_route: vec![],
             wall_ms: 0,
         },
