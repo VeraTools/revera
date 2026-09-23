@@ -57,6 +57,24 @@ const GENERATED_MARKERS: &[&str] = &[
 ];
 const GENERATED_HEADER_LINES: u32 = 5;
 
+/// Credential files, matched on the file name: their content never goes to
+/// a model, whatever the configuration.
+const CREDENTIAL_FILES: &[&str] = &[
+    ".npmrc",
+    ".netrc",
+    "_netrc",
+    ".pypirc",
+    ".dockercfg",
+    ".git-credentials",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+];
+const CREDENTIAL_SUFFIXES: &[&str] = &[".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"];
+/// `.env*` files that are templates, not secrets.
+const ENV_TEMPLATE_SUFFIXES: &[&str] = &[".example", ".sample", ".template", ".dist"];
+
 /// Path fragments that always force a full review, whatever the diff size.
 const SENSITIVE_FRAGMENTS: &[&str] = &[
     "auth",
@@ -175,6 +193,8 @@ impl RiskTier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReason {
+    /// Withheld from models; scanned only by the local static rules.
+    Credential,
     Lockfile,
     Minified,
     SourceMap,
@@ -186,6 +206,7 @@ pub enum SkipReason {
 impl SkipReason {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Credential => "credential file; content withheld from models",
             Self::Lockfile => "lockfile",
             Self::Minified => "minified",
             Self::SourceMap => "source map",
@@ -207,6 +228,8 @@ pub struct Triage {
     /// The diff with skipped files removed: what the reviewers see.
     pub diff: DiffSet,
     pub skipped: Vec<Skipped>,
+    /// The credential files among `skipped`, kept for local-only scanning.
+    pub withheld: DiffSet,
     pub tier: RiskTier,
     /// Added plus deleted lines across the reviewed files.
     pub changed_lines: usize,
@@ -238,6 +261,17 @@ fn has_generated_header(f: &FileDiff) -> bool {
             GENERATED_MARKERS.iter().any(|m| t.contains(m))
         }
     })
+}
+
+pub fn is_credential_path(path: &str) -> bool {
+    let name = file_name(path);
+    let lower = name.to_ascii_lowercase();
+    CREDENTIAL_FILES.contains(&name)
+        || CREDENTIAL_SUFFIXES.iter().any(|s| lower.ends_with(s))
+        || (lower.starts_with(".env") && !ENV_TEMPLATE_SUFFIXES.iter().any(|s| lower.ends_with(s)))
+        || path.split('/').any(|seg| seg == ".ssh")
+        || path.ends_with(".aws/credentials")
+        || path.ends_with(".docker/config.json")
 }
 
 fn noise_reason(f: &FileDiff) -> Option<SkipReason> {
@@ -286,8 +320,18 @@ pub fn triage(diff: DiffSet, cfg: &TriageConfig) -> Result<Triage> {
     let sensitive_globs = build_globs("triage.sensitive_paths", &cfg.sensitive_paths)?;
     let mut kept = Vec::with_capacity(diff.files.len());
     let mut skipped = vec![];
+    let mut withheld = vec![];
     for f in diff.files {
         let path = file_path(&f);
+        // not configurable: `filter_noise: false` must not send secrets out
+        if is_credential_path(path) {
+            skipped.push(Skipped {
+                path: path.to_string(),
+                reason: SkipReason::Credential,
+            });
+            withheld.push(f);
+            continue;
+        }
         let reason = if ignore.is_match(path) {
             Some(SkipReason::Ignored)
         } else if cfg.filter_noise {
@@ -323,6 +367,7 @@ pub fn triage(diff: DiffSet, cfg: &TriageConfig) -> Result<Triage> {
     Ok(Triage {
         diff: DiffSet { files: kept },
         skipped,
+        withheld: DiffSet { files: withheld },
         tier,
         changed_lines: lines,
         sensitive,

@@ -124,7 +124,18 @@ impl DiffSet {
 
     /// Render truncated to `max_bytes` (per-file note when a file doesn't fit).
     pub fn render_truncated(&self, max_bytes: usize) -> String {
+        self.truncated(max_bytes).0
+    }
+
+    /// Paths whose diff `render_truncated(max_bytes)` replaces with an
+    /// omission note, so callers can report them instead of implying review.
+    pub fn omitted_by_budget(&self, max_bytes: usize) -> Vec<String> {
+        self.truncated(max_bytes).1
+    }
+
+    fn truncated(&self, max_bytes: usize) -> (String, Vec<String>) {
         let mut s = String::new();
+        let mut omitted = vec![];
         for f in &self.files {
             let mut part = format!("diff --git a/{} b/{}\n", f.old_path, f.new_path);
             for h in &f.hunks {
@@ -148,11 +159,16 @@ impl DiffSet {
                     "diff --git a/{} b/{}\n[file diff omitted: exceeds max_diff_bytes]\n",
                     f.old_path, f.new_path
                 ));
+                omitted.push(if f.status == FileStatus::Deleted {
+                    f.old_path.clone()
+                } else {
+                    f.new_path.clone()
+                });
             } else {
                 s.push_str(&part);
             }
         }
-        s
+        (s, omitted)
     }
 
     /// Per-file excerpt used for validator context.

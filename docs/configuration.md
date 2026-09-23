@@ -206,6 +206,19 @@ review identity, so changing them re-reviews an unchanged PR.
 | `lite_max_lines` | `100` | at or under this (and above `trivial_max_lines`) are `lite` |
 | `lite_max_lanes` | `2` | panel lanes kept for a `lite` change, in configured order |
 
+Credential files (`.npmrc`, `.netrc`, `.pypirc`, `.dockercfg`,
+`.git-credentials`, SSH private keys and anything under `.ssh/`,
+`.aws/credentials`, `.docker/config.json`, `.env*` except
+`.example`/`.sample`/`.template`/`.dist`, and `*.pem`, `*.key`, `*.p12`,
+`*.pfx`, `*.jks`, `*.keystore`) are always withheld from every model and from
+the repository tools, whatever `filter_noise` says. The static rules still scan
+them locally; any match is listed in the summary by line number, never by
+content.
+
+Files that do not fit in `review.max_diff_bytes` are listed in the summary as
+well: their diff is not in the reviewers' prompt and they are reachable only
+through the repository tools.
+
 With `risk_tiers: true`, a change is `full` when it touches more than 20
 reviewed files or any security-sensitive path (a path containing `auth`,
 `crypto`, `security`, `secret`, `credential`, `password`, `permission`,

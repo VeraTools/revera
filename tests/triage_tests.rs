@@ -307,3 +307,121 @@ async fn tiers_off_runs_the_full_panel() {
     assert_eq!(tier, None);
     assert!(summary.contains("panel: 3 scouts"), "{summary}");
 }
+
+#[tokio::test]
+async fn files_past_the_prompt_budget_are_reported_as_gaps() {
+    let (dir, base) = repo_with_change(30);
+    let cfg: Config = serde_yaml::from_str(
+        "review: {max_diff_bytes: 64}\nmodels:\n  investigator: {protocol: scripted, script: /tmp/s.json, model: m}\n",
+    )
+    .unwrap();
+    let req = ReviewRequest {
+        repo: dir.path().to_path_buf(),
+        base,
+        head: None,
+        title: None,
+        body: String::new(),
+        strategy_override: None,
+        force: true,
+        uncommitted: false,
+    };
+    let prep = match prepare(&cfg, &req, "baseline").await.unwrap() {
+        PrepareOut::Ready(p) => p,
+        PrepareOut::ShortCircuit(..) => panic!("unexpected short circuit"),
+    };
+    assert_eq!(
+        prep.diff.omitted_by_budget(64),
+        vec!["src/lib.rs".to_string()]
+    );
+    assert!(
+        prep.coverage_gaps
+            .iter()
+            .any(|g| g.contains("`src/lib.rs`") && g.contains("max_diff_bytes")),
+        "{:?}",
+        prep.coverage_gaps
+    );
+    // the default budget holds the whole diff, so nothing is reported
+    assert!(prep.diff.omitted_by_budget(200_000).is_empty());
+}
+
+#[test]
+fn credential_files_are_withheld_even_with_noise_filter_off() {
+    let cfg = TriageConfig {
+        filter_noise: false,
+        ..Default::default()
+    };
+    let text = [
+        modified(".npmrc", 1),
+        modified("config/.env.production", 1),
+        modified("deploy/server.key", 1),
+        modified("home/.ssh/config", 1),
+        modified(".env.example", 1),
+        modified("src/keys.rs", 1),
+    ]
+    .concat();
+    let t = triage(parse_unified(&text), &cfg).unwrap();
+    let withheld: Vec<&str> = t
+        .withheld
+        .files
+        .iter()
+        .map(|f| f.new_path.as_str())
+        .collect();
+    assert_eq!(
+        withheld,
+        vec![
+            ".npmrc",
+            "config/.env.production",
+            "deploy/server.key",
+            "home/.ssh/config"
+        ]
+    );
+    let kept: Vec<&str> = t.diff.files.iter().map(|f| f.new_path.as_str()).collect();
+    assert_eq!(kept, vec![".env.example", "src/keys.rs"]);
+    assert!(t.skipped.iter().all(|s| s.reason == SkipReason::Credential));
+}
+
+#[tokio::test]
+async fn committed_secret_in_a_credential_file_is_reported_without_its_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "x\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-q", "-m", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        repo.join(".npmrc"),
+        "registry=x\n//r/:_authToken=AKIAIOSFODNN7EXAMPLE\n",
+    )
+    .unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-q", "-m", "creds"]);
+    let cfg: Config = serde_yaml::from_str(
+        "models:\n  investigator: {protocol: scripted, script: /tmp/s.json, model: m}\n",
+    )
+    .unwrap();
+    let req = ReviewRequest {
+        repo: repo.to_path_buf(),
+        base,
+        head: None,
+        title: None,
+        body: String::new(),
+        strategy_override: None,
+        force: true,
+        uncommitted: false,
+    };
+    let prep = match prepare(&cfg, &req, "baseline").await.unwrap() {
+        PrepareOut::Ready(p) => p,
+        PrepareOut::ShortCircuit(..) => panic!("unexpected short circuit"),
+    };
+    assert!(prep.diff.files.is_empty());
+    let gap = prep.coverage_gaps.join("\n");
+    assert!(gap.contains("`.npmrc` (credential file"), "{gap}");
+    assert!(gap.contains("line(s) 2"), "{gap}");
+    assert!(!gap.contains("AKIA"), "{gap}");
+    let read = prep
+        .toolbox
+        .call("read_file", serde_json::json!({"path": ".npmrc"}))
+        .await;
+    assert!(!read.contains("AKIA"), "{read}");
+}

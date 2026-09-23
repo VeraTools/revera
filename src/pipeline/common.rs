@@ -253,12 +253,29 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     };
 
     let triaged = crate::triage::triage(parse_unified(&raw_diff), &cfg.triage)?;
+    let triaged_skipped = triaged.skipped.len();
+    // credential files never reach a model; the static rules still scan them
+    // here, and hits are reported by line (never by content)
+    let local_hits = crate::rules::scan_diff(&triaged.withheld, cfg.rules.as_deref());
     let skipped_gaps: Vec<String> = triaged
         .skipped
         .iter()
         .map(|s| {
+            let lines: Vec<String> = local_hits
+                .iter()
+                .filter(|f| f.file == s.path)
+                .map(|f| f.start_line.to_string())
+                .collect();
+            let hits = if lines.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; static rules matched on line(s) {}, check them by hand",
+                    lines.join(", ")
+                )
+            };
             format!(
-                "`{}` ({}; filtered before review)",
+                "`{}` ({}{hits}; filtered before review)",
                 s.path,
                 s.reason.as_str()
             )
@@ -277,6 +294,16 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     }
     let sensitive_change = !triaged.sensitive.is_empty();
     let diff: Arc<DiffSet> = Arc::new(triaged.diff);
+    // files past the prompt budget are only reachable through tools; say so
+    // instead of letting the summary imply they were in front of a reviewer
+    let mut coverage_gaps = skipped_gaps;
+    coverage_gaps.extend(
+        diff.omitted_by_budget(cfg.review.max_diff_bytes)
+            .into_iter()
+            .map(|p| {
+                format!("`{p}` (diff exceeds review.max_diff_bytes; not in the reviewers' prompt, reachable only through tools)")
+            }),
+    );
     let key = review_key(
         &base_sha,
         &head_tree,
@@ -428,7 +455,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     let stats = RunStats {
         retrieval,
         resolved: resolved_titles.len(),
-        filtered_files: skipped_gaps.len(),
+        filtered_files: triaged_skipped,
         risk_tier: risk_tier.map(|t| t.as_str().to_string()),
         ..Default::default()
     };
@@ -455,7 +482,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         retrieval_unavailable,
         stats,
         coverage: String::new(),
-        coverage_gaps: skipped_gaps,
+        coverage_gaps,
         report_note: None,
         deadline,
         reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),

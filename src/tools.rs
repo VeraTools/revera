@@ -27,11 +27,12 @@ struct Stats {
     files_read: std::collections::BTreeSet<String>,
 }
 
-/// Credential files no tool may read or list: env files, SSH keys and
-/// directories, AWS credentials.
+/// Credential files no tool may read or list: the triage credential set
+/// plus env files, SSH keys and directories, AWS credentials.
 fn is_sensitive_path(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.starts_with(".env")
+    crate::triage::is_credential_path(path)
+        || lower.starts_with(".env")
         || lower.contains("/.env")
         || lower.contains("id_rsa")
         || lower.contains("id_ed25519")
