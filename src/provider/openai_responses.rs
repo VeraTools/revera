@@ -265,6 +265,9 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
             reasoning_tokens: parsed["usage"]["output_tokens_details"]["reasoning_tokens"]
                 .as_u64()
                 .unwrap_or(0),
+            cached_tokens: parsed["usage"]["input_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .unwrap_or(0),
         };
         Parse::Ok(
             ChatMessage {

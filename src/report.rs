@@ -1,4 +1,4 @@
-use crate::findings::{Finding, ValidationStatus};
+use crate::findings::{Finding, Severity, ValidationStatus};
 use crate::pipeline::anchor::is_publishable;
 use crate::provider::RunLedger;
 use crate::state::ReviewState;
@@ -46,15 +46,20 @@ pub struct RouteLedger {
     pub completion_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
+    /// Prompt tokens served from the provider's cache (part of prompt_tokens).
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LedgerReport {
     pub requests: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
+    #[serde(default)]
+    pub cached_tokens: u64,
     pub by_route: Vec<RouteLedger>,
     pub wall_ms: u64,
 }
@@ -69,6 +74,11 @@ pub struct Publication {
     pub summary_comment_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped_reason: Option<String>,
+    /// Review threads resolved because their finding was validated as fixed.
+    #[serde(default)]
+    pub resolved_threads: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_resolution_error: Option<String>,
 }
 
 impl Default for Publication {
@@ -78,6 +88,8 @@ impl Default for Publication {
             review_id: None,
             summary_comment_id: None,
             skipped_reason: None,
+            resolved_threads: 0,
+            thread_resolution_error: None,
         }
     }
 }
@@ -104,6 +116,12 @@ pub struct RunStats {
     pub malformed_findings: usize,
     /// A terminal repair round was attempted.
     pub repaired: bool,
+    /// Files dropped by diff triage before review (lockfiles, generated, ...).
+    #[serde(default)]
+    pub filtered_files: usize,
+    /// Risk tier that sized the reviewer swarm (`None` when tiers are off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,18 +165,46 @@ fn backtick_run(s: &str) -> usize {
     s.split(|c| c != '`').map(str::len).max().unwrap_or(0)
 }
 
+static SECRET_REDACT_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?x)
+        \bAKIA[0-9A-Z]{16}\b |
+        \bgh[pousr]_[A-Za-z0-9_]{36,255}\b |
+        \bgithub_pat_[A-Za-z0-9_]{22,255}\b |
+        \bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b |
+        -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----(?:[\s\S]*?-----END[A-Z\x20]*PRIVATE\x20KEY-----)?
+    "#,
+    )
+    .unwrap()
+});
+
+/// Redact detected credentials and secrets from text.
+pub fn redact_secrets(input: &str) -> String {
+    SECRET_REDACT_REGEX
+        .replace_all(input, "[REDACTED_CREDENTIAL]")
+        .into_owned()
+}
+
+/// Model text made safe to publish: no forged markers, no credentials.
+fn clean(t: &str) -> String {
+    redact_secrets(&sanitize(t))
+}
+
 pub fn finding_body(f: &Finding) -> String {
-    let mut b = format!(
-        "**[{}] {}**\n\n{}\n",
-        f.severity,
-        sanitize(&f.title),
-        sanitize(&f.claim)
-    );
+    let clean_title = redact_secrets(&sanitize(&f.title));
+    let clean_claim = redact_secrets(&sanitize(&f.claim));
+    let mut b = format!("**[{}] {}**\n\n{}\n", f.severity, clean_title, clean_claim);
     if !f.trigger.is_empty() {
-        b.push_str(&format!("\nTrigger: {}\n", sanitize(&f.trigger)));
+        b.push_str(&format!(
+            "\nTrigger: {}\n",
+            redact_secrets(&sanitize(&f.trigger))
+        ));
     }
     if !f.impact.is_empty() {
-        b.push_str(&format!("Impact: {}\n", sanitize(&f.impact)));
+        b.push_str(&format!(
+            "Impact: {}\n",
+            redact_secrets(&sanitize(&f.impact))
+        ));
     }
     if !f.supporting_evidence.is_empty() {
         let ev: Vec<String> = f
@@ -169,10 +215,72 @@ pub fn finding_body(f: &Finding) -> String {
         b.push_str(&format!("Evidence: {}\n", ev.join(", ")));
     }
     if let Some(fix) = &f.suggested_fix {
-        let fix = sanitize(fix);
+        let fix = redact_secrets(&sanitize(fix));
         let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
         b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
     }
+    if let Some(repl) = &f.suggested_replacement {
+        // a GitHub suggestion replaces exactly the commented lines, so it is
+        // only offered when those lines came from a unique quote match, and
+        // never with text that sanitizing or redaction had to alter
+        let cleaned = clean(repl);
+        let fence = "`".repeat(3.max(backtick_run(&cleaned) + 1));
+        if f.quote_anchored && cleaned == *repl {
+            b.push_str(&format!("\n{fence}suggestion\n{repl}\n{fence}\n"));
+        } else {
+            b.push_str(&format!(
+                "\nSuggested replacement:\n{fence}\n{cleaned}\n{fence}\n"
+            ));
+        }
+    }
+    if f.sources.len() > 1 {
+        let sources = f
+            .sources
+            .iter()
+            .map(|s| sanitize(s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        b.push_str(&format!(
+            "\n> **Consensus**: Flagged independently by {} review lenses: {}.\n",
+            f.sources.len(),
+            sources
+        ));
+    }
+    let assurance = f.effective_assurance();
+    b.push_str("\n<details>\n<summary>Assurance Trace</summary>\n\n");
+    if let Some(rule) = &assurance.rule_id {
+        b.push_str(&format!("- **Origin**: Static Rule `{}`\n", sanitize(rule)));
+    } else {
+        b.push_str(&format!("- **Origin**: Lens `{}`\n", sanitize(&f.source)));
+    }
+    if !assurance.trigger.is_empty() {
+        b.push_str(&format!(
+            "- **Trigger**: {}\n",
+            redact_secrets(&sanitize(&assurance.trigger))
+        ));
+    }
+    if !assurance.rationale.is_empty() {
+        b.push_str(&format!(
+            "- **Rationale**: {}\n",
+            redact_secrets(&sanitize(&assurance.rationale))
+        ));
+    }
+    if !assurance.counterevidence_checked.is_empty() {
+        let ce = assurance
+            .counterevidence_checked
+            .iter()
+            .map(|c| redact_secrets(&sanitize(c)))
+            .collect::<Vec<_>>()
+            .join("; ");
+        b.push_str(&format!("- **Counter-evidence Checked**: {}\n", ce));
+    }
+    if let Some(rederivation) = &assurance.validator_rederivation {
+        b.push_str(&format!(
+            "- **Validator Re-derivation**: {}\n",
+            redact_secrets(&sanitize(rederivation))
+        ));
+    }
+    b.push_str("\n</details>\n");
     b.push_str(&format!("\n<!-- revera-id:{} -->", f.id()));
     b
 }
@@ -291,7 +399,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         for f in &accepted {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                f.file,
+                f.start_line,
+                clean(&f.title)
             ));
         }
     }
@@ -303,7 +414,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         {
             s.push_str(&format!(
                 "- _(unconfirmed)_ **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                f.file,
+                f.start_line,
+                clean(&f.title)
             ));
         }
     }
@@ -312,7 +426,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         for f in inp.outside_diff {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                f.file,
+                f.start_line,
+                clean(&f.title)
             ));
         }
     }
@@ -446,7 +563,7 @@ pub fn ledger_route_label(e: &crate::provider::LedgerEntry) -> String {
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     use std::collections::BTreeMap;
     let mut by: BTreeMap<(String, String, String, String, String), RouteLedger> = BTreeMap::new();
-    let (mut pr, mut cr, mut rr) = (0u64, 0u64, 0u64);
+    let (mut pr, mut cr, mut rr, mut cached) = (0u64, 0u64, 0u64, 0u64);
     for e in &ledger.entries {
         let key = (
             e.role.clone(),
@@ -465,8 +582,11 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
+            cached_tokens: 0,
         });
         r.requests += 1;
+        r.cached_tokens += e.cached_tokens;
+        cached += e.cached_tokens;
         r.prompt_tokens += e.prompt_tokens;
         r.completion_tokens += e.completion_tokens;
         r.reasoning_tokens += e.reasoning_tokens;
@@ -479,9 +599,109 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
         prompt_tokens: pr,
         completion_tokens: cr,
         reasoning_tokens: rr,
+        cached_tokens: cached,
         by_route: by.into_values().collect(),
         wall_ms,
     }
+}
+
+/// Generate OASIS SARIF 2.1.0 JSON representation of the run findings.
+/// `--fail-on` gate: true when the review stands behind a finding at or above
+/// `thresh`, i.e. an accepted finding of this run or one still open in state
+/// (a reused review carries its findings there, not in the report). Rejected
+/// and uncertain candidates never fail CI.
+pub fn fails_severity_gate(
+    report: &RunReport,
+    state: &crate::state::ReviewState,
+    thresh: Severity,
+) -> bool {
+    report
+        .findings
+        .iter()
+        .any(|f| crate::pipeline::anchor::is_publishable(f) && f.severity >= thresh)
+        || state
+            .findings
+            .iter()
+            .any(|f| f.status == crate::state::FindingState::Open && f.severity >= thresh)
+}
+
+pub fn to_sarif(report: &RunReport) -> serde_json::Value {
+    let level = |sev: Severity| match sev {
+        Severity::High => "error",
+        Severity::Medium => "warning",
+        Severity::Low => "note",
+    };
+    // only what the review would publish: rejected and uncertain candidates
+    // are not alerts
+    let published: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|f| crate::pipeline::anchor::is_publishable(f))
+        .collect();
+    let mut rules: Vec<serde_json::Value> = vec![];
+    let mut rule_ids = std::collections::BTreeSet::new();
+    for f in &published {
+        if rule_ids.insert(f.source.as_str()) {
+            rules.push(serde_json::json!({
+                "id": f.source,
+                "shortDescription": { "text": f.source },
+                "defaultConfiguration": { "level": level(f.severity) }
+            }));
+        }
+    }
+    let results: Vec<serde_json::Value> = published
+        .iter()
+        .map(|f| {
+            let mut result = serde_json::json!({
+                // the finding id survives line shifts across pushes, so code
+                // scanning keeps one alert per defect instead of re-opening
+                "partialFingerprints": { "reveraFindingId/v1": f.id() },
+                "ruleId": f.source,
+                "level": level(f.severity),
+                "message": {
+                    "text": format!("{}\n\n{}\n\nTrigger: {}", clean(&f.title), clean(&f.claim), clean(&f.trigger))
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": f.file,
+                                "uriBaseId": "%SRCROOT%"
+                            },
+                            "region": {
+                                "startLine": f.start_line,
+                                "endLine": f.end_line.unwrap_or(f.start_line)
+                            }
+                        }
+                    }
+                ]
+            });
+            // a prose suggestion is not a SARIF `fix` (which needs exact
+            // artifact replacements), so it travels as a property
+            if let Some(fix) = &f.suggested_fix {
+                result["properties"] = serde_json::json!({ "suggestedFix": clean(fix) });
+            }
+            result
+        })
+        .collect();
+
+    serde_json::json!({
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "revera",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "informationUri": "https://github.com/VeraTools/revera",
+                        "rules": rules
+                    }
+                },
+                "results": results
+            }
+        ]
+    })
 }
 
 #[cfg(test)]
@@ -563,5 +783,91 @@ mod tests {
         // no timing line -> unchanged
         let plain = "## Revera review\n\nNo findings.\n";
         assert_eq!(refresh_timing_line(plain, &t1), plain);
+    }
+
+    #[test]
+    fn sarif_export_generates_valid_schema() {
+        let f = Finding {
+            defect_key: "k".into(),
+            severity: Severity::High,
+            file: "src/lib.rs".into(),
+            start_line: 10,
+            end_line: Some(15),
+            title: "Test Title".into(),
+            claim: "Test Claim".into(),
+            trigger: "Test Trigger".into(),
+            impact: "Test Impact".into(),
+            introduced_by_change: true,
+            supporting_evidence: vec![],
+            counterevidence_checked: vec![],
+            validation_status: Some(ValidationStatus::Accepted),
+            suggested_fix: Some("let x = 1;".into()),
+            source: "test-rule".into(),
+            rationale: None,
+            sources: vec!["test-rule".into()],
+            assurance: None,
+            quoted_code: None,
+            suggested_replacement: None,
+            quote_anchored: false,
+        };
+
+        let rep = RunReport {
+            status: RunStatus::Complete,
+            reason: None,
+            base: "base".into(),
+            head: "head".into(),
+            strategy: "baseline".into(),
+            findings: vec![
+                f.clone(),
+                Finding {
+                    start_line: 30,
+                    title: "leaks AKIAIOSFODNN7EXAMPLE".into(),
+                    ..f.clone()
+                },
+                Finding {
+                    validation_status: Some(ValidationStatus::Rejected),
+                    ..f
+                },
+            ],
+            plan: PublicationPlan {
+                inline: vec![],
+                summary_markdown: String::new(),
+                state: Default::default(),
+            },
+            ledger: Default::default(),
+            publication: Default::default(),
+            coverage_gaps: vec![],
+            timing: Default::default(),
+            stats: Default::default(),
+        };
+
+        let sarif = to_sarif(&rep);
+        assert_eq!(sarif["version"], "2.1.0");
+        assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "revera");
+        // the rejected candidate is not exported; one rule for both results
+        assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            sarif["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let text = sarif.to_string();
+        assert!(!text.contains("AKIAIOSFODNN7EXAMPLE"), "{text}");
+        assert!(sarif["runs"][0]["results"][0].get("fixes").is_none());
+        // both accepted findings share file and key, so they share an id
+        let fp = &sarif["runs"][0]["results"][0]["partialFingerprints"]["reveraFindingId/v1"];
+        assert_eq!(fp.as_str().unwrap(), rep.findings[0].id());
+        assert_eq!(
+            sarif["runs"][0]["results"][0]["properties"]["suggestedFix"],
+            "let x = 1;"
+        );
+        assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
+        assert_eq!(
+            sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+                ["uri"],
+            "src/lib.rs"
+        );
     }
 }

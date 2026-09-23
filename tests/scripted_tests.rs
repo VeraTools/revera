@@ -91,6 +91,10 @@ fn summary_rendering() {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     };
     let md = revera::report::summary_markdown(&revera::report::Summary {
         findings: &[f],
@@ -121,6 +125,10 @@ fn summary_rendering() {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     });
     assert!(body.contains("**[high] bad thing**"));
     assert!(body.contains("<!-- revera-id:"));

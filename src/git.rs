@@ -87,6 +87,7 @@ pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
             "diff",
             "--no-color",
             "--unified=3",
+            "--end-of-options",
             &format!("{}...{}", base, head),
         ],
     )
@@ -95,14 +96,53 @@ pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
         Ok(d) => Ok(d),
         Err(e) => {
             tracing::warn!("three-dot diff failed ({e}); falling back to two-dot diff");
-            git(repo, &["diff", "--no-color", "--unified=3", base, head]).await
+            git(
+                repo,
+                &[
+                    "diff",
+                    "--no-color",
+                    "--unified=3",
+                    "--end-of-options",
+                    base,
+                    head,
+                ],
+            )
+            .await
         }
     }
 }
 
-/// `git patch-id --stable` of the base...head diff.
-pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
-    let diff_text = diff(repo, base, head).await?;
+/// Determine default base branch (tries main, then master).
+pub async fn default_branch(repo: &Path) -> Result<String> {
+    if git(repo, &["rev-parse", "--verify", "main"]).await.is_ok() {
+        Ok("main".into())
+    } else if git(repo, &["rev-parse", "--verify", "master"])
+        .await
+        .is_ok()
+    {
+        Ok("master".into())
+    } else {
+        bail!("could not determine default branch (neither main nor master found)")
+    }
+}
+
+/// `git diff --no-color --unified=3 HEAD` (uncommitted working tree diff against HEAD).
+pub async fn diff_uncommitted(repo: &Path) -> Result<String> {
+    git(
+        repo,
+        &[
+            "diff",
+            "--no-color",
+            "--unified=3",
+            "--end-of-options",
+            "HEAD",
+        ],
+    )
+    .await
+}
+
+/// Compute patch-id from a raw diff string.
+pub async fn patch_id_from_diff(repo: &Path, diff_text: &str) -> Result<String> {
     let mut child = Command::new("git")
         .args(["patch-id", "--stable"])
         .current_dir(repo)
@@ -134,6 +174,12 @@ pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
         .to_string())
 }
 
+/// `git patch-id --stable` of the base...head diff.
+pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
+    let diff_text = diff(repo, base, head).await?;
+    patch_id_from_diff(repo, &diff_text).await
+}
+
 /// Files changed between base...head, one `path status` per line.
 pub async fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let out = git(
@@ -151,6 +197,38 @@ pub async fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<St
 
 /// Tree object id of `rev` — identifies exact content regardless of
 /// commit metadata.
+/// Content of `path` at `rev`, or `None` when no such file exists there.
+pub async fn show_file(repo: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+    let spec = format!("{rev}:{path}");
+    if git(repo, &["cat-file", "-e", "--end-of-options", &spec])
+        .await
+        .is_err()
+    {
+        return Ok(None);
+    }
+    Ok(Some(git(repo, &["show", "--end-of-options", &spec]).await?))
+}
+
+/// Paths of the files under `dir` at `rev` (recursive).
+pub async fn ls_tree(repo: &Path, rev: &str, dir: &str) -> Result<Vec<String>> {
+    Ok(git(
+        repo,
+        &[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "--end-of-options",
+            rev,
+            "--",
+            dir,
+        ],
+    )
+    .await?
+    .lines()
+    .map(str::to_string)
+    .collect())
+}
+
 pub async fn tree_id(repo: &Path, rev: &str) -> Result<String> {
     rev_parse(repo, &format!("{rev}^{{tree}}")).await
 }

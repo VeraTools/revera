@@ -4,7 +4,7 @@ use crate::vera::VeraClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,20 @@ struct Stats {
     by_tool: BTreeMap<String, ToolStat>,
     /// distinct repository files read via `read_file`
     files_read: std::collections::BTreeSet<String>,
+}
+
+/// Credential files no tool may read or list: the triage credential set
+/// plus env files, SSH keys and directories, AWS credentials.
+fn is_sensitive_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    crate::triage::is_credential_path(path)
+        || lower.starts_with(".env")
+        || lower.contains("/.env")
+        || lower.contains("id_rsa")
+        || lower.contains("id_ed25519")
+        || lower.contains("id_ecdsa")
+        || lower.contains(".aws/")
+        || lower.split('/').any(|c| c == ".ssh")
 }
 
 pub struct ToolBox {
@@ -72,6 +86,8 @@ pub fn terminal_submit_findings_spec() -> ToolSpec {
                             "required": ["path"]}},
                         "counterevidence_checked": {"type": "array", "items": {"type": "string"}},
                         "suggested_fix": {"type": "string"},
+                        "quoted_code": {"type": "string", "description": "Verbatim copy of the 1-10 consecutive head-side lines (added or context lines, without the +/- marker) the finding is about. Used to place the comment; copy, do not paraphrase."},
+                        "suggested_replacement": {"type": "string", "description": "Optional exact code that should replace quoted_code, only when the fix is local to those lines."},
                     },
                     "required": ["defect_key","severity","file","start_line","title","claim"],
                 }},
@@ -141,6 +157,7 @@ pub fn terminal_submit_verdict_spec() -> ToolSpec {
                 "severity": {"type": "string", "enum": ["high","medium","low"]},
                 "start_line": {"type": "integer"},
                 "end_line": {"type": "integer"},
+                "quoted_code": {"type": "string"},
                 "rationale": {"type": "string"},
             }),
             &["validation_status", "rationale"],
@@ -332,25 +349,42 @@ impl ToolBox {
         crate::text::truncate_bytes(&s, self.max_output_bytes)
     }
 
-    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+    /// Validate that a path resides strictly within the repository root
+    /// and does not target internal or sensitive credential files.
+    pub fn is_safe_repo_path(repo_root: &Path, path: &str) -> Result<PathBuf, String> {
         let p = PathBuf::from(path);
         if p.is_absolute() || path.contains("..") {
             return Err("path must be relative to the repo root".into());
         }
-        let joined = self.repo_root.join(&p);
+        if is_sensitive_path(path) {
+            return Err("access to sensitive credential files is blocked".into());
+        }
+        let joined = repo_root.join(&p);
         let canon = joined
             .canonicalize()
             .map_err(|e| format!("cannot resolve {path}: {e}"))?;
-        if !canon.starts_with(&self.repo_root) {
+        let canon_root = repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.to_path_buf());
+        if !canon.starts_with(&canon_root) {
             return Err("path escapes repo root".into());
         }
-        for comp in canon.strip_prefix(&self.repo_root).unwrap().components() {
+        let rel = canon.strip_prefix(&canon_root).unwrap();
+        // a symlink inside the repo can point at a credential file
+        if is_sensitive_path(&rel.to_string_lossy()) {
+            return Err("access to sensitive credential files is blocked".into());
+        }
+        for comp in rel.components() {
             let s = comp.as_os_str().to_string_lossy();
             if s == ".git" || s == ".vera" || s == ".revera" {
                 return Err(format!("path under {s} is not readable"));
             }
         }
         Ok(canon)
+    }
+
+    fn resolve_path(&self, path: &str) -> Result<PathBuf, String> {
+        Self::is_safe_repo_path(&self.repo_root, path)
     }
 
     async fn read_file(&self, args: &Value) -> Result<String, String> {
@@ -388,6 +422,9 @@ impl ToolBox {
     }
 
     fn is_internal_path(p: &str) -> bool {
+        if is_sensitive_path(p) {
+            return true;
+        }
         p.split('/')
             .any(|c| c == ".git" || c == ".vera" || c == ".revera")
     }

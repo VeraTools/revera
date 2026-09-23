@@ -1,0 +1,5 @@
+- returned `error` values ignored or overwritten before being checked; `nil` pointer or nil map writes
+- goroutines that leak (no cancellation via `context`), data races on shared maps/slices, `defer` inside loops
+- loop variable capture in closures and goroutines (pre-Go 1.22 semantics where the module targets older versions)
+- slices aliasing a shared backing array after `append`; integer overflow on conversions
+- `http.Response.Body` not closed; `context` not propagated to outbound calls; timeouts missing on clients and servers

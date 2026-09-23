@@ -1,0 +1,5 @@
+- `NullPointerException` paths, `Optional.get()` without a presence check, unboxing of nullable wrappers
+- resources (streams, connections, locks) not closed on every path; missing try-with-resources
+- `equals`/`hashCode` inconsistency, mutation of objects used as map keys, `==` on strings or boxed numbers
+- shared mutable state without synchronization; non-thread-safe classes (`SimpleDateFormat`, `HashMap`) used concurrently
+- SQL, LDAP, XPath or shell commands built by string concatenation; deserialization of untrusted data

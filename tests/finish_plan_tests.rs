@@ -39,6 +39,10 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 
@@ -51,6 +55,16 @@ fn valid_finding_json() -> serde_json::Value {
 }
 
 // ---------- terminal parsing ----------
+
+#[test]
+fn consensus_findings_include_attribution_badge() {
+    let mut f1 = finding("src/lib.rs", "key1", 10);
+    f1.sources = vec!["panel:security".into(), "panel:concurrency".into()];
+    let body = revera::report::finding_body(&f1);
+    assert!(body.contains("Consensus"));
+    assert!(body.contains("Flagged independently by 2 review lenses"));
+    assert!(body.contains("panel:security, panel:concurrency"));
+}
 
 #[test]
 fn empty_findings_list_is_complete_but_missing_list_is_not() {
@@ -458,6 +472,7 @@ fn comment(id: u64, body: &str, author: Option<&str>, bot: bool) -> GhComment {
         body: body.into(),
         author: author.map(Into::into),
         author_is_bot: bot,
+        ..Default::default()
     }
 }
 

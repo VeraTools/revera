@@ -1,0 +1,6 @@
+- `unwrap`/`expect`/indexing/slicing on values that can be absent, empty or out of range at runtime (including `&s[..n]` on a UTF-8 boundary)
+- integer overflow or underflow in `usize`/`u32` arithmetic (`len() - 1` on empty input), `as` casts that truncate or change sign
+- errors swallowed with `let _ =`, `.ok()`, or `unwrap_or_default()` where the caller needs to know
+- locks held across `.await`, `std::sync::Mutex` in async code, blocking I/O inside async tasks, `JoinSet`/task panics that abort the whole run
+- `unsafe` blocks whose invariants the changed code no longer guarantees
+- behaviour of `Drop`, `Default` or `serde(default)` that silently changes a persisted or wire format

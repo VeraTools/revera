@@ -2,6 +2,8 @@ pub mod anchor;
 pub mod baseline;
 pub mod common;
 pub mod delegated;
+pub mod lens_router;
+pub mod load;
 pub mod panel;
 pub mod validate;
 

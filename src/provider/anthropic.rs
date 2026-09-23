@@ -120,6 +120,19 @@ fn to_blocks(messages: &[ChatMessage], drop_reasoning: bool) -> (Vec<String>, Ve
     (system, out)
 }
 
+/// Cache breakpoint on the last block of the newest turn, so each request of
+/// an agent loop reads the conversation the previous request wrote. Only
+/// text and tool_result blocks are marked (thinking blocks cannot be).
+fn mark_cache_breakpoint(msgs: &mut [Value]) {
+    if let Some(Value::Array(blocks)) = msgs.last_mut().map(|m| &mut m["content"]) {
+        if let Some(b) = blocks.last_mut() {
+            if matches!(b["type"].as_str(), Some("text") | Some("tool_result")) {
+                b["cache_control"] = json!({"type": "ephemeral"});
+            }
+        }
+    }
+}
+
 /// Append `parts` under `role`, merging into the previous message when the
 /// roles match (keeps strict alternation).
 fn push_role(out: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
@@ -180,7 +193,8 @@ impl ProtocolAdapter for AnthropicAdapter {
         tools: &[ToolSpec],
         attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
-        let (system, msgs) = to_blocks(messages, attempt.drop_reasoning);
+        let (system, mut msgs) = to_blocks(messages, attempt.drop_reasoning);
+        mark_cache_breakpoint(&mut msgs);
         let tool_specs: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -216,7 +230,13 @@ impl ProtocolAdapter for AnthropicAdapter {
         }
         body["max_tokens"] = json!(max_tokens);
         if !system.is_empty() {
-            body["system"] = json!(system.join("\n\n"));
+            // breakpoint on the system block caches tools + system, the prefix
+            // every validator and every lane of a run shares
+            body["system"] = json!([{
+                "type": "text",
+                "text": system.join("\n\n"),
+                "cache_control": {"type": "ephemeral"},
+            }]);
         }
         let mut headers = vec![
             ("x-api-key".to_string(), self.api_key.clone()),
@@ -290,11 +310,17 @@ impl ProtocolAdapter for AnthropicAdapter {
                     .into(),
             ));
         }
+        // input_tokens is only the uncached remainder; the prompt is the sum
+        let u = &parsed["usage"];
+        let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
         let usage = Usage {
-            prompt_tokens: parsed["usage"]["input_tokens"].as_u64().unwrap_or(0),
-            completion_tokens: parsed["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0)
+                + u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
+                + cache_read,
+            completion_tokens: u["output_tokens"].as_u64().unwrap_or(0),
             // anthropic reports thinking under output_tokens; no split
             reasoning_tokens: 0,
+            cached_tokens: cache_read,
         };
         Parse::Ok(
             ChatMessage {

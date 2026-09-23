@@ -23,5 +23,9 @@ pub fn prompt_version() -> String {
         h.update(p.as_bytes());
         h.update([0]);
     }
+    for p in crate::checklists::all_texts() {
+        h.update(p.as_bytes());
+        h.update([0]);
+    }
     hex::encode(&h.finalize()[..8])
 }

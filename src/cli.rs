@@ -18,34 +18,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    Review {
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
-        #[arg(long)]
-        base: Option<String>,
-        #[arg(long)]
-        head: Option<String>,
-        /// GitHub event payload path (pull_request / pull_request_target).
-        #[arg(long)]
-        event: Option<PathBuf>,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        profile: Option<String>,
-        #[arg(long)]
-        strategy: Option<StrategyArg>,
-        #[arg(long)]
-        publish: Option<PublishArg>,
-        #[arg(long)]
-        out: Option<PathBuf>,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        /// Re-review even when the patch is identical to stored state.
-        #[arg(long)]
-        force: bool,
-    },
+    Review(Box<ReviewArgs>),
     Doctor {
         #[arg(long)]
         config: Option<PathBuf>,
@@ -79,6 +52,23 @@ enum StrategyArg {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+enum SeverityArg {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<SeverityArg> for crate::findings::Severity {
+    fn from(s: SeverityArg) -> Self {
+        match s {
+            SeverityArg::Low => crate::findings::Severity::Low,
+            SeverityArg::Medium => crate::findings::Severity::Medium,
+            SeverityArg::High => crate::findings::Severity::High,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 enum PublishArg {
     DryRun,
     Comment,
@@ -95,52 +85,57 @@ pub async fn run() -> i32 {
         } => doctor(config, profile, strategy, publish).await,
         Cmd::CacheInfo { repo } => cache_info(&repo),
         Cmd::CacheKey { config, profile } => cache_key(config, profile),
-        Cmd::Review {
-            repo,
-            base,
-            head,
-            event,
-            config,
-            profile,
-            strategy,
-            publish,
-            out,
-            title,
-            body_file,
-            force,
-        } => {
-            review(ReviewArgs {
-                repo,
-                base,
-                head,
-                event,
-                config,
-                profile,
-                strategy,
-                publish,
-                out,
-                title,
-                body_file,
-                force,
-            })
-            .await
-        }
+        Cmd::Review(a) => review(*a).await,
     }
 }
 
+#[derive(clap::Args)]
 struct ReviewArgs {
+    #[arg(long, default_value = ".")]
     repo: PathBuf,
+    #[arg(long)]
     base: Option<String>,
+    #[arg(long)]
     head: Option<String>,
+    /// Review uncommitted working tree changes against HEAD.
+    #[arg(long, conflicts_with = "event")]
+    uncommitted: bool,
+    /// Emit structured JSON findings for agent workflows.
+    #[arg(long)]
+    agent: bool,
+    /// Path to export findings in OASIS SARIF 2.1.0 format.
+    #[arg(long)]
+    sarif: Option<PathBuf>,
+    /// Fail CI with non-zero exit code (3) if findings meet or exceed severity.
+    #[arg(long)]
+    fail_on: Option<SeverityArg>,
+    /// GitHub event payload path (pull_request / pull_request_target).
+    #[arg(long)]
     event: Option<PathBuf>,
+    #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long)]
     profile: Option<String>,
+    #[arg(long)]
     strategy: Option<StrategyArg>,
+    #[arg(long)]
     publish: Option<PublishArg>,
+    #[arg(long)]
     out: Option<PathBuf>,
+    #[arg(long)]
     title: Option<String>,
+    #[arg(long)]
     body_file: Option<PathBuf>,
+    /// Re-review even when the patch is identical to stored state.
+    #[arg(long)]
     force: bool,
+    /// Print what would be reviewed and by whom, without any model,
+    /// Vera or GitHub call.
+    #[arg(long, conflicts_with_all = ["event", "publish", "sarif", "agent"])]
+    preview: bool,
+    /// Stream pipeline progress as NDJSON to this file (`-` for stderr).
+    #[arg(long, value_name = "PATH")]
+    progress_json: Option<PathBuf>,
 }
 
 fn load_cfg_unvalidated(
@@ -230,6 +225,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     reasoning_tokens: 0,
+                    cached_tokens: 0,
                     by_route: vec![],
                     wall_ms: 0,
                 },
@@ -255,9 +251,12 @@ async fn review(a: ReviewArgs) -> i32 {
             return 2;
         }
     }
-    if let Err(e) = cfg.validate_for(effective_strategy) {
-        eprintln!("error: {e}");
-        return 1;
+    // a preview calls no provider, so it needs no credentials
+    if !a.preview {
+        if let Err(e) = cfg.validate_for(effective_strategy) {
+            eprintln!("error: {e}");
+            return 1;
+        }
     }
     let body = a
         .body_file
@@ -334,15 +333,25 @@ async fn review(a: ReviewArgs) -> i32 {
             )
         }
         None => {
-            let Some(b) = a.base.clone() else {
-                eprintln!("error: --base is required without --event");
+            if a.uncommitted {
+                (
+                    "HEAD".into(),
+                    None,
+                    a.title.or_else(|| Some("Local uncommitted review".into())),
+                    body,
+                )
+            } else if let Some(b) = a.base.clone() {
+                (b, a.head.clone(), a.title.clone(), body)
+            } else if let Ok(def) = crate::git::default_branch(&repo).await {
+                (def, a.head.clone(), a.title.clone(), body)
+            } else {
+                eprintln!("error: --base is required without --event (or pass --uncommitted)");
                 return 1;
-            };
-            (b, a.head.clone(), a.title.clone(), body)
+            }
         }
     };
 
-    let req = ReviewRequest {
+    let mut req = ReviewRequest {
         repo: a.repo.clone(),
         base,
         head,
@@ -350,8 +359,44 @@ async fn review(a: ReviewArgs) -> i32 {
         body: pr_body,
         strategy_override: strategy,
         force: a.force,
+        uncommitted: a.uncommitted,
+        progress: None,
     };
-    match pipeline_run(&cfg, &req).await {
+    if a.preview {
+        return match crate::preview::preview(&cfg, &req).await {
+            Ok(text) => {
+                print!("{text}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                1
+            }
+        };
+    }
+    let sink = match &a.progress_json {
+        Some(p) => {
+            let b = std::sync::Arc::new(crate::progress::ProgressBroadcaster::default());
+            match crate::progress::spawn_ndjson_writer(&b, p) {
+                Ok(h) => {
+                    req.progress = Some(b);
+                    Some(h)
+                }
+                Err(e) => {
+                    eprintln!("error: cannot write progress to {}: {e}", p.display());
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+    let result = pipeline_run(&cfg, &req).await;
+    // dropping the last sender ends the stream; wait so every line is out
+    req.progress = None;
+    if let Some(h) = sink {
+        let _ = h.await;
+    }
+    match result {
         Ok((mut report, mut state)) => {
             let mut publish_failed = false;
             if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {
@@ -362,8 +407,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     &mut report,
                     &mut state,
                     cfg.review.max_findings,
-                    &cfg.github.summary_marker,
-                    &cfg.github.bot_login,
+                    &cfg.github,
                 )
                 .await;
                 let publish_ms = publish_start.elapsed().as_millis() as u64;
@@ -404,7 +448,28 @@ async fn review(a: ReviewArgs) -> i32 {
                     }
                 }
             }
-            print!("{}", report.plan.summary_markdown);
+            if a.agent {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report.findings).unwrap()
+                );
+            } else {
+                print!("{}", report.plan.summary_markdown);
+            }
+            if let Some(sarif_path) = &a.sarif {
+                let sarif_val = crate::report::to_sarif(&report);
+                if let Some(parent) = sarif_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(
+                    sarif_path,
+                    serde_json::to_string_pretty(&sarif_val).unwrap(),
+                ) {
+                    eprintln!("error: cannot write {}: {e}", sarif_path.display());
+                    return 1;
+                }
+                eprintln!("sarif: {}", sarif_path.display());
+            }
             let out = a
                 .out
                 .unwrap_or_else(|| repo.join(".revera/last-report.json"));
@@ -423,6 +488,19 @@ async fn review(a: ReviewArgs) -> i32 {
                 }
             }
             eprintln!("report: {}", out.display());
+            let fail_threshold = a
+                .fail_on
+                .map(crate::findings::Severity::from)
+                .or(cfg.review.fail_on_severity);
+            let ci_fail = fail_threshold
+                .is_some_and(|thresh| crate::report::fails_severity_gate(&report, &state, thresh));
+            if ci_fail {
+                eprintln!(
+                    "revera: review failed CI gate (findings meeting or exceeding {:?} detected)",
+                    fail_threshold.unwrap()
+                );
+                return 3;
+            }
             match report.status {
                 _ if publish_failed => 2,
                 RunStatus::Complete => 0,
@@ -510,6 +588,22 @@ async fn doctor(
             }
             for s in cfg.models.scouts.iter().flatten() {
                 routes.push((format!("models.scouts.{}", s.name), &s.route));
+            }
+            if let Some(r) = &cfg.panel.lens_router {
+                match r.check_credentials() {
+                    Ok(()) => println!(
+                        "panel.lens_router: {} via {} (key env {} set; diff text is sent there)",
+                        r.model, r.base_url, r.api_key_env
+                    ),
+                    Err(e) => {
+                        println!("panel.lens_router: FAIL — {e}");
+                        println!(
+                            "  next: export {}=<your TypeSafe key>, or remove panel.lens_router",
+                            r.api_key_env
+                        );
+                        ok = false;
+                    }
+                }
             }
         }
     }

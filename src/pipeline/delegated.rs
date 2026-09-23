@@ -68,6 +68,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         PrepareOut::Ready(p) => p,
         PrepareOut::ShortCircuit(rep, st) => return Ok((*rep, st)),
     };
+    if prep.risk_tier == Some(crate::triage::RiskTier::Trivial) {
+        return super::baseline::run_trivial(cfg, req, prep, "delegated").await;
+    }
     let labels = vec![
         "lead".to_string(),
         "workers".to_string(),
@@ -98,7 +101,14 @@ async fn delegated_candidates(
         cfg.budget.retries,
         &plan_terminal.name,
     )?;
-    let mut user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
+    let mut user = investigator_user(
+        req,
+        &prep.diff,
+        cfg.review.max_diff_bytes,
+        &cfg.review.path_instructions,
+        &cfg.review.knowledge_base,
+        &prep.review_context,
+    );
     if !prep.rechecks.is_empty() {
         user.push_str("\n\nPrior findings under recheck:\n");
         for r in &prep.rechecks {
@@ -152,7 +162,7 @@ async fn delegated_candidates(
         prep.partial_reasons
             .push("lead produced no questions; fell back to baseline".into());
         tracing::info!("delegated: lead returned no questions; running baseline investigator");
-        return super::baseline::investigate(cfg, req, prep).await;
+        return super::baseline::investigate(cfg, req, prep, &[]).await;
     }
 
     // ---- 2. workers concurrently ----
@@ -584,6 +594,10 @@ vera: {}
             reserve: Duration::ZERO,
             wall: Instant::now(),
             timing: crate::timing::Recorder::default(),
+            progress: Arc::new(crate::progress::ProgressBroadcaster::default()),
+            risk_tier: None,
+            sensitive_change: false,
+            review_context: String::new(),
         };
         if skipped > 0 {
             prep.partial_reasons

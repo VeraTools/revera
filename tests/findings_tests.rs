@@ -21,6 +21,10 @@ fn finding(file: &str, key: &str, line: u32, sev: Severity) -> Finding {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 
@@ -62,6 +66,50 @@ fn collapse_overlapping_lines_similar_titles() {
     b.title = "parse has null pointer dereference".into();
     let out = collapse(vec![a, b]);
     assert_eq!(out.len(), 1);
+}
+
+#[test]
+fn assurance_case_renders_in_finding_body() {
+    let mut f = finding("src/lib.rs", "key_sec", 15, Severity::High);
+    f.assurance = Some(revera::findings::AssuranceCase {
+        rule_id: Some("secrets".into()),
+        trigger: "Hardcoded API key detected".into(),
+        rationale: "Leaked secret in source code".into(),
+        counterevidence_checked: vec!["no env var fallback".into()],
+        validator_rederivation: Some("Confirmed AWS key regex match".into()),
+        confidence: 1.0,
+    });
+    let body = revera::report::finding_body(&f);
+    assert!(body.contains("<details>"));
+    assert!(body.contains("<summary>Assurance Trace</summary>"));
+    assert!(body.contains("Static Rule `secrets`"));
+    assert!(body.contains("**Trigger**: Hardcoded API key detected"));
+    assert!(body.contains("**Validator Re-derivation**: Confirmed AWS key regex match"));
+}
+
+#[test]
+fn rank_candidates_prioritizes_consensus_then_severity() {
+    let mut f_solo_high = finding("a.rs", "k1", 10, Severity::High);
+    f_solo_high.sources = vec!["scout:sec".into()];
+
+    let mut f_consensus_med = finding("b.rs", "k2", 20, Severity::Medium);
+    f_consensus_med.sources = vec!["scout:sec".into(), "scout:cross-file".into()];
+
+    let mut f_solo_low = finding("c.rs", "k3", 30, Severity::Low);
+    f_solo_low.sources = vec!["scout:general".into()];
+
+    let ranked = revera::findings::rank_candidates(vec![
+        f_solo_low.clone(),
+        f_solo_high.clone(),
+        f_consensus_med.clone(),
+    ]);
+
+    // f_consensus_med has 2 sources -> ranks 1st
+    // f_solo_high has 1 source, High severity -> ranks 2nd
+    // f_solo_low has 1 source, Low severity -> ranks 3rd
+    assert_eq!(ranked[0].defect_key, "k2");
+    assert_eq!(ranked[1].defect_key, "k1");
+    assert_eq!(ranked[2].defect_key, "k3");
 }
 
 #[test]

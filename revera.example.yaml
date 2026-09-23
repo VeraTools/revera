@@ -32,3 +32,10 @@ models:
 #     base_url: https://api.example.com/v1
 #     model: your-embedding-model
 #     api_key_env: EMBEDDING_API_KEY
+
+# Optional: diff triage. Lockfiles, minified bundles, source maps, vendored
+# and generated files are dropped before review by default; the summary lists
+# every skipped file. `risk_tiers` sizes panel/delegated swarms to the change.
+# triage:
+#   ignore_paths: ["docs/**"]
+#   risk_tiers: true

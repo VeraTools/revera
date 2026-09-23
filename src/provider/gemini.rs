@@ -349,6 +349,8 @@ impl ProtocolAdapter for GeminiAdapter {
             prompt_tokens: u["promptTokenCount"].as_u64().unwrap_or(0),
             completion_tokens: u["candidatesTokenCount"].as_u64().unwrap_or(0),
             reasoning_tokens: u["thoughtsTokenCount"].as_u64().unwrap_or(0),
+            // implicit context caching; included in promptTokenCount
+            cached_tokens: u["cachedContentTokenCount"].as_u64().unwrap_or(0),
         };
         // keep an ordered per-part record only when a signature was
         // actually returned; otherwise preserve the joined-text echo

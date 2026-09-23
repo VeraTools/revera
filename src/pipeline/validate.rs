@@ -7,6 +7,7 @@ use crate::prompts;
 use crate::provider::{LedgerHandle, ToolSpec};
 use crate::timing::Recorder;
 use crate::tools::{terminal_submit_verdict_spec, ToolBox};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -27,10 +28,31 @@ fn validator_budget_at(
     })
 }
 
+/// Strict EVAL validation gate: verifies a candidate names a real location
+/// before dispatching a validator agent. The file must be in the diff or be
+/// a readable file of the reviewed tree: cross-file findings outside the diff
+/// are legitimate and are published in the summary.
+pub fn has_verifiable_evidence(finding: &Finding, diff: &DiffSet, repo_root: &Path) -> bool {
+    if finding.file.trim().is_empty() || finding.start_line == 0 {
+        return false;
+    }
+    if diff.file(&finding.file).is_none()
+        && !ToolBox::is_safe_repo_path(repo_root, &finding.file).is_ok_and(|p| p.is_file())
+    {
+        return false;
+    }
+    for e in &finding.supporting_evidence {
+        if e.path.contains("..") || e.path.starts_with('/') {
+            return false;
+        }
+    }
+    true
+}
+
 /// Run one fresh-context validator agent per candidate, bounded by a
 /// concurrency semaphore. Failures mark the candidate uncertain; returns
 /// Some(partial_reason) when any candidate could not be conclusively validated.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 pub async fn validate_candidates(
     cfg: &Config,
     ledger: LedgerHandle,
@@ -49,7 +71,7 @@ pub async fn validate_candidates(
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_from = None;
-    for (i, c) in candidates.iter().enumerate() {
+    for i in 0..candidates.len() {
         if std::time::Instant::now() >= deadline {
             skipped_from = Some(i);
             break;
@@ -65,9 +87,24 @@ pub async fn validate_candidates(
         let system = system_prompt.to_string();
         let terminal = terminal.clone();
         let role = role.to_string();
-        let cand = c.clone();
-        let cand_id = c.id();
+        let cand = candidates[i].clone();
+        let cand_id = cand.id();
         let excerpt = diff.file_excerpt(&cand.file);
+        // rechecks re-validate findings already published; only the
+        // validator may resolve them, never this pre-filter
+        if !recheck && !has_verifiable_evidence(&cand, &diff, &tb.repo_root) {
+            candidates[i].validation_status = Some(ValidationStatus::Rejected);
+            candidates[i].rationale =
+                Some("failed EVAL gate: missing or ungrounded code evidence".into());
+            timing.record(
+                phase_name,
+                &format!("validator:{}", cand_id),
+                std::time::Instant::now(),
+                wall,
+                "eval_gate:rejected",
+            );
+            continue;
+        }
         // create the client in candidate order (before the semaphore race)
         // so scripted validators are matched to candidates deterministically
         let client = make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name);
@@ -174,6 +211,9 @@ pub async fn validate_candidates(
                         }
                         if let Some(l) = v.end_line {
                             cand.end_line = Some(l);
+                        }
+                        if let Some(q) = v.quoted_code {
+                            cand.quoted_code = Some(q);
                         }
                         cand.rationale = Some(v.rationale);
                         if v.validation_status == ValidationStatus::Accepted {

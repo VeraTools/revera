@@ -40,6 +40,24 @@ pub struct Evidence {
     pub note: String,
 }
 
+fn default_confidence() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssuranceCase {
+    #[serde(default)]
+    pub rule_id: Option<String>,
+    pub trigger: String,
+    pub rationale: String,
+    #[serde(default)]
+    pub counterevidence_checked: Vec<String>,
+    #[serde(default)]
+    pub validator_rederivation: Option<String>,
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub defect_key: String,
@@ -70,12 +88,51 @@ pub struct Finding {
     pub rationale: Option<String>,
     #[serde(default)]
     pub sources: Vec<String>,
+    #[serde(default)]
+    pub assurance: Option<AssuranceCase>,
+    /// Verbatim head-side lines the finding is about. Anchoring derives the
+    /// line range from a unique match in the diff instead of trusting counted
+    /// line numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted_code: Option<String>,
+    /// Exact replacement text for `quoted_code`; published as a GitHub
+    /// suggestion only when the quote anchored uniquely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_replacement: Option<String>,
+    /// Set by anchoring when `quoted_code` matched exactly once in the diff.
+    #[serde(skip)]
+    pub quote_anchored: bool,
 }
 
 impl Finding {
     /// hex(sha256(file + "\0" + defect_key))[..12]
     pub fn id(&self) -> String {
         finding_id(&self.file, &self.defect_key)
+    }
+
+    /// Number of distinct review lenses or scouts that flagged this defect.
+    pub fn consensus_count(&self) -> usize {
+        self.sources.len().max(1)
+    }
+
+    /// Returns the effective assurance case or constructs a baseline one from finding fields.
+    pub fn effective_assurance(&self) -> AssuranceCase {
+        if let Some(a) = &self.assurance {
+            a.clone()
+        } else {
+            AssuranceCase {
+                rule_id: if self.source.starts_with("static:") {
+                    Some(self.source.trim_start_matches("static:").to_string())
+                } else {
+                    None
+                },
+                trigger: self.trigger.clone(),
+                rationale: self.rationale.clone().unwrap_or_else(|| self.claim.clone()),
+                counterevidence_checked: self.counterevidence_checked.clone(),
+                validator_rederivation: None,
+                confidence: 1.0,
+            }
+        }
     }
 }
 
@@ -98,6 +155,9 @@ pub struct Verdict {
     pub start_line: Option<u32>,
     #[serde(default)]
     pub end_line: Option<u32>,
+    /// Corrected quote of the head-side lines, when the anchor should move.
+    #[serde(default)]
+    pub quoted_code: Option<String>,
     #[serde(default)]
     pub rationale: String,
 }
@@ -125,6 +185,28 @@ fn titles_similar(a: &str, b: &str) -> bool {
     let shared = ta.iter().filter(|w| tb.contains(w)).count();
     let denom = ta.len().max(tb.len()) as f64;
     (shared as f64 / denom) >= 0.6
+}
+
+/// Rank candidate findings prior to validation or publication.
+/// Order priority:
+/// 1. `consensus_count()` descending (corroborated by multiple independent scouts)
+/// 2. `severity` descending (High > Medium > Low)
+/// 3. `supporting_evidence.len()` descending (grounded in more code references)
+/// 4. `file` and `start_line` ascending for deterministic tie-breaking.
+pub fn rank_candidates(mut candidates: Vec<Finding>) -> Vec<Finding> {
+    candidates.sort_by(|a, b| {
+        b.consensus_count()
+            .cmp(&a.consensus_count())
+            .then_with(|| b.severity.cmp(&a.severity))
+            .then_with(|| {
+                b.supporting_evidence
+                    .len()
+                    .cmp(&a.supporting_evidence.len())
+            })
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.start_line.cmp(&b.start_line))
+    });
+    candidates
 }
 
 /// Merge candidates: same file and (same defect_key OR overlapping line ranges

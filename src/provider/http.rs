@@ -307,6 +307,7 @@ impl HttpTransport {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
                                     reasoning_tokens: usage.reasoning_tokens,
+                                    cached_tokens: usage.cached_tokens,
                                     latency_ms: latency,
                                     retries: retries_used,
                                     error: None,

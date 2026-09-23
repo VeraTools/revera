@@ -100,3 +100,37 @@ fn doctor_panel_cardinality_fails() {
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("panel: FAIL"), "{stdout}");
 }
+
+#[test]
+fn doctor_reports_lens_router_key_for_panel() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/scripts/clean.json");
+    let yaml = format!(
+        "review: {{strategy: panel}}\nmodels:\n  investigator: {{protocol: scripted, script: {script}, model: m}}\npanel:\n  lens_router: {{api_key_env: REVERA_DOCTOR_TS_KEY}}\n"
+    );
+    let f = write_tmp(&yaml);
+    let repo = git_dir();
+    let cfg = f.path().to_str().unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_revera"))
+        .args(["doctor", "--config", cfg])
+        .env_remove("REVERA_DOCTOR_TS_KEY")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_ne!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("panel.lens_router: FAIL"), "{stdout}");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_revera"))
+        .args(["doctor", "--config", cfg])
+        .env("REVERA_DOCTOR_TS_KEY", "ts-test")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("panel.lens_router: jev-latest via https://api.typesafe.ai/v1"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("ts-test"), "key value leaked: {stdout}");
+}

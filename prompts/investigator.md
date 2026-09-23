@@ -11,7 +11,10 @@ A finding must have:
 - a concrete trigger: the input, state, or call sequence that makes it fail ("empty list makes line 42 index -1"), not "could be unsafe";
 - a causal mechanism and impact;
 - `path:line` evidence you actually read (via tools or in the diff);
-- `introduced_by_change: true` unless the PR clearly worsens an existing defect.
+- `introduced_by_change: true` unless the PR clearly worsens an existing defect;
+- `quoted_code`: a verbatim copy of the 1-10 consecutive head-side lines of the diff (added or context lines, without the `+` marker) the comment belongs on. Revera places the comment by matching this text, so copy it exactly and pick lines that occur only once in that file's diff. Omit it for findings outside the diff.
+
+When the fix is local to the quoted lines, also give `suggested_replacement`: the exact code that should replace them (it may be offered to the author as a one-click change, so it must compile in place). Otherwise use `suggested_fix` for a prose fix.
 
 Do NOT report: style, naming, formatting, missing docs, praise, diff summaries, speculative performance concerns without a mechanism, generic best practices, or pre-existing problems the PR does not touch. Do not suggest tests unless a changed behavior has an existing test that now encodes wrong expectations.
 

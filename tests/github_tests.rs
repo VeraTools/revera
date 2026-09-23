@@ -31,6 +31,7 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
             prompt_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
+            cached_tokens: 0,
             by_route: vec![],
             wall_ms: 1,
         },
@@ -64,6 +65,10 @@ fn finding(id_body_file: &str) -> Finding {
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
+        assurance: None,
+        quoted_code: None,
+        suggested_replacement: None,
+        quote_anchored: false,
     }
 }
 
@@ -138,8 +143,7 @@ async fn head_moved_refuses() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .unwrap();
@@ -206,8 +210,7 @@ async fn happy_path_posts_review_and_summary() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .unwrap();
@@ -300,8 +303,7 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .unwrap();
@@ -353,8 +355,7 @@ async fn summary_only_finding_marked_posted() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .unwrap();
@@ -412,8 +413,7 @@ async fn summary_failure_leaves_finding_unposted() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .is_err());
@@ -477,8 +477,7 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .is_err());
@@ -505,8 +504,7 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
         &mut rep2,
         &mut st2,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await;
     assert!(st2.findings[0].posted, "reconciled from the PR's comments");
@@ -583,8 +581,7 @@ async fn forged_inline_marker_by_other_author_is_ignored() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .unwrap();
@@ -637,8 +634,7 @@ async fn inline_review_422_degrades_to_summary_only() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .unwrap();
@@ -687,8 +683,7 @@ async fn inline_review_500_still_fails_and_leaves_unposted() {
         &mut rep,
         &mut st,
         10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
+        &revera::config::GithubConfig::default(),
     )
     .await
     .is_err());

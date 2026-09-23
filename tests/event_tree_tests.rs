@@ -79,6 +79,8 @@ fn request(repo: &Path, base: &str, head: &str) -> ReviewRequest {
         body: String::new(),
         strategy_override: None,
         force: false,
+        uncommitted: false,
+        progress: None,
     }
 }
 

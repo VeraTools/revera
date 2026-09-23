@@ -8,5 +8,5 @@ Call `submit_report` exactly once with:
 - `result`: `complete` or `blocked` (with `blocked_reason`)
 - `answer`: 1-5 sentences answering the question directly
 - `evidence`: list of `{path, start_line, end_line, note}` you actually read; every claim in `answer` must be backed by one
-- `candidate_findings`: zero or more findings in the standard schema if your evidence shows a concrete defect (trigger, mechanism, impact, evidence, `defect_key`). Do not invent a finding to look useful; an answer of "all callers are compatible" is valuable.
+- `candidate_findings`: zero or more findings in the standard schema if your evidence shows a concrete defect (trigger, mechanism, impact, evidence, `defect_key`, and `quoted_code` when the defect sits on diff lines). Do not invent a finding to look useful; an answer of "all callers are compatible" is valuable.
 - `gaps`: what you could not check

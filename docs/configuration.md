@@ -78,6 +78,14 @@ Protocol wire formats:
 All HTTP protocols share one transport: retries with `Retry-After`, the run
 request budget, the run deadline and the ledger. Routes can mix protocols.
 
+Prompt caching needs no configuration. On `anthropic` routes Revera marks two
+cache breakpoints: the system block (caching the tools and system prompt every
+validator and lane of a run shares) and the newest turn (so each step of an
+agent loop reads the conversation the previous step wrote). OpenAI and Gemini
+cache long prefixes automatically. Every protocol reports cache hits, which
+the run report's ledger lists as `cached_tokens` (a subset of
+`prompt_tokens`, per route and in total).
+
 ## `review`
 
 | key | default | notes |
@@ -91,6 +99,9 @@ request budget, the run deadline and the ledger. Routes can mix protocols.
 | `concurrency` | `4` | concurrent lanes / validations |
 | `max_tool_output_bytes` | `12000` | truncation cap on each tool result |
 | `max_diff_bytes` | `200000` | diffs larger than this are truncated per file with a note |
+| `recall_rounds` | `1` | investigator passes for the `baseline` strategy (and the trivial-tier single investigator), 1-3. Each later pass is told what was already reported and looks for different defects; the loop stops as soon as a pass adds nothing new or the run deadline leaves no budget. A later pass that fails or times out does not make the run `partial`, because the first pass already covered the change. Every candidate is still validated |
+| `checklists` | `true` | add Revera's built-in defect checklists for the changed file types (Rust, Python, TypeScript/JavaScript, Go, Java/Kotlin, SQL, shell, C/C++, GitHub Actions workflows) to reviewer prompts. They list failure modes only, never style, and are part of the prompt version |
+| `instruction_files` | `true` | add the team's instruction files to reviewer prompts: `AGENTS.md` and `CLAUDE.md` in the root and in every directory above a changed file, `REVIEW.md`, `.github/copilot-instructions.md`, and `.github/instructions/*.instructions.md` whose `applyTo` globs match a changed file (files with `excludeAgent: code-review` are skipped). They are read from the **base** revision, so a pull request cannot change the guidance its own review follows; capped at 16 KB |
 
 ## `budget`
 
@@ -149,6 +160,14 @@ to cache `.vera` between runs.
 | `summary_marker` | `<!-- revera-summary -->` | marker identifying the managed summary comment |
 | `bot_login` | `github-actions[bot]` | author treated as Revera when the token cannot name itself |
 | `allow_forks` | `false` | publish on fork PRs (secrets are normally unavailable there; the run is reported `partial`) |
+| `resolve_threads` | `true` | resolve Revera's own review thread when the recheck validator marks its finding resolved. A thread is left open when a human replied, when its root comment is not authored by Revera's identity or lacks the finding's marker, or when not all of its comments could be read; at most 50 per run. Failures are recorded in the report, never fatal |
+
+When people react with 👎 or reply to Revera's inline comments, the summary
+comment lists that feedback (at most five entries, quoted as untrusted text
+with secrets redacted). Revera does not learn from it by itself and never
+hides a validated finding because of it; to change what it flags, record the
+convention in `REVIEW.md` or `AGENTS.md` on the base branch, which Revera reads
+as review guidance (`review.instruction_files`).
 
 ## `delegated` and `panel`
 
@@ -159,6 +178,76 @@ to cache `.vera` between runs.
 | `delegated.worker_max_seconds` | `120` | |
 | `panel.focuses` | `[general, cross-file]` | focus labels assigned to scouts without an explicit `focus` |
 | `panel.scout_max_tool_calls` | `15` | |
+| `panel.lens_router` | off | optional TypeSafe lens selection, below |
+
+### `panel.lens_router` (optional, TypeSafe)
+
+Before the scouts start, one request to a [TypeSafe](https://docs.typesafe.ai)
+System One model asks, for every lane, how likely the diff holds changes that
+lane's focus covers (a `noul` question per lane, batched in one call). Lanes
+below `min_probability` are not run; the most relevant lane always runs. The
+router only chooses scouts: every candidate still goes through fresh-context
+validation. Changes touching a security-sensitive path (see `triage`) bypass
+the router and run every lane.
+
+The router fails open: a missing key, HTTP error, timeout, malformed or
+missing answer runs every lane, and the summary note says why. Skipped lanes
+and their probabilities are listed in the summary note.
+
+**Data boundary:** when enabled, up to `max_state_bytes` of the reviewed diff
+is sent to `base_url`. Leave it unset for repositories whose code must not
+reach that service.
+
+| key | default | notes |
+|---|---|---|
+| `api_key_env` | required | *name* of the environment variable holding the TypeSafe key; required for `panel` runs, checked by `revera doctor` |
+| `base_url` | `https://api.typesafe.ai/v1` | requests go to `{base_url}/systemone` |
+| `model` | `jev-latest` | TypeSafe model id |
+| `min_probability` | `0.2` | lanes below this relevance probability are skipped |
+| `timeout_seconds` | `15` | per request, also bounded by the run deadline |
+| `max_state_bytes` | `60000` | cap on the diff text sent |
+
+## `triage`
+
+Deterministic diff triage runs before any model call. Files it drops are
+removed from the diff that reviewers, diff tools and static rules see (repository
+tools can still read them on request), and each one is listed in the
+summary under "not checked" with its reason. Triage settings are part of the
+review identity, so changing them re-reviews an unchanged PR.
+
+| key | default | notes |
+|---|---|---|
+| `filter_noise` | `true` | drop dependency lockfiles, minified bundles (`.min.js`, `.bundle.js`), JS/CSS source maps, files under `vendor/`, `node_modules/` or `third_party/`, and files whose first five lines carry a generated marker (`@generated`, `DO NOT EDIT`, `Code generated by`); paths containing `migration` are never treated as generated |
+| `ignore_paths` | `[]` | extra globs never reviewed, applied even with `filter_noise: false` |
+| `risk_tiers` | `false` | size the `panel` and `delegated` swarms by the reviewed change (below) |
+| `sensitive_paths` | `[]` | extra globs that force the `full` tier |
+| `trivial_max_lines` | `10` | added plus deleted reviewed lines at or under this are `trivial` |
+| `lite_max_lines` | `100` | at or under this (and above `trivial_max_lines`) are `lite` |
+| `lite_max_lanes` | `2` | panel lanes kept for a `lite` change, in configured order |
+
+Credential files (`.npmrc`, `.netrc`, `.pypirc`, `.dockercfg`,
+`.git-credentials`, SSH private keys and anything under `.ssh/`,
+`.aws/credentials`, `.docker/config.json`, `.env*` except
+`.example`/`.sample`/`.template`/`.dist`, and `*.pem`, `*.key`, `*.p12`,
+`*.pfx`, `*.jks`, `*.keystore`) are always withheld from every model and from
+the repository tools, whatever `filter_noise` says. The static rules still scan
+them locally; any match is listed in the summary by line number, never by
+content.
+
+Files that do not fit in `review.max_diff_bytes` are listed in the summary as
+well: their diff is not in the reviewers' prompt and they are reachable only
+through the repository tools.
+
+With `risk_tiers: true`, a change is `full` when it touches more than 20
+reviewed files or any security-sensitive path (a path containing `auth`,
+`crypto`, `security`, `secret`, `credential`, `password`, `permission`,
+`oauth`, `jwt`, `session` or `sandbox`, anything under `.github/workflows/`, or
+a `sensitive_paths` glob). A `trivial` change runs one investigator instead of
+the panel or delegated swarm; a `lite` change runs at most `lite_max_lanes`
+panel lanes. Fresh-context validation is unchanged in every tier. An explicit
+`--strategy` on the command line (or the Action's `strategy` input) opts the
+run out of tier downgrades. The summary note and `stats.risk_tier` in the run
+report record the tier applied.
 
 ## `profiles`
 
@@ -180,6 +269,8 @@ profiles:
 ```sh
 revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
 revera review --event "$GITHUB_EVENT_PATH" [--config <file>] --publish comment
+revera review --preview --base <rev> [--config <file>] [--strategy <s>]
+revera review ... --progress-json <path|->
 revera doctor [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment]
 revera cache-key [--config <file>] [--profile <name>]
 revera cache-info [--repo <path>]
@@ -187,6 +278,18 @@ revera cache-info [--repo <path>]
 
 `--force` re-reviews even when the previous review of the same head, base
 and effective configuration was `complete`.
+
+`--progress-json <path>` streams pipeline progress as NDJSON, one object per
+line with an `event` field (`diff_parsed`, `scout_dispatched`,
+`lane_completed`, `static_rules_checked`, `candidates_aggregated`,
+`validation_started`, `validation_finished`, `review_complete`), to a file or
+to stderr with `-`, for CI logs and agents that watch a run.
+
+`--preview` prints what a review would do without running it: the files it
+would review, the files triage skips and why, files that would not fit in
+`review.max_diff_bytes`, the strategy, risk tier and reviewer lanes. It makes
+no model, Vera or GitHub call, needs no credentials and writes no state. It
+works on local diffs only (not with `--event`).
 
 ## Action inputs
 

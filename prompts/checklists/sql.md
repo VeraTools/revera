@@ -1,0 +1,4 @@
+- migrations that lock or rewrite large tables, add `NOT NULL` without a default, or drop/rename columns still read by deployed code
+- missing `WHERE` on `UPDATE`/`DELETE`; joins that multiply rows; `NULL` semantics in `NOT IN` and comparisons
+- changed indexes or constraints that break uniqueness assumptions in application code
+- non-transactional multi-step changes that leave data inconsistent on failure

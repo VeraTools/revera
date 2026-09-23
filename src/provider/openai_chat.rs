@@ -281,6 +281,10 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             reasoning_tokens: parsed["usage"]["completion_tokens_details"]["reasoning_tokens"]
                 .as_u64()
                 .unwrap_or(0),
+            // OpenAI caches long prefixes automatically; this reports the hit
+            cached_tokens: parsed["usage"]["prompt_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .unwrap_or(0),
         };
         Parse::Ok(
             ChatMessage {

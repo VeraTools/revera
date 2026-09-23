@@ -1,6 +1,6 @@
 use crate::findings::Severity;
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +39,42 @@ impl Protocol {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathInstruction {
+    pub path: String,
+    pub instructions: String,
+}
+
+impl PathInstruction {
+    pub fn matches(&self, path: &str) -> bool {
+        if let Ok(glob) = globset::Glob::new(&self.path) {
+            let matcher = glob.compile_matcher();
+            matcher.is_match(path)
+        } else {
+            false
+        }
+    }
+}
+
+/// Review profiles governing sensitivity and publication severity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewProfile {
+    Quiet,
+    Chill,
+    Assertive,
+}
+
+impl ReviewProfile {
+    pub fn default_min_severity(self) -> Severity {
+        match self {
+            Self::Quiet => Severity::High,
+            Self::Chill => Severity::Medium,
+            Self::Assertive => Severity::Low,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewConfig {
@@ -62,6 +98,25 @@ pub struct ReviewConfig {
     /// accepted (warns in the log). Default true.
     #[serde(default = "default_true")]
     pub validate: bool,
+    #[serde(default)]
+    pub review_profile: Option<ReviewProfile>,
+    #[serde(default)]
+    pub path_instructions: Vec<PathInstruction>,
+    #[serde(default)]
+    pub fail_on_severity: Option<Severity>,
+    #[serde(default)]
+    pub knowledge_base: Vec<String>,
+    /// Add AGENTS.md / CLAUDE.md / REVIEW.md / Copilot instruction files
+    /// from the base revision to reviewer prompts.
+    #[serde(default = "default_true")]
+    pub instruction_files: bool,
+    /// Add the built-in defect checklists for the changed file types.
+    #[serde(default = "default_true")]
+    pub checklists: bool,
+    /// Investigator passes for the baseline strategy (1-3); later passes
+    /// look for defects the earlier ones did not report.
+    #[serde(default = "default_recall_rounds")]
+    pub recall_rounds: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -278,6 +333,10 @@ pub struct GithubConfig {
     /// Allow publishing comments on forked-PR events (default false).
     #[serde(default)]
     pub allow_forks: bool,
+    /// Resolve Revera's own review threads once the recheck validator marks
+    /// their finding resolved (default true).
+    #[serde(default = "default_true")]
+    pub resolve_threads: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -293,11 +352,110 @@ pub struct DelegatedConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PersonaConfig {
+    pub name: String,
+    #[serde(default)]
+    pub focus: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub route: Option<ModelRoute>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectiveLane {
+    pub name: String,
+    pub focus: Option<String>,
+    pub custom_prompt: Option<String>,
+    pub route: ModelRoute,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PanelConfig {
     #[serde(default = "default_focuses")]
     pub focuses: Vec<String>,
     #[serde(default = "default_scout_tool_calls")]
     pub scout_max_tool_calls: u32,
+    #[serde(default)]
+    pub personas: Option<Vec<PersonaConfig>>,
+    /// Optional TypeSafe-backed selection of which lanes run per diff.
+    #[serde(default)]
+    pub lens_router: Option<crate::pipeline::lens_router::LensRouterConfig>,
+}
+
+impl PanelConfig {
+    /// Resolve the list of effective scout lanes:
+    /// (lane_name, focus_or_prompt_key, optional_custom_prompt, route).
+    pub fn effective_lanes(
+        &self,
+        default_route: &ModelRoute,
+        scouts: Option<&[ScoutRoute]>,
+    ) -> Result<Vec<EffectiveLane>> {
+        if let Some(personas) = &self.personas {
+            if !personas.is_empty() {
+                let mut lanes = Vec::with_capacity(personas.len());
+                for p in personas {
+                    let route = if let Some(r) = &p.route {
+                        r.clone()
+                    } else if let Some(scouts_list) = scouts {
+                        if let Some(s) = scouts_list.iter().find(|s| {
+                            s.name == p.name
+                                || p.focus.as_deref() == Some(&s.name)
+                                || (p.focus.is_some() && p.focus == s.focus)
+                        }) {
+                            s.route.clone()
+                        } else if scouts_list.len() == 1 {
+                            scouts_list[0].route.clone()
+                        } else {
+                            default_route.clone()
+                        }
+                    } else {
+                        default_route.clone()
+                    };
+                    lanes.push(EffectiveLane {
+                        name: p.name.clone(),
+                        focus: p.focus.clone(),
+                        custom_prompt: p.prompt.clone(),
+                        route,
+                    });
+                }
+                return Ok(lanes);
+            }
+        }
+        let routes = match scouts {
+            None | Some([]) => vec![default_route.clone(); self.focuses.len()],
+            Some([single]) => vec![single.route.clone(); self.focuses.len()],
+            Some(many) => {
+                check_lane_cardinality(self.focuses.len(), many.len())?;
+                many.iter().map(|s| s.route.clone()).collect()
+            }
+        };
+        Ok(self
+            .focuses
+            .iter()
+            .cloned()
+            .zip(routes)
+            .map(|(focus, route)| EffectiveLane {
+                name: focus.clone(),
+                focus: Some(focus),
+                custom_prompt: None,
+                route,
+            })
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuleConfig {
+    pub id: String,
+    pub pattern: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub severity: Severity,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -318,6 +476,10 @@ pub struct ReviewOverride {
     pub max_tool_output_bytes: Option<usize>,
     pub max_diff_bytes: Option<usize>,
     pub min_severity: Option<Severity>,
+    pub review_profile: Option<ReviewProfile>,
+    pub path_instructions: Option<Vec<PathInstruction>>,
+    pub fail_on_severity: Option<Severity>,
+    pub knowledge_base: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -347,11 +509,18 @@ pub struct Config {
     #[serde(default)]
     pub panel: PanelConfig,
     #[serde(default)]
+    pub rules: Option<Vec<RuleConfig>>,
+    #[serde(default)]
+    pub triage: crate::triage::TriageConfig,
+    #[serde(default)]
     pub profiles: HashMap<String, ProfileOverride>,
 }
 
 fn default_true() -> bool {
     true
+}
+fn default_recall_rounds() -> u32 {
+    1
 }
 fn default_max_findings() -> usize {
     10
@@ -426,6 +595,13 @@ impl Default for ReviewConfig {
             max_diff_bytes: default_diff_bytes(),
             min_severity: Severity::default(),
             validate: default_true(),
+            review_profile: None,
+            path_instructions: Vec::new(),
+            fail_on_severity: None,
+            knowledge_base: Vec::new(),
+            instruction_files: true,
+            checklists: true,
+            recall_rounds: default_recall_rounds(),
         }
     }
 }
@@ -457,6 +633,8 @@ impl Default for PanelConfig {
         Self {
             focuses: default_focuses(),
             scout_max_tool_calls: default_scout_tool_calls(),
+            personas: None,
+            lens_router: None,
         }
     }
 }
@@ -500,6 +678,7 @@ impl Default for GithubConfig {
             summary_marker: default_marker(),
             bot_login: default_bot_login(),
             allow_forks: false,
+            resolve_threads: true,
         }
     }
 }
@@ -640,6 +819,21 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self) -> Result<()> {
+        self.triage.validate()?;
+        if !(1..=3).contains(&self.review.recall_rounds) {
+            bail!(
+                "review.recall_rounds must be 1, 2 or 3 (got {})",
+                self.review.recall_rounds
+            );
+        }
+        if let Some(r) = &self.panel.lens_router {
+            r.validate()?;
+        }
+        if let Some(rp) = self.review.review_profile {
+            if self.review.min_severity == Severity::Low {
+                self.review.min_severity = rp.default_min_severity();
+            }
+        }
         let m = &self.github.summary_marker;
         if !(m.starts_with("<!-- revera") && m.trim_end().ends_with("-->")) {
             bail!(
@@ -669,6 +863,13 @@ impl Config {
                 expand_route(&mut s.route)?;
             }
         }
+        if let Some(ps) = &mut self.panel.personas {
+            for p in ps.iter_mut() {
+                if let Some(r) = &mut p.route {
+                    expand_route(r)?;
+                }
+            }
+        }
         check_route_shape("investigator", &self.models.investigator)?;
         if let Some(v) = &self.models.validator {
             check_route_shape("validator", v)?;
@@ -684,6 +885,13 @@ impl Config {
         if let Some(ss) = &self.models.scouts {
             for s in ss.iter() {
                 check_route_shape(&format!("scouts.{}", s.name), &s.route)?;
+            }
+        }
+        if let Some(ps) = &self.panel.personas {
+            for p in ps.iter() {
+                if let Some(r) = &p.route {
+                    check_route_shape(&format!("panel.personas.{}", p.name), r)?;
+                }
             }
         }
         Ok(())
@@ -705,6 +913,11 @@ impl Config {
 
     /// Panel cardinality rule used by `doctor` and the panel pipeline.
     pub fn check_panel_lanes(&self) -> Result<()> {
+        if let Some(ps) = &self.panel.personas {
+            if !ps.is_empty() {
+                return Ok(());
+            }
+        }
         let n = self.models.scouts.as_ref().map_or(0, |s| s.len());
         check_lane_cardinality(self.panel.focuses.len(), n)
     }
@@ -734,6 +947,16 @@ impl Config {
                     for s in ss.iter() {
                         check_route_credentials(&format!("scouts.{}", s.name), &s.route)?;
                     }
+                }
+                if let Some(ps) = &self.panel.personas {
+                    for p in ps.iter() {
+                        if let Some(r) = &p.route {
+                            check_route_credentials(&format!("panel.personas.{}", p.name), r)?;
+                        }
+                    }
+                }
+                if let Some(r) = &self.panel.lens_router {
+                    r.check_credentials()?;
                 }
             }
         }
@@ -768,6 +991,16 @@ impl Config {
             "max_findings": self.review.max_findings,
             "publish_uncertain": self.review.publish_uncertain,
             "min_severity": format!("{:?}", self.review.min_severity).to_lowercase(),
+            "review_profile": self.review.review_profile.map(|p| match p {
+                ReviewProfile::Quiet => "quiet",
+                ReviewProfile::Chill => "chill",
+                ReviewProfile::Assertive => "assertive",
+            }),
+            "path_instructions": self.review.path_instructions,
+            "knowledge_base": self.review.knowledge_base,
+            "instruction_files": self.review.instruction_files,
+            "checklists": self.review.checklists,
+            "recall_rounds": self.review.recall_rounds,
             "validate": self.review.validate,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
@@ -787,7 +1020,26 @@ impl Config {
             "panel": {
                 "focuses": self.panel.focuses,
                 "scout_max_tool_calls": self.panel.scout_max_tool_calls,
+                "lens_router": self.panel.lens_router.as_ref().map(|r| r.fingerprint()),
+                "personas": self.panel.personas.as_ref().map(|ps| {
+                    ps.iter().map(|p| serde_json::json!({
+                        "name": p.name,
+                        "focus": p.focus,
+                        "prompt": p.prompt,
+                        "route": p.route.as_ref().map(route),
+                    })).collect::<Vec<_>>()
+                }),
             },
+            "rules": self.rules.as_ref().map(|rs| {
+                rs.iter().map(|r| serde_json::json!({
+                    "id": r.id,
+                    "pattern": r.pattern,
+                    "files": r.files,
+                    "severity": r.severity.to_string(),
+                    "message": r.message,
+                })).collect::<Vec<_>>()
+            }),
+            "triage": self.triage,
             "investigator": route(&self.models.investigator),
             "validator": route(self.effective_validator()),
             "lead": self.models.lead.as_ref().map(route),
@@ -830,6 +1082,21 @@ impl Config {
             }
             if let Some(v) = r.min_severity {
                 self.review.min_severity = v;
+            }
+            if let Some(rp) = r.review_profile {
+                self.review.review_profile = Some(rp);
+                if r.min_severity.is_none() {
+                    self.review.min_severity = rp.default_min_severity();
+                }
+            }
+            if let Some(v) = &r.path_instructions {
+                self.review.path_instructions = v.clone();
+            }
+            if let Some(v) = r.fail_on_severity {
+                self.review.fail_on_severity = Some(v);
+            }
+            if let Some(v) = &r.knowledge_base {
+                self.review.knowledge_base = v.clone();
             }
         }
         if let Some(b) = &p.budget {

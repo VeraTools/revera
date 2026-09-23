@@ -410,7 +410,8 @@ async fn anthropic_request_shape_and_tool_result_merge() {
         ))
         .and(body_partial_json(json!({
             "model": "claude-x",
-            "system": "you review",
+            // cache breakpoints: tools + system, and the newest turn
+            "system": [{"type": "text", "text": "you review", "cache_control": {"type": "ephemeral"}}],
             "max_tokens": 100,
             "messages": [
                 {"role": "user", "content": [{"type": "text", "text": "check this"}]},
@@ -420,13 +421,15 @@ async fn anthropic_request_shape_and_tool_result_merge() {
                      "input": {"path": "a.rs"}}]},
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "call_1", "content": "file contents"},
-                    {"type": "tool_result", "tool_use_id": "call_2", "content": "a.rs b.rs"}]}
+                    {"type": "tool_result", "tool_use_id": "call_2", "content": "a.rs b.rs",
+                     "cache_control": {"type": "ephemeral"}}]}
             ],
             "tools": [{"name": "read_file", "input_schema": {"type": "object"}}]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "content": [{"type": "text", "text": "all good"}],
-            "usage": {"input_tokens": 9, "output_tokens": 4}
+            "usage": {"input_tokens": 9, "output_tokens": 4,
+                      "cache_creation_input_tokens": 100, "cache_read_input_tokens": 2000}
         })))
         .expect(1)
         .mount(&server)
@@ -443,7 +446,9 @@ async fn anthropic_request_shape_and_tool_result_merge() {
     let (.., tools) = convo();
     let r = c.complete(&msgs, &tools).await.unwrap();
     assert_eq!(r.message.content.as_deref(), Some("all good"));
-    assert_eq!(r.usage.prompt_tokens, 9);
+    // input_tokens is the uncached remainder; the prompt is all three
+    assert_eq!(r.usage.prompt_tokens, 2109);
+    assert_eq!(r.usage.cached_tokens, 2000);
     server.verify().await;
 }
 
@@ -1801,4 +1806,111 @@ async fn ledger_entry_records_reasoning_tokens() {
     let entries = ledger.0.lock().unwrap().entries.clone();
     assert_eq!(entries[0].reasoning_tokens, 7);
     assert_eq!(ledger.totals().3, 7);
+}
+
+// ---------- prompt cache accounting ----------
+
+/// Complete one request against `body` and return (prompt, cached) tokens
+/// plus the ledger's report totals.
+async fn cache_usage(proto: Protocol, body: serde_json::Value) -> (u64, u64, u64) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let r = match proto {
+        Protocol::OpenaiChat => {
+            OpenAiChatClient::new(route(&server.uri()), ledger.clone(), 10, 3, "test")
+                .unwrap()
+                .complete(&[ChatMessage::user("x")], &[])
+                .await
+        }
+        Protocol::OpenaiResponses => {
+            HttpClient {
+                adapter: OpenAiResponsesAdapter::from_route(route_for(&server.uri(), proto, "m"))
+                    .unwrap(),
+                transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+            }
+            .complete(&[ChatMessage::user("x")], &[])
+            .await
+        }
+        _ => {
+            HttpClient {
+                adapter: GeminiAdapter::from_route(route_for(&server.uri(), proto, "gemini-x"))
+                    .unwrap(),
+                transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+            }
+            .complete(&[ChatMessage::user("x")], &[])
+            .await
+        }
+    }
+    .unwrap();
+    let report = revera::report::ledger_report(&ledger.0.lock().unwrap(), 1);
+    assert_eq!(report.by_route[0].cached_tokens, report.cached_tokens);
+    (
+        r.usage.prompt_tokens,
+        r.usage.cached_tokens,
+        report.cached_tokens,
+    )
+}
+
+#[tokio::test]
+async fn cached_prompt_tokens_are_accounted_per_protocol() {
+    let chat = json!({
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 3000, "completion_tokens": 2,
+                  "prompt_tokens_details": {"cached_tokens": 2048}}
+    });
+    assert_eq!(
+        cache_usage(Protocol::OpenaiChat, chat).await,
+        (3000, 2048, 2048)
+    );
+    let responses = json!({
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 5000, "output_tokens": 2,
+                  "input_tokens_details": {"cached_tokens": 4096}}
+    });
+    assert_eq!(
+        cache_usage(Protocol::OpenaiResponses, responses).await,
+        (5000, 4096, 4096)
+    );
+    let gemini = json!({
+        "candidates": [{"content": {"parts": [{"text": "ok"}], "role": "model"}}],
+        "usageMetadata": {"promptTokenCount": 7000, "candidatesTokenCount": 2,
+                          "cachedContentTokenCount": 6000}
+    });
+    assert_eq!(
+        cache_usage(Protocol::Gemini, gemini).await,
+        (7000, 6000, 6000)
+    );
+}
+
+#[tokio::test]
+async fn anthropic_marks_the_newest_user_block_for_caching() {
+    // the newest turn carries the conversation breakpoint
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = HttpClient {
+        adapter: AnthropicAdapter::from_route(route_for(
+            &server.uri(),
+            Protocol::Anthropic,
+            "claude-x",
+        ))
+        .unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+    };
+    c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    server.verify().await;
 }

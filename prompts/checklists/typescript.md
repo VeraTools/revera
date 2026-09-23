@@ -1,0 +1,6 @@
+- `undefined`/`null` flowing into property access, especially after optional chaining is dropped or a non-null assertion (`!`) is added
+- promises not awaited, `forEach` with async callbacks, unhandled rejections, missing `try/finally` cleanup
+- `==` vs `===`, truthiness checks that treat `0`/`""` as missing, `parseInt` without radix, floating-point money arithmetic
+- user input reaching `innerHTML`/`dangerouslySetInnerHTML`, `eval`, shell commands, SQL strings or file paths
+- React: state updates from stale closures, missing effect dependencies, effects without cleanup, keys that are array indices on reorderable lists
+- type assertions (`as`) or `any` that hide a real shape mismatch

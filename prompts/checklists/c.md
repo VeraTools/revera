@@ -1,0 +1,5 @@
+- buffer overflows: unchecked lengths in `memcpy`/`strcpy`/`sprintf`, off-by-one on null terminators, signed/unsigned length mix-ups
+- use-after-free, double free, leaks on error paths, returning pointers to stack memory
+- integer overflow in size calculations before allocation
+- uninitialized variables and struct fields; undefined behaviour from shifts, aliasing or signed overflow
+- missing checks of return values from allocation and I/O calls
