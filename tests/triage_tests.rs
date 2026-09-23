@@ -6,6 +6,10 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+/// A key shaped like a real AWS access key id, split so the source never
+/// contains a scannable literal.
+const FAKE_AWS_KEY: &str = concat!("AKIA", "Z7Q3LK5RW2NVX8TB");
+
 /// A unified diff modifying `path` with `adds` added lines starting at line 10.
 fn modified(path: &str, adds: usize) -> String {
     let body: String = (0..adds).map(|i| format!("+let v{i} = {i};\n")).collect();
@@ -394,7 +398,7 @@ async fn committed_secret_in_a_credential_file_is_reported_without_its_content()
     let base = git(repo, &["rev-parse", "HEAD"]);
     std::fs::write(
         repo.join(".npmrc"),
-        "registry=x\n//r/:_authToken=AKIAIOSFODNN7EXAMPLE\n",
+        format!("registry=x\n//r/:_authToken={FAKE_AWS_KEY}\n"),
     )
     .unwrap();
     git(repo, &["add", "."]);

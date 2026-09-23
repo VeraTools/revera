@@ -6,6 +6,10 @@ use revera::state::{FindingState, ReviewState};
 use revera::tools::ToolBox;
 use std::process::Command;
 
+/// A key shaped like a real AWS access key id, split so the source never
+/// contains a scannable literal.
+const FAKE_AWS_KEY: &str = concat!("AKIA", "Z7Q3LK5RW2NVX8TB");
+
 fn added_line(file: &str, text: &str) -> DiffSet {
     DiffSet {
         files: vec![FileDiff {
@@ -30,17 +34,17 @@ fn added_line(file: &str, text: &str) -> DiffSet {
 
 #[test]
 fn static_secret_findings_never_carry_the_secret() {
-    let diff = added_line("src/config.rs", "let k = \"AKIAIOSFODNN7EXAMPLE\";");
+    let diff = added_line("src/config.rs", &format!("let k = \"{FAKE_AWS_KEY}\";"));
     let findings = scan_diff(&diff, None);
     assert_eq!(findings.len(), 1);
     let json = serde_json::to_string(&findings[0]).unwrap();
-    assert!(!json.contains("AKIAIOSFODNN7EXAMPLE"), "{json}");
+    assert!(!json.contains(FAKE_AWS_KEY), "{json}");
 }
 
 #[test]
 fn long_multibyte_matching_line_does_not_panic() {
     // a multi-byte character straddles byte 80 of the matched line
-    let line = format!("{}é let k = \"AKIAIOSFODNN7EXAMPLE\";", "x".repeat(79));
+    let line = format!("{}é let k = \"{FAKE_AWS_KEY}\";", "x".repeat(79));
     let findings = scan_diff(&added_line("src/a.rs", &line), None);
     assert_eq!(findings.len(), 1);
 }

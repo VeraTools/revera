@@ -3,6 +3,10 @@ use revera::diff::{DiffLine, DiffLineKind, DiffSet, FileDiff, FileStatus, Hunk};
 use revera::findings::Severity;
 use revera::rules::scan_diff;
 
+/// A key shaped like a real AWS access key id, split so the source never
+/// contains a scannable literal.
+const FAKE_AWS_KEY: &str = concat!("AKIA", "Z7Q3LK5RW2NVX8TB");
+
 fn make_diff(file: &str, lines: Vec<(DiffLineKind, &str)>) -> DiffSet {
     let diff_lines = lines
         .into_iter()
@@ -45,7 +49,7 @@ fn secrets_detector_catches_aws_and_github_keys() {
             (DiffLineKind::Ctx, "pub fn init() {"),
             (
                 DiffLineKind::Add,
-                "    let aws_key = \"AKIAIOSFODNN7EXAMPLE\";",
+                &format!("    let aws_key = \"{FAKE_AWS_KEY}\";"),
             ),
             (DiffLineKind::Ctx, "}"),
         ],
@@ -171,4 +175,26 @@ fn slop_detector_catches_unimplemented_stubs() {
         assert_eq!(f.source, "static:slop-placeholder");
         assert_eq!(f.severity, Severity::Medium);
     }
+}
+
+#[test]
+fn documented_example_keys_are_not_secrets_but_fine_grained_pats_are() {
+    let scan = |line: &str| {
+        scan_diff(
+            &make_diff("src/config.rs", vec![(DiffLineKind::Add, line)]),
+            None,
+        )
+    };
+    // AWS's published documentation example key
+    assert!(scan("let k = \"AKIAIOSFODNN7EXAMPLE\";").is_empty());
+    // an example next to a real-looking key still reports the real one
+    assert_eq!(
+        scan(&format!(
+            "let k = \"AKIAIOSFODNN7EXAMPLE\"; let r = \"{FAKE_AWS_KEY}\";"
+        ))
+        .len(),
+        1
+    );
+    let pat = format!("let t = \"github_pat_{}\";", "A1b2C3d4".repeat(8));
+    assert_eq!(scan(&pat).len(), 1);
 }

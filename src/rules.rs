@@ -10,12 +10,24 @@ static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         r#"(?x)
         \bAKIA[0-9A-Z]{16}\b |
         \bgh[pousr]_[A-Za-z0-9_]{36,255}\b |
+        \bgithub_pat_[A-Za-z0-9_]{22,255}\b |
         \bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b |
         -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----
     "#,
     )
     .unwrap()
 });
+
+/// Credentials vendors publish as documentation examples; they match the
+/// patterns but are not secrets (secret scanners allowlist them too).
+const DOC_EXAMPLE_SECRETS: &[&str] = &["AKIAIOSFODNN7EXAMPLE", "AKIAI44QH8DHBEXAMPLE"];
+
+/// A secret-pattern match that is not a published documentation example.
+fn has_secret(text: &str) -> bool {
+    SECRET_REGEX
+        .find_iter(text)
+        .any(|m| !DOC_EXAMPLE_SECRETS.contains(&m.as_str()))
+}
 
 static DEBUG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -88,7 +100,7 @@ pub fn scan_diff(diff: &DiffSet, custom_rules: Option<&[RuleConfig]>) -> Vec<Fin
                 let text = line.text.trim();
 
                 // 1. Secret detection
-                if SECRET_REGEX.is_match(text) {
+                if has_secret(text) {
                     findings.push(make_finding(StaticMatch {
                         rule_id: "secrets",
                         severity: Severity::High,
