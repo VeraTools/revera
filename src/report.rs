@@ -69,6 +69,11 @@ pub struct Publication {
     pub summary_comment_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped_reason: Option<String>,
+    /// Review threads resolved because their finding was validated as fixed.
+    #[serde(default)]
+    pub resolved_threads: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_resolution_error: Option<String>,
 }
 
 impl Default for Publication {
@@ -78,6 +83,8 @@ impl Default for Publication {
             review_id: None,
             summary_comment_id: None,
             skipped_reason: None,
+            resolved_threads: 0,
+            thread_resolution_error: None,
         }
     }
 }

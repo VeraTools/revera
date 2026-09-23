@@ -35,6 +35,20 @@ pub struct ReviewComment {
     pub body: String,
 }
 
+/// A pull request review thread as seen through GraphQL.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewThread {
+    pub id: String,
+    pub is_resolved: bool,
+    /// Every comment of the thread is in `comments` (no unfetched page).
+    pub complete: bool,
+    pub comments: Vec<GhComment>,
+}
+
+const THREADS_QUERY: &str = "query($owner:String!,$repo:String!,$n:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$n){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:50){totalCount nodes{body author{login __typename}}}}}}}}";
+const RESOLVE_MUTATION: &str =
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}";
+
 pub struct GitHubApi {
     pub base: String,
     token: String,
@@ -271,5 +285,104 @@ impl GitHubApi {
             )
             .await?;
         Ok(v["id"].as_u64().unwrap_or(0))
+    }
+
+    /// GraphQL endpoint for `base`: `/graphql` on api.github.com, and
+    /// `/api/graphql` for a GitHub Enterprise `/api/v3` REST base.
+    fn graphql_url(&self) -> String {
+        match self.base.strip_suffix("/api/v3") {
+            Some(host) => format!("{host}/api/graphql"),
+            None => format!("{}/graphql", self.base),
+        }
+    }
+
+    async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
+        let v = self
+            .send(
+                self.http
+                    .post(self.graphql_url())
+                    .json(&json!({"query": query, "variables": variables})),
+            )
+            .await?;
+        if let Some(errors) = v.get("errors").filter(|e| !e.is_null()) {
+            anyhow::bail!("GitHub GraphQL error: {}", excerpt(&errors.to_string()));
+        }
+        Ok(v["data"].clone())
+    }
+
+    /// All review threads of the PR (paginated), with up to 50 comments each.
+    pub async fn list_review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        n: u64,
+    ) -> Result<Vec<ReviewThread>> {
+        let mut out = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let data = self
+                .graphql(
+                    THREADS_QUERY,
+                    json!({"owner": owner, "repo": repo, "n": n, "after": after}),
+                )
+                .await?;
+            let threads = &data["repository"]["pullRequest"]["reviewThreads"];
+            let nodes = threads["nodes"]
+                .as_array()
+                .context("GraphQL response missing reviewThreads")?;
+            for t in nodes {
+                let comments: Vec<GhComment> = t["comments"]["nodes"]
+                    .as_array()
+                    .map(|cs| {
+                        cs.iter()
+                            .map(|c| {
+                                let is_bot = c["author"]["__typename"].as_str() == Some("Bot");
+                                // GraphQL names bots without the `[bot]` suffix
+                                // REST uses; normalise so ownership compares alike
+                                let author = c["author"]["login"].as_str().map(|l| {
+                                    if is_bot && !l.ends_with("[bot]") {
+                                        format!("{l}[bot]")
+                                    } else {
+                                        l.to_string()
+                                    }
+                                });
+                                GhComment {
+                                    id: 0,
+                                    body: c["body"].as_str().unwrap_or("").to_string(),
+                                    author,
+                                    author_is_bot: is_bot,
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let total = t["comments"]["totalCount"].as_u64().unwrap_or(u64::MAX);
+                out.push(ReviewThread {
+                    id: t["id"].as_str().unwrap_or("").to_string(),
+                    is_resolved: t["isResolved"].as_bool().unwrap_or(true),
+                    complete: total == comments.len() as u64,
+                    comments,
+                });
+            }
+            if threads["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
+                return Ok(out);
+            }
+            after = threads["pageInfo"]["endCursor"]
+                .as_str()
+                .map(str::to_string);
+            if after.is_none() {
+                return Ok(out);
+            }
+        }
+    }
+
+    pub async fn resolve_review_thread(&self, thread_id: &str) -> Result<()> {
+        let data = self
+            .graphql(RESOLVE_MUTATION, json!({"id": thread_id}))
+            .await?;
+        if data["resolveReviewThread"]["thread"]["isResolved"].as_bool() != Some(true) {
+            anyhow::bail!("thread {thread_id} was not resolved");
+        }
+        Ok(())
     }
 }

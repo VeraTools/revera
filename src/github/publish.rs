@@ -1,11 +1,15 @@
-use super::api::{GhComment, GitHubApi, GitHubHttpError, ReviewComment};
+use super::api::{GhComment, GitHubApi, GitHubHttpError, ReviewComment, ReviewThread};
 use super::event::PrEvent;
+use crate::config::GithubConfig;
 use crate::report::{surfaced_ids, Publication, RunReport};
 use crate::state::{FindingState, ReviewState};
 use anyhow::Result;
 use base64::Engine;
+use std::collections::HashSet;
 
 const STATE_PREFIX: &str = "<!-- revera-state:";
+/// Upper bound on review threads resolved in one run.
+const MAX_THREAD_RESOLUTIONS: usize = 50;
 const STATE_SUFFIX: &str = " -->";
 
 /// `<!-- revera-state:<base64(json)> -->`
@@ -102,6 +106,55 @@ fn revera_id(body: &str) -> Option<String> {
     Some(body[start..end].trim().to_string())
 }
 
+/// A thread may be resolved only when every check passes; anything unknown
+/// keeps it open. The trigger is a validator verdict (`resolved` ids), never
+/// GitHub's own "outdated" flag.
+pub fn thread_to_resolve(t: &ReviewThread, resolved: &HashSet<String>, me: &Identity) -> bool {
+    let Some(root) = t.comments.first() else {
+        return false;
+    };
+    !t.is_resolved
+        && t.complete
+        // authorship must be known and ours: the token may be shared with
+        // other workflows posting look-alike markers
+        && root.author.is_some()
+        && me.owns(root)
+        && revera_id(&root.body).is_some_and(|id| resolved.contains(&id))
+        // a human reply means a conversation Revera must not close
+        && t.comments.iter().all(|c| c.author == root.author)
+}
+
+/// Resolve our threads for findings the recheck validator marked resolved.
+/// Returns how many were resolved; errors are the caller's to report.
+async fn resolve_fixed_threads(
+    api: &GitHubApi,
+    ev: &PrEvent,
+    state: &ReviewState,
+    me: &Identity,
+) -> Result<usize> {
+    let resolved: HashSet<String> = state
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingState::Resolved)
+        .map(|f| f.id.clone())
+        .collect();
+    if resolved.is_empty() {
+        return Ok(0);
+    }
+    let (owner, repo) = ev.owner_repo();
+    let threads = api.list_review_threads(owner, repo, ev.number).await?;
+    let mut n = 0;
+    for t in threads
+        .iter()
+        .filter(|t| thread_to_resolve(t, &resolved, me))
+        .take(MAX_THREAD_RESOLUTIONS)
+    {
+        api.resolve_review_thread(&t.id).await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// All currently open findings (incl. previously posted).
 fn open_section(state: &ReviewState) -> String {
     let open: Vec<_> = state
@@ -136,9 +189,9 @@ pub async fn publish(
     report: &mut RunReport,
     state: &mut ReviewState,
     max_findings: usize,
-    summary_marker: &str,
-    bot_login: &str,
+    gh: &GithubConfig,
 ) -> Result<Publication> {
+    let summary_marker = gh.summary_marker.as_str();
     let (owner, repo) = ev.owner_repo();
     let mut pubn = Publication {
         mode: "comment".into(),
@@ -168,7 +221,7 @@ pub async fn publish(
     // (2) review with inline comments for accepted+Inline, not yet posted.
     // Inline comments already on the PR count as posted even when a prior
     // summary upsert failed before it could record them.
-    let me = Identity::resolve(api, bot_login).await;
+    let me = Identity::resolve(api, &gh.bot_login).await;
     let already = match api.list_review_comments(owner, repo, ev.number).await {
         Ok(comments) => posted_revera_ids(&comments, &me),
         Err(e) => {
@@ -260,6 +313,18 @@ pub async fn publish(
     // tell the same story
     report.plan.summary_markdown =
         crate::report::refresh_timing_line(&report.plan.summary_markdown, &report.timing);
+
+    // resolving threads is a courtesy: a failure is reported, never fatal
+    if gh.resolve_threads {
+        match resolve_fixed_threads(api, ev, state, &me).await {
+            Ok(n) => pubn.resolved_threads = n,
+            Err(e) => {
+                tracing::warn!("could not resolve review threads: {e:#}");
+                pubn.thread_resolution_error =
+                    Some(crate::text::excerpt_bytes(&e.to_string(), 200));
+            }
+        }
+    }
 
     // (3) upsert the managed summary comment
     let mut staged = state.clone();

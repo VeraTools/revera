@@ -414,8 +414,7 @@ async fn review(a: ReviewArgs) -> i32 {
                     &mut report,
                     &mut state,
                     cfg.review.max_findings,
-                    &cfg.github.summary_marker,
-                    &cfg.github.bot_login,
+                    &cfg.github,
                 )
                 .await;
                 let publish_ms = publish_start.elapsed().as_millis() as u64;

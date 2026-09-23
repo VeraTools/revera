@@ -322,6 +322,10 @@ pub struct GithubConfig {
     /// Allow publishing comments on forked-PR events (default false).
     #[serde(default)]
     pub allow_forks: bool,
+    /// Resolve Revera's own review threads once the recheck validator marks
+    /// their finding resolved (default true).
+    #[serde(default = "default_true")]
+    pub resolve_threads: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -657,6 +661,7 @@ impl Default for GithubConfig {
             summary_marker: default_marker(),
             bot_login: default_bot_login(),
             allow_forks: false,
+            resolve_threads: true,
         }
     }
 }
