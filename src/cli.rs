@@ -57,6 +57,10 @@ enum Cmd {
         /// Re-review even when the patch is identical to stored state.
         #[arg(long)]
         force: bool,
+        /// Print what would be reviewed and by whom, without any model,
+        /// Vera or GitHub call.
+        #[arg(long, conflicts_with_all = ["event", "publish", "sarif", "agent"])]
+        preview: bool,
     },
     Doctor {
         #[arg(long)]
@@ -141,6 +145,7 @@ pub async fn run() -> i32 {
             title,
             body_file,
             force,
+            preview,
         } => {
             review(ReviewArgs {
                 repo,
@@ -159,6 +164,7 @@ pub async fn run() -> i32 {
                 title,
                 body_file,
                 force,
+                preview,
             })
             .await
         }
@@ -182,6 +188,7 @@ struct ReviewArgs {
     title: Option<String>,
     body_file: Option<PathBuf>,
     force: bool,
+    preview: bool,
 }
 
 fn load_cfg_unvalidated(
@@ -296,9 +303,12 @@ async fn review(a: ReviewArgs) -> i32 {
             return 2;
         }
     }
-    if let Err(e) = cfg.validate_for(effective_strategy) {
-        eprintln!("error: {e}");
-        return 1;
+    // a preview calls no provider, so it needs no credentials
+    if !a.preview {
+        if let Err(e) = cfg.validate_for(effective_strategy) {
+            eprintln!("error: {e}");
+            return 1;
+        }
     }
     let body = a
         .body_file
@@ -403,6 +413,18 @@ async fn review(a: ReviewArgs) -> i32 {
         force: a.force,
         uncommitted: a.uncommitted,
     };
+    if a.preview {
+        return match crate::preview::preview(&cfg, &req).await {
+            Ok(text) => {
+                print!("{text}");
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                1
+            }
+        };
+    }
     match pipeline_run(&cfg, &req).await {
         Ok((mut report, mut state)) => {
             let mut publish_failed = false;

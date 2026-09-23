@@ -216,41 +216,13 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         bail!("{} is not a git repository", repo.display());
     }
 
-    let (base_sha, head_sha, raw_diff, patch_id, head_tree) = if req.uncommitted {
-        let current_head = git::current_head(&repo).await?;
-        let raw_diff = git::diff_uncommitted(&repo).await?;
-        let patch_id = git::patch_id_from_diff(&repo, &raw_diff)
-            .await
-            .unwrap_or_else(|_| "uncommitted-empty".to_string());
-        (
-            current_head.clone(),
-            format!("{current_head}+dirty"),
-            raw_diff,
-            patch_id,
-            "working_tree".to_string(),
-        )
-    } else {
-        let base_sha = git::rev_parse(&repo, &req.base).await?;
-        let head_rev = req.head.as_deref().unwrap_or("HEAD");
-        let head_sha = git::rev_parse(&repo, head_rev).await?;
-        let current_head = git::current_head(&repo).await?;
-        if head_sha != current_head {
-            bail!(
-                "head {head_sha} is not the checked-out tree (HEAD is {current_head}); reviewer tools read the working tree, so check out the PR head first (GitHub Actions: actions/checkout with ref: ${{{{ github.event.pull_request.head.sha }}}})"
-            );
-        }
-        if git::tracked_dirty(&repo).await? {
-            bail!(
-                "working tree has uncommitted changes to tracked files; commit or stash them so the reviewed tree matches {head_sha} (HEAD is {current_head})"
-            );
-        }
-        let raw_diff = git::diff(&repo, &req.base, head_rev).await?;
-        let patch_id = git::patch_id(&repo, &req.base, head_rev)
-            .await
-            .unwrap_or_default();
-        let head_tree = git::tree_id(&repo, head_rev).await?;
-        (base_sha, head_sha, raw_diff, patch_id, head_tree)
-    };
+    let super::load::LoadedDiff {
+        base_sha,
+        head_sha,
+        raw_diff,
+        patch_id,
+        head_tree,
+    } = super::load::load_diff(&repo, req).await?;
 
     let triaged = crate::triage::triage(parse_unified(&raw_diff), &cfg.triage)?;
     let triaged_skipped = triaged.skipped.len();

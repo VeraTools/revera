@@ -251,6 +251,7 @@ profiles:
 ```sh
 revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
 revera review --event "$GITHUB_EVENT_PATH" [--config <file>] --publish comment
+revera review --preview --base <rev> [--config <file>] [--strategy <s>]
 revera doctor [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment]
 revera cache-key [--config <file>] [--profile <name>]
 revera cache-info [--repo <path>]
@@ -258,6 +259,12 @@ revera cache-info [--repo <path>]
 
 `--force` re-reviews even when the previous review of the same head, base
 and effective configuration was `complete`.
+
+`--preview` prints what a review would do without running it: the files it
+would review, the files triage skips and why, files that would not fit in
+`review.max_diff_bytes`, the strategy, risk tier and reviewer lanes. It makes
+no model, Vera or GitHub call, needs no credentials and writes no state. It
+works on local diffs only (not with `--event`).
 
 ## Action inputs
 

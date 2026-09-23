@@ -6,6 +6,7 @@ pub mod findings;
 pub mod git;
 pub mod github;
 pub mod pipeline;
+pub mod preview;
 pub mod progress;
 pub mod prompts;
 pub mod provider;
