@@ -287,6 +287,38 @@ impl GitHubApi {
         Ok(v["id"].as_u64().unwrap_or(0))
     }
 
+    /// GitHub's own diff of the PR: `(filename, patch)` per changed file
+    /// (paginated). `patch` is absent for binary or oversized files.
+    pub async fn list_pull_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        n: u64,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let mut out = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let v = self
+                .send(self.http.get(format!(
+                    "{}/repos/{}/{}/pulls/{}/files?per_page=100&page={}",
+                    self.base, owner, repo, n, page
+                )))
+                .await?;
+            let arr = v.as_array().cloned().unwrap_or_default();
+            let count = arr.len();
+            for f in &arr {
+                out.push((
+                    f["filename"].as_str().unwrap_or("").to_string(),
+                    f["patch"].as_str().map(str::to_string),
+                ));
+            }
+            if count < 100 {
+                return Ok(out);
+            }
+            page += 1;
+        }
+    }
+
     /// GraphQL endpoint for `base`: `/graphql` on api.github.com, and
     /// `/api/graphql` for a GitHub Enterprise `/api/v3` REST base.
     fn graphql_url(&self) -> String {

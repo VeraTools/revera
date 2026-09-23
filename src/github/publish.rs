@@ -106,6 +106,51 @@ fn revera_id(body: &str) -> Option<String> {
     Some(body[start..end].trim().to_string())
 }
 
+/// A 422 from `create_review` that GitHub gives for comments it cannot
+/// place on its diff (as opposed to validation of anything else).
+fn is_placement_rejection(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    b.contains("could not be resolved")
+        || b.contains("part of the diff")
+        || b.contains("same hunk")
+        || b.contains("pull_request_review_thread")
+}
+
+/// GitHub's diff of the PR as a [`DiffSet`], built from `/pulls/{n}/files`.
+pub fn pull_files_diff(files: &[(String, Option<String>)]) -> crate::diff::DiffSet {
+    let files = files
+        .iter()
+        .filter_map(|(name, patch)| {
+            let patch = patch.as_ref()?;
+            let mut f = crate::diff::parse_unified(&format!("diff --git a/f b/f\n{patch}\n"))
+                .files
+                .pop()?;
+            f.old_path = name.clone();
+            f.new_path = name.clone();
+            Some(f)
+        })
+        .collect();
+    crate::diff::DiffSet { files }
+}
+
+/// Whether GitHub can place `c`: its line (and range start) are head-side
+/// lines of one hunk of GitHub's own diff.
+pub fn placeable(diff: &crate::diff::DiffSet, c: &ReviewComment) -> bool {
+    let Some(f) = diff.file(&c.path) else {
+        return false;
+    };
+    let end = c.end_line.unwrap_or(c.line).max(c.line);
+    f.hunks.iter().any(|h| {
+        let head: HashSet<u32> = h
+            .lines
+            .iter()
+            .filter(|l| l.kind != crate::diff::DiffLineKind::Del)
+            .filter_map(|l| l.new_no)
+            .collect();
+        head.contains(&c.line) && head.contains(&end)
+    })
+}
+
 /// A thread may be resolved only when every check passes; anything unknown
 /// keeps it open. The trigger is a validator verdict (`resolved` ids), never
 /// GitHub's own "outdated" flag.
@@ -283,12 +328,72 @@ pub async fn publish(
                     .downcast_ref::<GitHubHttpError>()
                     .is_some_and(|e| e.status == 422) =>
             {
-                tracing::warn!("GitHub rejected inline review (422); continuing with summary");
-                pubn.skipped_reason = Some(
-                    "inline review rejected by GitHub (422); findings listed in summary only"
-                        .into(),
-                );
-                review_outcome = "ok:inline-rejected";
+                // one unplaceable comment rejects the whole batch: re-send
+                // once with only the comments GitHub's own diff can hold
+                let placement = err
+                    .downcast_ref::<GitHubHttpError>()
+                    .is_some_and(|e| is_placement_rejection(&e.body));
+                let retry = if placement {
+                    match api.list_pull_files(owner, repo, ev.number).await {
+                        Ok(files) => {
+                            let gh_diff = pull_files_diff(&files);
+                            let keep: Vec<ReviewComment> = comments
+                                .iter()
+                                .filter(|c| placeable(&gh_diff, c))
+                                .cloned()
+                                .collect();
+                            if keep.is_empty() || keep.len() == comments.len() {
+                                None
+                            } else {
+                                api.create_review(
+                                    owner,
+                                    repo,
+                                    ev.number,
+                                    &report.head,
+                                    "Revera inline review findings",
+                                    &keep,
+                                )
+                                .await
+                                .ok()
+                                .map(|id| (id, keep))
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("could not list PR files after 422: {e:#}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                match retry {
+                    Some((review_id, sent)) => {
+                        let sent_ids: Vec<String> =
+                            sent.iter().filter_map(|c| revera_id(&c.body)).collect();
+                        tracing::warn!(
+                            "GitHub rejected {} of {} inline comments (422); re-sent the rest",
+                            comments.len() - sent.len(),
+                            comments.len()
+                        );
+                        pubn.review_id = Some(review_id);
+                        pubn.skipped_reason = Some(format!(
+                            "{} inline comment(s) could not be placed on GitHub's diff (422); they are listed in the summary",
+                            comments.len() - sent.len()
+                        ));
+                        state.mark_posted(&sent_ids);
+                        review_outcome = "ok:inline-partial";
+                    }
+                    None => {
+                        tracing::warn!(
+                            "GitHub rejected inline review (422); continuing with summary"
+                        );
+                        pubn.skipped_reason = Some(
+                            "inline review rejected by GitHub (422); findings listed in summary only"
+                                .into(),
+                        );
+                        review_outcome = "ok:inline-rejected";
+                    }
+                }
             }
             Err(err) => {
                 report.timing.append_publish(
