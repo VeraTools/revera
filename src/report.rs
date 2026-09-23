@@ -644,6 +644,9 @@ pub fn to_sarif(report: &RunReport) -> serde_json::Value {
         .iter()
         .map(|f| {
             let mut result = serde_json::json!({
+                // the finding id survives line shifts across pushes, so code
+                // scanning keeps one alert per defect instead of re-opening
+                "partialFingerprints": { "reveraFindingId/v1": f.id() },
                 "ruleId": f.source,
                 "level": level(f.severity),
                 "message": {
@@ -844,6 +847,9 @@ mod tests {
         let text = sarif.to_string();
         assert!(!text.contains("AKIAIOSFODNN7EXAMPLE"), "{text}");
         assert!(sarif["runs"][0]["results"][0].get("fixes").is_none());
+        // both accepted findings share file and key, so they share an id
+        let fp = &sarif["runs"][0]["results"][0]["partialFingerprints"]["reveraFindingId/v1"];
+        assert_eq!(fp.as_str().unwrap(), rep.findings[0].id());
         assert_eq!(
             sarif["runs"][0]["results"][0]["properties"]["suggestedFix"],
             "let x = 1;"
