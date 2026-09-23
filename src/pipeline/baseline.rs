@@ -58,6 +58,7 @@ pub(crate) async fn investigate(
         cfg.review.max_diff_bytes,
         &cfg.review.path_instructions,
         &cfg.review.knowledge_base,
+        &prep.repo_guidance,
     );
     let terminal: ToolSpec = terminal_submit_findings_spec();
     let lane_start = std::time::Instant::now();

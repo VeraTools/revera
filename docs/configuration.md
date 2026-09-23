@@ -91,6 +91,7 @@ request budget, the run deadline and the ledger. Routes can mix protocols.
 | `concurrency` | `4` | concurrent lanes / validations |
 | `max_tool_output_bytes` | `12000` | truncation cap on each tool result |
 | `max_diff_bytes` | `200000` | diffs larger than this are truncated per file with a note |
+| `instruction_files` | `true` | add the team's instruction files to reviewer prompts: `AGENTS.md` and `CLAUDE.md` in the root and in every directory above a changed file, `REVIEW.md`, `.github/copilot-instructions.md`, and `.github/instructions/*.instructions.md` whose `applyTo` globs match a changed file (files with `excludeAgent: code-review` are skipped). They are read from the **base** revision, so a pull request cannot change the guidance its own review follows; capped at 16 KB |
 
 ## `budget`
 

@@ -495,7 +495,7 @@ index 0000000..1111111 100644
         instructions: "Verify endpoint rate limiting and authentication.".into(),
     }];
 
-    let prompt = investigator_user(&req, &diff, 100_000, &instructions, &[]);
+    let prompt = investigator_user(&req, &diff, 100_000, &instructions, &[], "");
     assert!(prompt.contains("Targeted Path Guidance:"));
     assert!(
         prompt.contains("- [src/api/**/*.rs] Verify endpoint rate limiting and authentication.")

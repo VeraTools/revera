@@ -197,6 +197,38 @@ pub async fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<St
 
 /// Tree object id of `rev` — identifies exact content regardless of
 /// commit metadata.
+/// Content of `path` at `rev`, or `None` when no such file exists there.
+pub async fn show_file(repo: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+    let spec = format!("{rev}:{path}");
+    if git(repo, &["cat-file", "-e", "--end-of-options", &spec])
+        .await
+        .is_err()
+    {
+        return Ok(None);
+    }
+    Ok(Some(git(repo, &["show", "--end-of-options", &spec]).await?))
+}
+
+/// Paths of the files under `dir` at `rev` (recursive).
+pub async fn ls_tree(repo: &Path, rev: &str, dir: &str) -> Result<Vec<String>> {
+    Ok(git(
+        repo,
+        &[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "--end-of-options",
+            rev,
+            "--",
+            dir,
+        ],
+    )
+    .await?
+    .lines()
+    .map(str::to_string)
+    .collect())
+}
+
 pub async fn tree_id(repo: &Path, rev: &str) -> Result<String> {
     rev_parse(repo, &format!("{rev}^{{tree}}")).await
 }

@@ -107,6 +107,7 @@ async fn delegated_candidates(
         cfg.review.max_diff_bytes,
         &cfg.review.path_instructions,
         &cfg.review.knowledge_base,
+        &prep.repo_guidance,
     );
     if !prep.rechecks.is_empty() {
         user.push_str("\n\nPrior findings under recheck:\n");
@@ -596,6 +597,7 @@ vera: {}
             progress: Arc::new(crate::progress::ProgressBroadcaster::default()),
             risk_tier: None,
             sensitive_change: false,
+            repo_guidance: String::new(),
         };
         if skipped > 0 {
             prep.partial_reasons

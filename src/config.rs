@@ -106,6 +106,10 @@ pub struct ReviewConfig {
     pub fail_on_severity: Option<Severity>,
     #[serde(default)]
     pub knowledge_base: Vec<String>,
+    /// Add AGENTS.md / CLAUDE.md / REVIEW.md / Copilot instruction files
+    /// from the base revision to reviewer prompts.
+    #[serde(default = "default_true")]
+    pub instruction_files: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -585,6 +589,7 @@ impl Default for ReviewConfig {
             path_instructions: Vec::new(),
             fail_on_severity: None,
             knowledge_base: Vec::new(),
+            instruction_files: true,
         }
     }
 }
@@ -975,6 +980,7 @@ impl Config {
             }),
             "path_instructions": self.review.path_instructions,
             "knowledge_base": self.review.knowledge_base,
+            "instruction_files": self.review.instruction_files,
             "validate": self.review.validate,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
