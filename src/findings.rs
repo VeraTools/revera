@@ -183,7 +183,11 @@ pub fn rank_candidates(mut candidates: Vec<Finding>) -> Vec<Finding> {
         b.consensus_count()
             .cmp(&a.consensus_count())
             .then_with(|| b.severity.cmp(&a.severity))
-            .then_with(|| b.supporting_evidence.len().cmp(&a.supporting_evidence.len()))
+            .then_with(|| {
+                b.supporting_evidence
+                    .len()
+                    .cmp(&a.supporting_evidence.len())
+            })
             .then_with(|| a.file.cmp(&b.file))
             .then_with(|| a.start_line.cmp(&b.start_line))
     });

@@ -4,14 +4,40 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum ProgressEvent {
-    DiffParsed { files_changed: usize, bytes: usize },
-    StaticRulesChecked { matches_found: usize },
-    ScoutDispatched { lane: String, model: String },
-    LaneCompleted { lane: String, candidates: usize, status: String },
-    CandidatesAggregated { raw: usize, unique: usize, consensus: usize },
-    ValidationStarted { count: usize },
-    ValidationFinished { accepted: usize, rejected: usize, uncertain: usize },
-    ReviewComplete { status: String, duration_ms: u64, published: usize },
+    DiffParsed {
+        files_changed: usize,
+        bytes: usize,
+    },
+    StaticRulesChecked {
+        matches_found: usize,
+    },
+    ScoutDispatched {
+        lane: String,
+        model: String,
+    },
+    LaneCompleted {
+        lane: String,
+        candidates: usize,
+        status: String,
+    },
+    CandidatesAggregated {
+        raw: usize,
+        unique: usize,
+        consensus: usize,
+    },
+    ValidationStarted {
+        count: usize,
+    },
+    ValidationFinished {
+        accepted: usize,
+        rejected: usize,
+        uncertain: usize,
+    },
+    ReviewComplete {
+        status: String,
+        duration_ms: u64,
+        published: usize,
+    },
 }
 
 impl ProgressEvent {

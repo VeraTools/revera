@@ -116,7 +116,10 @@ pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
 pub async fn default_branch(repo: &Path) -> Result<String> {
     if git(repo, &["rev-parse", "--verify", "main"]).await.is_ok() {
         Ok("main".into())
-    } else if git(repo, &["rev-parse", "--verify", "master"]).await.is_ok() {
+    } else if git(repo, &["rev-parse", "--verify", "master"])
+        .await
+        .is_ok()
+    {
         Ok("master".into())
     } else {
         bail!("could not determine default branch (neither main nor master found)")

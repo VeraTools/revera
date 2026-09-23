@@ -81,10 +81,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         PrepareOut::ShortCircuit(rep, st) => return Ok((*rep, st)),
     };
 
-    let lanes = cfg.panel.effective_lanes(
-        &cfg.models.investigator,
-        cfg.models.scouts.as_deref(),
-    )?;
+    let lanes = cfg
+        .panel
+        .effective_lanes(&cfg.models.investigator, cfg.models.scouts.as_deref())?;
     let n_scouts = lanes.len();
 
     let terminal = terminal_submit_findings_spec();
@@ -130,11 +129,11 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 );
                 return (lane_name, None, lane_start);
             }
-            let client = match make_client(&route, &lane_name, ledger, max_req, retries, &terminal.name)
-            {
-                Ok(c) => c,
-                Err(e) => return (lane_name, Some(Err(e)), lane_start),
-            };
+            let client =
+                match make_client(&route, &lane_name, ledger, max_req, retries, &terminal.name) {
+                    Ok(c) => c,
+                    Err(e) => return (lane_name, Some(Err(e)), lane_start),
+                };
             let system = if addendum.is_empty() {
                 format!("{}\n\n# Focus: {}", prompts::INVESTIGATOR, lane_name)
             } else {

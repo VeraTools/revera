@@ -451,13 +451,19 @@ vera: {enabled: false}
     let quiet_yaml = yaml.replace("review_profile: chill", "review_profile: quiet");
     let f_quiet = write_tmp(&quiet_yaml);
     let c_quiet = Config::load(f_quiet.path()).unwrap();
-    assert_eq!(c_quiet.review.min_severity, revera::findings::Severity::High);
+    assert_eq!(
+        c_quiet.review.min_severity,
+        revera::findings::Severity::High
+    );
 
     // Assertive profile sets Low severity
     let assertive_yaml = yaml.replace("review_profile: chill", "review_profile: assertive");
     let f_assertive = write_tmp(&assertive_yaml);
     let c_assertive = Config::load(f_assertive.path()).unwrap();
-    assert_eq!(c_assertive.review.min_severity, revera::findings::Severity::Low);
+    assert_eq!(
+        c_assertive.review.min_severity,
+        revera::findings::Severity::Low
+    );
 }
 
 #[test]
@@ -491,7 +497,9 @@ index 0000000..1111111 100644
 
     let prompt = investigator_user(&req, &diff, 100_000, &instructions, &[]);
     assert!(prompt.contains("Targeted Path Guidance:"));
-    assert!(prompt.contains("- [src/api/**/*.rs] Verify endpoint rate limiting and authentication."));
+    assert!(
+        prompt.contains("- [src/api/**/*.rs] Verify endpoint rate limiting and authentication.")
+    );
 }
 
 #[test]
@@ -514,4 +522,3 @@ vera: {enabled: false}
     );
     assert_eq!(c.review.knowledge_base, vec!["README.md"]);
 }
-

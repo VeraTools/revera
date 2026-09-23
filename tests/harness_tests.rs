@@ -54,7 +54,7 @@ index 0000000..1111111 100644
     state.upsert(&f_c1, FindingState::Open);
     assert_eq!(state.open_findings().len(), 1);
     // Mark as posted to GitHub
-    state.mark_posted(&[finding_id.clone()]);
+    state.mark_posted(std::slice::from_ref(&finding_id));
     assert!(state.has_posted(&finding_id));
 
     // --- Commit 2: Line shift - 15 lines of imports/comments inserted at top ---
@@ -113,7 +113,7 @@ fn multi_commit_resolution_lifecycle() {
     let id = f.id();
     let mut state = ReviewState::default();
     state.upsert(&f, FindingState::Open);
-    state.mark_posted(&[id.clone()]);
+    state.mark_posted(std::slice::from_ref(&id));
     assert_eq!(state.open_findings().len(), 1);
 
     // Author patches defect: recheck validator rejects defect as no longer present -> Resolved

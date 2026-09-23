@@ -500,9 +500,8 @@ async fn review(a: ReviewArgs) -> i32 {
                 .fail_on
                 .map(crate::findings::Severity::from)
                 .or(cfg.review.fail_on_severity);
-            let ci_fail = fail_threshold.is_some_and(|thresh| {
-                report.findings.iter().any(|f| f.severity >= thresh)
-            });
+            let ci_fail = fail_threshold
+                .is_some_and(|thresh| report.findings.iter().any(|f| f.severity >= thresh));
             if ci_fail {
                 eprintln!(
                     "revera: review failed CI gate (findings meeting or exceeding {:?} detected)",

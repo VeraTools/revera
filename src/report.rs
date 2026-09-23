@@ -148,12 +148,15 @@ fn backtick_run(s: &str) -> usize {
 }
 
 static SECRET_REDACT_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"(?x)
+    regex::Regex::new(
+        r#"(?x)
         \bAKIA[0-9A-Z]{16}\b |
         \bgh[pousr]_[A-Za-z0-9_]{36,255}\b |
         \bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b |
         -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----
-    "#).unwrap()
+    "#,
+    )
+    .unwrap()
 });
 
 /// Redact detected credentials and secrets from text.
@@ -166,12 +169,7 @@ pub fn redact_secrets(input: &str) -> String {
 pub fn finding_body(f: &Finding) -> String {
     let clean_title = redact_secrets(&sanitize(&f.title));
     let clean_claim = redact_secrets(&sanitize(&f.claim));
-    let mut b = format!(
-        "**[{}] {}**\n\n{}\n",
-        f.severity,
-        clean_title,
-        clean_claim
-    );
+    let mut b = format!("**[{}] {}**\n\n{}\n", f.severity, clean_title, clean_claim);
     if !f.trigger.is_empty() {
         b.push_str(&format!(
             "\nTrigger: {}\n",
@@ -773,7 +771,8 @@ mod tests {
         assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
         assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
         assert_eq!(
-            sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+                ["uri"],
             "src/lib.rs"
         );
     }

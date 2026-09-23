@@ -135,7 +135,10 @@ fn custom_rules_glob_and_regex_match() {
         "src/parser.rs",
         vec![
             (DiffLineKind::Ctx, "fn parse() {"),
-            (DiffLineKind::Add, "    // HACK: workaround for upstream bug"),
+            (
+                DiffLineKind::Add,
+                "    // HACK: workaround for upstream bug",
+            ),
             (DiffLineKind::Ctx, "}"),
         ],
     );

@@ -6,37 +6,44 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?x)
+    Regex::new(
+        r#"(?x)
         \bAKIA[0-9A-Z]{16}\b |
         \bgh[pousr]_[A-Za-z0-9_]{36,255}\b |
         \bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b |
         -----BEGIN[A-Z\x20]*PRIVATE\x20KEY-----
-    "#).unwrap()
+    "#,
+    )
+    .unwrap()
 });
 
 static DEBUG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?x)
+    Regex::new(
+        r#"(?x)
         \bdbg!\s*\( |
         \bconsole\.(?:log|debug|dir)\s*\( |
         \bprintln!\s*\(\s*"debug |
         \bbinding\.pry\b |
         \bbreakpoint\s*\(\)
-    "#).unwrap()
+    "#,
+    )
+    .unwrap()
 });
 
-static UNSAFE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\bunsafe\s*\{"#).unwrap()
-});
+static UNSAFE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bunsafe\s*\{"#).unwrap());
 
 static SQL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)format!\s*\(\s*"[^"]*\b(SELECT|INSERT|UPDATE|DELETE)\b[^"]*\{"#).unwrap()
 });
 
 static SLOP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?x)
+    Regex::new(
+        r#"(?x)
         \b(?:todo!|unimplemented!)\s*\( |
         (?i)(?://|\#|/\*)\s*(?:TODO|FIXME|XXX)\s*:\s*(?:implement|fill\s+in|add\s+logic|placeholder)
-    "#).unwrap()
+    "#,
+    )
+    .unwrap()
 });
 
 /// Evaluates static regex patterns against added lines in a diff.
@@ -223,13 +230,21 @@ fn make_finding(m: StaticMatch<'_>) -> Finding {
         validation_status: None,
         suggested_fix: m.suggested_fix.map(str::to_string),
         source: format!("static:{}", m.rule_id),
-        rationale: Some(format!("Deterministic rule {} triggered on line {}", m.rule_id, m.line_no)),
+        rationale: Some(format!(
+            "Deterministic rule {} triggered on line {}",
+            m.rule_id, m.line_no
+        )),
         sources: vec![format!("static:{}", m.rule_id)],
         assurance: Some(crate::findings::AssuranceCase {
             rule_id: Some(m.rule_id.to_string()),
             trigger: m.trigger.to_string(),
-            rationale: format!("Deterministic rule {} triggered on line {}", m.rule_id, m.line_no),
-            counterevidence_checked: vec!["static rule matched directly on added diff line".to_string()],
+            rationale: format!(
+                "Deterministic rule {} triggered on line {}",
+                m.rule_id, m.line_no
+            ),
+            counterevidence_checked: vec![
+                "static rule matched directly on added diff line".to_string()
+            ],
             validator_rederivation: None,
             confidence: 1.0,
         }),
