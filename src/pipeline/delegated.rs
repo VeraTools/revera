@@ -162,7 +162,7 @@ async fn delegated_candidates(
         prep.partial_reasons
             .push("lead produced no questions; fell back to baseline".into());
         tracing::info!("delegated: lead returned no questions; running baseline investigator");
-        return super::baseline::investigate(cfg, req, prep).await;
+        return super::baseline::investigate(cfg, req, prep, &[]).await;
     }
 
     // ---- 2. workers concurrently ----

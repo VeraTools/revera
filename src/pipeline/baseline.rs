@@ -19,8 +19,48 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         PrepareOut::Ready(p) => p,
         PrepareOut::ShortCircuit(rep, st) => return Ok((*rep, st)),
     };
-    let candidates = investigate(cfg, req, &mut prep).await?;
+    let candidates = investigate_rounds(cfg, req, &mut prep).await?;
     finish(cfg, prep, candidates, &["investigator".to_string()]).await
+}
+
+/// `review.recall_rounds` investigator passes. Later rounds see what was
+/// already reported and look for different defects; they stop as soon as a
+/// round adds nothing new or the run deadline leaves no budget. Every
+/// candidate still goes through validation.
+pub(crate) async fn investigate_rounds(
+    cfg: &Config,
+    req: &ReviewRequest,
+    prep: &mut Prepared,
+) -> Result<Vec<Finding>> {
+    let mut candidates = investigate(cfg, req, prep, &[]).await?;
+    for round in 2..=cfg.review.recall_rounds {
+        if prep
+            .budget(
+                cfg.budget.agent_max_tool_calls,
+                cfg.budget.agent_max_seconds,
+            )
+            .max_seconds
+            == 0
+        {
+            break;
+        }
+        let known = crate::findings::collapse(candidates.clone()).len();
+        // round 1 covered the change; a later round that fails or times out
+        // costs recall, not coverage, so it does not make the run partial
+        let reasons = prep.partial_reasons.len();
+        let more = investigate(cfg, req, prep, &candidates).await?;
+        if prep.partial_reasons.len() > reasons {
+            let dropped: Vec<String> = prep.partial_reasons.drain(reasons..).collect();
+            tracing::warn!("recall round {round} incomplete: {}", dropped.join("; "));
+        }
+        candidates.extend(more);
+        let now = crate::findings::collapse(candidates.clone()).len();
+        tracing::info!("recall round {round}: {} new candidate(s)", now - known);
+        if now == known {
+            break;
+        }
+    }
+    Ok(candidates)
 }
 
 /// Risk-tier downgrade for the swarm strategies: a trivial change gets one
@@ -34,16 +74,20 @@ pub(crate) async fn run_trivial(
     prep.report_note = Some(format!(
         "risk tier trivial: single investigator instead of the {swarm} swarm"
     ));
-    let candidates = investigate(cfg, req, &mut prep).await?;
+    let candidates = investigate_rounds(cfg, req, &mut prep).await?;
     finish(cfg, prep, candidates, &["investigator".to_string()]).await
 }
 
 /// Run the investigator agent and return parsed candidate findings.
+/// `already` lists findings of earlier rounds, which the agent must not
+/// repeat.
 pub(crate) async fn investigate(
     cfg: &Config,
     req: &ReviewRequest,
     prep: &mut Prepared,
+    already: &[Finding],
 ) -> Result<Vec<Finding>> {
+    let round = !already.is_empty();
     let investigator = make_client(
         &cfg.models.investigator,
         "investigator",
@@ -60,6 +104,26 @@ pub(crate) async fn investigate(
         &cfg.review.knowledge_base,
         &prep.repo_guidance,
     );
+    let user = if round {
+        let listed: Vec<String> = already
+            .iter()
+            .map(|f| {
+                format!(
+                    "- {}:{} [{}] {}",
+                    f.file,
+                    f.start_line,
+                    f.defect_key,
+                    crate::text::excerpt_bytes(&f.title, 160)
+                )
+            })
+            .collect();
+        format!(
+            "{user}\n\nAlready reported by an earlier pass (do not repeat these; look for different defects, and submit an empty list if there are none):\n{}",
+            listed.join("\n")
+        )
+    } else {
+        user
+    };
     let terminal: ToolSpec = terminal_submit_findings_spec();
     let lane_start = std::time::Instant::now();
     let run = run_agent_checked(
@@ -86,10 +150,12 @@ pub(crate) async fn investigate(
         crate::agent::StopReason::Terminal => {
             let call = run.final_call.as_ref().expect("checked above");
             tracing::debug!(args = %call.arguments, "investigator terminal call");
-            prep.coverage = call.arguments["coverage"]
-                .as_str()
-                .unwrap_or("(none)")
-                .to_string();
+            if !round {
+                prep.coverage = call.arguments["coverage"]
+                    .as_str()
+                    .unwrap_or("(none)")
+                    .to_string();
+            }
             // a valid empty list is a complete clean result; a missing or
             // malformed list is not — keep what parsed, mark the run partial
             let parsed = parse_findings_checked(&call.arguments);
@@ -125,7 +191,12 @@ pub(crate) async fn investigate(
             "error"
         }
     };
+    let label = if round {
+        "investigator:recall"
+    } else {
+        "investigator"
+    };
     prep.timing
-        .record("lane", "investigator", lane_start, prep.wall, outcome);
+        .record("lane", label, lane_start, prep.wall, outcome);
     Ok(candidates)
 }

@@ -99,6 +99,7 @@ the run report's ledger lists as `cached_tokens` (a subset of
 | `concurrency` | `4` | concurrent lanes / validations |
 | `max_tool_output_bytes` | `12000` | truncation cap on each tool result |
 | `max_diff_bytes` | `200000` | diffs larger than this are truncated per file with a note |
+| `recall_rounds` | `1` | investigator passes for the `baseline` strategy (and the trivial-tier single investigator), 1-3. Each later pass is told what was already reported and looks for different defects; the loop stops as soon as a pass adds nothing new or the run deadline leaves no budget. A later pass that fails or times out does not make the run `partial`, because the first pass already covered the change. Every candidate is still validated |
 | `instruction_files` | `true` | add the team's instruction files to reviewer prompts: `AGENTS.md` and `CLAUDE.md` in the root and in every directory above a changed file, `REVIEW.md`, `.github/copilot-instructions.md`, and `.github/instructions/*.instructions.md` whose `applyTo` globs match a changed file (files with `excludeAgent: code-review` are skipped). They are read from the **base** revision, so a pull request cannot change the guidance its own review follows; capped at 16 KB |
 
 ## `budget`

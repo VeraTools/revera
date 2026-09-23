@@ -110,6 +110,10 @@ pub struct ReviewConfig {
     /// from the base revision to reviewer prompts.
     #[serde(default = "default_true")]
     pub instruction_files: bool,
+    /// Investigator passes for the baseline strategy (1-3); later passes
+    /// look for defects the earlier ones did not report.
+    #[serde(default = "default_recall_rounds")]
+    pub recall_rounds: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -512,6 +516,9 @@ pub struct Config {
 fn default_true() -> bool {
     true
 }
+fn default_recall_rounds() -> u32 {
+    1
+}
 fn default_max_findings() -> usize {
     10
 }
@@ -590,6 +597,7 @@ impl Default for ReviewConfig {
             fail_on_severity: None,
             knowledge_base: Vec::new(),
             instruction_files: true,
+            recall_rounds: default_recall_rounds(),
         }
     }
 }
@@ -808,6 +816,12 @@ impl Config {
 
     fn expand_and_validate(&mut self) -> Result<()> {
         self.triage.validate()?;
+        if !(1..=3).contains(&self.review.recall_rounds) {
+            bail!(
+                "review.recall_rounds must be 1, 2 or 3 (got {})",
+                self.review.recall_rounds
+            );
+        }
         if let Some(r) = &self.panel.lens_router {
             r.validate()?;
         }
@@ -981,6 +995,7 @@ impl Config {
             "path_instructions": self.review.path_instructions,
             "knowledge_base": self.review.knowledge_base,
             "instruction_files": self.review.instruction_files,
+            "recall_rounds": self.review.recall_rounds,
             "validate": self.review.validate,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
