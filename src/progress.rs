@@ -73,3 +73,35 @@ impl Default for ProgressBroadcaster {
         Self::new(128)
     }
 }
+
+/// Stream every event emitted on `b` as one JSON object per line to `path`
+/// (`-` for stderr) until every sender is dropped. The subscription is taken
+/// before this returns, so no event emitted afterwards is missed; if the
+/// writer falls behind, a `lagged` line says how many events were skipped.
+pub fn spawn_ndjson_writer(
+    b: &ProgressBroadcaster,
+    path: &std::path::Path,
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    use std::io::Write;
+    let mut out: Box<dyn Write + Send> = if path.as_os_str() == "-" {
+        Box::new(std::io::stderr())
+    } else {
+        Box::new(std::fs::File::create(path)?)
+    };
+    let mut rx = b.subscribe();
+    Ok(tokio::spawn(async move {
+        loop {
+            let line = match rx.recv().await {
+                Ok(ev) => ev.to_json_line(),
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    serde_json::json!({"event": "lagged", "skipped": n}).to_string()
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+            if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
+                tracing::warn!("progress stream closed by the reader; events dropped");
+                break;
+            }
+        }
+    }))
+}

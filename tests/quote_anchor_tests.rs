@@ -186,6 +186,7 @@ async fn pipeline_places_a_miscounted_finding_by_its_quote() {
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let (rep, _) = revera::pipeline::run(&cfg, &req).await.unwrap();
     assert_eq!(rep.plan.inline.len(), 1, "{:#?}", rep.plan);

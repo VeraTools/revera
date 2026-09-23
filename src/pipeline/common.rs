@@ -28,6 +28,8 @@ pub struct ReviewRequest {
     pub strategy_override: Option<Strategy>,
     pub force: bool,
     pub uncommitted: bool,
+    /// Receiver of progress events; a private broadcaster is used when absent.
+    pub progress: Option<Arc<crate::progress::ProgressBroadcaster>>,
 }
 
 /// Shared pre-review state: resolved refs, diff, index, prior-state rechecks.
@@ -447,7 +449,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         risk_tier: risk_tier.map(|t| t.as_str().to_string()),
         ..Default::default()
     };
-    let progress = Arc::new(crate::progress::ProgressBroadcaster::default());
+    let progress = req.progress.clone().unwrap_or_default();
     progress.emit(crate::progress::ProgressEvent::DiffParsed {
         files_changed: diff.files.len(),
         bytes: raw_diff.len(),

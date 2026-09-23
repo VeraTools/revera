@@ -236,6 +236,7 @@ async fn panel_summary(server: &MockServer, file: &str) -> String {
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let (rep, _) = revera::pipeline::run(&cfg, &req).await.unwrap();
     rep.plan.summary_markdown

@@ -261,6 +261,7 @@ profiles:
 revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
 revera review --event "$GITHUB_EVENT_PATH" [--config <file>] --publish comment
 revera review --preview --base <rev> [--config <file>] [--strategy <s>]
+revera review ... --progress-json <path|->
 revera doctor [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment]
 revera cache-key [--config <file>] [--profile <name>]
 revera cache-info [--repo <path>]
@@ -268,6 +269,12 @@ revera cache-info [--repo <path>]
 
 `--force` re-reviews even when the previous review of the same head, base
 and effective configuration was `complete`.
+
+`--progress-json <path>` streams pipeline progress as NDJSON, one object per
+line with an `event` field (`diff_parsed`, `scout_dispatched`,
+`lane_completed`, `static_rules_checked`, `candidates_aggregated`,
+`validation_started`, `validation_finished`, `review_complete`), to a file or
+to stderr with `-`, for CI logs and agents that watch a run.
 
 `--preview` prints what a review would do without running it: the files it
 would review, the files triage skips and why, files that would not fit in

@@ -18,50 +18,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    Review {
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
-        #[arg(long)]
-        base: Option<String>,
-        #[arg(long)]
-        head: Option<String>,
-        /// Review uncommitted working tree changes against HEAD.
-        #[arg(long, conflicts_with = "event")]
-        uncommitted: bool,
-        /// Emit structured JSON findings for agent workflows.
-        #[arg(long)]
-        agent: bool,
-        /// Path to export findings in OASIS SARIF 2.1.0 format.
-        #[arg(long)]
-        sarif: Option<PathBuf>,
-        /// Fail CI with non-zero exit code (3) if findings meet or exceed severity.
-        #[arg(long)]
-        fail_on: Option<SeverityArg>,
-        /// GitHub event payload path (pull_request / pull_request_target).
-        #[arg(long)]
-        event: Option<PathBuf>,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        profile: Option<String>,
-        #[arg(long)]
-        strategy: Option<StrategyArg>,
-        #[arg(long)]
-        publish: Option<PublishArg>,
-        #[arg(long)]
-        out: Option<PathBuf>,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        /// Re-review even when the patch is identical to stored state.
-        #[arg(long)]
-        force: bool,
-        /// Print what would be reviewed and by whom, without any model,
-        /// Vera or GitHub call.
-        #[arg(long, conflicts_with_all = ["event", "publish", "sarif", "agent"])]
-        preview: bool,
-    },
+    Review(Box<ReviewArgs>),
     Doctor {
         #[arg(long)]
         config: Option<PathBuf>,
@@ -128,67 +85,57 @@ pub async fn run() -> i32 {
         } => doctor(config, profile, strategy, publish).await,
         Cmd::CacheInfo { repo } => cache_info(&repo),
         Cmd::CacheKey { config, profile } => cache_key(config, profile),
-        Cmd::Review {
-            repo,
-            base,
-            head,
-            uncommitted,
-            agent,
-            sarif,
-            fail_on,
-            event,
-            config,
-            profile,
-            strategy,
-            publish,
-            out,
-            title,
-            body_file,
-            force,
-            preview,
-        } => {
-            review(ReviewArgs {
-                repo,
-                base,
-                head,
-                uncommitted,
-                agent,
-                sarif,
-                fail_on,
-                event,
-                config,
-                profile,
-                strategy,
-                publish,
-                out,
-                title,
-                body_file,
-                force,
-                preview,
-            })
-            .await
-        }
+        Cmd::Review(a) => review(*a).await,
     }
 }
 
+#[derive(clap::Args)]
 struct ReviewArgs {
+    #[arg(long, default_value = ".")]
     repo: PathBuf,
+    #[arg(long)]
     base: Option<String>,
+    #[arg(long)]
     head: Option<String>,
+    /// Review uncommitted working tree changes against HEAD.
+    #[arg(long, conflicts_with = "event")]
     uncommitted: bool,
+    /// Emit structured JSON findings for agent workflows.
+    #[arg(long)]
     agent: bool,
+    /// Path to export findings in OASIS SARIF 2.1.0 format.
+    #[arg(long)]
     sarif: Option<PathBuf>,
+    /// Fail CI with non-zero exit code (3) if findings meet or exceed severity.
+    #[arg(long)]
     fail_on: Option<SeverityArg>,
+    /// GitHub event payload path (pull_request / pull_request_target).
+    #[arg(long)]
     event: Option<PathBuf>,
+    #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long)]
     profile: Option<String>,
+    #[arg(long)]
     strategy: Option<StrategyArg>,
+    #[arg(long)]
     publish: Option<PublishArg>,
+    #[arg(long)]
     out: Option<PathBuf>,
+    #[arg(long)]
     title: Option<String>,
+    #[arg(long)]
     body_file: Option<PathBuf>,
+    /// Re-review even when the patch is identical to stored state.
+    #[arg(long)]
     force: bool,
+    /// Print what would be reviewed and by whom, without any model,
+    /// Vera or GitHub call.
+    #[arg(long, conflicts_with_all = ["event", "publish", "sarif", "agent"])]
     preview: bool,
+    /// Stream pipeline progress as NDJSON to this file (`-` for stderr).
+    #[arg(long, value_name = "PATH")]
+    progress_json: Option<PathBuf>,
 }
 
 fn load_cfg_unvalidated(
@@ -404,7 +351,7 @@ async fn review(a: ReviewArgs) -> i32 {
         }
     };
 
-    let req = ReviewRequest {
+    let mut req = ReviewRequest {
         repo: a.repo.clone(),
         base,
         head,
@@ -413,6 +360,7 @@ async fn review(a: ReviewArgs) -> i32 {
         strategy_override: strategy,
         force: a.force,
         uncommitted: a.uncommitted,
+        progress: None,
     };
     if a.preview {
         return match crate::preview::preview(&cfg, &req).await {
@@ -426,7 +374,29 @@ async fn review(a: ReviewArgs) -> i32 {
             }
         };
     }
-    match pipeline_run(&cfg, &req).await {
+    let sink = match &a.progress_json {
+        Some(p) => {
+            let b = std::sync::Arc::new(crate::progress::ProgressBroadcaster::default());
+            match crate::progress::spawn_ndjson_writer(&b, p) {
+                Ok(h) => {
+                    req.progress = Some(b);
+                    Some(h)
+                }
+                Err(e) => {
+                    eprintln!("error: cannot write progress to {}: {e}", p.display());
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+    let result = pipeline_run(&cfg, &req).await;
+    // dropping the last sender ends the stream; wait so every line is out
+    req.progress = None;
+    if let Some(h) = sink {
+        let _ = h.await;
+    }
+    match result {
         Ok((mut report, mut state)) => {
             let mut publish_failed = false;
             if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {

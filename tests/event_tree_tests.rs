@@ -80,6 +80,7 @@ fn request(repo: &Path, base: &str, head: &str) -> ReviewRequest {
         strategy_override: None,
         force: false,
         uncommitted: false,
+        progress: None,
     }
 }
 

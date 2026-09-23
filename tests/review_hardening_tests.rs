@@ -263,6 +263,7 @@ async fn recheck_of_a_finding_outside_the_new_diff_goes_to_the_validator() {
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let (rep, state) = revera::pipeline::run(&cfg, &req).await.unwrap();
     let kept = state.findings.iter().find(|f| f.id == id).unwrap();

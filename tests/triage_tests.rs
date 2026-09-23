@@ -204,6 +204,7 @@ async fn prepare_hides_noise_from_reviewers_and_reports_it() {
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let prep = match prepare(&cfg, &req, "panel").await.unwrap() {
         PrepareOut::Ready(p) => p,
@@ -274,6 +275,7 @@ async fn panel_note(lines: usize, risk_tiers: bool) -> (String, Option<String>) 
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let (rep, _) = revera::pipeline::run(&cfg, &req).await.unwrap();
     (rep.plan.summary_markdown, rep.stats.risk_tier)
@@ -324,6 +326,7 @@ async fn files_past_the_prompt_budget_are_reported_as_gaps() {
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let prep = match prepare(&cfg, &req, "baseline").await.unwrap() {
         PrepareOut::Ready(p) => p,
@@ -409,6 +412,7 @@ async fn committed_secret_in_a_credential_file_is_reported_without_its_content()
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     let prep = match prepare(&cfg, &req, "baseline").await.unwrap() {
         PrepareOut::Ready(p) => p,

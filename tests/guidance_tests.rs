@@ -115,6 +115,7 @@ async fn guidance_for(cfg_yaml: &str) -> String {
         strategy_override: None,
         force: true,
         uncommitted: false,
+        progress: None,
     };
     match prepare(&cfg, &req, "baseline").await.unwrap() {
         PrepareOut::Ready(p) => p.repo_guidance,

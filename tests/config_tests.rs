@@ -489,6 +489,7 @@ index 0000000..1111111 100644
         strategy_override: None,
         force: false,
         uncommitted: false,
+        progress: None,
     };
     let instructions = vec![PathInstruction {
         path: "src/api/**/*.rs".into(),
