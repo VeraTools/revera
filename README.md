@@ -189,7 +189,7 @@ Prebuilt binaries are attached to
 - [Configuration](docs/configuration.md) — every key with defaults
 - [Strategies](docs/strategies.md) — baseline, delegated, panel
 - [Evaluation](docs/evaluation.md) — what was measured and how to reproduce it
-- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 ## License
 
