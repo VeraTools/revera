@@ -63,6 +63,36 @@ pub struct ReviewConfig {
     /// seed stored state; `publish: comment` is rejected. Default true.
     #[serde(default = "default_true")]
     pub validate: bool,
+    /// Repository guidance given to the investigator, read from the base
+    /// commit: `off` (default), `review` (`REVIEW.md`) or `agents`
+    /// (`REVIEW.md`, else `AGENTS.md`, per directory).
+    #[serde(default)]
+    pub guidance: GuidanceMode,
+    #[serde(default = "default_guidance_bytes")]
+    pub guidance_max_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GuidanceMode {
+    #[default]
+    Off,
+    Review,
+    Agents,
+}
+
+impl GuidanceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Review => "review",
+            Self::Agents => "agents",
+        }
+    }
+}
+
+fn default_guidance_bytes() -> usize {
+    16 * 1024
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -376,6 +406,7 @@ pub struct ReviewOverride {
     pub max_tool_output_bytes: Option<usize>,
     pub max_diff_bytes: Option<usize>,
     pub min_severity: Option<Severity>,
+    pub guidance: Option<GuidanceMode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -484,6 +515,8 @@ impl Default for ReviewConfig {
             max_diff_bytes: default_diff_bytes(),
             min_severity: Severity::default(),
             validate: default_true(),
+            guidance: GuidanceMode::default(),
+            guidance_max_bytes: default_guidance_bytes(),
         }
     }
 }
@@ -1061,6 +1094,8 @@ impl Config {
             "publish_uncertain": self.review.publish_uncertain,
             "min_severity": format!("{:?}", self.review.min_severity).to_lowercase(),
             "validate": self.review.validate,
+            "guidance": self.review.guidance.as_str(),
+            "guidance_max_bytes": self.review.guidance_max_bytes,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
             "max_diff_bytes": self.review.max_diff_bytes,
@@ -1123,6 +1158,9 @@ impl Config {
             }
             if let Some(v) = r.min_severity {
                 self.review.min_severity = v;
+            }
+            if let Some(v) = r.guidance {
+                self.review.guidance = v;
             }
         }
         if let Some(b) = &p.budget {

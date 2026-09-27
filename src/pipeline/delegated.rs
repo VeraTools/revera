@@ -98,7 +98,8 @@ async fn delegated_candidates(
         cfg.budget.retries,
         &plan_terminal.name,
     )?;
-    let mut user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
+    let mut user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes)
+        + &prep.guidance.prompt_block();
     if !prep.rechecks.is_empty() {
         user.push_str("\n\nPrior findings under recheck:\n");
         for r in &prep.rechecks {
@@ -581,6 +582,7 @@ vera: {}
             partial_reasons: vec![],
             retrieval_unavailable: None,
             stats: Default::default(),
+            guidance: Default::default(),
             coverage: String::new(),
             coverage_gaps: vec![],
             report_note: None,
