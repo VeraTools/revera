@@ -123,9 +123,44 @@ impl DiffSet {
     }
 
     /// Render truncated to `max_bytes` (per-file note when a file doesn't fit).
+    /// Files whose diff `render_truncated(max_bytes)` omits.
+    pub fn omitted_files(&self, max_bytes: usize) -> Vec<String> {
+        let mut used = 0usize;
+        let mut out = vec![];
+        for f in &self.files {
+            let part = Self::render_file(f);
+            if used + part.len() > max_bytes {
+                out.push(f.new_path.clone());
+                used += Self::omitted_note(f).len();
+            } else {
+                used += part.len();
+            }
+        }
+        out
+    }
+
+    fn omitted_note(f: &FileDiff) -> String {
+        format!(
+            "diff --git a/{} b/{}\n[file diff omitted: exceeds max_diff_bytes]\n",
+            f.old_path, f.new_path
+        )
+    }
+
     pub fn render_truncated(&self, max_bytes: usize) -> String {
         let mut s = String::new();
         for f in &self.files {
+            let part = Self::render_file(f);
+            if s.len() + part.len() > max_bytes {
+                s.push_str(&Self::omitted_note(f));
+            } else {
+                s.push_str(&part);
+            }
+        }
+        s
+    }
+
+    fn render_file(f: &FileDiff) -> String {
+        {
             let mut part = format!("diff --git a/{} b/{}\n", f.old_path, f.new_path);
             for h in &f.hunks {
                 part.push_str(&format!(
@@ -143,16 +178,8 @@ impl DiffSet {
                     part.push('\n');
                 }
             }
-            if s.len() + part.len() > max_bytes {
-                s.push_str(&format!(
-                    "diff --git a/{} b/{}\n[file diff omitted: exceeds max_diff_bytes]\n",
-                    f.old_path, f.new_path
-                ));
-            } else {
-                s.push_str(&part);
-            }
+            part
         }
-        s
     }
 
     /// Per-file excerpt used for validator context.

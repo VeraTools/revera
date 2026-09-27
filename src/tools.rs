@@ -38,6 +38,30 @@ pub struct ToolBox {
     /// When set, only these tool names are exposed/callable.
     allowed: Option<Vec<String>>,
     stats: Arc<Mutex<Stats>>,
+    /// Reviewed head commit: file reads come from this immutable tree
+    /// (tracked regular files only) rather than the working directory.
+    head: Option<String>,
+    /// Corpus policy shared with Vera indexing and lexical tools.
+    excluded: globset::GlobSet,
+}
+
+/// Largest file `read_file` will load.
+const MAX_READ_BYTES: usize = 4 * 1024 * 1024;
+
+fn exclusion_set(globs: &[String]) -> globset::GlobSet {
+    let mut b = globset::GlobSetBuilder::new();
+    for g in globs {
+        match globset::GlobBuilder::new(g)
+            .literal_separator(false)
+            .build()
+        {
+            Ok(gl) => {
+                b.add(gl);
+            }
+            Err(e) => tracing::warn!("ignoring invalid exclude glob {g:?}: {e}"),
+        }
+    }
+    b.build().unwrap_or_else(|_| globset::GlobSet::empty())
 }
 
 fn obj_schema(props: Value, required: &[&str]) -> Value {
@@ -76,6 +100,7 @@ pub fn terminal_submit_findings_spec() -> ToolSpec {
                     "required": ["defect_key","severity","file","start_line","title","claim"],
                 }},
                 "coverage": {"type": "string"},
+                "not_checked": {"type": "array", "items": {"type": "string"}},
             }),
             &["findings", "coverage"],
         ),
@@ -155,6 +180,7 @@ impl ToolBox {
         vera: Arc<VeraClient>,
         max_output_bytes: usize,
     ) -> Self {
+        let excluded = exclusion_set(&vera.exclude);
         Self {
             repo_root,
             diff,
@@ -164,7 +190,20 @@ impl ToolBox {
             hide_vera: false,
             allowed: None,
             stats: Arc::new(Mutex::new(Stats::default())),
+            head: None,
+            excluded,
         }
+    }
+
+    /// Serve file reads from the tracked tree of `head` (a full object id).
+    pub fn with_head(mut self, head: &str) -> Self {
+        self.head = Some(head.to_string());
+        self
+    }
+
+    /// Whether the content policy hides `path` from every model surface.
+    pub fn is_excluded(&self, path: &str) -> bool {
+        Self::is_internal_path(path) || self.excluded.is_match(path)
     }
 
     /// Snapshot of per-tool telemetry, sorted by tool name.
@@ -203,6 +242,8 @@ impl ToolBox {
             hide_vera: self.hide_vera,
             allowed: Some(names.iter().map(|s| s.to_string()).collect()),
             stats: self.stats.clone(),
+            head: self.head.clone(),
+            excluded: self.excluded.clone(),
         }
     }
 
@@ -355,8 +396,30 @@ impl ToolBox {
 
     async fn read_file(&self, args: &Value) -> Result<String, String> {
         let path = args["path"].as_str().ok_or("missing path")?;
-        let canon = self.resolve_path(path)?;
-        let text = std::fs::read_to_string(&canon).map_err(|e| format!("read {path}: {e}"))?;
+        let path = path.trim_start_matches("./");
+        if self.is_excluded(path) {
+            return Err(format!(
+                "{path} is excluded by the repository content policy"
+            ));
+        }
+        let text = match &self.head {
+            Some(head) => {
+                if path.is_empty() || path.starts_with('/') || path.split('/').any(|c| c == "..") {
+                    return Err("path must be relative to the repo root".into());
+                }
+                let bytes = crate::git::read_blob(&self.repo_root, head, path, MAX_READ_BYTES)
+                    .await
+                    .map_err(|e| format!("read {path}: {e}"))?
+                    .ok_or_else(|| {
+                        format!("{path} is not a tracked regular file at the reviewed head")
+                    })?;
+                String::from_utf8(bytes).map_err(|_| format!("{path} is not UTF-8 text"))?
+            }
+            None => {
+                let canon = self.resolve_path(path)?;
+                std::fs::read_to_string(&canon).map_err(|e| format!("read {path}: {e}"))?
+            }
+        };
         self.stats
             .lock()
             .unwrap()
@@ -574,8 +637,8 @@ impl ToolBox {
             }
         }
         match self.call_inner(name, args).await {
-            Ok(s) => (self.truncate(s), false),
-            Err(e) => (json!({"error": e}).to_string(), true),
+            Ok(s) => (self.truncate(crate::redact::text(&s).into_owned()), false),
+            Err(e) => (json!({"error": crate::redact::text(&e)}).to_string(), true),
         }
     }
 }

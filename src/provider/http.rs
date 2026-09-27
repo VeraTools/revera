@@ -250,7 +250,9 @@ impl HttpTransport {
             // effort actually sent on this attempt; captured right after
             // build() so later parse-time mutations don't rewrite history
             let effective = adapter.effective_reasoning(&attempt);
-            let mut req = self.http.post(&spec.url).json(&spec.body);
+            let mut body = spec.body.clone();
+            crate::redact::json(&mut body);
+            let mut req = self.http.post(&spec.url).json(&body);
             for (k, v) in &spec.headers {
                 req = req.header(k.as_str(), v.as_str());
             }

@@ -9,6 +9,66 @@ use tokio::process::Command;
 
 /// Per-invocation cap for query subcommands (search/grep/references).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Cap on captured Vera stdout (JSON results).
+const MAX_OUTPUT: usize = 64 * 1024 * 1024;
+
+/// Ambient variables Vera reads that Revera always controls itself; they
+/// are removed from the child environment before Revera's own are set.
+/// Platform, proxy and certificate settings pass through untouched.
+fn is_vera_controlled(key: &str) -> bool {
+    key.starts_with("VERA_")
+        || key.starts_with("EMBEDDING_MODEL_")
+        || key.starts_with("RERANKER_MODEL_")
+}
+
+/// Reranker state as observed by Revera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RerankState {
+    /// No reranker configured; reranking explicitly disabled in Vera.
+    #[default]
+    Off,
+    /// Configured and activated in the isolated Vera home.
+    Enabled,
+    /// Configured but activation failed; retrieval runs unreranked.
+    Degraded,
+}
+
+/// `vera config set` values applied to the Revera-owned Vera home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RerankSettings {
+    pub protocol: Option<&'static str>,
+    pub endpoint_path: Option<String>,
+    pub return_documents: Option<bool>,
+}
+
+impl RerankSettings {
+    /// `(key, value)` pairs for `vera config set`; `null` clears a key.
+    pub fn config_pairs(this: Option<&Self>) -> Vec<(&'static str, String)> {
+        let mut v = vec![("retrieval.reranking_enabled", this.is_some().to_string())];
+        let (protocol, path, docs) = match this {
+            Some(r) => (
+                r.protocol.map(str::to_string),
+                r.endpoint_path.clone(),
+                r.return_documents,
+            ),
+            None => (None, None, None),
+        };
+        v.push((
+            "retrieval.reranker_protocol",
+            protocol.unwrap_or_else(|| "null".into()),
+        ));
+        v.push((
+            "retrieval.reranker_endpoint_path",
+            path.unwrap_or_else(|| "null".into()),
+        ));
+        v.push((
+            "retrieval.reranker_return_documents",
+            docs.unwrap_or(false).to_string(),
+        ));
+        v
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct VeraClient {
@@ -17,6 +77,12 @@ pub struct VeraClient {
     pub env: Vec<(String, String)>,
     pub backend: String,
     pub exclude: Vec<String>,
+    /// Revera-owned `VERA_HOME` (never the user's global Vera home).
+    pub home: PathBuf,
+    /// `Some` when a reranker is configured.
+    pub rerank: Option<RerankSettings>,
+    /// Hash of the index-shaping config; stored with the index.
+    pub index_key: String,
     /// Every subprocess is bounded by the remaining time to this deadline;
     /// a timed-out child is killed and reaped.
     pub deadline: Option<Instant>,
@@ -29,6 +95,10 @@ pub struct VeraCacheInfo {
     pub embedding_model: String,
     pub dim: Option<u32>,
     pub updated_at: String,
+    /// [`VeraConfig::index_key`] the index was built with (absent in
+    /// indexes written by older Revera).
+    #[serde(default)]
+    pub index_key: Option<String>,
 }
 
 impl VeraClient {
@@ -41,6 +111,9 @@ impl VeraClient {
             env: vec![],
             backend: "disabled".into(),
             exclude: vec![],
+            home: PathBuf::new(),
+            rerank: None,
+            index_key: String::new(),
             deadline: None,
         }
     }
@@ -53,55 +126,127 @@ impl VeraClient {
     pub fn from_config(cfg: &VeraConfig, repo_root: &Path) -> Result<Self> {
         if !cfg.enabled {
             let mut c = Self::disabled(repo_root);
-            c.exclude = cfg.exclude.clone();
+            c.exclude = cfg.effective_excludes();
             return Ok(c);
         }
-        let mut env: Vec<(String, String)> = vec![
-            ("VERA_NO_UPDATE_CHECK".into(), "1".into()),
-            (
-                "VERA_HOME".into(),
-                std::env::var("VERA_HOME").unwrap_or_else(|_| {
-                    format!("{}/.vera", std::env::var("HOME").unwrap_or_default())
-                }),
-            ),
-        ];
+        let home = cfg.vera_home();
         let backend = match cfg.backend {
             VeraBackend::Api => "api",
             VeraBackend::Local => "local",
         }
         .to_string();
+        let mut env: Vec<(String, String)> = vec![
+            ("VERA_NO_UPDATE_CHECK".into(), "1".into()),
+            ("VERA_HOME".into(), home.display().to_string()),
+            (
+                "VERA_BACKEND".into(),
+                match cfg.backend {
+                    VeraBackend::Api => "api".into(),
+                    VeraBackend::Local => crate::config::LOCAL_VERA_BACKEND.into(),
+                },
+            ),
+        ];
+        let key = |what: &str, name: &str| {
+            crate::redact::secret_env(name)
+                .with_context(|| format!("vera.{what}.api_key_env {name} is not set"))
+        };
         if cfg.backend == VeraBackend::Api {
-            env.push(("VERA_BACKEND".into(), "api".into()));
-            if let Some(e) = &cfg.embedding {
-                env.push(("EMBEDDING_MODEL_BASE_URL".into(), e.base_url.clone()));
-                env.push(("EMBEDDING_MODEL_ID".into(), e.model.clone()));
-                let key = std::env::var(&e.api_key_env)
-                    .ok()
-                    .filter(|k| !k.trim().is_empty())
-                    .with_context(|| {
-                        format!("vera.embedding.api_key_env {} is not set", e.api_key_env)
-                    })?;
-                env.push(("EMBEDDING_MODEL_API_KEY".into(), key));
-            }
-            if let Some(r) = &cfg.reranker {
+            let e = cfg
+                .embedding
+                .as_ref()
+                .context("vera.backend = api needs a vera.embedding endpoint")?;
+            env.push(("EMBEDDING_MODEL_BASE_URL".into(), e.base_url.clone()));
+            env.push(("EMBEDDING_MODEL_ID".into(), e.model.clone()));
+            env.push((
+                "EMBEDDING_MODEL_API_KEY".into(),
+                key("embedding", &e.api_key_env)?,
+            ));
+        }
+        // the reranker is independent of the embedding backend: local
+        // embeddings with a remote reranker are supported by Vera
+        let rerank = match &cfg.reranker {
+            Some(r) => {
                 env.push(("RERANKER_MODEL_BASE_URL".into(), r.base_url.clone()));
                 env.push(("RERANKER_MODEL_ID".into(), r.model.clone()));
-                let key = std::env::var(&r.api_key_env)
-                    .ok()
-                    .filter(|k| !k.trim().is_empty())
-                    .with_context(|| {
-                        format!("vera.reranker.api_key_env {} is not set", r.api_key_env)
-                    })?;
-                env.push(("RERANKER_MODEL_API_KEY".into(), key));
+                env.push((
+                    "RERANKER_MODEL_API_KEY".into(),
+                    key("reranker", &r.api_key_env)?,
+                ));
+                Some(RerankSettings {
+                    protocol: r.protocol.map(|p| p.as_str()),
+                    endpoint_path: r.endpoint_path.clone(),
+                    return_documents: r.return_documents,
+                })
             }
-        }
+            None => None,
+        };
         Ok(Self {
             exe: PathBuf::from(&cfg.executable),
             repo_root: repo_root.to_path_buf(),
             env,
             backend,
-            exclude: cfg.exclude.clone(),
+            exclude: cfg.effective_excludes(),
+            home,
+            rerank,
+            index_key: cfg.index_key(),
             deadline: None,
+        })
+    }
+
+    /// A Vera command with a sanitized environment: ambient Vera/embedding/
+    /// reranker overrides removed, Revera's own values set.
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(&self.exe);
+        for (k, _) in std::env::vars_os() {
+            if k.to_str().is_some_and(is_vera_controlled) {
+                cmd.env_remove(&k);
+            }
+        }
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
+        cmd.current_dir(&self.repo_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        cmd
+    }
+
+    /// Apply reranker settings to the Revera-owned Vera home through the
+    /// public `vera config set` interface. With no reranker configured,
+    /// reranking is explicitly disabled (Vera would otherwise fall back to
+    /// a local reranker model).
+    pub async fn configure(&self) -> Result<RerankState> {
+        if self.backend == "disabled" {
+            return Ok(RerankState::Off);
+        }
+        std::fs::create_dir_all(&self.home)
+            .with_context(|| format!("create vera home {}", self.home.display()))?;
+        let pairs = RerankSettings::config_pairs(self.rerank.as_ref());
+        for (k, v) in &pairs {
+            let r = self
+                .run_bounded(&["config", "set", k, v], Some(QUERY_TIMEOUT))
+                .await;
+            if let Err(e) = r {
+                if self.rerank.is_some() {
+                    tracing::warn!("vera reranker activation failed: {e:#}");
+                    // never leave a half-applied reranker config behind
+                    let _ = self
+                        .run_bounded(
+                            &["config", "set", "retrieval.reranking_enabled", "false"],
+                            Some(QUERY_TIMEOUT),
+                        )
+                        .await;
+                    return Ok(RerankState::Degraded);
+                }
+                return Err(e.context("vera config set"));
+            }
+        }
+        Ok(if self.rerank.is_some() {
+            RerankState::Enabled
+        } else {
+            RerankState::Off
         })
     }
 
@@ -125,16 +270,8 @@ impl VeraClient {
         let Some(limit) = self.time_left(cap) else {
             bail!("vera {}: run time budget exhausted", args.join(" "));
         };
-        let mut cmd = Command::new(&self.exe);
-        cmd.args(args)
-            .current_dir(&self.repo_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        for (k, v) in &self.env {
-            cmd.env(k, v);
-        }
+        let mut cmd = self.command();
+        cmd.args(args);
         let child = cmd
             .spawn()
             .with_context(|| format!("failed to run {} {}", self.exe.display(), args.join(" ")))?;
@@ -162,6 +299,9 @@ impl VeraClient {
                 .collect();
             bail!("vera {} failed: {}", args.join(" "), tail.trim());
         }
+        if out.stdout.len() > MAX_OUTPUT {
+            bail!("vera {} output exceeds {MAX_OUTPUT} bytes", args.join(" "));
+        }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
@@ -188,11 +328,7 @@ impl VeraClient {
         }
         let out = tokio::time::timeout(
             Duration::from_secs(20),
-            Command::new(&self.exe)
-                .arg("--version")
-                .stdin(Stdio::null())
-                .kill_on_drop(true)
-                .output(),
+            self.command().arg("--version").output(),
         )
         .await
         .map_err(|_| anyhow::anyhow!("vera --version timed out"))?
@@ -220,6 +356,12 @@ impl VeraClient {
             Ok(i) => i,
             Err(e) => return Some(format!("unreadable vera-cache.json: {e}")),
         };
+        if let Some(k) = &info.index_key {
+            if k != &self.index_key {
+                return Some(format!("index identity changed {k} -> {}", self.index_key));
+            }
+            return None;
+        }
         if info.backend != self.backend {
             return Some(format!(
                 "backend changed {} -> {}",
@@ -305,14 +447,13 @@ impl VeraClient {
             embedding_model,
             dim,
             updated_at: chrono::Utc::now().to_rfc3339(),
+            index_key: Some(self.index_key.clone()),
         };
-        let dir = self.repo_root.join(".revera");
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(
-            dir.join("vera-cache.json"),
-            serde_json::to_string_pretty(&info)?,
-        )?;
-        Ok(())
+        crate::fsutil::write_repo_file(
+            &self.repo_root,
+            Path::new(".revera/vera-cache.json"),
+            serde_json::to_string_pretty(&info)?.as_bytes(),
+        )
     }
 
     pub fn cache_info_path(repo_root: &Path) -> PathBuf {

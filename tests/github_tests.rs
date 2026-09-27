@@ -25,6 +25,7 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
             inline,
             summary_markdown: "## Revera review\n\n- finding\n".into(),
             state: ReviewState::default(),
+            publish_uncertain: false,
         },
         ledger: LedgerReport {
             requests: 0,
@@ -65,6 +66,14 @@ fn finding(id_body_file: &str) -> Finding {
         rationale: None,
         sources: vec![],
     }
+}
+
+async fn mount_no_review_comments(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(server)
+        .await;
 }
 
 #[test]
@@ -165,6 +174,7 @@ async fn head_moved_refuses() {
 #[tokio::test]
 async fn happy_path_posts_review_and_summary() {
     let server = MockServer::start().await;
+    mount_no_review_comments(&server).await;
     let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
@@ -238,6 +248,7 @@ async fn happy_path_posts_review_and_summary() {
 #[tokio::test]
 async fn second_run_updates_summary_and_posts_only_unposted() {
     let server = MockServer::start().await;
+    mount_no_review_comments(&server).await;
     let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     // existing managed comment carrying a state blob where f1 is posted
     let f1 = finding("src/x.rs");
@@ -255,7 +266,7 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/issues/42/comments"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            {"id": 555, "body": existing_body}
+            {"id": 555, "body": existing_body, "user": {"login": "github-actions[bot]", "type": "Bot"}}
         ])))
         .mount(&server)
         .await;
@@ -323,6 +334,7 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
 #[tokio::test]
 async fn summary_only_finding_marked_posted() {
     let server = MockServer::start().await;
+    mount_no_review_comments(&server).await;
     let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
@@ -594,6 +606,7 @@ async fn forged_inline_marker_by_other_author_is_ignored() {
 #[tokio::test]
 async fn inline_review_422_degrades_to_summary_only() {
     let server = MockServer::start().await;
+    mount_no_review_comments(&server).await;
     let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
@@ -654,6 +667,7 @@ async fn inline_review_422_degrades_to_summary_only() {
 #[tokio::test]
 async fn inline_review_500_still_fails_and_leaves_unposted() {
     let server = MockServer::start().await;
+    mount_no_review_comments(&server).await;
     let head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
@@ -693,4 +707,382 @@ async fn inline_review_500_still_fails_and_leaves_unposted() {
     .await
     .is_err());
     assert!(!st.findings[0].posted);
+}
+
+async fn mount_head(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        })))
+        .mount(server)
+        .await;
+}
+
+fn inline_report(f: &Finding) -> RunReport {
+    report_with_findings(
+        vec![InlineComment {
+            file: f.file.clone(),
+            line: f.start_line,
+            end_line: None,
+            body: revera::report::finding_body(f),
+        }],
+        vec![f.clone()],
+    )
+}
+
+async fn run_publish(
+    api: &GitHubApi,
+    rep: &mut RunReport,
+    st: &mut ReviewState,
+) -> anyhow::Result<revera::report::Publication> {
+    publish(
+        api,
+        &event(),
+        rep,
+        st,
+        10,
+        "<!-- revera-summary -->",
+        "github-actions[bot]",
+    )
+    .await
+}
+
+fn fast_api(server: &MockServer) -> GitHubApi {
+    let mut api = GitHubApi::with_base(&server.uri(), "t");
+    api.retry = revera::github::api::RetryPolicy {
+        attempts: 3,
+        deadline: std::time::Duration::from_secs(5),
+        max_wait: std::time::Duration::from_millis(50),
+    };
+    api
+}
+
+#[tokio::test]
+async fn review_comment_list_failure_fails_closed_without_posting() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let f = finding("src/x.rs");
+    let mut rep = inline_report(&f);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(run_publish(&api, &mut rep, &mut st).await.is_err());
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        !reqs.iter().any(|r| r.method == "POST"),
+        "nothing may be posted"
+    );
+    assert!(!st.findings[0].posted);
+}
+
+#[tokio::test]
+async fn malformed_review_comment_list_is_an_error_not_empty_history() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"message": "ok"})))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let f = finding("src/x.rs");
+    let mut rep = inline_report(&f);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    let err = run_publish(&api, &mut rep, &mut st).await.unwrap_err();
+    assert!(format!("{err:#}").contains("not an array"), "{err:#}");
+    let reqs = server.received_requests().await.unwrap();
+    assert!(!reqs.iter().any(|r| r.method == "POST"));
+}
+
+#[tokio::test]
+async fn unrelated_422_does_not_degrade_to_summary_only() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    mount_no_review_comments(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(
+            ResponseTemplate::new(422)
+                .set_body_string(r#"{"message":"Validation Failed: body is too long"}"#),
+        )
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let f = finding("src/x.rs");
+    let mut rep = inline_report(&f);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(run_publish(&api, &mut rep, &mut st).await.is_err());
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.method == "POST" && r.url.path().ends_with("/issues/42/comments")),
+        "an unrelated 422 must not be reported as an inline-placement fallback"
+    );
+    assert!(!st.findings[0].posted);
+}
+
+#[tokio::test]
+async fn review_ack_without_id_is_a_failure() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    mount_no_review_comments(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"state": "COMMENTED"})))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let f = finding("src/x.rs");
+    let mut rep = inline_report(&f);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(run_publish(&api, &mut rep, &mut st).await.is_err());
+    assert!(!st.findings[0].posted);
+}
+
+#[tokio::test]
+async fn non_json_success_is_a_failure() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    mount_no_review_comments(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_string("<html>proxy</html>"))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let f = finding("src/outside.rs");
+    let mut rep = report_with_findings(vec![], vec![f.clone()]);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    assert!(run_publish(&api, &mut rep, &mut st).await.is_err());
+    assert!(!st.findings[0].posted);
+}
+
+#[tokio::test]
+async fn get_retries_transient_errors_honouring_retry_after() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(502))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    mount_head(&server).await;
+    let api = fast_api(&server);
+    let sha = api.get_pull("acme", "widgets", 42).await.unwrap();
+    assert_eq!(sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn retries_are_bounded_and_not_applied_to_4xx() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/43"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    assert!(api.get_pull("acme", "widgets", 42).await.is_err());
+    assert!(api.get_pull("acme", "widgets", 43).await.is_err());
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(
+        reqs.iter()
+            .filter(|r| r.url.path().ends_with("/42"))
+            .count(),
+        3
+    );
+    assert_eq!(
+        reqs.iter()
+            .filter(|r| r.url.path().ends_with("/43"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn malformed_head_sha_is_rejected() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"head": {"sha": "--upload-pack=x"}})),
+        )
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    assert!(api.get_pull("acme", "widgets", 42).await.is_err());
+}
+
+#[tokio::test]
+async fn ambiguous_review_post_is_reconciled_not_replayed() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    let f = finding("src/x.rs");
+    let body = revera::report::finding_body(&f);
+    // before the POST: nothing posted; after the 502: our comment is there
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 9, "body": body, "user": {"login": "github-actions[bot]", "type": "Bot"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/pulls/42/reviews"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 555})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/widgets/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let mut rep = inline_report(&f);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    let p = run_publish(&api, &mut rep, &mut st).await.unwrap();
+    assert_eq!(p.summary_comment_id, Some(555));
+    assert!(st.findings[0].posted);
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(
+        reqs.iter()
+            .filter(|r| r.method == "POST" && r.url.path().ends_with("/reviews"))
+            .count(),
+        1,
+        "an ambiguous review POST is never replayed"
+    );
+}
+
+#[tokio::test]
+async fn ambiguous_summary_post_adopts_existing_comment() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    mount_no_review_comments(&server).await;
+    let st0 = ReviewState::default();
+    let landed = format!(
+        "<!-- revera-summary -->\n## Revera review\n{}",
+        encode_state(&st0)
+    );
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 601, "body": landed, "user": {"login": "github-actions[bot]", "type": "Bot"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/widgets/issues/comments/601"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 601})))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let f = finding("src/outside.rs");
+    let mut rep = report_with_findings(vec![], vec![f.clone()]);
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    let p = run_publish(&api, &mut rep, &mut st).await.unwrap();
+    assert_eq!(p.summary_comment_id, Some(601));
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.iter().filter(|r| r.method == "POST").count(), 1);
+}
+
+#[tokio::test]
+async fn published_summary_redacts_secrets() {
+    let server = MockServer::start().await;
+    mount_head(&server).await;
+    mount_no_review_comments(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues/42/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 555})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/widgets/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .mount(&server)
+        .await;
+    let api = fast_api(&server);
+    let mut f = finding("src/outside.rs");
+    let leaked = "ghp_0123456789abcdefghijABCDEFGHIJ012345";
+    f.claim = format!("token {leaked} is hardcoded");
+    let mut rep = report_with_findings(vec![], vec![f.clone()]);
+    rep.plan.summary_markdown = format!("## Revera review\n\n- {leaked}\n");
+    let mut st = ReviewState::default();
+    st.upsert(&f, FindingState::Open);
+    run_publish(&api, &mut rep, &mut st).await.unwrap();
+    for r in server.received_requests().await.unwrap() {
+        let b = String::from_utf8_lossy(&r.body);
+        assert!(
+            !b.contains(leaked),
+            "secret leaked in {} {}",
+            r.method,
+            r.url
+        );
+        if r.method == "POST" || r.method == "PATCH" {
+            let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            if let Some(s) = decode_state(v["body"].as_str().unwrap()) {
+                assert!(!serde_json::to_string(&s).unwrap().contains(leaked));
+            }
+        }
+    }
 }

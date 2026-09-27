@@ -92,6 +92,7 @@ fn surfaced_ids_only_returns_accepted_findings() {
             inline: vec![],
             summary_markdown: String::new(),
             state: ReviewState::default(),
+            publish_uncertain: false,
         },
         stats: Default::default(),
         ledger: LedgerReport {
