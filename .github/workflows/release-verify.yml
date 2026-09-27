@@ -1,0 +1,124 @@
+name: release-verify
+
+# Maintainer-triggered live verification of a *released* Revera against a
+# controlled fixture PR (one containing a known defect). Unlike
+# dogfood-released.yml it never skips: missing credentials fail the run.
+# It validates the released binary + the base-revision config of the fixture
+# PR, not the source of the branch it is dispatched from; self-review.yml
+# covers new source.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag to verify (e.g. v0 or v0.3.0)
+        default: v0
+        required: true
+      pr:
+        description: Fixture pull request number (must contain a known defect)
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: release-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # protect this environment (required reviewers) in repository settings
+    environment: release-verify
+    runs-on: ubuntu-latest
+    env:
+      RELEASE: ${{ inputs.release }}
+      PR: ${{ inputs.pr }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+      REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
+    steps:
+      - name: Require live credentials
+        run: |
+          missing=()
+          [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
+          [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::release verification needs ${missing[*]}; this is a failure, not a skip"; exit 1
+          fi
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a number"; exit 1; }
+          [[ "$RELEASE" =~ ^v[0-9]+(\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)?$ ]] || { echo "::error::bad release tag"; exit 1; }
+
+      - name: Fixture PR event
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" > "$RUNNER_TEMP/pr.json"
+          jq --slurpfile pr "$RUNNER_TEMP/pr.json" --arg repo "$GITHUB_REPOSITORY" -n \
+            '{number: $pr[0].number, pull_request: $pr[0], repository: {full_name: $repo}}' \
+            > "$RUNNER_TEMP/event.json"
+          echo "HEAD_SHA=$(jq -r .head.sha "$RUNNER_TEMP/pr.json")" >> "$GITHUB_ENV"
+          if [ "$(jq -r .head.repo.full_name "$RUNNER_TEMP/pr.json")" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::fixture PR must come from this repository"; exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ env.HEAD_SHA }}
+          path: fixture
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.release }}
+          path: released
+
+      - name: Install released binaries
+        run: |
+          set -euo pipefail
+          sha=$(git -C released rev-parse HEAD)
+          version=$(sed -n '/revera-version:/,/default:/ s/.*default: *"\([^"]*\)".*/\1/p' released/action.yml | head -n1)
+          vera_version=$(sed -n '/vera-version:/,/default:/ s/.*default: *"\([^"]*\)".*/\1/p' released/action.yml | head -n1)
+          mkdir -p "$RUNNER_TEMP/bin"
+          released/scripts/install-revera.sh "$version" "$RUNNER_TEMP/bin"
+          released/scripts/install-vera.sh "$vera_version" "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          {
+            echo "## Release verification"
+            echo "- release: \`$RELEASE\` -> \`$sha\`"
+            echo "- revera: \`$("$RUNNER_TEMP/bin/revera" --version)\` sha256 \`$(sha256sum "$RUNNER_TEMP/bin/revera" | cut -d' ' -f1)\`"
+            echo "- vera: \`$vera_version\`"
+            echo "- fixture: #$PR at \`$HEAD_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Review twice (publish, then recheck/dedupe)
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          summarize() {
+            jq -r --arg run "$1" '"- run \($run): status=\(.status) accepted=\(.stats.accepted) rejected=\(.stats.rejected) uncertain=\(.stats.uncertain) reused=\(.stats.reused) validation=\(.stats.validation) retrieval=\(.stats.retrieval) review_id=\(.publication.review_id // "-") summary=\(.publication.summary_comment_id // "-") phases=\([.timing.phases[] | "\(.phase):\(.outcome)"] | join(","))"' "$2" >> "$GITHUB_STEP_SUMMARY"
+          }
+          for run in 1 2; do
+            set +e
+            revera review --event "$RUNNER_TEMP/event.json" --config .github/revera-self-review.yaml \
+              --publish comment --out "$RUNNER_TEMP/report-$run.json" 2> >(tee "$RUNNER_TEMP/stderr-$run.log" >&2)
+            code=$?
+            set -e
+            grep -m1 '^config:' "$RUNNER_TEMP/stderr-$run.log" | sed 's/^/- run '"$run"' /' >> "$GITHUB_STEP_SUMMARY" || true
+            [ -f "$RUNNER_TEMP/report-$run.json" ] || { echo "::error::run $run wrote no report (exit $code)"; exit 1; }
+            summarize "$run" "$RUNNER_TEMP/report-$run.json"
+            [ "$(jq -r .status "$RUNNER_TEMP/report-$run.json")" = complete ] || { echo "::error::run $run did not complete (exit $code)"; exit 1; }
+          done
+          r1=$RUNNER_TEMP/report-1.json r2=$RUNNER_TEMP/report-2.json
+          [ "$(jq '.stats.accepted' "$r1")" -gt 0 ] || { echo "::error::the known defect was not reported"; exit 1; }
+          [ "$(jq '.publication.summary_comment_id' "$r1")" = "$(jq '.publication.summary_comment_id' "$r2")" ] \
+            || { echo "::error::second run did not update the same managed summary"; exit 1; }
+          if [ "$(jq '.publication.review_id // 0' "$r2")" != 0 ] && [ "$(jq '.stats.reused' "$r2")" = true ]; then
+            echo "::error::reused review of identical content posted a new review"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: release-verify-reports
+          path: ${{ runner.temp }}/report-*.json
+          if-no-files-found: ignore

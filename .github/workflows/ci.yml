@@ -12,7 +12,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check package and Action versions
         run: ./scripts/check-versions.sh
       - name: Public docs hygiene
@@ -23,12 +23,20 @@ jobs:
           bash scripts/test-install-vera.sh
       - name: Action outcome normalisation test
         run: bash scripts/test-action-outcome.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      # tests/vera_integration.rs drives the pinned vera binary against mock
+      # embedding/reranker servers; REVERA_TEST_VERA makes it mandatory here.
+      - name: Install vera (offline integration tests)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
+          echo "REVERA_TEST_VERA=$RUNNER_TEMP/bin/vera" >> "$GITHUB_ENV"
       - run: cargo test
       - name: doctor fails without publication credentials
         env:
@@ -69,9 +77,11 @@ jobs:
     if: needs.has-key.outputs.ok == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install vera
         run: |
           mkdir -p "$RUNNER_TEMP/bin"

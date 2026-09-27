@@ -210,8 +210,15 @@ pub async fn load_event_config(
     let wanted = config.unwrap_or(std::path::Path::new("revera.yaml"));
     let abs = lexical_abs(&cwd, wanted);
     let root = crate::git::repo_root(repo);
-    let (origin, mut cfg) = match abs.strip_prefix(&root) {
-        Ok(rel) => {
+    // a path that only resolves into the checkout through a symlink is
+    // still PR content
+    let canon = abs.canonicalize().ok();
+    let inside = abs
+        .strip_prefix(&root)
+        .ok()
+        .or_else(|| canon.as_deref().and_then(|c| c.strip_prefix(&root).ok()));
+    let (origin, mut cfg) = match inside {
+        Some(rel) => {
             // the base commit holds the trusted config (shallow checkouts
             // may not have it yet)
             if !crate::git::has_commit(&root, base_sha).await {
@@ -240,7 +247,7 @@ pub async fn load_event_config(
             let cfg = Config::parse(&text, &origin.to_string()).map_err(|e| format!("{e:#}"))?;
             (origin, cfg)
         }
-        Err(_) => (
+        None => (
             ConfigOrigin::External(abs.clone()),
             Config::load(&abs).map_err(|e| format!("{e:#}"))?,
         ),

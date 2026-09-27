@@ -39,7 +39,7 @@ pub enum RerankState {
 pub struct RerankSettings {
     pub protocol: Option<&'static str>,
     pub endpoint_path: Option<String>,
-    pub return_documents: Option<bool>,
+    pub return_documents: Option<crate::config::ReturnDocuments>,
 }
 
 impl RerankSettings {
@@ -64,7 +64,7 @@ impl RerankSettings {
         ));
         v.push((
             "retrieval.reranker_return_documents",
-            docs.unwrap_or(false).to_string(),
+            crate::config::ReturnDocuments::config_value(docs).to_string(),
         ));
         v
     }

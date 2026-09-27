@@ -34,17 +34,21 @@ jobs:
             echo "::warning title=live self-review skipped::secrets not available to this run: ${missing[*]} (expected for fork PRs). This is a SKIP, not a passing review; offline proof is action-smoke.yml."
           fi
 
+  # Builds and runs the PR's own source with provider secrets, so only for
+  # same-repository branches (fork PRs never receive secrets anyway).
   revera:
     needs: has-key
-    if: needs.has-key.outputs.ok == 'true'
+    if: needs.has-key.outputs.ok == 'true' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install vera
         run: |
           mkdir -p "$RUNNER_TEMP/bin"

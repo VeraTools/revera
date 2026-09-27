@@ -251,10 +251,35 @@ pub struct VeraEndpoint {
     /// Reranker only: path joined onto `base_url` (Vera default `/rerank`).
     #[serde(default)]
     pub endpoint_path: Option<String>,
-    /// Reranker only: explicit `return_documents` value; unset omits the
-    /// field from requests.
+    /// Reranker only: `true`/`false` send `return_documents` explicitly;
+    /// `omit` leaves the field out for providers that reject it. Unset keeps
+    /// Vera's default (`false`).
     #[serde(default)]
-    pub return_documents: Option<bool>,
+    pub return_documents: Option<ReturnDocuments>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum ReturnDocuments {
+    Send(bool),
+    Omit(OmitTag),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OmitTag {
+    Omit,
+}
+
+impl ReturnDocuments {
+    /// Value for `vera config set retrieval.reranker_return_documents`.
+    pub fn config_value(this: Option<Self>) -> &'static str {
+        match this {
+            None | Some(Self::Send(false)) => "false",
+            Some(Self::Send(true)) => "true",
+            Some(Self::Omit(_)) => "null",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -597,7 +622,7 @@ impl VeraConfig {
                 "model": r.model,
                 "protocol": r.protocol.map(|p| p.as_str()),
                 "endpoint_path": r.endpoint_path,
-                "return_documents": r.return_documents,
+                "return_documents": crate::config::ReturnDocuments::config_value(r.return_documents),
             }),
         }
     }
