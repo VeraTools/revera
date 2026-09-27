@@ -244,7 +244,18 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         );
     }
     let raw_diff = git::diff(&repo, &req.base, head_rev).await?;
-    let diff: Arc<DiffSet> = Arc::new(parse_unified(&raw_diff));
+    let mut parsed = parse_unified(&raw_diff);
+    // credential-bearing files never reach a model, even as diff text
+    let sensitive = crate::tools::glob_set(crate::config::SENSITIVE_GLOBS);
+    let mut policy_gaps = vec![];
+    parsed.files.retain(|f| {
+        let hit = sensitive.is_match(&f.new_path) || sensitive.is_match(&f.old_path);
+        if hit {
+            policy_gaps.push(format!("`{}` excluded by the content policy", f.new_path));
+        }
+        !hit
+    });
+    let diff: Arc<DiffSet> = Arc::new(parsed);
     let patch_id = git::patch_id(&repo, &req.base, head_rev)
         .await
         .unwrap_or_default();
@@ -416,7 +427,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
 
     // the investigator never sees diffs omitted by max_diff_bytes: that is
     // unchecked scope, not a clean result
-    let mut coverage_gaps = vec![];
+    let mut coverage_gaps = policy_gaps;
     let omitted = diff.omitted_files(cfg.review.max_diff_bytes);
     if !omitted.is_empty() {
         partial_reasons.push(format!(
@@ -639,6 +650,16 @@ pub async fn finish(
     };
     stats.files_read = prep.toolbox.files_read();
     stats.tools = prep.toolbox.tool_stats();
+    let fallbacks = prep
+        .vera
+        .rerank_fallbacks
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if fallbacks > 0 {
+        stats.retrieval = format!(
+            "{} (rerank fell back on {fallbacks} searches)",
+            stats.retrieval
+        );
+    }
     let routes: Vec<String> = prep
         .ledger
         .0

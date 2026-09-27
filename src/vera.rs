@@ -83,6 +83,8 @@ pub struct VeraClient {
     pub rerank: Option<RerankSettings>,
     /// Hash of the index-shaping config; stored with the index.
     pub index_key: String,
+    /// Searches where Vera fell back to unreranked results.
+    pub rerank_fallbacks: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every subprocess is bounded by the remaining time to this deadline;
     /// a timed-out child is killed and reaped.
     pub deadline: Option<Instant>,
@@ -114,6 +116,7 @@ impl VeraClient {
             home: PathBuf::new(),
             rerank: None,
             index_key: String::new(),
+            rerank_fallbacks: Default::default(),
             deadline: None,
         }
     }
@@ -189,6 +192,7 @@ impl VeraClient {
             home,
             rerank,
             index_key: cfg.index_key(),
+            rerank_fallbacks: Default::default(),
             deadline: None,
         })
     }
@@ -298,6 +302,10 @@ impl VeraClient {
                 .rev()
                 .collect();
             bail!("vera {} failed: {}", args.join(" "), tail.trim());
+        }
+        if String::from_utf8_lossy(&out.stderr).contains("reranker unavailable") {
+            self.rerank_fallbacks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if out.stdout.len() > MAX_OUTPUT {
             bail!("vera {} output exceeds {MAX_OUTPUT} bytes", args.join(" "));
@@ -468,7 +476,7 @@ impl VeraClient {
         lang: Option<&str>,
         limit: u32,
     ) -> Result<Value> {
-        let mut args: Vec<String> = vec!["search".into(), query.into()];
+        let mut args: Vec<String> = vec!["search".into()];
         if let Some(i) = intent {
             args.extend(["--intent".into(), i.into()]);
         }
@@ -479,26 +487,30 @@ impl VeraClient {
             args.extend(["--lang".into(), l.into()]);
         }
         args.extend(["-n".into(), limit.to_string(), "--json".into()]);
+        // positional last, after `--`: a model-chosen query is never a flag
+        args.extend(["--".into(), query.into()]);
         self.run_json(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
             .await
     }
 
     pub async fn references(&self, symbol: &str, callees: bool, limit: u32) -> Result<Value> {
-        let mut args = vec!["references".to_string(), symbol.to_string()];
+        let mut args = vec!["references".to_string()];
         if callees {
             args.push("--callees".into());
         }
         args.extend(["-n".into(), limit.to_string(), "--json".into()]);
+        args.extend(["--".into(), symbol.to_string()]);
         self.run_json(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
             .await
     }
 
     pub async fn grep(&self, pattern: &str, path_glob: Option<&str>, limit: u32) -> Result<Value> {
-        let mut args = vec!["grep".to_string(), pattern.to_string()];
+        let mut args = vec!["grep".to_string()];
         if let Some(p) = path_glob {
             args.extend(["--path".into(), p.into()]);
         }
         args.extend(["-n".into(), limit.to_string(), "--json".into()]);
+        args.extend(["--".into(), pattern.to_string()]);
         self.run_json(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
             .await
     }

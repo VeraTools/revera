@@ -311,3 +311,14 @@ async fn read_blob_refuses_symlink_entries() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn sensitive_globs_cover_nested_credentials_only() {
+    let s = revera::tools::glob_set(revera::config::SENSITIVE_GLOBS);
+    for p in [".env", "app/.env", "app/.env.production", "certs/server.pem", "k.key"] {
+        assert!(s.is_match(p), "{p}");
+    }
+    for p in ["src/env.rs", "docs/keys.md", "environment.yaml"] {
+        assert!(!s.is_match(p), "{p}");
+    }
+}

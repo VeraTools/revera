@@ -48,9 +48,10 @@ pub struct ToolBox {
 /// Largest file `read_file` will load.
 const MAX_READ_BYTES: usize = 4 * 1024 * 1024;
 
-fn exclusion_set(globs: &[String]) -> globset::GlobSet {
+pub fn glob_set<S: AsRef<str>>(globs: &[S]) -> globset::GlobSet {
     let mut b = globset::GlobSetBuilder::new();
     for g in globs {
+        let g = g.as_ref();
         match globset::GlobBuilder::new(g)
             .literal_separator(false)
             .build()
@@ -180,7 +181,7 @@ impl ToolBox {
         vera: Arc<VeraClient>,
         max_output_bytes: usize,
     ) -> Self {
-        let excluded = exclusion_set(&vera.exclude);
+        let excluded = glob_set(&vera.exclude);
         Self {
             repo_root,
             diff,

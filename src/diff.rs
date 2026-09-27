@@ -122,7 +122,6 @@ impl DiffSet {
         s
     }
 
-    /// Render truncated to `max_bytes` (per-file note when a file doesn't fit).
     /// Files whose diff `render_truncated(max_bytes)` omits.
     pub fn omitted_files(&self, max_bytes: usize) -> Vec<String> {
         let mut used = 0usize;
@@ -146,6 +145,7 @@ impl DiffSet {
         )
     }
 
+    /// Render truncated to `max_bytes` (per-file note when a file doesn't fit).
     pub fn render_truncated(&self, max_bytes: usize) -> String {
         let mut s = String::new();
         for f in &self.files {
@@ -160,26 +160,24 @@ impl DiffSet {
     }
 
     fn render_file(f: &FileDiff) -> String {
-        {
-            let mut part = format!("diff --git a/{} b/{}\n", f.old_path, f.new_path);
-            for h in &f.hunks {
-                part.push_str(&format!(
-                    "@@ -{},{} +{},{} @@\n",
-                    h.old_start, h.old_len, h.new_start, h.new_len
-                ));
-                for l in &h.lines {
-                    let p = match l.kind {
-                        DiffLineKind::Add => '+',
-                        DiffLineKind::Del => '-',
-                        DiffLineKind::Ctx => ' ',
-                    };
-                    part.push(p);
-                    part.push_str(&l.text);
-                    part.push('\n');
-                }
+        let mut part = format!("diff --git a/{} b/{}\n", f.old_path, f.new_path);
+        for h in &f.hunks {
+            part.push_str(&format!(
+                "@@ -{},{} +{},{} @@\n",
+                h.old_start, h.old_len, h.new_start, h.new_len
+            ));
+            for l in &h.lines {
+                let p = match l.kind {
+                    DiffLineKind::Add => '+',
+                    DiffLineKind::Del => '-',
+                    DiffLineKind::Ctx => ' ',
+                };
+                part.push(p);
+                part.push_str(&l.text);
+                part.push('\n');
             }
-            part
         }
+        part
     }
 
     /// Per-file excerpt used for validator context.

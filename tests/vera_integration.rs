@@ -173,6 +173,8 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
         .await
         .unwrap();
     assert!(hits.to_string().contains("apply_discount"), "{hits}");
+    // option-like model queries are positional, not flags
+    vera.search("--help", None, None, None, 1).await.unwrap();
     let rr = requests_to(&server, "/v1/rerank").await;
     assert!(!rr.is_empty(), "search must invoke the configured reranker");
     let body: Value = serde_json::from_slice(&rr[0].body).unwrap();
@@ -341,4 +343,10 @@ async fn reranker_outage_degrades_to_unreranked_results() {
         .unwrap();
     assert!(hits.to_string().contains("src/lib.rs"), "{hits}");
     assert!(!requests_to(&server, "/v1/broken").await.is_empty());
+    assert!(
+        vera.rerank_fallbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0,
+        "an unreranked fallback must be observable"
+    );
 }

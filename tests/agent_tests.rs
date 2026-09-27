@@ -93,6 +93,7 @@ fn toolbox() -> ToolBox {
             home: std::env::temp_dir(),
             rerank: None,
             index_key: String::new(),
+            rerank_fallbacks: Default::default(),
             deadline: None,
         }),
         12000,
