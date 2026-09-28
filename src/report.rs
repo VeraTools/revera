@@ -118,6 +118,10 @@ pub struct RunStats {
     /// `min_severity`.
     #[serde(default)]
     pub below_threshold_after_validation: usize,
+    /// Base-commit guidance given to the investigator (sources + digest;
+    /// never rendered into public comments).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<crate::guidance::Guidance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

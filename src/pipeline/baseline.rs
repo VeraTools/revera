@@ -37,7 +37,8 @@ pub(crate) async fn investigate(
         cfg.budget.retries,
         "submit_findings",
     )?;
-    let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes);
+    let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes)
+        + &prep.guidance.prompt_block();
     let terminal: ToolSpec = terminal_submit_findings_spec();
     let lane_start = std::time::Instant::now();
     let run = run_agent_checked(

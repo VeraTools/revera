@@ -38,6 +38,10 @@ jobs:
           scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
           echo "REVERA_TEST_VERA=$RUNNER_TEMP/bin/vera" >> "$GITHUB_ENV"
       - run: cargo test
+      - name: Offline evaluation harness tests
+        run: |
+          bash eval/test-run-all.sh
+          bash eval/test-frozen.sh
       - name: doctor fails without publication credentials
         env:
           FIXTURE_SCRIPTS: ${{ github.workspace }}/fixtures/scripts
