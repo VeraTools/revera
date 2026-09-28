@@ -227,6 +227,15 @@ fn repo_writes_refuse_symlinks_and_traversal() {
     symlink(&victim, &link).unwrap();
     assert!(fsutil::write_output(root.path(), &link, b"x").is_err());
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+
+    // absolute output inside the checkout: symlinked ancestors refused
+    symlink(outside.path(), root.path().join("reports")).unwrap();
+    let inside = root.path().join("reports/sub/out.md");
+    assert!(fsutil::write_output(root.path(), &inside, b"x").is_err());
+    assert!(!outside.path().join("sub").exists());
+    let ok = root.path().join("real/out.md");
+    fsutil::write_output(root.path(), &ok, b"y").unwrap();
+    assert_eq!(std::fs::read_to_string(&ok).unwrap(), "y");
 }
 
 // ---------- git ----------

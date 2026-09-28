@@ -76,7 +76,8 @@ runs:
         PROFILE: ${{ inputs.profile }}
       run: |
         set -euo pipefail
-        args=(cache-key --config "$CONFIG")
+        # same trusted base-revision config the review step loads
+        args=(cache-key --event "$GITHUB_EVENT_PATH" --config "$CONFIG")
         if [ -n "$PROFILE" ]; then args+=(--profile "$PROFILE"); fi
         if key=$(revera "${args[@]}" 2>/dev/null); then
           echo "value=$key" >> "$GITHUB_OUTPUT"

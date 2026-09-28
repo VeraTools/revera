@@ -336,17 +336,27 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         None
     } else {
         let t0 = Instant::now();
-        rerank = match vera.configure().await {
-            Ok(r) => r,
+        let configured = match vera.configure().await {
+            Ok(r) => Ok(r),
             Err(e) => {
+                // the persistent Vera home may still carry another run's
+                // reranker settings: do not search through it
                 tracing::warn!("vera configuration failed: {e:#}");
-                crate::vera::RerankState::Degraded
+                Err(e.context("vera configuration failed"))
             }
         };
-        if rerank == crate::vera::RerankState::Degraded {
+        if configured
+            .as_ref()
+            .is_ok_and(|r| *r == crate::vera::RerankState::Degraded)
+        {
+            rerank = crate::vera::RerankState::Degraded;
             partial_reasons.push("vera reranker configured but not activated".into());
         }
-        match vera.ensure_index().await {
+        let indexed = match configured {
+            Ok(_) => vera.ensure_index().await,
+            Err(e) => Err(e),
+        };
+        match indexed {
             Ok(_) => {
                 timing.record("vera_index", "", t0, wall, "ok");
                 None
@@ -393,7 +403,13 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     };
 
     // ---- recheck prior open findings ----
-    let mut rechecks = recheck_candidates(&state);
+    // validation-disabled runs are evaluation-only: no validator sessions,
+    // and no prior finding may be re-accepted into this run's output
+    let mut rechecks = if cfg.review.validate {
+        recheck_candidates(&state)
+    } else {
+        vec![]
+    };
     let mut resolved_titles = vec![];
     if !rechecks.is_empty() {
         let clean = validate_candidates(

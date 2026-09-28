@@ -235,13 +235,14 @@ impl VeraClient {
             if let Err(e) = r {
                 if self.rerank.is_some() {
                     tracing::warn!("vera reranker activation failed: {e:#}");
-                    // never leave a half-applied reranker config behind
-                    let _ = self
-                        .run_bounded(
-                            &["config", "set", "retrieval.reranking_enabled", "false"],
-                            Some(QUERY_TIMEOUT),
-                        )
-                        .await;
+                    // never leave a half-applied reranker config behind; if
+                    // it cannot be switched off the home's state is unknown
+                    self.run_bounded(
+                        &["config", "set", "retrieval.reranking_enabled", "false"],
+                        Some(QUERY_TIMEOUT),
+                    )
+                    .await
+                    .context("disable vera reranker after failed activation")?;
                     return Ok(RerankState::Degraded);
                 }
                 return Err(e.context("vera config set"));
@@ -364,26 +365,13 @@ impl VeraClient {
             Ok(i) => i,
             Err(e) => return Some(format!("unreadable vera-cache.json: {e}")),
         };
-        if let Some(k) = &info.index_key {
-            if k != &self.index_key {
-                return Some(format!("index identity changed {k} -> {}", self.index_key));
-            }
-            return None;
+        match &info.index_key {
+            Some(k) if k == &self.index_key => None,
+            Some(k) => Some(format!("index identity changed {k} -> {}", self.index_key)),
+            // legacy metadata predates the recorded exclusion policy, so the
+            // index may hold content that is excluded now
+            None => Some("index has no recorded identity (legacy cache)".into()),
         }
-        if info.backend != self.backend {
-            return Some(format!(
-                "backend changed {} -> {}",
-                info.backend, self.backend
-            ));
-        }
-        let want = self.embedding_model();
-        if info.embedding_model != want {
-            return Some(format!(
-                "embedding model changed {} -> {}",
-                info.embedding_model, want
-            ));
-        }
-        None
     }
 
     /// Index (or incrementally update) the repository. An existing index
