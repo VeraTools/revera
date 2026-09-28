@@ -496,9 +496,24 @@ fn spoofed_marker_comment_is_not_selected() {
     );
     let got = find_managed(&comments, marker, None, &me(Some("mallory"))).map(|c| c.id);
     assert_eq!(got, Some(3));
-    // a recorded comment id wins outright
+    // a recorded comment id never excuses an author mismatch
     let got = find_managed(&comments, marker, Some(4), &me(Some("revera-bot"))).map(|c| c.id);
+    assert_eq!(got, None);
+    let got = find_managed(&comments, marker, Some(4), &me(None)).map(|c| c.id);
     assert_eq!(got, Some(4));
+    // missing author data is never ownership
+    let anon = vec![GhComment {
+        author: None,
+        ..comments[4].clone()
+    }];
+    assert_eq!(
+        find_managed(&anon, marker, None, &me(None)).map(|c| c.id),
+        None
+    );
+    assert_eq!(
+        find_managed(&anon, marker, Some(4), &me(None)).map(|c| c.id),
+        None
+    );
 }
 
 // ---------- lexical discovery without Vera ----------

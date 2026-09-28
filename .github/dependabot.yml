@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Workflow and composite-Action pins are full commit SHAs with a version
+  # comment; Dependabot bumps both together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

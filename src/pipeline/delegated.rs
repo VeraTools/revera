@@ -556,6 +556,10 @@ vera: {}
             env: vec![],
             backend: "local".into(),
             exclude: vec![],
+            home: repo.clone(),
+            rerank: None,
+            index_key: String::new(),
+            rerank_fallbacks: Default::default(),
             deadline: None,
         });
         let diff = Arc::new(DiffSet::default());

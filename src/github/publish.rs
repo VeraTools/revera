@@ -1,4 +1,4 @@
-use super::api::{GhComment, GitHubApi, GitHubHttpError, ReviewComment};
+use super::api::{is_ambiguous, GhComment, GitHubApi, GitHubHttpError, ReviewComment};
 use super::event::PrEvent;
 use crate::report::{surfaced_ids, Publication, RunReport};
 use crate::state::{FindingState, ReviewState};
@@ -11,10 +11,11 @@ const STATE_SUFFIX: &str = " -->";
 /// `<!-- revera-state:<base64(json)> -->`
 pub fn encode_state(s: &ReviewState) -> String {
     let json = serde_json::to_string(s).unwrap_or_default();
+    let json = crate::redact::text(&json);
     format!(
         "{}{}{}",
         STATE_PREFIX,
-        base64::engine::general_purpose::STANDARD.encode(json),
+        base64::engine::general_purpose::STANDARD.encode(json.as_bytes()),
         STATE_SUFFIX
     )
 }
@@ -46,11 +47,10 @@ impl Identity {
     }
 
     /// A comment is ours only when its author is exactly our identity.
-    /// Comments with no author information (older API shapes, tests) are
-    /// accepted; any other author — human or another bot — is not.
+    /// Missing author information is never evidence of ownership.
     pub fn owns(&self, c: &GhComment) -> bool {
         match (&c.author, &self.viewer) {
-            (None, _) => true,
+            (None, _) => false,
             (Some(a), Some(v)) => a == v,
             (Some(a), None) => a == &self.bot_login,
         }
@@ -61,26 +61,23 @@ impl Identity {
 ///
 /// A candidate must *start* with the marker and carry a decodable state
 /// blob — a quoted or copied marker inside someone else's comment does
-/// not qualify. Among candidates: the comment id recorded in prior state
-/// wins; otherwise the author must be [`Identity::owns`].
+/// not qualify, and the author must be [`Identity::owns`]. Among owned
+/// candidates the comment id recorded in prior state wins.
 pub fn find_managed<'a>(
     comments: &'a [GhComment],
     marker: &str,
     expected_id: Option<u64>,
     me: &Identity,
 ) -> Option<&'a GhComment> {
-    let mut cands = comments
-        .iter()
-        .filter(|c| c.body.trim_start().starts_with(marker) && decode_state(&c.body).is_some());
+    let mut cands = comments.iter().filter(|c| {
+        c.body.trim_start().starts_with(marker) && decode_state(&c.body).is_some() && me.owns(c)
+    });
     if let Some(id) = expected_id {
-        if let Some(c) = comments
-            .iter()
-            .find(|c| c.id == id && c.body.trim_start().starts_with(marker))
-        {
+        if let Some(c) = cands.clone().find(|c| c.id == id) {
             return Some(c);
         }
     }
-    cands.find(|c| me.owns(c))
+    cands.next()
 }
 
 /// Revera ids already present as inline review comments *we* posted on the
@@ -140,6 +137,7 @@ pub async fn publish(
     bot_login: &str,
 ) -> Result<Publication> {
     let (owner, repo) = ev.owner_repo();
+    let publish_uncertain = report.plan.publish_uncertain;
     let mut pubn = Publication {
         mode: "comment".into(),
         ..Default::default()
@@ -169,13 +167,12 @@ pub async fn publish(
     // Inline comments already on the PR count as posted even when a prior
     // summary upsert failed before it could record them.
     let me = Identity::resolve(api, bot_login).await;
-    let already = match api.list_review_comments(owner, repo, ev.number).await {
-        Ok(comments) => posted_revera_ids(&comments, &me),
-        Err(e) => {
-            tracing::warn!("could not list existing review comments: {e:#}");
-            vec![]
-        }
-    };
+    // fail closed: without the durable record we cannot tell what is
+    // already posted, and guessing "nothing" duplicates comments
+    let already = posted_revera_ids(
+        &api.list_review_comments(owner, repo, ev.number).await?,
+        &me,
+    );
     if !already.is_empty() {
         state.mark_posted(&already);
     }
@@ -228,14 +225,19 @@ pub async fn publish(
             Err(err)
                 if err
                     .downcast_ref::<GitHubHttpError>()
-                    .is_some_and(|e| e.status == 422) =>
+                    .is_some_and(|e| e.is_placement_rejection()) =>
             {
-                tracing::warn!("GitHub rejected inline review (422); continuing with summary");
+                tracing::warn!("GitHub rejected inline placement (422); continuing with summary");
                 pubn.skipped_reason = Some(
                     "inline review rejected by GitHub (422); findings listed in summary only"
                         .into(),
                 );
                 review_outcome = "ok:inline-rejected";
+            }
+            Err(err) if is_ambiguous(&err) && reconcile_review(api, ev, &me, &posted_ids).await => {
+                tracing::warn!("inline review POST failed ambiguously ({err:#}) but its comments are on the PR");
+                review_outcome = "ok:reconciled";
+                state.mark_posted(&posted_ids);
             }
             Err(err) => {
                 report.timing.append_publish(
@@ -275,21 +277,34 @@ pub async fn publish(
         Some(id) => {
             staged.summary_comment_id = Some(id);
             body.push('\n');
-            body.push_str(&encode_state(&staged));
+            body.push_str(&encode_state(&staged.public_projection(publish_uncertain)));
             api.update_issue_comment(owner, repo, id, &body).await?
         }
         None => {
             body.push('\n');
-            body.push_str(&encode_state(&staged));
-            let created = api
+            body.push_str(&encode_state(&staged.public_projection(publish_uncertain)));
+            let created = match api
                 .create_issue_comment(owner, repo, ev.number, &body)
-                .await?;
-            if created.id != 0 {
+                .await
+            {
+                Ok(c) => c,
+                Err(err) if is_ambiguous(&err) => {
+                    // the create may have landed: adopt our comment if it
+                    // is there now, never post a second one blindly
+                    let now = api.list_issue_comments(owner, repo, ev.number).await?;
+                    match find_managed(&now, summary_marker, None, &me) {
+                        Some(c) => c.clone(),
+                        None => return Err(err),
+                    }
+                }
+                Err(err) => return Err(err),
+            };
+            {
                 staged.summary_comment_id = Some(created.id);
                 let mut b2 = format!("{summary_marker}\n{}", report.plan.summary_markdown);
                 b2.push_str(&open_section(&staged));
                 b2.push('\n');
-                b2.push_str(&encode_state(&staged));
+                b2.push_str(&encode_state(&staged.public_projection(publish_uncertain)));
                 // best effort: the id is a convenience, ownership is also
                 // checked by author
                 if let Err(e) = api.update_issue_comment(owner, repo, created.id, &b2).await {
@@ -304,4 +319,23 @@ pub async fn publish(
 
     report.publication = pubn.clone();
     Ok(pubn)
+}
+
+/// After an ambiguous review POST: true when every comment we tried to post
+/// is now present as one of our own review comments.
+async fn reconcile_review(api: &GitHubApi, ev: &PrEvent, me: &Identity, ids: &[String]) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    let (owner, repo) = ev.owner_repo();
+    match api.list_review_comments(owner, repo, ev.number).await {
+        Ok(c) => {
+            let present = posted_revera_ids(&c, me);
+            ids.iter().all(|id| present.contains(id))
+        }
+        Err(e) => {
+            tracing::warn!("could not reconcile inline review: {e:#}");
+            false
+        }
+    }
 }

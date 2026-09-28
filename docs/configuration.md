@@ -121,8 +121,26 @@ key or index is needed. Present: enabled unless `enabled: false`.
 | `version` | — | expected Vera version; mismatch is reported by `doctor` |
 | `backend` | `local` | `local` (on-device embeddings) or `api` |
 | `embedding` | — | `api` backend: `{base_url, model, api_key_env}` |
-| `reranker` | — | optional `{base_url, model, api_key_env}` |
+| `reranker` | — | optional `{base_url, model, api_key_env, protocol?, endpoint_path?, return_documents?}` |
 | `exclude` | `[]` | glob patterns excluded from indexing and lexical tools |
+
+Reranker options: `protocol` is `generic` (`/rerank`, `top_n`) or `voyage`
+(`top_k`); unset lets Vera infer it from the base URL. `endpoint_path` is
+joined onto `base_url` (default `/rerank`). `return_documents` is `true` or
+`false` (sent explicitly; default `false`) or `omit` (field left out for
+providers that reject it).
+
+Revera runs Vera with its own `VERA_HOME` under `.revera/`, strips ambient
+`VERA_*`/`EMBEDDING_MODEL_*`/`RERANKER_MODEL_*` variables from the child,
+and applies the reranker with `vera config set retrieval.*`; with no
+reranker configured, reranking is explicitly disabled. The report's
+`retrieval` field distinguishes `vera`, `vera+rerank`,
+`vera (rerank degraded)` and searches where Vera fell back to unreranked
+results.
+
+Credential-bearing paths (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, …)
+are always excluded from indexing, lexical tools, `read_file` and the diff
+shown to models; excluded changed files are listed as coverage gaps.
 
 ```yaml
 vera:
@@ -138,8 +156,21 @@ vera:
 ```
 
 `revera cache-key` prints a hash of the index-shaping settings (backend,
-embedding model, excludes, Vera version) or `disabled`; the Action uses it
-to cache `.vera` between runs.
+embedding origin and model, excludes, Vera version) or `disabled`; the
+Action uses it to cache `.vera` between runs. Reranker, model routes,
+prompts, budgets and credential variable names are deliberately absent, so
+changing them reuses the warm index; they are part of the review
+fingerprint instead.
+
+## Event mode trust
+
+With `--event` (the Action), a `--config` path inside the checkout is read
+from the PR's base commit, never the PR head, so a pull request cannot
+change the endpoints, executables or credential names its own review uses.
+A path outside the checkout is read as-is (operator-provided). Before any
+credential is resolved, event mode requires `https` endpoints (loopback
+excepted), valid credential variable names that are not GitHub token
+variables, and `review.validate: true` for `publish: comment`.
 
 ## `github`
 

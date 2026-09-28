@@ -1,26 +1,170 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-async fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(repo)
+/// Wall-clock bound for any single git subprocess.
+const GIT_TIMEOUT: Duration = Duration::from_secs(300);
+/// Output bound for any single git subprocess (stdout).
+const GIT_MAX_OUTPUT: usize = 256 * 1024 * 1024;
+
+/// A git command that never prompts, never runs repository-configured
+/// external diff/textconv drivers or fsmonitor hooks, and ignores the
+/// user's global/system config for those knobs.
+fn git_cmd(repo: &Path) -> Command {
+    let mut c = Command::new("git");
+    c.current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_EXTERNAL_DIFF")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "diff.external=",
+            "-c",
+            "core.pager=cat",
+        ])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("failed to run git")?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        bail!("git {} failed: {}", args.join(" "), err.trim());
+        .kill_on_drop(true);
+    c
+}
+
+/// Run a git command with bounded time and output; returns (status, stdout, stderr).
+async fn run_bounded(mut cmd: Command, what: &str) -> Result<(Option<i32>, Vec<u8>, String)> {
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to run {what}"))?;
+    let mut stdout = child.stdout.take().context("git stdout")?;
+    let mut stderr = child.stderr.take().context("git stderr")?;
+    let work = async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let read_out = async {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = stdout.read(&mut buf).await?;
+                if n == 0 {
+                    return Ok::<bool, std::io::Error>(false);
+                }
+                if out.len() + n > GIT_MAX_OUTPUT {
+                    return Ok(true);
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+        };
+        let read_err = async {
+            let mut buf = Vec::new();
+            (&mut stderr).take(64 * 1024).read_to_end(&mut buf).await?;
+            err = buf;
+            Ok::<(), std::io::Error>(())
+        };
+        let (over, _) = tokio::try_join!(read_out, read_err)?;
+        Ok::<(bool, Vec<u8>, Vec<u8>), std::io::Error>((over, out, err))
+    };
+    let (over, out, err) = match tokio::time::timeout(GIT_TIMEOUT, work).await {
+        Ok(r) => r.with_context(|| format!("{what}: reading output"))?,
+        Err(_) => {
+            let _ = child.kill().await;
+            bail!("{what} timed out after {}s", GIT_TIMEOUT.as_secs());
+        }
+    };
+    if over {
+        let _ = child.kill().await;
+        bail!("{what} output exceeds {} bytes", GIT_MAX_OUTPUT);
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let status = child.wait().await?;
+    Ok((
+        status.code(),
+        out,
+        String::from_utf8_lossy(&err).trim().to_string(),
+    ))
+}
+
+async fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    let mut cmd = git_cmd(repo);
+    cmd.args(args);
+    let what = format!("git {}", args.first().copied().unwrap_or(""));
+    let (code, out, err) = run_bounded(cmd, &what).await?;
+    if code != Some(0) {
+        bail!("git {} failed: {}", args.join(" "), err);
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Full hex object id (SHA-1 or SHA-256).
+pub fn is_oid(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
-    Ok(git(repo, &["rev-parse", rev]).await?.trim().to_string())
+    let out = git(repo, &["rev-parse", "--verify", "--end-of-options", rev])
+        .await?
+        .trim()
+        .to_string();
+    if !is_oid(&out) {
+        bail!("git rev-parse {rev}: unexpected output {out:?}");
+    }
+    Ok(out)
+}
+
+/// Resolve `rev` to a validated commit id (option-terminated, so a
+/// revision like `--output=x` is never parsed as a flag).
+pub async fn resolve_commit(repo: &Path, rev: &str) -> Result<String> {
+    rev_parse(repo, &format!("{rev}^{{commit}}")).await
+}
+
+pub async fn is_shallow(repo: &Path) -> bool {
+    git(repo, &["rev-parse", "--is-shallow-repository"])
+        .await
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
+}
+
+/// Content of a regular tracked file at `rev` (never a symlink, submodule
+/// or tree). `Ok(None)` when absent or not a regular file; errors when
+/// larger than `max_bytes`.
+pub async fn read_blob(
+    repo: &Path,
+    rev: &str,
+    path: &str,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>> {
+    if !is_oid(rev) {
+        bail!("read_blob: {rev:?} is not a resolved object id");
+    }
+    let listing = git(repo, &["ls-tree", "-z", "--full-tree", rev, "--", path]).await?;
+    let entry = listing.split('\0').find(|e| !e.is_empty());
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    let (meta, name) = entry.split_once('\t').context("malformed ls-tree output")?;
+    if name != path {
+        return Ok(None);
+    }
+    let mut parts = meta.split_whitespace();
+    let (mode, kind, oid) = (parts.next(), parts.next(), parts.next());
+    if kind != Some("blob") || !matches!(mode, Some("100644") | Some("100755")) {
+        return Ok(None);
+    }
+    let oid = oid.context("malformed ls-tree output")?;
+    let size: usize = git(repo, &["cat-file", "-s", oid]).await?.trim().parse()?;
+    if size > max_bytes {
+        bail!("{path} at {rev} is {size} bytes (limit {max_bytes})");
+    }
+    let mut cmd = git_cmd(repo);
+    cmd.args(["cat-file", "blob", oid]);
+    let (code, out, err) = run_bounded(cmd, "git cat-file").await?;
+    if code != Some(0) {
+        bail!("git cat-file {oid} failed: {err}");
+    }
+    Ok(Some(out))
 }
 
 pub async fn current_head(repo: &Path) -> Result<String> {
@@ -37,7 +181,10 @@ pub async fn tracked_dirty(repo: &Path) -> Result<bool> {
 }
 
 pub async fn checkout_detached(repo: &Path, sha: &str) -> Result<()> {
-    git(repo, &["checkout", "--detach", "--quiet", sha])
+    if !is_oid(sha) {
+        bail!("refusing to check out {sha:?}: not a full object id");
+    }
+    git(repo, &["checkout", "--detach", "--quiet", sha, "--"])
         .await
         .map(|_| ())
 }
@@ -68,47 +215,86 @@ pub async fn is_repo(repo: &Path) -> bool {
 
 /// `git cat-file -e <sha>` — is the object present locally?
 pub async fn has_commit(repo: &Path, sha: &str) -> bool {
-    git(repo, &["cat-file", "-e", sha]).await.is_ok()
+    is_oid(sha)
+        && git(repo, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+            .await
+            .is_ok()
 }
 
 /// Fetch a single sha from origin (shallow repos may lack the base).
 pub async fn fetch_sha(repo: &Path, sha: &str) -> Result<()> {
-    git(repo, &["fetch", "--no-tags", "--depth=1", "origin", sha])
-        .await
-        .map(|_| ())
+    if !is_oid(sha) {
+        bail!("refusing to fetch {sha:?}: not a full object id");
+    }
+    git(
+        repo,
+        &["fetch", "--no-tags", "--depth=1", "origin", "--", sha],
+    )
+    .await
+    .map(|_| ())
 }
 
-/// `git diff --no-color --unified=3 base...head` (merge-base form);
-/// falls back to two-dot `base head` when no merge-base exists (shallow clone).
+/// Merge base of `base` and `head`. In a shallow clone a missing merge
+/// base is fetched (deepening, then unshallowing) instead of silently
+/// changing the diff semantics.
+pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String> {
+    let find = || async {
+        git(repo, &["merge-base", "--end-of-options", base, head])
+            .await
+            .map(|s| s.trim().to_string())
+    };
+    if let Ok(mb) = find().await {
+        if is_oid(&mb) {
+            return Ok(mb);
+        }
+    }
+    if is_shallow(repo).await {
+        for deepen in ["--deepen=200", "--unshallow"] {
+            tracing::info!("merge base of {base}...{head} missing; fetching history ({deepen})");
+            if git(repo, &["fetch", "--no-tags", deepen, "origin"])
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            if let Ok(mb) = find().await {
+                if is_oid(&mb) {
+                    return Ok(mb);
+                }
+            }
+        }
+    }
+    bail!(
+        "no merge base between {base} and {head}; cannot compute the pull request diff (fetch full history, e.g. actions/checkout fetch-depth: 0)"
+    )
+}
+
+/// `git diff base...head` (merge-base form) with external diff and
+/// textconv drivers disabled. Never degrades to a two-dot diff.
 pub async fn diff(repo: &Path, base: &str, head: &str) -> Result<String> {
-    match git(
+    let mb = merge_base(repo, base, head).await?;
+    git(
         repo,
         &[
             "diff",
             "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
             "--unified=3",
-            &format!("{}...{}", base, head),
+            "--end-of-options",
+            &mb,
+            head,
         ],
     )
     .await
-    {
-        Ok(d) => Ok(d),
-        Err(e) => {
-            tracing::warn!("three-dot diff failed ({e}); falling back to two-dot diff");
-            git(repo, &["diff", "--no-color", "--unified=3", base, head]).await
-        }
-    }
 }
 
 /// `git patch-id --stable` of the base...head diff.
 pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
     let diff_text = diff(repo, base, head).await?;
-    let mut child = Command::new("git")
+    let mut child = git_cmd(repo)
         .args(["patch-id", "--stable"])
-        .current_dir(repo)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()
         .context("git patch-id")?;
     use tokio::io::AsyncWriteExt;
@@ -136,13 +322,17 @@ pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
 
 /// Files changed between base...head, one `path status` per line.
 pub async fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+    let mb = merge_base(repo, base, head).await?;
     let out = git(
         repo,
         &[
             "diff",
             "--no-color",
+            "--no-ext-diff",
             "--name-status",
-            &format!("{}...{}", base, head),
+            "--end-of-options",
+            &mb,
+            head,
         ],
     )
     .await?;
@@ -187,21 +377,12 @@ pub async fn grep(
         _ => args.push(".".into()),
     }
     args.extend(exclude_pathspecs(exclude));
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = Command::new("git")
-        .args(&argv)
-        .current_dir(repo)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .context("failed to run git grep")?;
-    match out.status.code() {
-        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
-        _ => bail!(
-            "git grep failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ),
+    let mut cmd = git_cmd(repo);
+    cmd.args(&args);
+    let (code, out, err) = run_bounded(cmd, "git grep").await?;
+    match code {
+        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out).into_owned()),
+        _ => bail!("git grep failed: {err}"),
     }
 }
 

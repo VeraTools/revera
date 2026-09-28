@@ -1,6 +1,6 @@
 use super::common::{
-    findings_terminal_check, finish, investigator_user, parse_findings_checked, prepare,
-    PrepareOut, Prepared, ReviewRequest,
+    findings_terminal_check, finish, investigator_user, parse_findings_checked, parse_not_checked,
+    prepare, PrepareOut, Prepared, ReviewRequest,
 };
 use super::make_client;
 use crate::agent::run_agent_checked;
@@ -70,6 +70,14 @@ pub(crate) async fn investigate(
                 .to_string();
             // a valid empty list is a complete clean result; a missing or
             // malformed list is not — keep what parsed, mark the run partial
+            let unchecked = parse_not_checked(&call.arguments);
+            if !unchecked.is_empty() {
+                prep.partial_reasons.push(format!(
+                    "investigator reported {} unchecked area(s)",
+                    unchecked.len()
+                ));
+                prep.coverage_gaps.extend(unchecked);
+            }
             let parsed = parse_findings_checked(&call.arguments);
             candidates = parsed.findings;
             prep.stats.malformed_findings += parsed.dropped;

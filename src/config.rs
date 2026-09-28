@@ -58,8 +58,9 @@ pub struct ReviewConfig {
     pub max_diff_bytes: usize,
     #[serde(default)]
     pub min_severity: Severity,
-    /// Eval-only knob: skip the validation pass and treat candidates as
-    /// accepted (warns in the log). Default true.
+    /// Evaluation-only knob: `false` skips the validation pass. Candidates
+    /// are then reported as unvalidated, are never publishable, and never
+    /// seed stored state; `publish: comment` is rejected. Default true.
     #[serde(default = "default_true")]
     pub validate: bool,
 }
@@ -243,6 +244,58 @@ pub struct VeraEndpoint {
     pub base_url: String,
     pub model: String,
     pub api_key_env: String,
+    /// Reranker only: `generic` (Jina/Cohere/SiliconFlow-style `/rerank`) or
+    /// `voyage`. Unset lets Vera infer it from the base URL.
+    #[serde(default)]
+    pub protocol: Option<RerankerProtocol>,
+    /// Reranker only: path joined onto `base_url` (Vera default `/rerank`).
+    #[serde(default)]
+    pub endpoint_path: Option<String>,
+    /// Reranker only: `true`/`false` send `return_documents` explicitly;
+    /// `omit` leaves the field out for providers that reject it. Unset keeps
+    /// Vera's default (`false`).
+    #[serde(default)]
+    pub return_documents: Option<ReturnDocuments>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum ReturnDocuments {
+    Send(bool),
+    Omit(OmitTag),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OmitTag {
+    Omit,
+}
+
+impl ReturnDocuments {
+    /// Value for `vera config set retrieval.reranker_return_documents`.
+    pub fn config_value(this: Option<Self>) -> &'static str {
+        match this {
+            None | Some(Self::Send(false)) => "false",
+            Some(Self::Send(true)) => "true",
+            Some(Self::Omit(_)) => "null",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RerankerProtocol {
+    Generic,
+    Voyage,
+}
+
+impl RerankerProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Voyage => "voyage",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -262,6 +315,11 @@ pub struct VeraConfig {
     pub reranker: Option<VeraEndpoint>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Revera-owned Vera home (config + local models). Defaults to
+    /// `$REVERA_VERA_HOME`, else `$XDG_CACHE_HOME/revera/vera-home`, else
+    /// `~/.cache/revera/vera-home`. Never the user's global Vera home.
+    #[serde(default)]
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -471,27 +529,127 @@ impl Default for VeraConfig {
             embedding: None,
             reranker: None,
             exclude: vec![],
+            home: None,
+        }
+    }
+}
+
+/// Repository paths no model-facing surface (file tools, grep, Vera index,
+/// guidance) may read: likely credential material, even when tracked.
+pub const SENSITIVE_GLOBS: &[&str] = &[
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "*.pem",
+    "**/*.pem",
+    "*.key",
+    "**/*.key",
+    "*.p12",
+    "**/*.p12",
+    "*.pfx",
+    "**/*.pfx",
+    "**/id_rsa*",
+    "**/id_ed25519*",
+    "**/id_ecdsa*",
+    ".npmrc",
+    "**/.npmrc",
+    ".pypirc",
+    "**/.pypirc",
+    ".netrc",
+    "**/.netrc",
+    ".revera/**",
+    ".vera/**",
+];
+
+/// Schema of the Revera-side index identity; bump when its meaning changes.
+const INDEX_IDENTITY_SCHEMA: u32 = 2;
+
+impl VeraConfig {
+    /// Stable identity of everything that shapes the on-disk index: Vera
+    /// version, embedding backend/origin/model and the effective corpus
+    /// exclusions. Query-time settings (reranker, review models, budgets,
+    /// guidance) and credentials are deliberately absent so they never
+    /// invalidate a warm index.
+    pub fn index_identity(&self) -> serde_json::Value {
+        let embedding = match self.backend {
+            VeraBackend::Api => self
+                .embedding
+                .as_ref()
+                .map(|e| serde_json::json!({"base_url": e.base_url.trim_end_matches('/'), "model": e.model})),
+            VeraBackend::Local => Some(serde_json::json!({"local": LOCAL_VERA_BACKEND})),
+        };
+        serde_json::json!({
+            "schema": INDEX_IDENTITY_SCHEMA,
+            "version": self.version,
+            "backend": format!("{:?}", self.backend).to_lowercase(),
+            "embedding": embedding,
+            "exclude": self.effective_excludes(),
+        })
+    }
+
+    /// Short stable hash of [`Self::index_identity`] (Action cache key).
+    pub fn index_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let h = Sha256::digest(self.index_identity().to_string().as_bytes());
+        hex::encode(&h[..12])
+    }
+
+    /// Configured exclusions plus [`SENSITIVE_GLOBS`], deduplicated in order.
+    pub fn effective_excludes(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for g in self
+            .exclude
+            .iter()
+            .map(String::as_str)
+            .chain(SENSITIVE_GLOBS.iter().copied())
+        {
+            let g = g.trim();
+            if !g.is_empty() && !out.iter().any(|x| x == g) {
+                out.push(g.to_string());
+            }
+        }
+        out
+    }
+
+    /// Query-time reranker identity: part of the review fingerprint, not
+    /// the index identity.
+    pub fn reranker_identity(&self) -> serde_json::Value {
+        match &self.reranker {
+            None => serde_json::Value::Null,
+            Some(r) => serde_json::json!({
+                "base_url": r.base_url.trim_end_matches('/'),
+                "model": r.model,
+                "protocol": r.protocol.map(|p| p.as_str()),
+                "endpoint_path": r.endpoint_path,
+                "return_documents": crate::config::ReturnDocuments::config_value(r.return_documents),
+            }),
         }
     }
 }
 
 impl VeraConfig {
-    /// Stable identity of everything that shapes the on-disk index (not the
-    /// review models): used for cache keys and compatibility checks.
-    pub fn index_identity(&self) -> serde_json::Value {
-        let ep = |e: &Option<VeraEndpoint>| {
-            e.as_ref()
-                .map(|e| serde_json::json!({"base_url": e.base_url, "model": e.model}))
-        };
-        serde_json::json!({
-            "version": self.version,
-            "backend": format!("{:?}", self.backend).to_lowercase(),
-            "embedding": ep(&self.embedding),
-            "reranker": ep(&self.reranker),
-            "exclude": self.exclude,
-        })
+    /// Revera-owned Vera home; see [`VeraConfig::home`].
+    pub fn vera_home(&self) -> PathBuf {
+        if let Some(h) = &self.home {
+            return h.clone();
+        }
+        if let Some(h) = std::env::var_os("REVERA_VERA_HOME").filter(|v| !v.is_empty()) {
+            return PathBuf::from(h);
+        }
+        let cache = std::env::var_os("XDG_CACHE_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+            });
+        cache.join("revera/vera-home")
     }
 }
+
+/// Vera backend used for `vera.backend: local` (CPU static embeddings that
+/// need no GPU and no API key).
+pub const LOCAL_VERA_BACKEND: &str = "potion-code";
 
 impl Default for GithubConfig {
     fn default() -> Self {
@@ -549,6 +707,36 @@ fn expand_route(r: &mut ModelRoute) -> Result<()> {
         r.session_header = Some("x-opencode-session".into());
     }
     Ok(())
+}
+
+/// `[A-Za-z_][A-Za-z0-9_]*`
+pub fn is_env_name(s: &str) -> bool {
+    let mut c = s.chars();
+    matches!(c.next(), Some(ch) if ch == '_' || ch.is_ascii_alphabetic())
+        && c.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Credential-bearing endpoints must be absolute https URLs without
+/// embedded userinfo; plain http is allowed only for loopback hosts.
+/// `strict` (event mode, where CI secrets are present): https only, plain
+/// http only for loopback. Always: absolute URL without embedded credentials.
+pub fn check_endpoint_url(what: &str, u: &str, strict: bool) -> Result<()> {
+    let parsed =
+        url::Url::parse(u).with_context(|| format!("{what}: {u:?} is not an absolute URL"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        bail!("{what}: credentials must not be embedded in the URL");
+    }
+    let loopback = matches!(
+        parsed.host(),
+        Some(url::Host::Domain("localhost"))
+            | Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+            | Some(url::Host::Ipv6(std::net::Ipv6Addr::LOCALHOST))
+    );
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if loopback || !strict => Ok(()),
+        s => bail!("{what}: scheme {s:?} is not allowed (use https; http only for localhost)"),
+    }
 }
 
 /// Whether `base_url` points at opencode.ai or a subdomain. Anything that
@@ -621,9 +809,14 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read config {}", path.display()))?;
-        let text = expand_env(&text)?;
-        let mut cfg: Config = serde_yaml::from_str(&text)
-            .with_context(|| format!("invalid config {}", path.display()))?;
+        Self::parse(&text, &path.display().to_string())
+    }
+
+    /// Parse config text (`label` names its origin in errors).
+    pub fn parse(text: &str, label: &str) -> Result<Self> {
+        let text = expand_env(text)?;
+        let mut cfg: Config =
+            serde_yaml::from_str(&text).with_context(|| format!("invalid config {label}"))?;
         cfg.expand_and_validate()?;
         Ok(cfg)
     }
@@ -740,6 +933,105 @@ impl Config {
         Ok(())
     }
 
+    /// Publication precondition: comments are only ever published from a
+    /// run whose candidates went through fresh-context validation.
+    pub fn check_publication(&self, publish: PublishMode) -> Result<()> {
+        if publish == PublishMode::Comment && !self.review.validate {
+            bail!(
+                "review.validate=false is evaluation-only and cannot be combined with publish = comment"
+            );
+        }
+        Ok(())
+    }
+
+    /// Trust checks that must pass before any credential is resolved:
+    /// endpoints must be https (plain http only to loopback), credential
+    /// env var names must be well-formed and must not name the GitHub
+    /// token, and in event mode the Vera executable must not be a
+    /// repository-relative path (PR content must never be executed).
+    pub fn check_trust(&self, event_mode: bool) -> Result<()> {
+        let gh = self.github.token_env.as_str();
+        let check_env = |what: &str, env: &str| -> Result<()> {
+            if !is_env_name(env) {
+                bail!("{what}: {env:?} is not a valid environment variable name");
+            }
+            if env == gh || env == "GITHUB_TOKEN" || env == "ACTIONS_RUNTIME_TOKEN" {
+                bail!(
+                    "{what}: {env} is reserved for GitHub and cannot be sent to a model provider"
+                );
+            }
+            Ok(())
+        };
+        if !is_env_name(gh) {
+            bail!("github.token_env: {gh:?} is not a valid environment variable name");
+        }
+        let mut routes: Vec<(String, &ModelRoute)> =
+            vec![("models.investigator".into(), &self.models.investigator)];
+        if let Some(v) = &self.models.validator {
+            routes.push(("models.validator".into(), v));
+        }
+        if let Some(l) = &self.models.lead {
+            routes.push(("models.lead".into(), l));
+        }
+        for (i, w) in self.models.workers.iter().flatten().enumerate() {
+            routes.push((format!("models.workers[{i}]"), w));
+        }
+        for s in self.models.scouts.iter().flatten() {
+            routes.push((format!("models.scouts.{}", s.name), &s.route));
+        }
+        for (name, r) in routes {
+            if !r.protocol.is_http() {
+                continue;
+            }
+            if let Some(u) = &r.base_url {
+                check_endpoint_url(&format!("{name}.base_url"), u, event_mode)?;
+            }
+            if let Some(env) = &r.api_key_env {
+                check_env(&format!("{name}.api_key_env"), env)?;
+            }
+        }
+        if self.vera.enabled {
+            for (name, e) in [
+                ("vera.embedding", &self.vera.embedding),
+                ("vera.reranker", &self.vera.reranker),
+            ] {
+                if let Some(e) = e {
+                    check_endpoint_url(&format!("{name}.base_url"), &e.base_url, event_mode)?;
+                    check_env(&format!("{name}.api_key_env"), &e.api_key_env)?;
+                    if let Some(p) = &e.endpoint_path {
+                        if !p.starts_with('/') || p.contains("://") || p.contains("..") {
+                            bail!("{name}.endpoint_path must be an absolute path like /rerank");
+                        }
+                    }
+                }
+            }
+            if let Some(e) = &self.vera.embedding {
+                if e.protocol.is_some() || e.endpoint_path.is_some() || e.return_documents.is_some()
+                {
+                    bail!("vera.embedding: protocol/endpoint_path/return_documents apply to vera.reranker only");
+                }
+            }
+            if self.vera.backend == VeraBackend::Api && self.vera.embedding.is_none() {
+                bail!("vera.backend: api requires vera.embedding");
+            }
+            if event_mode {
+                let exe = Path::new(&self.vera.executable);
+                if !exe.is_absolute() && self.vera.executable.contains(['/', '\\']) {
+                    bail!(
+                        "vera.executable {:?} is repository-relative; in event mode it must be a bare command name or an absolute path",
+                        self.vera.executable
+                    );
+                }
+                if let Some(h) = &self.vera.home {
+                    if !h.is_absolute() {
+                        bail!("vera.home must be an absolute path in event mode");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Review-affecting configuration, hashed into the review identity so a
     /// stored result is only reused when the same review would run again.
     /// Contains no secrets: credential values and their env var names stay out.
@@ -798,6 +1090,7 @@ impl Config {
             "vera": {
                 "enabled": self.vera.enabled,
                 "index": self.vera.index_identity(),
+                "reranker": self.vera.reranker_identity(),
             },
         })
     }

@@ -144,6 +144,21 @@ pub struct ParsedFindings {
     pub problem: Option<String>,
 }
 
+/// Scope the submitting agent explicitly reports as not checked.
+pub fn parse_not_checked(args: &serde_json::Value) -> Vec<String> {
+    args["not_checked"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| crate::text::excerpt_bytes(s.trim(), 300))
+                .filter(|s| !s.is_empty())
+                .take(20)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn parse_findings_checked(args: &serde_json::Value) -> ParsedFindings {
     let Some(arr) = args["findings"].as_array() else {
         return ParsedFindings {
@@ -159,7 +174,13 @@ pub fn parse_findings_checked(args: &serde_json::Value) -> ParsedFindings {
     let mut errors: Vec<String> = vec![];
     for v in arr {
         match serde_json::from_value::<Finding>(normalize_finding_json(v)) {
-            Ok(f) => out.findings.push(f),
+            Ok(mut f) => {
+                // verdict fields are owned by the validator, never the finder
+                f.validation_status = None;
+                f.rationale = None;
+                f.counterevidence_checked.clear();
+                out.findings.push(f)
+            }
             Err(e) => {
                 tracing::warn!("dropping malformed finding: {e}");
                 out.dropped += 1;
@@ -223,7 +244,18 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         );
     }
     let raw_diff = git::diff(&repo, &req.base, head_rev).await?;
-    let diff: Arc<DiffSet> = Arc::new(parse_unified(&raw_diff));
+    let mut parsed = parse_unified(&raw_diff);
+    // credential-bearing files never reach a model, even as diff text
+    let sensitive = crate::tools::glob_set(crate::config::SENSITIVE_GLOBS);
+    let mut policy_gaps = vec![];
+    parsed.files.retain(|f| {
+        let hit = sensitive.is_match(&f.new_path) || sensitive.is_match(&f.old_path);
+        if hit {
+            policy_gaps.push(format!("`{}` excluded by the content policy", f.new_path));
+        }
+        !hit
+    });
+    let diff: Arc<DiffSet> = Arc::new(parsed);
     let patch_id = git::patch_id(&repo, &req.base, head_rev)
         .await
         .unwrap_or_default();
@@ -249,7 +281,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     if !req.force && !unposted && state.can_reuse(&key) {
         state.reviewed_head = head_sha.clone();
         state.save(&repo)?;
-        let plan_state = state.clone();
+        let plan_state = state.public_projection(cfg.review.publish_uncertain);
         let carried = state.open_findings().len();
         let reason = "reused completed review of identical content";
         let summary = summary_markdown(&Summary {
@@ -272,6 +304,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
                 inline: vec![],
                 summary_markdown: summary,
                 state: plan_state,
+                publish_uncertain: cfg.review.publish_uncertain,
             },
             ledger: ledger_report(&ledger.0.lock().unwrap(), wall.elapsed().as_millis() as u64),
             publication: Default::default(),
@@ -295,13 +328,34 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
 
     let mut partial_reasons: Vec<String> = Vec::new();
     let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?.with_deadline(deadline));
+    let mut rerank = crate::vera::RerankState::Off;
     let vera_err = if !cfg.vera.enabled {
         tracing::info!("vera disabled by config; no index, no retrieval tools");
         timing.record("vera_index", "", Instant::now(), wall, "skipped");
         None
     } else {
         let t0 = Instant::now();
-        match vera.ensure_index().await {
+        let configured = match vera.configure().await {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                // the persistent Vera home may still carry another run's
+                // reranker settings: do not search through it
+                tracing::warn!("vera configuration failed: {e:#}");
+                Err(e.context("vera configuration failed"))
+            }
+        };
+        if configured
+            .as_ref()
+            .is_ok_and(|r| *r == crate::vera::RerankState::Degraded)
+        {
+            rerank = crate::vera::RerankState::Degraded;
+            partial_reasons.push("vera reranker configured but not activated".into());
+        }
+        let indexed = match configured {
+            Ok(_) => vera.ensure_index().await,
+            Err(e) => Err(e),
+        };
+        match indexed {
             Ok(_) => {
                 timing.record("vera_index", "", t0, wall, "ok");
                 None
@@ -325,7 +379,8 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         diff.clone(),
         vera.clone(),
         cfg.review.max_tool_output_bytes,
-    );
+    )
+    .with_head(&head_sha);
     if !cfg.vera.enabled {
         tb.hide_vera_tools();
     }
@@ -339,11 +394,21 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     } else if let Some(r) = &retrieval_unavailable {
         format!("unavailable: {r}")
     } else {
-        "vera".to_string()
+        match rerank {
+            crate::vera::RerankState::Enabled => "vera+rerank".to_string(),
+            crate::vera::RerankState::Degraded => "vera (rerank degraded)".to_string(),
+            crate::vera::RerankState::Off => "vera".to_string(),
+        }
     };
 
     // ---- recheck prior open findings ----
-    let mut rechecks = recheck_candidates(&state);
+    // validation-disabled runs are evaluation-only: no validator sessions,
+    // and no prior finding may be re-accepted into this run's output
+    let mut rechecks = if cfg.review.validate {
+        recheck_candidates(&state)
+    } else {
+        vec![]
+    };
     let mut resolved_titles = vec![];
     if !rechecks.is_empty() {
         let clean = validate_candidates(
@@ -376,6 +441,24 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         }
     }
 
+    // the investigator never sees diffs omitted by max_diff_bytes: that is
+    // unchecked scope, not a clean result
+    let mut coverage_gaps = policy_gaps;
+    let omitted = diff.omitted_files(cfg.review.max_diff_bytes);
+    if !omitted.is_empty() {
+        partial_reasons.push(format!(
+            "{} omitted from the reviewed diff (max_diff_bytes={})",
+            if omitted.len() == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", omitted.len())
+            },
+            cfg.review.max_diff_bytes
+        ));
+        for f in &omitted {
+            coverage_gaps.push(format!("`{f}` diff omitted (exceeds max_diff_bytes)"));
+        }
+    }
     let stats = RunStats {
         retrieval,
         resolved: resolved_titles.len(),
@@ -399,7 +482,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         retrieval_unavailable,
         stats,
         coverage: String::new(),
-        coverage_gaps: vec![],
+        coverage_gaps,
         report_note: None,
         deadline,
         reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
@@ -451,11 +534,16 @@ pub async fn finish(
     prep.stats.candidates = collapsed.len();
 
     // ---- validate ----
-    if !cfg.review.validate {
-        // eval-only knob: candidates treated as accepted, no validation pass
-        tracing::warn!("review.validate=false: skipping validation (eval-only)");
+    // Publishability is Rust-owned: only a fresh validator verdict from this
+    // run (or a recheck verdict below) can mark a candidate accepted.
+    let validation_disabled = !cfg.review.validate;
+    if validation_disabled {
+        tracing::warn!(
+            "review.validate=false: candidates reported unvalidated (evaluation-only, never published or stored)"
+        );
         for c in &mut collapsed {
-            c.validation_status = Some(crate::findings::ValidationStatus::Accepted);
+            c.validation_status = None;
+            c.rationale = Some("not validated (review.validate=false, evaluation-only)".into());
         }
     } else if !collapsed.is_empty() {
         let clean = validate_candidates(
@@ -480,17 +568,23 @@ pub async fn finish(
     }
 
     collapsed.extend(reenter);
+    // the validator may lower severity: the threshold applies to the
+    // corrected finding, not the investigator's claim
+    let before = collapsed.len();
+    collapsed.retain(|f| f.severity >= cfg.review.min_severity);
+    prep.stats.below_threshold_after_validation = before - collapsed.len();
+
     // ---- anchor + plan ----
-    let anchored = anchor(&prep.diff, collapsed.clone(), cfg.review.max_findings);
+    // only publishable findings compete for inline slots; everything else
+    // stays in the report (and state) without a placement
+    let (publishable, unpublished): (Vec<Finding>, Vec<Finding>) =
+        collapsed.into_iter().partition(is_publishable);
+    let anchored = anchor(&prep.diff, publishable, cfg.review.max_findings);
     let mut inline: Vec<InlineComment> = vec![];
     let mut outside: Vec<&Finding> = vec![];
     let mut final_findings: Vec<Finding> = vec![];
     for a in &anchored {
         let f = &a.finding;
-        if !is_publishable(f) {
-            final_findings.push(f.clone());
-            continue;
-        }
         match a.placement {
             Placement::Inline => inline.push(InlineComment {
                 file: f.file.clone(),
@@ -502,11 +596,12 @@ pub async fn finish(
         }
         final_findings.push(f.clone());
     }
+    final_findings.extend(unpublished);
 
     // ---- state update ----
     let mut state = prep.state.clone();
     let mut reopened_titles: Vec<String> = vec![];
-    for f in &final_findings {
+    for f in final_findings.iter().filter(|_| !validation_disabled) {
         // `posted` is only ever set by the publisher via mark_posted().
         let st = match f.validation_status {
             Some(crate::findings::ValidationStatus::Accepted) => FindingState::Open,
@@ -522,14 +617,16 @@ pub async fn finish(
     } else {
         RunStatus::Partial
     };
-    state.record_outcome(
-        &prep.base_sha,
-        &prep.head_sha,
-        &prep.patch_id,
-        &prep.review_key,
-        status,
-    );
-    state.save(&prep.repo)?;
+    if !validation_disabled {
+        state.record_outcome(
+            &prep.base_sha,
+            &prep.head_sha,
+            &prep.patch_id,
+            &prep.review_key,
+            status,
+        );
+        state.save(&prep.repo)?;
+    }
 
     let reason = if prep.partial_reasons.is_empty() {
         None
@@ -554,9 +651,31 @@ pub async fn finish(
         .iter()
         .filter(|f| f.validation_status == Some(crate::findings::ValidationStatus::Rejected))
         .count();
-    stats.uncertain = final_findings.len() - stats.accepted - stats.rejected;
+    stats.uncertain = final_findings
+        .iter()
+        .filter(|f| f.validation_status == Some(crate::findings::ValidationStatus::Uncertain))
+        .count();
+    stats.unvalidated = final_findings
+        .iter()
+        .filter(|f| f.validation_status.is_none())
+        .count();
+    stats.validation = if validation_disabled {
+        "disabled".into()
+    } else {
+        "fresh".into()
+    };
     stats.files_read = prep.toolbox.files_read();
     stats.tools = prep.toolbox.tool_stats();
+    let fallbacks = prep
+        .vera
+        .rerank_fallbacks
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if fallbacks > 0 {
+        stats.retrieval = format!(
+            "{} (rerank fell back on {fallbacks} searches)",
+            stats.retrieval
+        );
+    }
     let routes: Vec<String> = prep
         .ledger
         .0
@@ -588,7 +707,9 @@ pub async fn finish(
         retrieval_unavailable: prep.retrieval_unavailable.as_deref(),
         resolved: &prep.resolved_titles,
         reopened: &reopened_titles,
+        unvalidated: stats.unvalidated,
     });
+    let public_state = state.public_projection(cfg.review.publish_uncertain);
     let rep = RunReport {
         status,
         reason,
@@ -599,7 +720,8 @@ pub async fn finish(
         plan: PublicationPlan {
             inline,
             summary_markdown: summary,
-            state: state.clone(),
+            state: public_state,
+            publish_uncertain: cfg.review.publish_uncertain,
         },
         ledger: ledger_report(
             &prep.ledger.0.lock().unwrap(),

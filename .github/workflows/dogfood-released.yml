@@ -47,7 +47,7 @@ jobs:
         os: [ubuntu-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
@@ -62,9 +62,19 @@ jobs:
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
       - name: Action outputs
+        env:
+          STATUS: ${{ steps.rv.outputs.status }}
+          FINDINGS: ${{ steps.rv.outputs.findings }}
+          REPORT: ${{ steps.rv.outputs.report-path }}
         run: |
-          echo "status=${{ steps.rv.outputs.status }}"
-          echo "findings=${{ steps.rv.outputs.findings }}"
+          released=$(git ls-remote https://github.com/VeraTools/revera.git 'refs/tags/v0^{}' 'refs/tags/v0' | head -n1 | cut -f1)
+          {
+            echo "- released action \`v0\` -> \`$released\` (this job does not test the PR's source)"
+            echo "- status=$STATUS findings=$FINDINGS"
+            if [ -n "$REPORT" ] && [ -f "$REPORT" ]; then
+              jq -r '"- validation=\(.stats.validation) retrieval=\(.stats.retrieval) reused=\(.stats.reused) publication=\(.publication.mode) review_id=\(.publication.review_id // "-") skipped=\(.publication.skipped_reason // "-")"' "$REPORT"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       # musl asset should report "statically linked" on both runners
       - name: Installed binary sanity
         run: |

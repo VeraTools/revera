@@ -102,7 +102,7 @@ fn summary_rendering() {
     });
     assert!(md.contains("Revera review"));
     assert!(md.contains("**[high]** `src/a.rs`:12"));
-    assert!(md.contains("Not checked: checked callers"));
+    assert!(md.contains("Checked: checked callers"));
     let body = revera::report::finding_body(&revera::findings::Finding {
         defect_key: "k".into(),
         severity: Severity::High,

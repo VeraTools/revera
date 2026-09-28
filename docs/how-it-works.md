@@ -138,8 +138,9 @@ env names). `.revera/vera-cache.json` records Vera version, backend,
 embedding model and vector dimension and is rewritten only after a
 successful, health-checked index or update; a restored cache that does not
 match is discarded. `revera cache-key` hashes just the index-shaping
-configuration (backend, embedding model, excludes, Vera version) so the
-Action's cache survives investigator/validator changes; it prints
+configuration (backend, embedding origin and model, excludes, Vera
+version) so the Action's cache survives investigator, validator, reranker,
+prompt, budget and credential-name changes; it prints
 `disabled` when Vera is off, and the Action then skips the Vera download
 entirely.
 

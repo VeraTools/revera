@@ -68,6 +68,12 @@ enum Cmd {
         config: Option<PathBuf>,
         #[arg(long)]
         profile: Option<String>,
+        /// PR event JSON: an in-checkout config is read from the event's
+        /// base commit, exactly as `review --event` does.
+        #[arg(long)]
+        event: Option<PathBuf>,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
     },
 }
 
@@ -94,7 +100,12 @@ pub async fn run() -> i32 {
             publish,
         } => doctor(config, profile, strategy, publish).await,
         Cmd::CacheInfo { repo } => cache_info(&repo),
-        Cmd::CacheKey { config, profile } => cache_key(config, profile),
+        Cmd::CacheKey {
+            config,
+            profile,
+            event,
+            repo,
+        } => cache_key(config, profile, event, repo).await,
         Cmd::Review {
             repo,
             base,
@@ -155,6 +166,109 @@ fn load_cfg_unvalidated(
     Ok((p, c))
 }
 
+/// Lexically normalize `p` against `cwd` (no symlink resolution: a
+/// symlink inside the checkout must not make PR content look external).
+fn lexical_abs(cwd: &std::path::Path, p: &std::path::Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in cwd.join(p).components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Where the review configuration came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigOrigin {
+    /// Local run: the working-tree file.
+    WorkingTree(PathBuf),
+    /// Event mode, config inside the checkout: read from the immutable
+    /// base revision, never the PR head.
+    Base { path: String, sha: String },
+    /// Event mode, config outside the checkout (operator-provided).
+    External(PathBuf),
+}
+
+impl std::fmt::Display for ConfigOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkingTree(p) => write!(f, "{}", p.display()),
+            Self::Base { path, sha } => write!(f, "{path} at base {sha}"),
+            Self::External(p) => write!(f, "{} (external)", p.display()),
+        }
+    }
+}
+
+/// Maximum size of a config file read from git.
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+
+/// Event-mode config: a path inside the checkout is read from the base
+/// commit (the PR cannot change the config that holds its credentials);
+/// a path outside it is an operator-supplied trusted file.
+pub async fn load_event_config(
+    repo: &std::path::Path,
+    config: Option<&std::path::Path>,
+    profile: Option<&str>,
+    base_sha: &str,
+) -> Result<(ConfigOrigin, Config), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    let wanted = config.unwrap_or(std::path::Path::new("revera.yaml"));
+    let abs = lexical_abs(&cwd, wanted);
+    let root = crate::git::repo_root(repo);
+    // a path that only resolves into the checkout through a symlink is
+    // still PR content
+    let canon = abs.canonicalize().ok();
+    let inside = abs
+        .strip_prefix(&root)
+        .ok()
+        .or_else(|| canon.as_deref().and_then(|c| c.strip_prefix(&root).ok()));
+    let (origin, mut cfg) = match inside {
+        Some(rel) => {
+            // the base commit holds the trusted config (shallow checkouts
+            // may not have it yet)
+            if !crate::git::has_commit(&root, base_sha).await {
+                crate::git::fetch_sha(&root, base_sha)
+                    .await
+                    .map_err(|e| format!("cannot fetch base sha {base_sha}: {e:#}"))?;
+            }
+            let rel = rel
+                .to_str()
+                .ok_or("config path is not valid UTF-8")?
+                .replace('\\', "/");
+            let bytes = crate::git::read_blob(&root, base_sha, &rel, MAX_CONFIG_BYTES)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .ok_or_else(|| {
+                    format!(
+                        "config {rel} is not a regular file at base {base_sha}; in event mode the config is read from the base revision (merge it first, or pass an absolute --config outside the checkout)"
+                    )
+                })?;
+            let text =
+                String::from_utf8(bytes).map_err(|_| format!("config {rel} is not UTF-8"))?;
+            let origin = ConfigOrigin::Base {
+                path: rel,
+                sha: base_sha.to_string(),
+            };
+            let cfg = Config::parse(&text, &origin.to_string()).map_err(|e| format!("{e:#}"))?;
+            (origin, cfg)
+        }
+        None => (
+            ConfigOrigin::External(abs.clone()),
+            Config::load(&abs).map_err(|e| format!("{e:#}"))?,
+        ),
+    };
+    if let Some(pr) = profile {
+        cfg.apply_profile(pr).map_err(|e| e.to_string())?;
+    }
+    Ok((origin, cfg))
+}
+
 fn strategy_arg(s: StrategyArg) -> Strategy {
     match s {
         StrategyArg::Baseline => Strategy::Baseline,
@@ -170,23 +284,66 @@ fn publish_arg(p: PublishArg) -> PublishMode {
     }
 }
 
+/// Fork PR skipped before any model, Vera or credential access: write the
+/// partial report and return exit 2.
+fn fork_skip(
+    a: &ReviewArgs,
+    e: &crate::github::event::PrEvent,
+    strategy: Strategy,
+    reason: &str,
+) -> i32 {
+    let repo = crate::git::repo_root(&a.repo);
+    let rep = crate::report::RunReport {
+        status: crate::report::RunStatus::Partial,
+        reason: Some(reason.into()),
+        base: e.base_sha.clone(),
+        head: e.head_sha.clone(),
+        strategy: format!("{:?}", strategy).to_lowercase(),
+        findings: vec![],
+        plan: crate::report::PublicationPlan {
+            inline: vec![],
+            summary_markdown: crate::report::summary_markdown(&crate::report::Summary {
+                coverage: reason,
+                status: Some(RunStatus::Partial),
+                reason: Some(reason),
+                strategy: "none",
+                ..Default::default()
+            }),
+            state: crate::state::ReviewState::default(),
+            publish_uncertain: false,
+        },
+        ledger: crate::report::LedgerReport {
+            requests: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            reasoning_tokens: 0,
+            by_route: vec![],
+            wall_ms: 0,
+        },
+        publication: crate::report::Publication {
+            mode: "dry-run".into(),
+            skipped_reason: Some(reason.into()),
+            ..Default::default()
+        },
+        coverage_gaps: vec![],
+        timing: Default::default(),
+        stats: Default::default(),
+    };
+    print!("{}", rep.plan.summary_markdown);
+    let out = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".revera/last-report.json"));
+    if let Err(e) = write_report(&repo, &out, &rep) {
+        eprintln!("error: cannot write {}: {e:#}", out.display());
+    }
+    eprintln!("report: {}", out.display());
+    2
+}
+
 async fn review(a: ReviewArgs) -> i32 {
     let strategy = a.strategy.map(strategy_arg);
-    // unvalidated here: the fork guard must run (and emit its partial
-    // report) before any credential check can abort the run
-    let (_, cfg) = match load_cfg_unvalidated(a.config.as_deref(), a.profile.as_deref()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
-    let effective_strategy = strategy.unwrap_or(cfg.review.strategy);
-    let publish = a.publish.map(publish_arg).unwrap_or(cfg.review.publish);
-    if publish == PublishMode::Comment && a.event.is_none() {
-        eprintln!("error: --publish comment requires --event");
-        return 1;
-    }
+    let repo = crate::git::repo_root(&a.repo);
 
     // ---- event mode ----
     let ev = match &a.event {
@@ -199,6 +356,59 @@ async fn review(a: ReviewArgs) -> i32 {
         },
         None => None,
     };
+    if let Some(e) = &ev {
+        if !crate::git::is_oid(&e.base_sha) || !crate::git::is_oid(&e.head_sha) {
+            eprintln!("error: event base/head are not full commit ids");
+            return 1;
+        }
+    }
+    // credentials are not checked here: the fork guard must run (and emit
+    // its partial report) before any credential check can abort the run
+    let loaded = match &ev {
+        Some(e) => {
+            load_event_config(
+                &repo,
+                a.config.as_deref(),
+                a.profile.as_deref(),
+                &e.base_sha,
+            )
+            .await
+        }
+        None => load_cfg_unvalidated(a.config.as_deref(), a.profile.as_deref())
+            .map(|(p, c)| (ConfigOrigin::WorkingTree(p), c)),
+    };
+    let (origin, cfg) = match loaded {
+        Ok(c) => c,
+        Err(err) => {
+            // no trusted base config: a fork cannot be reviewed with
+            // credentials anyway, so report the skip instead of failing
+            if let Some(e) = ev.as_ref().filter(|e| e.is_fork()) {
+                if a.publish.is_some_and(|p| matches!(p, PublishArg::Comment)) {
+                    eprintln!("config: {err}");
+                    let reason = "fork PR: review skipped (no trusted base config)";
+                    eprintln!(
+                        "revera: {reason} ({} -> {})",
+                        e.head_repo_full_name, e.repo_full_name
+                    );
+                    return fork_skip(&a, e, strategy.unwrap_or_default(), reason);
+                }
+            }
+            eprintln!("error: {err}");
+            return 1;
+        }
+    };
+    eprintln!("config: {origin}");
+    let effective_strategy = strategy.unwrap_or(cfg.review.strategy);
+    let publish = a.publish.map(publish_arg).unwrap_or(cfg.review.publish);
+    if publish == PublishMode::Comment && a.event.is_none() {
+        eprintln!("error: --publish comment requires --event");
+        return 1;
+    }
+    if let Err(e) = cfg.check_publication(publish) {
+        eprintln!("error: {e}");
+        return 1;
+    }
+
     // Fork guard: no model or Vera calls at all — return partial immediately.
     if let Some(e) = &ev {
         if e.is_fork() && publish == PublishMode::Comment && !cfg.github.allow_forks {
@@ -207,55 +417,15 @@ async fn review(a: ReviewArgs) -> i32 {
                 "revera: {reason} ({} -> {})",
                 e.head_repo_full_name, e.repo_full_name
             );
-            let rep = crate::report::RunReport {
-                status: crate::report::RunStatus::Partial,
-                reason: Some(reason.into()),
-                base: e.base_sha.clone(),
-                head: e.head_sha.clone(),
-                strategy: format!("{:?}", effective_strategy).to_lowercase(),
-                findings: vec![],
-                plan: crate::report::PublicationPlan {
-                    inline: vec![],
-                    summary_markdown: crate::report::summary_markdown(&crate::report::Summary {
-                        coverage: reason,
-                        status: Some(RunStatus::Partial),
-                        reason: Some(reason),
-                        strategy: "none",
-                        ..Default::default()
-                    }),
-                    state: crate::state::ReviewState::default(),
-                },
-                ledger: crate::report::LedgerReport {
-                    requests: 0,
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    reasoning_tokens: 0,
-                    by_route: vec![],
-                    wall_ms: 0,
-                },
-                publication: crate::report::Publication {
-                    mode: "dry-run".into(),
-                    skipped_reason: Some(reason.into()),
-                    ..Default::default()
-                },
-                coverage_gaps: vec![],
-                timing: Default::default(),
-                stats: Default::default(),
-            };
-            print!("{}", rep.plan.summary_markdown);
-            let out = a
-                .out
-                .clone()
-                .unwrap_or_else(|| crate::git::repo_root(&a.repo).join(".revera/last-report.json"));
-            if let Some(p) = out.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            let _ = std::fs::write(&out, serde_json::to_string_pretty(&rep).unwrap());
-            eprintln!("report: {}", out.display());
-            return 2;
+            return fork_skip(&a, e, effective_strategy, reason);
         }
     }
-    if let Err(e) = cfg.validate_for(effective_strategy) {
+    // trust before credentials: no secret is resolved for an endpoint or
+    // env name that fails these checks
+    if let Err(e) = cfg
+        .check_trust(ev.is_some())
+        .and_then(|_| cfg.validate_for(effective_strategy))
+    {
         eprintln!("error: {e}");
         return 1;
     }
@@ -264,22 +434,14 @@ async fn review(a: ReviewArgs) -> i32 {
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
-    let repo = crate::git::repo_root(&a.repo);
 
     // Event mode supplies base/head/title/body and GitHub-backed state.
     let api = ev.as_ref().map(|e| {
-        let token = std::env::var(&cfg.github.token_env).unwrap_or_default();
+        let token = crate::redact::secret_env(&cfg.github.token_env).unwrap_or_default();
         (e.clone(), crate::github::api::GitHubApi::new(&token))
     });
     let (base, head, title, pr_body) = match &api {
         Some((e, api)) => {
-            // ensure the base sha exists locally (shallow checkouts)
-            if !crate::git::has_commit(&repo, &e.base_sha).await {
-                if let Err(err) = crate::git::fetch_sha(&repo, &e.base_sha).await {
-                    eprintln!("error: cannot fetch base sha {}: {err:#}", e.base_sha);
-                    return 1;
-                }
-            }
             let current = match crate::git::current_head(&repo).await {
                 Ok(current) => current,
                 Err(err) => {
@@ -407,12 +569,9 @@ async fn review(a: ReviewArgs) -> i32 {
             print!("{}", report.plan.summary_markdown);
             let out = a
                 .out
-                .unwrap_or_else(|| repo.join(".revera/last-report.json"));
-            if let Some(parent) = out.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(e) = std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()) {
-                eprintln!("error: cannot write {}: {e}", out.display());
+                .unwrap_or_else(|| PathBuf::from(".revera/last-report.json"));
+            if let Err(e) = write_report(&repo, &out, &report) {
+                eprintln!("error: cannot write {}: {e:#}", out.display());
                 return 1;
             }
             if !(api.is_some() && publish == PublishMode::Comment) {
@@ -435,6 +594,18 @@ async fn review(a: ReviewArgs) -> i32 {
             1
         }
     }
+}
+
+/// Write the run report (redacted) without following symlinks under the
+/// checkout. Relative paths resolve against the repository root.
+fn write_report(
+    repo: &std::path::Path,
+    out: &std::path::Path,
+    report: &crate::report::RunReport,
+) -> anyhow::Result<()> {
+    let mut v = serde_json::to_value(report)?;
+    crate::redact::json(&mut v);
+    crate::fsutil::write_output(repo, out, serde_json::to_string_pretty(&v)?.as_bytes())
 }
 
 /// Checks exactly what a review with this config would need: the routes
@@ -626,13 +797,31 @@ async fn doctor(
 
 /// Prints the Vera index cache identity, or `disabled` when Vera is off so
 /// callers (the Action) skip cache restore/save entirely.
-fn cache_key(config: Option<PathBuf>, profile: Option<String>) -> i32 {
-    match load_cfg_unvalidated(config.as_deref(), profile.as_deref()) {
-        Ok((_, cfg)) if !cfg.vera.enabled => {
+async fn cache_key(
+    config: Option<PathBuf>,
+    profile: Option<String>,
+    event: Option<PathBuf>,
+    repo: PathBuf,
+) -> i32 {
+    let loaded = match event {
+        Some(p) => match crate::github::event::parse(&p) {
+            Ok(e) if crate::git::is_oid(&e.base_sha) => {
+                let repo = crate::git::repo_root(&repo);
+                load_event_config(&repo, config.as_deref(), profile.as_deref(), &e.base_sha)
+                    .await
+                    .map(|(_, c)| c)
+            }
+            Ok(_) => Err("event base is not a full commit id".into()),
+            Err(e) => Err(format!("{e:#}")),
+        },
+        None => load_cfg_unvalidated(config.as_deref(), profile.as_deref()).map(|(_, c)| c),
+    };
+    match loaded {
+        Ok(cfg) if !cfg.vera.enabled => {
             println!("disabled");
             0
         }
-        Ok((_, cfg)) => {
+        Ok(cfg) => {
             use sha2::{Digest, Sha256};
             let id = cfg.vera.index_identity().to_string();
             let h = Sha256::digest(id.as_bytes());

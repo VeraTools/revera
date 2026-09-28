@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// Bump when the meaning of stored fields changes. Older blobs are still
 /// read (findings and publication ids are kept) but never trusted as a
 /// completed review of the current content.
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
 /// Upper bound on findings retained in state (resolved/rejected are dropped
 /// first) so the embedded blob stays small.
 pub const MAX_STATE_FINDINGS: usize = 200;
@@ -149,10 +149,21 @@ impl ReviewState {
         repo_root.join(".revera/state.json")
     }
 
-    /// Loads local state. A corrupt file is set aside (`state.json.corrupt`)
-    /// and treated as absent, so a bad blob cannot wedge every later run.
+    /// Loads local state. A corrupt file is set aside
+    /// (`state.json.corrupt`, then `state.json.corrupt-<n>`; an earlier
+    /// quarantine is never overwritten) and
+    /// treated as absent, so a bad blob cannot wedge every later run. A
+    /// symlinked `.revera` directory or state file is refused.
     pub fn load(repo_root: &Path) -> Result<Option<Self>> {
+        let dir = repo_root.join(".revera");
+        if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!(
+                "{} is a symlink; refusing to use it for state",
+                dir.display()
+            );
+        }
         let p = Self::path(repo_root);
+        crate::fsutil::check_regular_target(&p)?;
         if !p.exists() {
             return Ok(None);
         }
@@ -161,17 +172,59 @@ impl ReviewState {
             Ok(st) => Ok(Some(st)),
             Err(e) => {
                 tracing::warn!("ignoring corrupt state {}: {e}", p.display());
-                let _ = std::fs::rename(&p, p.with_extension("json.corrupt"));
+                let quarantine = std::iter::once(p.with_extension("json.corrupt"))
+                    .chain((1..1000).map(|i| dir.join(format!("state.json.corrupt-{i}"))))
+                    .find(|q| std::fs::symlink_metadata(q).is_err());
+                match quarantine {
+                    Some(q) => {
+                        let _ = std::fs::rename(&p, q);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
                 Ok(None)
             }
         }
     }
 
+    /// Atomic replacement: readers see either the old or the new file.
     pub fn save(&self, repo_root: &Path) -> Result<()> {
-        let dir = repo_root.join(".revera");
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(Self::path(repo_root), serde_json::to_string_pretty(self)?)?;
-        Ok(())
+        crate::fsutil::write_repo_file(
+            repo_root,
+            Path::new(".revera/state.json"),
+            serde_json::to_string_pretty(self)?.as_bytes(),
+        )
+    }
+
+    /// The state that may leave the machine (embedded in the PR summary
+    /// comment and the report plan). Rejected candidates and unpublished
+    /// uncertain candidates are dropped entirely; resolved findings keep
+    /// only their identity and location. Publishable (open) findings keep
+    /// the detail needed for rechecks; uncertain ones only when uncertain
+    /// findings are published.
+    pub fn public_projection(&self, publish_uncertain: bool) -> Self {
+        let findings = self
+            .findings
+            .iter()
+            .filter_map(|f| match f.status {
+                FindingState::Open => Some(f.clone()),
+                FindingState::Uncertain if f.posted || publish_uncertain => Some(f.clone()),
+                FindingState::Uncertain | FindingState::Rejected => None,
+                FindingState::Resolved if f.posted => Some(StateFinding {
+                    claim: String::new(),
+                    trigger: String::new(),
+                    impact: String::new(),
+                    evidence: vec![],
+                    ..f.clone()
+                }),
+                FindingState::Resolved => None,
+            })
+            .collect();
+        Self {
+            findings,
+            ..self.clone()
+        }
     }
 
     /// True when a rerun would review the same content with the same

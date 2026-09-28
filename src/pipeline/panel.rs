@@ -1,6 +1,6 @@
 use super::common::{
-    findings_terminal_check, finish, investigator_user, parse_findings_checked, prepare,
-    PrepareOut, ReviewRequest,
+    findings_terminal_check, finish, investigator_user, parse_findings_checked, parse_not_checked,
+    prepare, PrepareOut, ReviewRequest,
 };
 use super::make_client;
 use crate::agent::run_agent_checked;
@@ -160,6 +160,14 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                         );
                         continue;
                     };
+                    let unchecked = parse_not_checked(&call.arguments);
+                    if !unchecked.is_empty() {
+                        prep.partial_reasons.push(format!(
+                            "scout {focus} reported {} unchecked area(s)",
+                            unchecked.len()
+                        ));
+                        prep.coverage_gaps.extend(unchecked);
+                    }
                     let parsed = parse_findings_checked(&call.arguments);
                     prep.stats.malformed_findings += parsed.dropped;
                     let mut fs = parsed.findings;

@@ -27,7 +27,11 @@ pub struct InlineComment {
 pub struct PublicationPlan {
     pub inline: Vec<InlineComment>,
     pub summary_markdown: String,
+    /// Public projection of the state (see `ReviewState::public_projection`).
     pub state: ReviewState,
+    /// Whether uncertain findings are surfaced (and so may be projected).
+    #[serde(default)]
+    pub publish_uncertain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +108,16 @@ pub struct RunStats {
     pub malformed_findings: usize,
     /// A terminal repair round was attempted.
     pub repaired: bool,
+    /// Findings without any validator verdict (validation disabled).
+    #[serde(default)]
+    pub unvalidated: usize,
+    /// "fresh" (per-candidate validator) | "disabled" (evaluation-only).
+    #[serde(default)]
+    pub validation: String,
+    /// Findings dropped because validator-corrected severity fell below
+    /// `min_severity`.
+    #[serde(default)]
+    pub below_threshold_after_validation: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +214,8 @@ pub struct Summary<'a> {
     pub retrieval_unavailable: Option<&'a str>,
     pub resolved: &'a [String],
     pub reopened: &'a [String],
+    /// Candidates reported without validation (evaluation-only runs).
+    pub unvalidated: usize,
 }
 
 fn plural(n: usize, one: &str) -> String {
@@ -281,6 +297,12 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
                 .unwrap_or_default()
         ));
     }
+    if inp.unvalidated > 0 {
+        s.push_str(&format!(
+            "\n> Validation disabled (evaluation-only): {} not validated and not publishable.\n",
+            plural(inp.unvalidated, "candidate")
+        ));
+    }
     if let Some(r) = inp.retrieval_unavailable {
         s.push_str(&format!(
             "\n> Semantic retrieval unavailable ({r}); repository-wide lookups used lexical search only.\n"
@@ -329,7 +351,7 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         }
     }
     if !inp.reused {
-        s.push_str(&format!("\nNot checked: {}\n", inp.coverage));
+        s.push_str(&format!("\nChecked: {}\n", inp.coverage));
         for g in inp.coverage_gaps {
             s.push_str(&format!("- not checked: {g}\n"));
         }
