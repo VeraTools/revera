@@ -31,7 +31,8 @@ def candidates(report):
 
 
 def digest(items):
-    keyed = sorted(json.dumps({k: c.get(k) for k in ("defect_key", "file", "start_line", "claim")},
+    # validators may correct lines/severity, so identity excludes them
+    keyed = sorted(json.dumps({k: c.get(k) for k in ("defect_key", "file", "title", "claim")},
                               sort_keys=True) for c in items)
     return hashlib.sha256("\n".join(keyed).encode()).hexdigest()
 
@@ -73,7 +74,12 @@ def main():
         # another arm's verdicts (rechecks would otherwise consume sessions)
         repo = os.path.join(a.out, f"{name}.repo")
         shutil.rmtree(repo, ignore_errors=True)
-        shutil.copytree(a.repo, repo, symlinks=True)
+        src = os.path.realpath(a.repo)
+
+        def skip_out(d, names):
+            # --out may live inside --repo; never copy it into itself
+            return [n for n in names if os.path.realpath(os.path.join(d, n)) == os.path.realpath(a.out)]
+        shutil.copytree(src, repo, symlinks=True, ignore=skip_out)
         state = os.path.join(repo, ".revera", "state.json")
         if os.path.lexists(state):
             os.remove(state)
@@ -100,7 +106,10 @@ def main():
                "validation": st.get("validation"), "validator_requests": vreq,
                "candidate_digest": got,
                "identical_candidates": got == want and st.get("candidates") == len(frozen)}
+        # validator errors make the run partial; explicit uncertain
+        # verdicts keep it complete
         if (not row["identical_candidates"] or st.get("validation") != "fresh"
+                or rep["status"] != "complete" or rc != 0
                 or vreq < len(frozen) or row["rechecked"]):
             ok = False
         rows.append(row)
