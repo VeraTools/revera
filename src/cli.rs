@@ -68,6 +68,12 @@ enum Cmd {
         config: Option<PathBuf>,
         #[arg(long)]
         profile: Option<String>,
+        /// PR event JSON: an in-checkout config is read from the event's
+        /// base commit, exactly as `review --event` does.
+        #[arg(long)]
+        event: Option<PathBuf>,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
     },
 }
 
@@ -94,7 +100,12 @@ pub async fn run() -> i32 {
             publish,
         } => doctor(config, profile, strategy, publish).await,
         Cmd::CacheInfo { repo } => cache_info(&repo),
-        Cmd::CacheKey { config, profile } => cache_key(config, profile),
+        Cmd::CacheKey {
+            config,
+            profile,
+            event,
+            repo,
+        } => cache_key(config, profile, event, repo).await,
         Cmd::Review {
             repo,
             base,
@@ -273,6 +284,63 @@ fn publish_arg(p: PublishArg) -> PublishMode {
     }
 }
 
+/// Fork PR skipped before any model, Vera or credential access: write the
+/// partial report and return exit 2.
+fn fork_skip(
+    a: &ReviewArgs,
+    e: &crate::github::event::PrEvent,
+    strategy: Strategy,
+    reason: &str,
+) -> i32 {
+    let repo = crate::git::repo_root(&a.repo);
+    let rep = crate::report::RunReport {
+        status: crate::report::RunStatus::Partial,
+        reason: Some(reason.into()),
+        base: e.base_sha.clone(),
+        head: e.head_sha.clone(),
+        strategy: format!("{:?}", strategy).to_lowercase(),
+        findings: vec![],
+        plan: crate::report::PublicationPlan {
+            inline: vec![],
+            summary_markdown: crate::report::summary_markdown(&crate::report::Summary {
+                coverage: reason,
+                status: Some(RunStatus::Partial),
+                reason: Some(reason),
+                strategy: "none",
+                ..Default::default()
+            }),
+            state: crate::state::ReviewState::default(),
+            publish_uncertain: false,
+        },
+        ledger: crate::report::LedgerReport {
+            requests: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            reasoning_tokens: 0,
+            by_route: vec![],
+            wall_ms: 0,
+        },
+        publication: crate::report::Publication {
+            mode: "dry-run".into(),
+            skipped_reason: Some(reason.into()),
+            ..Default::default()
+        },
+        coverage_gaps: vec![],
+        timing: Default::default(),
+        stats: Default::default(),
+    };
+    print!("{}", rep.plan.summary_markdown);
+    let out = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".revera/last-report.json"));
+    if let Err(e) = write_report(&repo, &out, &rep) {
+        eprintln!("error: cannot write {}: {e:#}", out.display());
+    }
+    eprintln!("report: {}", out.display());
+    2
+}
+
 async fn review(a: ReviewArgs) -> i32 {
     let strategy = a.strategy.map(strategy_arg);
     let repo = crate::git::repo_root(&a.repo);
@@ -311,8 +379,21 @@ async fn review(a: ReviewArgs) -> i32 {
     };
     let (origin, cfg) = match loaded {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(err) => {
+            // no trusted base config: a fork cannot be reviewed with
+            // credentials anyway, so report the skip instead of failing
+            if let Some(e) = ev.as_ref().filter(|e| e.is_fork()) {
+                if a.publish.is_some_and(|p| matches!(p, PublishArg::Comment)) {
+                    eprintln!("config: {err}");
+                    let reason = "fork PR: review skipped (no trusted base config)";
+                    eprintln!(
+                        "revera: {reason} ({} -> {})",
+                        e.head_repo_full_name, e.repo_full_name
+                    );
+                    return fork_skip(&a, e, strategy.unwrap_or_default(), reason);
+                }
+            }
+            eprintln!("error: {err}");
             return 1;
         }
     };
@@ -336,52 +417,7 @@ async fn review(a: ReviewArgs) -> i32 {
                 "revera: {reason} ({} -> {})",
                 e.head_repo_full_name, e.repo_full_name
             );
-            let rep = crate::report::RunReport {
-                status: crate::report::RunStatus::Partial,
-                reason: Some(reason.into()),
-                base: e.base_sha.clone(),
-                head: e.head_sha.clone(),
-                strategy: format!("{:?}", effective_strategy).to_lowercase(),
-                findings: vec![],
-                plan: crate::report::PublicationPlan {
-                    inline: vec![],
-                    summary_markdown: crate::report::summary_markdown(&crate::report::Summary {
-                        coverage: reason,
-                        status: Some(RunStatus::Partial),
-                        reason: Some(reason),
-                        strategy: "none",
-                        ..Default::default()
-                    }),
-                    state: crate::state::ReviewState::default(),
-                    publish_uncertain: false,
-                },
-                ledger: crate::report::LedgerReport {
-                    requests: 0,
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    reasoning_tokens: 0,
-                    by_route: vec![],
-                    wall_ms: 0,
-                },
-                publication: crate::report::Publication {
-                    mode: "dry-run".into(),
-                    skipped_reason: Some(reason.into()),
-                    ..Default::default()
-                },
-                coverage_gaps: vec![],
-                timing: Default::default(),
-                stats: Default::default(),
-            };
-            print!("{}", rep.plan.summary_markdown);
-            let out = a
-                .out
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(".revera/last-report.json"));
-            if let Err(e) = write_report(&repo, &out, &rep) {
-                eprintln!("error: cannot write {}: {e:#}", out.display());
-            }
-            eprintln!("report: {}", out.display());
-            return 2;
+            return fork_skip(&a, e, effective_strategy, reason);
         }
     }
     // trust before credentials: no secret is resolved for an endpoint or
@@ -761,13 +797,31 @@ async fn doctor(
 
 /// Prints the Vera index cache identity, or `disabled` when Vera is off so
 /// callers (the Action) skip cache restore/save entirely.
-fn cache_key(config: Option<PathBuf>, profile: Option<String>) -> i32 {
-    match load_cfg_unvalidated(config.as_deref(), profile.as_deref()) {
-        Ok((_, cfg)) if !cfg.vera.enabled => {
+async fn cache_key(
+    config: Option<PathBuf>,
+    profile: Option<String>,
+    event: Option<PathBuf>,
+    repo: PathBuf,
+) -> i32 {
+    let loaded = match event {
+        Some(p) => match crate::github::event::parse(&p) {
+            Ok(e) if crate::git::is_oid(&e.base_sha) => {
+                let repo = crate::git::repo_root(&repo);
+                load_event_config(&repo, config.as_deref(), profile.as_deref(), &e.base_sha)
+                    .await
+                    .map(|(_, c)| c)
+            }
+            Ok(_) => Err("event base is not a full commit id".into()),
+            Err(e) => Err(format!("{e:#}")),
+        },
+        None => load_cfg_unvalidated(config.as_deref(), profile.as_deref()).map(|(_, c)| c),
+    };
+    match loaded {
+        Ok(cfg) if !cfg.vera.enabled => {
             println!("disabled");
             0
         }
-        Ok((_, cfg)) => {
+        Ok(cfg) => {
             use sha2::{Digest, Sha256};
             let id = cfg.vera.index_identity().to_string();
             let h = Sha256::digest(id.as_bytes());

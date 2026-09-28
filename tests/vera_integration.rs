@@ -350,3 +350,50 @@ async fn reranker_outage_degrades_to_unreranked_results() {
         "an unreranked fallback must be observable"
     );
 }
+
+#[tokio::test]
+async fn legacy_cache_without_identity_is_rebuilt() {
+    let Some((server, exe)) = setup().await else {
+        return;
+    };
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    let v = VeraClient::from_config(
+        &config(&server.uri(), home.path(), &exe, false).vera,
+        repo.path(),
+    )
+    .unwrap();
+    let p = VeraClient::cache_info_path(repo.path());
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    // metadata written before index identities were recorded
+    std::fs::write(
+        &p,
+        r#"{"vera_version": "1.4.1", "backend": "api", "embedding_model": "emb", "dim": null, "updated_at": "0"}"#,
+    )
+    .unwrap();
+    assert!(v.cache_incompatibility().is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_reranker_shutdown_is_a_configuration_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // a vera whose `config set` always fails
+    let exe = dir.path().join("vera");
+    std::fs::write(&exe, "#!/bin/sh\necho 'config locked' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    for rr in [None, Some("protocol: generic")] {
+        let v = VeraClient::from_config(
+            &config_with("http://127.0.0.1:9", home.path(), &exe, rr).vera,
+            repo.path(),
+        )
+        .unwrap();
+        assert!(
+            v.configure().await.is_err(),
+            "reranking state unknown ({rr:?}) must not be reported as usable"
+        );
+    }
+}

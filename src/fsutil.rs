@@ -84,12 +84,18 @@ pub fn write_repo_file(root: &Path, rel: &Path, bytes: &[u8]) -> Result<()> {
     write_atomic_in(&dir, name, bytes)
 }
 
-/// Write a caller-chosen output path (`--out`). Relative paths resolve
-/// under `root` with the same symlink checks; absolute paths are the
-/// operator's explicit choice, but the final component must still not be
-/// a symlink.
+/// Write a caller-chosen output path (`--out`). Relative paths, and
+/// absolute paths inside `root`, get the same symlink checks as state
+/// files; other absolute paths are the operator's explicit choice, but the
+/// final component must still not be a symlink.
 pub fn write_output(root: &Path, out: &Path, bytes: &[u8]) -> Result<()> {
     if out.is_absolute() {
+        let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        for r in [root, canon_root.as_path()] {
+            if let Ok(rel) = out.strip_prefix(r) {
+                return write_repo_file(r, rel, bytes);
+            }
+        }
         let dir = out.parent().context("output path has no parent")?;
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let name = out
