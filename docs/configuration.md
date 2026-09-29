@@ -117,7 +117,11 @@ sha256 and truncation are recorded under
 `stats.guidance` in the run report and are never rendered into PR comments.
 The mode is part of the review fingerprint, not the Vera index identity.
 It stays `off` by default; evaluation found no benefit so far
-([evaluation](evaluation.md)).
+([evaluation](evaluation.md)). Guidance is text the investigator may
+follow: in one evaluation run, a base `AGENTS.md` claiming a file was
+externally audited and out of scope made it skip a real high-severity defect while the
+review still reported `complete`. Enable it only for guidance you would
+accept as review policy.
 
 ## `budget`
 

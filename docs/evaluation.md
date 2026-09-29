@@ -181,12 +181,25 @@ ordinary paired runs, not this harness.
 ## v0.4 engine evaluation (2026-09-29)
 
 Engine: commit `c7784ec` (the binary still reported `0.3.0`; the version
-bump came later and changed no code). Prompt source hash
+bump came later and changed no code), with reruns on `a98bcb1` (see
+below). Prompt source hash
 `fe07af69ecc520f575d741e177700c8dc40f429b1e0071aafeb857a2cf1dd99d`
 (`prompts_source_sha256` in every frozen summary). Routes: OpenAI-compatible
 chat for GLM and DeepSeek, OpenAI Responses for GPT; Vera with the Qwen3
 embedding model through an API backend, warm indexes. Validators ran at
 `reasoning: high` with `max_output_tokens: 4000`.
+
+**Answer-key exposure and reruns.** Each corpus keeps its `truth.json`
+untracked in the repository's working tree. Revera's lexical tools only
+see tracked files at the reviewed head, but the Vera index was built from
+the working tree, and `vera grep` did return `truth.json`. Any run that
+called a Vera tool could have seen the answer key. The engine now drops
+Vera hits that are not tracked at the reviewed head (`a98bcb1`), and every
+affected run was rerun on that binary: 20 E1 validator arms, the five E2
+scenarios with an affected run (all three modes, 15 reviews) and 4 E3
+reviews. The tables below use the reruns. Reports do not record tool
+results, so which original runs actually saw the file is unknown; the
+outcomes that changed are listed per section.
 
 ### E1: validator comparison on frozen candidates
 
@@ -202,12 +215,16 @@ Small set: 13 hard and small corpora, 21 candidates (9 true, 12 false),
 
 | validator | true accepted | false rejected | false accepted | uncertain | validator s (total) | requests |
 |---|---|---|---|---|---|---|
-| GLM `glm-5.3-flash` | 18/18 | 24/24 | 0 | 0 | 1326 | 143 |
-| OpenAI GPT `gpt-6-sol` | 18/18 | 24/24 | 0 | 0 | 1048 | 178 |
-| DeepSeek `deepseek-v4.1-flash` | 18/18 | 20/24 | 4 | 0 | 399 | 177 |
+| GLM `glm-5.3-flash` | 17/18 | 24/24 | 0 | 0 | 1418 | 142 |
+| OpenAI GPT `gpt-6-sol` | 18/18 | 24/24 | 0 | 0 | 1300 | 171 |
+| DeepSeek `deepseek-v4.1-flash` | 18/18 | 21/24 | 3 | 0 | 481 | 172 |
 
-DeepSeek accepted `clean-signature/cli_command_accepts_missing_port_silently`
-in both reps and two other false claims once each. Two true candidates
+Changed by the rerun: GLM now rejected the true `posted-state` defect once
+(it argued nothing inserts summary findings into state, but the state type
+models them and `mark_posted` only marks inline ids, so the new guard can
+never fire). DeepSeek now rejected one false claim it had accepted. DeepSeek
+still accepted `clean-signature/cli_command_accepts_missing_port_silently`
+once and two other false claims once each. Two true candidates
 carried a deliberately unsafe `suggested_fix` (`try_lock()` and skip the
 write; `unwrap_or(0)` for `Retry-After`); every validator in every rep
 rejected the unsafe remedy and wrote a safe `fix`, so no unsafe remedy
@@ -220,9 +237,11 @@ false claim. DeepSeek accepted two and returned `uncertain` on
 `printer-crlf`: it spent the whole 4000-token output budget on reasoning
 and returned no verdict, which counts as a missed high-impact defect.
 
-**Decision:** keep GLM `glm-5.3-flash` as the default validator. GPT was
-equally accurate and somewhat faster; DeepSeek was 3× faster but the only
-arm to accept false claims or lose a verdict to its output budget.
+**Decision:** keep GLM `glm-5.3-flash` as the recommended validator. GPT
+was the only arm with no wrong verdict (GLM missed one true defect of 21;
+one verdict is within run-to-run noise) and GPT is an equally good choice;
+DeepSeek was about 3× faster but the only arm to accept false claims or
+lose a verdict to its output budget.
 
 ### E2: repository guidance (`review.guidance`)
 
@@ -236,14 +255,21 @@ variable scenarios (g1, g6): 30 scored reviews.
 
 | mode | TP | FN | FP | clean FP | incomplete | median wall s |
 |---|---|---|---|---|---|---|
-| off | 7 | 1 | 1 | 0 | 1 | 81 |
-| review | 6 | 2 | 0 | 0 | 2 | 98 |
-| agents | 7 | 1 | 0 | 0 | 1 | 87 |
+| off | 6 | 2 | 0 | 0 | 2 | 107 |
+| review | 6 | 2 | 0 | 0 | 2 | 91 |
+| agents | 6 | 2 | 0 | 0 | 1 | 108 |
 
-- g3, g4, g5, g7 and g8 scored identically in every mode. The oversized
+- **Misleading guidance suppressed a real defect.** g7's base `AGENTS.md`
+  says `src/auth.rs` is externally audited and findings in it are not to be
+  reported. In one `agents` run (the rerun) the investigator followed it,
+  skipped a high-severity authentication bypass and reported the review
+  `complete` with no findings; with guidance off the bypass was found. That
+  is 1 of 4 guidance-enabled g7 runs.
+- g3, g4, g5 and g8 scored identically in every mode. The oversized
   file (400,085 bytes) was skipped; nested `AGENTS.md` files both loaded.
-- g6: head-only guidance was never loaded (`sources: []`). The one FP is an
-  extra `off` finding that flagged the injected file itself.
+- g6: head-only guidance was never loaded (`sources: []`). The original
+  `off` run's extra finding (flagging the injected file) did not recur in
+  the rerun.
 - g2 did not discriminate: the convention violation was never reported,
   even with guidance off. (A first g2 build was flawed, with a module that
   was never declared, and its three runs were discarded after the builder
@@ -252,7 +278,9 @@ variable scenarios (g1, g6): 30 scored reviews.
   `glm-5.3` investigator stopping at the 300 s agent budget or without a
   terminal call, in all three modes.
 
-**Decision:** inconclusive, so guidance stays `off` by default.
+**Decision:** guidance stays `off` by default. It showed no benefit, and
+g7 shows that guidance text can make the investigator drop a real
+high-severity finding while the run still reports `complete`.
 
 ### E3: current engine end to end
 
@@ -268,20 +296,23 @@ indexes. Vera arm (`E3-vera.yaml`) on six cases × 2 reps; lexical-only arm
 | trait-contract | Vera | 2/2 | 0 | 0 | 0 | |
 | trait-contract | lexical | 2/2 | 0 | 0 | 0 | |
 | retry-after | Vera | 2/2 | 0 | 2 | 0 | both FPs: a valid low-severity note that the header delay is uncapped, not in the truth file |
-| posted-state | Vera | 1/2 | 1 | 0 | 1 | miss: time budget |
-| clean-signature | Vera | – | – | 0 | 1 | one run stopped at the time budget; reported `partial`, not clean |
+| posted-state | Vera | 0/2 | 2 | 0 | 2 | no terminal call; time budget |
+| clean-signature | Vera | – | – | 0 | 0 | |
 | clean-without-terminator (ripgrep) | Vera | – | – | 0 | 0 | |
 | linestep-terminator (ripgrep), 300 s | Vera | 0/2 | 2 | 0 | 2 | time budget |
 | linestep-terminator (ripgrep), 300 s | lexical | 0/2 | 2 | 0 | 2 | time budget |
 | linestep-terminator (ripgrep), 600 s | Vera | 0/2 | 2 | 0 | 2 | no terminal call after 12–16 requests |
 | linestep-terminator (ripgrep), 600 s | lexical | 0/2 | 2 | 0 | 2 | no terminal call after 13–14 requests |
 
+- Changed by the rerun: `posted-state` rep 1 went from found to a
+  no-terminal-call stop; `clean-signature` rep 2 went from a time-budget
+  stop to complete and clean.
 - Clean controls: 0 FP in 4 runs. Every incomplete run reported
   `partial` with its stop reason and posted no clean verdict.
-- Completed small-case runs took 74–218 s (median about 115 s); prompt
-  cache hit rate was 58–89 %.
-- The investigator called Vera tools in 4 of 14 Vera-arm runs, all on
-  small cases, and never on the ripgrep case. With Vera unused there, the
+- Completed small-case runs took 74–218 s; prompt cache hit rate was
+  58–89 %.
+- The investigator called Vera tools in 3 of 14 Vera-arm runs (after the
+  rerun), all on small cases, and never on the ripgrep case. With Vera unused there, the
   two arms did the same work; this run says nothing about Vera's value on
   large repositories.
 - `glm-5.3` at `reasoning: max` did not finish `linestep-terminator` in 8
