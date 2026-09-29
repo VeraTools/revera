@@ -65,7 +65,9 @@ otherwise).
    mark the release Latest or move the `vX` major tag.
 4. Prove the published binary on a fixture PR with a known defect:
    dispatch `release-verify.yml` with the exact tag, the PR number,
-   `expect_file` and `expect_terms`.
+   `expect_file` and `expect_terms`. The fixture head must not have been
+   reviewed before: the first run has to be a fresh review, and the
+   second run proves identical-head reuse.
 5. Dispatch `release-promote.yml` with the tag. It moves `vX`, marks the
    release Latest and reads both back.
 6. Open a small follow-up PR so `dogfood-released.yml` exercises the
