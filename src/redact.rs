@@ -86,7 +86,7 @@ pub fn text(s: &str) -> Cow<'_, str> {
 /// mask the rest. Only for diagnostics, never for model input or output.
 pub fn diagnostic(s: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"(https?://[^\s?#"'<>()]+)\?[^\s#"'<>()]*"#).unwrap());
+    let re = RE.get_or_init(|| Regex::new(r#"(https?://[^\s?#"'<>]+)\?[^\s#"'<>]*"#).unwrap());
     text(&re.replace_all(s, "$1?[query removed]")).into_owned()
 }
 
@@ -101,5 +101,16 @@ pub fn json(v: &mut serde_json::Value) {
         serde_json::Value::Array(a) => a.iter_mut().for_each(json),
         serde_json::Value::Object(o) => o.values_mut().for_each(json),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn diagnostic_strips_queries_even_with_parentheses() {
+        let out = super::diagnostic("error (url: https://h/v1?key=a(b)c&x=1) end");
+        assert!(!out.contains("a(b)c"), "{out}");
+        assert!(!out.contains("x=1"), "{out}");
+        assert!(out.contains("https://h/v1?[query removed]"), "{out}");
     }
 }

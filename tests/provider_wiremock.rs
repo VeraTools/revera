@@ -56,14 +56,11 @@ fn client(url: &str) -> OpenAiChatClient {
 
 #[tokio::test]
 async fn request_errors_and_ledger_hide_base_url_query_values() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
+    // Port 1 is privileged and unbound, so the connection is refused at once.
     let secret = "s3cr3t-value";
     let ledger = LedgerHandle::new();
     let c = OpenAiChatClient::new(
-        route(&format!("http://127.0.0.1:{port}/v1?key={secret}")),
+        route(&format!("http://127.0.0.1:1/v1?key={secret}")),
         ledger.clone(),
         1,
         0,
@@ -98,6 +95,7 @@ async fn provider_error_bodies_echoing_the_url_hide_query_values() {
     );
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(400).set_body_string(echoed))
+        .expect(1)
         .mount(&server)
         .await;
     let ledger = LedgerHandle::new();
@@ -117,6 +115,8 @@ async fn provider_error_bodies_echoing_the_url_hide_query_values() {
         !err.to_string().contains("echoed-credential-value"),
         "{err}"
     );
+    assert!(err.to_string().contains("HTTP 400"), "{err}");
+    server.verify().await;
     let entries = &ledger.0.lock().unwrap().entries;
     assert!(entries.iter().all(|e| {
         !e.error
