@@ -634,7 +634,7 @@ fn sanitize_report_fixes(report: &mut serde_json::Value) {
     for finding in findings {
         if let Some(object) = finding.as_object_mut() {
             object.remove("suggested_fix");
-            if object.get("validation_status").and_then(|v| v.as_str()) == Some("rejected") {
+            if object.get("validation_status").and_then(|v| v.as_str()) != Some("accepted") {
                 object.remove("validated_fix");
             }
         }
@@ -891,6 +891,7 @@ mod report_fix_tests {
             "stats": {"validation": "fresh"},
             "findings": [
                 {"validation_status":"rejected","suggested_fix":"candidate","validated_fix":"rejected fix"},
+                {"validation_status":"uncertain","suggested_fix":"candidate","validated_fix":"uncertain fix"},
                 {"validation_status":"accepted","suggested_fix":"candidate","validated_fix":"accepted fix"}
             ]
         });
@@ -898,7 +899,9 @@ mod report_fix_tests {
         assert!(report["findings"][0].get("suggested_fix").is_none());
         assert!(report["findings"][0].get("validated_fix").is_none());
         assert!(report["findings"][1].get("suggested_fix").is_none());
-        assert_eq!(report["findings"][1]["validated_fix"], "accepted fix");
+        assert!(report["findings"][1].get("validated_fix").is_none());
+        assert!(report["findings"][2].get("suggested_fix").is_none());
+        assert_eq!(report["findings"][2]["validated_fix"], "accepted fix");
     }
 
     #[test]

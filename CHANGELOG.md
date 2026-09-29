@@ -20,7 +20,9 @@
   every other tool, so untracked working-tree files never reach a model.
   Endpoint query values (which may carry credentials) no longer enter review
   identity or prompt-cache keys. Written reports drop the investigator's
-  `suggested_fix` and fixes on rejected findings unless validation is off.
+  `suggested_fix` and any fix without an accepted verdict unless validation
+  is off; an evaluation-only run (`validate: false`) now reports candidates
+  already tracked in state instead of dropping them.
 - Replaced `serde_yaml` with `serde-saphyr`, refreshed the HTTP/TLS stack and
   added bundled Mozilla trust roots so HTTPS works on hosts without a system
   CA bundle. Minimum supported Rust was lowered to 1.89.
@@ -31,7 +33,8 @@
 - Exact-version releases publish checksummed assets without moving the
   `vX` major tag or marking the release Latest. After a live proof is
   verified by `scripts/verify-release-report.py`, the manual promotion
-  workflow moves `vX` through the Git refs API and marks the release Latest;
+  workflow (gated by a required-reviewer environment) moves `vX` through the
+  Git refs API and marks the release Latest;
   see [the release sequence](CONTRIBUTING.md#releasing).
 
 ## v0.3.0

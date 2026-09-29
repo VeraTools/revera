@@ -156,6 +156,7 @@ def score(findings, truth, min_sev, candidate_fixes):
             "true_uncertain",
             "false_uncertain",
             "true_below_threshold",
+            "false_below_threshold",
             "failures",
             "high_impact_missed",
             "unlabeled",
@@ -198,7 +199,7 @@ def score(findings, truth, min_sev, candidate_fixes):
         elif st == "uncertain":
             s["true_uncertain" if true else "false_uncertain"] += 1
         elif st == "accepted" and not surfaced:
-            s["true_below_threshold" if true else "false_rejected"] += 1
+            s["true_below_threshold" if true else "false_below_threshold"] += 1
         elif st == "accepted":
             s["true_accepted" if true else "false_accepted"] += 1
         else:
@@ -240,9 +241,18 @@ def main():
     payload = payload_hash(frozen)
     truth = json.load(open(a.truth)) if a.truth else None
     if truth is not None:
-        bad = [k for k, v in truth.items() if v.get("label") not in ("true", "false")]
+        if not isinstance(truth, dict):
+            sys.exit("truth must be a JSON object mapping defect keys to entries")
+        bad = [
+            k
+            for k, v in truth.items()
+            if not isinstance(v, dict) or v.get("label") not in ("true", "false")
+        ]
         if bad:
-            sys.exit(f"truth labels must be 'true' or 'false': {bad}")
+            sys.exit(
+                "truth entries must be objects with label 'true' or 'false': "
+                f"{bad}"
+            )
     a.out = os.path.abspath(a.out)
     src = os.path.realpath(a.repo)
     base_oid, head_oid = git_oid(src, a.base), git_oid(src, a.head)
@@ -304,7 +314,13 @@ def main():
         open(script, "w"),
     )
 
-    version = subprocess.run([a.bin, "--version"], capture_output=True, text=True).stdout.strip()
+    version_result = subprocess.run([a.bin, "--version"], capture_output=True, text=True)
+    if version_result.returncode != 0:
+        sys.exit(
+            f"{a.bin} --version failed with exit {version_result.returncode}: "
+            f"{version_result.stderr.strip()}"
+        )
+    version = version_result.stdout.strip()
     prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prompts")
     provenance = {
         "base": base_oid,
@@ -420,7 +436,7 @@ def main():
             "validator_models": vmodels,
             "validator_prompt_tokens": vprompt,
             "validator_cache_hit_rate": round(vcached / vprompt, 3) if vprompt else None,
-            "validate_s": (rep.get("timing", {}) or {}).get("validate_ms", 0) / 1000,
+            "validate_s": ((rep.get("timing", {}) or {}).get("validate_ms") or 0) / 1000,
             "min_severity": min_sev,
             "accepted_at_min_severity": sum(
                 1
@@ -444,7 +460,7 @@ def main():
             or rc != 0
             or vreq < len(frozen)
             or row["rechecked"]
-            or vmodels != [expected_model(validator)]
+            or (frozen and vmodels != [expected_model(validator)])
         ):
             ok = False
         rows.append(row)

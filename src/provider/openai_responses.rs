@@ -54,8 +54,19 @@ impl HttpClient<OpenAiResponsesAdapter> {
         retries: u32,
         role: &str,
     ) -> Result<Self, ProviderError> {
+        Self::new_responses_with_cache_key(route, ledger, max_requests, retries, role, None)
+    }
+
+    pub fn new_responses_with_cache_key(
+        route: ModelRoute,
+        ledger: LedgerHandle,
+        max_requests: u32,
+        retries: u32,
+        role: &str,
+        cache_key: Option<String>,
+    ) -> Result<Self, ProviderError> {
         Ok(Self {
-            adapter: OpenAiResponsesAdapter::from_route(route)?,
+            adapter: OpenAiResponsesAdapter::from_route(route)?.with_cache_key(cache_key),
             transport: HttpTransport::new(ledger, max_requests, retries, role)?,
         })
     }

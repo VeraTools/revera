@@ -233,7 +233,7 @@ use revera::provider::anthropic::AnthropicAdapter;
 use revera::provider::gemini::GeminiAdapter;
 use revera::provider::http::{AttemptState, HttpClient, HttpTransport, ProtocolAdapter};
 use revera::provider::openai_chat::OpenAiChatAdapter;
-use revera::provider::openai_responses::OpenAiResponsesAdapter;
+use revera::provider::openai_responses::{OpenAiResponsesAdapter, OpenAiResponsesClient};
 use revera::provider::{Role, ToolCall};
 
 fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
@@ -1834,12 +1834,17 @@ fn cache_client(
             )
             .unwrap(),
         ),
-        Protocol::OpenaiResponses => Box::new(HttpClient {
-            adapter: OpenAiResponsesAdapter::from_route(cache_route_for(url, proto, model, cache))
-                .unwrap()
-                .with_cache_key(cache_key()),
-            transport: HttpTransport::new(ledger, 10, 0, "cache-test").unwrap(),
-        }),
+        Protocol::OpenaiResponses => Box::new(
+            OpenAiResponsesClient::new_responses_with_cache_key(
+                cache_route_for(url, proto, model, cache),
+                ledger,
+                10,
+                0,
+                "cache-test",
+                cache_key(),
+            )
+            .unwrap(),
+        ),
         Protocol::Anthropic => Box::new(HttpClient {
             adapter: AnthropicAdapter::from_route(cache_route_for(url, proto, model, cache))
                 .unwrap(),

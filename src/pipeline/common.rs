@@ -546,7 +546,7 @@ pub async fn finish(
     // defect coming back is a reintroduction and must be validated again.
     collapsed.retain(|f| {
         let id = f.id();
-        !(prep.state.is_tracked_open(&id) && !reenter_ids.contains(&id))
+        !(cfg.review.validate && prep.state.is_tracked_open(&id) && !reenter_ids.contains(&id))
     });
     prep.stats.candidates = collapsed.len();
 

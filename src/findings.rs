@@ -67,7 +67,11 @@ pub struct Finding {
     #[serde(default)]
     pub suggested_fix: Option<String>,
     /// Remedy text the fresh validator approved or wrote in this run.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "lenient_fix",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub validated_fix: Option<String>,
     #[serde(default)]
     pub source: String,

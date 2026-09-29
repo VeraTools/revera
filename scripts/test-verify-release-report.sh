@@ -59,6 +59,11 @@ def json_response(handler, value, link=None):
 
 class ApiHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+            self.send_response(401)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         parsed = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         mode = scenario["name"]
@@ -87,16 +92,37 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 "body": "<!-- revera-summary --> managed",
                 "user": {"login": AUTHOR},
             }
-            items = [managed, managed] if mode == "duplicate-managed-summary" else [managed]
+            other_managed = {
+                "id": SUMMARY_ID + 1,
+                "body": "<!-- revera-summary --> managed duplicate",
+                "user": {"login": "other"},
+            }
+            nonprefix_managed = {
+                "id": SUMMARY_ID + 1,
+                "body": "not managed <!-- revera-summary -->",
+                "user": {"login": AUTHOR},
+            }
+            if mode == "duplicate-managed-summary":
+                items = [managed, managed]
+            elif mode == "duplicate-managed-summary-other":
+                items = [managed, other_managed]
+            elif mode == "nonprefix-managed-summary":
+                items = [managed, nonprefix_managed]
+            else:
+                items = [managed]
             return json_response(self, items)
         if parsed.path == f"/repos/{REPO}/pulls/{PR}/comments":
             inline = {
                 "id": 8,
                 "body": f"Inline review <!-- revera-id:{FINDING_ID} -->",
                 "user": {"login": AUTHOR},
+                "commit_id": "d" * 40 if mode == "stale-inline-commit" else HEAD,
             }
             if mode == "missing-inline-review":
                 return json_response(self, [])
+            if mode == "duplicate-inline-review-other":
+                other_inline = dict(inline, id=9, user={"login": "other"})
+                return json_response(self, [inline, other_inline])
             return json_response(
                 self,
                 [inline, inline] if mode == "duplicate-inline-review" else [inline],
@@ -155,7 +181,7 @@ def report(number):
             ]
         },
         "stats": {
-            "validation": "fresh",
+            "validation": "reused" if number == 2 else "fresh",
             "reused": number == 2,
         },
         "publication": {
@@ -313,6 +339,10 @@ try:
         "missing-inline-review",
         "inline comments by --author for the designated finding; expected exactly one",
     )
+    expect_fail(
+        "stale-inline-commit",
+        "inline comments by --author for the designated finding; expected exactly one",
+    )
     expect_fail("missing-review", "reviews by --author for the expected head; expected exactly one")
     expect_fail("wrong-review-id", "does not match run 1 review_id")
     expect_fail(
@@ -347,6 +377,9 @@ try:
         "duplicate-inline-review",
         "duplicate inline review comments for run 1 revera-id",
     )
+    expect_pass("duplicate-inline-review-other")
+    expect_pass("duplicate-managed-summary-other")
+    expect_pass("nonprefix-managed-summary")
 
     different_summary = report(2)
     different_summary["publication"]["summary_comment_id"] = SUMMARY_ID + 1
@@ -362,6 +395,14 @@ try:
         "run-two-not-reused",
         "run 2 stats.reused is not true",
         second=not_reused,
+    )
+
+    wrong_reuse_validation = report(2)
+    wrong_reuse_validation["stats"]["validation"] = "fresh"
+    expect_fail(
+        "run-two-reused-without-validation",
+        "run 2 stats.validation is not reused",
+        second=wrong_reuse_validation,
     )
 
     new_review = report(2)

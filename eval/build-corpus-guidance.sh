@@ -24,7 +24,11 @@ repo() {
 
 commit() {
     git -C "$1" add -A
-    GIT_COMMITTER_DATE="${GIT_COMMITTER_DATE} +1 hour" git -C "$1" commit -qm "$2"
+    local committer_date="$GIT_COMMITTER_DATE"
+    if [[ "$2" == "update example behavior" ]]; then
+        committer_date="2026-01-01T01:00:00Z"
+    fi
+    GIT_COMMITTER_DATE="$committer_date" git -C "$1" commit -qm "$2"
     [ -n "${3:-}" ] && git -C "$1" tag "$3"
 }
 

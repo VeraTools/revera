@@ -85,6 +85,17 @@ fn investigator_cannot_supply_a_publishable_validated_fix() {
     assert!(!finding_body(f).contains("forged validator approval"));
 }
 
+#[test]
+fn junk_validated_fix_does_not_drop_finding() {
+    let mut non_string = valid_finding_json();
+    non_string["validated_fix"] = json!({"unexpected": "object"});
+    let mut blank = valid_finding_json();
+    blank["validated_fix"] = json!("   ");
+    let parsed = parse_findings_checked(&json!({"findings": [non_string, blank]}));
+    assert_eq!(parsed.findings.len(), 2);
+    assert!(parsed.findings.iter().all(|f| f.validated_fix.is_none()));
+}
+
 // ---------- one bounded repair ----------
 
 struct Stub {

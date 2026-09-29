@@ -29,6 +29,11 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
             || { echo "::error::tag must be an exact stable vX.Y.Z tag"; exit 1; }
 
+      - name: Verify release tag exists
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null \
+            || { echo "::error::tag $TAG does not exist"; exit 1; }
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -38,8 +43,6 @@ jobs:
       - name: Verify published stable release
         run: |
           set -euo pipefail
-          git show-ref --verify --quiet "refs/tags/$TAG" \
-            || { echo "::error::tag $TAG does not exist"; exit 1; }
           release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
           jq -e --arg tag "$TAG" \
             '.tag_name == $tag and .draft == false and .prerelease == false' \

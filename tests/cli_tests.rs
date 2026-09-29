@@ -171,7 +171,9 @@ fn validation_disabled_run_does_not_recheck_prior_findings() {
     assert_eq!(second["stats"]["validation"], "disabled", "{second}");
     assert_eq!(validator_requests(&second), 0, "{second}");
     assert_eq!(second["stats"]["accepted"], 0, "{second}");
-    for f in second["findings"].as_array().unwrap() {
+    let findings = second["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{second}");
+    for f in findings {
         assert!(f["validation_status"].is_null(), "{f}");
         assert_eq!(f["suggested_fix"], "candidate remedy", "{f}");
     }

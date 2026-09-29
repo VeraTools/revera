@@ -216,6 +216,10 @@ def validate_report_pair(
         isinstance(stats2, dict) and stats2.get("reused") is True, "run 2 stats.reused is not true"
     )
     require(
+        stats2.get("validation") == "reused",
+        "run 2 stats.validation is not reused",
+    )
+    require(
         publication2.get("review_id") is None,
         "run 2 publication.review_id is present for an identical-head reuse",
     )
@@ -354,7 +358,10 @@ def verify_remote(
     )
     body = summary.get("body")
     require(isinstance(body, str), "managed summary comment has no body")
-    require(SUMMARY_MARKER in body, "managed summary comment is missing the managed marker")
+    require(
+        body.startswith(SUMMARY_MARKER),
+        "managed summary comment is missing the managed marker at the start of its body",
+    )
 
     # publish.rs embeds ReviewState in a revera-state base64 comment; its
     # reviewed_head is the durable head evidence because the visible summary
@@ -382,8 +389,10 @@ def verify_remote(
         comment
         for comment in issue_comments
         if isinstance(comment, dict)
+        and isinstance(comment.get("user"), dict)
+        and comment["user"].get("login") == author
         and isinstance(comment.get("body"), str)
-        and SUMMARY_MARKER in comment["body"]
+        and comment["body"].startswith(SUMMARY_MARKER)
     ]
     require(
         len(managed) == 1,
@@ -407,6 +416,8 @@ def verify_remote(
             for comment in review_comments
             if isinstance(comment, dict)
             and isinstance(comment.get("body"), str)
+            and isinstance(comment.get("user"), dict)
+            and comment["user"].get("login") == author
             and revera_id in FINDING_MARKER.findall(comment["body"])
         )
         > 1
@@ -424,6 +435,7 @@ def verify_remote(
         and target_id in FINDING_MARKER.findall(comment["body"])
         and isinstance(comment.get("user"), dict)
         and comment["user"].get("login") == author
+        and comment.get("commit_id") == expected_head
     ]
     require(
         len(target_comments) == 1,

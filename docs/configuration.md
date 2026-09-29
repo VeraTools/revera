@@ -85,7 +85,8 @@ Each model route has `cache: true` by default. Revera sends
 `prompt_cache_key` on OpenAI-compatible chat and Responses requests, and
 ephemeral `cache_control` hints on Anthropic requests. If a provider returns
 HTTP 400 identifying an unsupported cache hint, Revera retries without that
-hint. Cache hints do not affect the review fingerprint, so changing `cache`
+hint. An endpoint that rejects the hint with an HTTP 400 that does not name it
+needs `cache: false` on that route. Cache hints do not affect the review fingerprint, so changing `cache`
 alone does not invalidate a completed review. Where providers report them,
 cached-prompt and cache-write token usage is recorded in the run ledger,
 both per route and in the totals.

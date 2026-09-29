@@ -6,7 +6,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 BIN="${REVERA_BIN:-$ROOT/target/debug/revera}"
 [ -x "$BIN" ] || cargo build -q --manifest-path "$ROOT/Cargo.toml"
-W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+W="$(mktemp -d)"
+cleanup() {
+    python3 -c 'import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "$W"
+}
+trap cleanup EXIT
 [ -n "${KEEP:-}" ] && trap - EXIT && echo "work dir: $W"
 R="$W/repo"; mkdir -p "$R/src"
 g() { git -C "$R" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
@@ -73,7 +77,8 @@ assert (r["min_severity"], r["accepted_at_min_severity"]) == ("low", 0), r
 # the true high-impact defect was accepted but downgraded below the arm's
 # threshold: not surfaced, so a miss, not a success
 sa, sr = a["score"], r["score"]
-assert (sa["true_below_threshold"], sa["high_impact_missed"], sa["false_accepted"]) == (1, 1, 0), sa
+assert (sa["true_below_threshold"], sa["false_below_threshold"],
+        sa["high_impact_missed"], sa["false_accepted"]) == (1, 1, 1, 0), sa
 assert (sr["true_rejected"], sr["false_rejected"], sr["high_impact_missed"]) == (1, 1, 1), sr
 s = json.load(open(sys.argv[2]))
 p = s["provenance"]
@@ -92,6 +97,17 @@ finding = {"defect_key": "div-zero", "validation_status": "accepted",
 scores, _ = frozen.score([finding], {"div-zero": {"label": "true", "fix_safe": False}},
                          "low", {"div-zero": "candidate remedy"})
 assert scores["unsafe_fix_published"] == 1, scores
+PY
+
+# clean candidate sets need no validator model or session
+echo '{"stats": {"validation": "disabled"}, "findings": []}' > "$W/empty-candidates.json"
+out="$(python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/empty-candidates.json" \
+    --repo "$R" --base HEAD~1 --out "$W/out-empty" "$W/reject.yaml")"
+python3 - "$out" <<'PY'
+import json, sys
+row = json.loads(sys.argv[1])
+assert row["status"] == "complete" and row["candidates"] == 0, row
+assert row["validator_models"] == [] and row["validator_requests"] == 0, row
 PY
 
 # an arm with only an investigator route inherits it as the validator: the
@@ -119,7 +135,7 @@ open(port_file, "w").write(str(s.server_port))
 s.serve_forever()
 PY
 MOCK=$!
-trap 'kill $MOCK 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$W"' EXIT
+trap 'kill "$MOCK" 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$W"' EXIT
 for _ in $(seq 50); do [ -s "$PORTF" ] && break; sleep 0.1; done
 cat > "$W/inherit.yaml" <<YAML
 review: {min_severity: low}
@@ -140,9 +156,40 @@ PY
 # malformed truth labels are refused
 echo '{"div-zero": {"label": "yes"}}' > "$W/badtruth.json"
 if python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" --repo "$R" \
-    --base HEAD~1 --out "$W/out7" --truth "$W/badtruth.json" "$W/reject.yaml" 2>/dev/null; then
+    --base HEAD~1 --out "$W/out7" --truth "$W/badtruth.json" "$W/reject.yaml" \
+    >"$W/badtruth.stdout" 2>"$W/badtruth.stderr"; then
     echo "FAIL: malformed truth label accepted" >&2; exit 1
 fi
+grep -q "truth entries must be objects with label 'true' or 'false'" "$W/badtruth.stderr"
+echo '[]' > "$W/badtruth-root.json"
+if python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" --repo "$R" \
+    --base HEAD~1 --out "$W/out7-root" --truth "$W/badtruth-root.json" "$W/reject.yaml" \
+    >"$W/badtruth-root.stdout" 2>"$W/badtruth-root.stderr"; then
+    echo "FAIL: non-object truth root accepted" >&2; exit 1
+fi
+grep -q "truth must be a JSON object mapping defect keys to entries" "$W/badtruth-root.stderr"
+echo '{"div-zero": "true"}' > "$W/badtruth-entry.json"
+if python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" --repo "$R" \
+    --base HEAD~1 --out "$W/out7-entry" --truth "$W/badtruth-entry.json" "$W/reject.yaml" \
+    >"$W/badtruth-entry.stdout" 2>"$W/badtruth-entry.stderr"; then
+    echo "FAIL: non-object truth entry accepted" >&2; exit 1
+fi
+grep -q "truth entries must be objects with label 'true' or 'false'" "$W/badtruth-entry.stderr"
+
+# a failing --version reports its exit status and stderr before an arm runs
+cat > "$W/version-fail" <<'SH'
+#!/bin/sh
+echo "version failed" >&2
+exit 7
+SH
+chmod +x "$W/version-fail"
+if python3 "$HERE/frozen.py" --bin "$W/version-fail" --candidates "$W/candidates.json" \
+    --repo "$R" --base HEAD~1 --out "$W/out-version" "$W/reject.yaml" \
+    >"$W/version.stdout" 2>"$W/version.stderr"; then
+    echo "FAIL: failed --version accepted" >&2; exit 1
+fi
+grep -q -- "--version failed with exit 7: version failed" "$W/version.stderr"
+[ ! -e "$W/out-version/reject.repo" ] || { echo "FAIL: arm ran after --version failure" >&2; exit 1; }
 
 # arms whose config file names collide are refused before any arm runs
 mkdir -p "$W/dup"; cp "$W/accept.yaml" "$W/dup/accept.yaml"

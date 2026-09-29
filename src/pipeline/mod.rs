@@ -25,7 +25,7 @@ use crate::provider::anthropic::AnthropicAdapter;
 use crate::provider::gemini::GeminiAdapter;
 use crate::provider::http::HttpClient;
 use crate::provider::openai_chat::OpenAiChatClient;
-use crate::provider::openai_responses::OpenAiResponsesAdapter;
+use crate::provider::openai_responses::OpenAiResponsesClient;
 use crate::provider::scripted::ScriptedClient;
 use crate::provider::{LedgerHandle, ModelClient, ProviderError};
 use std::sync::Arc;
@@ -48,15 +48,16 @@ pub fn make_client(
             role,
             cache_key,
         )?)),
-        Protocol::OpenaiResponses => Ok(Arc::new(HttpClient {
-            adapter: OpenAiResponsesAdapter::from_route(route.clone())?.with_cache_key(cache_key),
-            transport: crate::provider::http::HttpTransport::new(
+        Protocol::OpenaiResponses => Ok(Arc::new(
+            OpenAiResponsesClient::new_responses_with_cache_key(
+                route.clone(),
                 ledger,
                 max_requests,
                 retries,
                 role,
+                cache_key,
             )?,
-        })),
+        )),
         Protocol::Anthropic => Ok(Arc::new(HttpClient {
             adapter: AnthropicAdapter::from_route(route.clone())?,
             transport: crate::provider::http::HttpTransport::new(

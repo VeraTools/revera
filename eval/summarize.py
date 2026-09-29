@@ -58,10 +58,9 @@ for cfg in order + sorted(set(agg) - set(order)):
     inc_phases = sum(r.get("incomplete_phases") or 0 for r in rs)
     reqs = [r["requests"] for r in rs]
     toks = [r["prompt_tokens"] + r["completion_tokens"] for r in rs]
-    cache_rows = [r for r in rs if "cached_prompt_tokens" in r]
-    cache_prompt_tokens = sum(r.get("prompt_tokens", 0) for r in cache_rows)
+    cache_prompt_tokens = sum(r.get("prompt_tokens", 0) for r in rs)
     cache_hit = (
-        f"{sum(r.get('cached_prompt_tokens', 0) for r in cache_rows) / cache_prompt_tokens * 100:.0f}%"
+        f"{sum(r.get('cached_prompt_tokens', 0) for r in rs) / cache_prompt_tokens * 100:.0f}%"
         if cache_prompt_tokens
         else "-"
     )

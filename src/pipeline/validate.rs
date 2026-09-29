@@ -27,6 +27,12 @@ fn validator_budget_at(
     })
 }
 
+fn approved_fix(verdict: &Verdict) -> Option<String> {
+    (verdict.validation_status == ValidationStatus::Accepted)
+        .then(|| verdict.fix.clone())
+        .flatten()
+}
+
 /// Run one fresh-context validator agent per candidate, bounded by a
 /// concurrency semaphore. Failures mark the candidate uncertain; returns
 /// Some(partial_reason) when any candidate could not be conclusively validated.
@@ -176,6 +182,7 @@ pub async fn validate_candidates(
                     ..
                 }) => match serde_json::from_value::<Verdict>(call.arguments) {
                     Ok(v) => {
+                        let approved_fix = approved_fix(&v);
                         cand.validation_status = Some(v.validation_status);
                         cand.counterevidence_checked = v.counterevidence_checked;
                         if let Some(s) = v.severity {
@@ -187,8 +194,8 @@ pub async fn validate_candidates(
                         if let Some(l) = v.end_line {
                             cand.end_line = Some(l);
                         }
+                        cand.validated_fix = approved_fix;
                         cand.rationale = Some(v.rationale);
-                        cand.validated_fix = v.fix;
                         if v.validation_status == ValidationStatus::Accepted {
                             "ok:accepted".to_string()
                         } else {
@@ -261,7 +268,8 @@ pub fn recheck_prompt() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::validator_budget_at;
+    use super::{approved_fix, validator_budget_at};
+    use crate::findings::{ValidationStatus, Verdict};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -276,5 +284,24 @@ mod tests {
         assert!(validator_budget_at(4, 30, now, now + Duration::from_millis(400)).is_none());
         let b = validator_budget_at(4, 30, now, now + Duration::from_secs(5)).unwrap();
         assert_eq!(b.max_seconds, 5);
+    }
+
+    #[test]
+    fn only_accepted_verdict_approves_a_fix() {
+        let verdict = |validation_status| Verdict {
+            validation_status,
+            counterevidence_checked: vec![],
+            severity: None,
+            start_line: None,
+            end_line: None,
+            rationale: String::new(),
+            fix: Some("verified remedy".into()),
+        };
+        assert_eq!(
+            approved_fix(&verdict(ValidationStatus::Accepted)).as_deref(),
+            Some("verified remedy")
+        );
+        assert_eq!(approved_fix(&verdict(ValidationStatus::Rejected)), None);
+        assert_eq!(approved_fix(&verdict(ValidationStatus::Uncertain)), None);
     }
 }
