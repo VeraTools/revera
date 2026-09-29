@@ -10,7 +10,7 @@ rust-version = "1.98"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde-saphyr = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 anyhow = "1"
