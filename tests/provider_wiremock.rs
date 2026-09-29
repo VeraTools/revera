@@ -54,6 +54,78 @@ fn client(url: &str) -> OpenAiChatClient {
     OpenAiChatClient::new(route(url), LedgerHandle::new(), 100, 3, "test").unwrap()
 }
 
+#[tokio::test]
+async fn request_errors_and_ledger_hide_base_url_query_values() {
+    // Port 1 is privileged and unbound, so the connection is refused at once.
+    let secret = "s3cr3t-value";
+    let ledger = LedgerHandle::new();
+    let c = OpenAiChatClient::new(
+        route(&format!("http://127.0.0.1:1/v1?key={secret}")),
+        ledger.clone(),
+        1,
+        0,
+        "test",
+    )
+    .unwrap();
+    let err = c
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap_err();
+    assert!(!err.to_string().contains(secret), "{err}");
+
+    let entries = &ledger.0.lock().unwrap().entries;
+    assert_eq!(entries.len(), 1);
+    assert!(
+        !entries[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains(secret),
+        "{:?}",
+        entries[0].error
+    );
+}
+
+#[tokio::test]
+async fn provider_error_bodies_echoing_the_url_hide_query_values() {
+    let server = MockServer::start().await;
+    let echoed = format!(
+        "unsupported parameter in {}/v1/chat/completions?key=echoed-credential-value",
+        server.uri()
+    );
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(echoed))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = OpenAiChatClient::new(
+        route(&format!("{}/v1?key=echoed-credential-value", server.uri())),
+        ledger.clone(),
+        2,
+        0,
+        "test",
+    )
+    .unwrap();
+    let err = c
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap_err();
+    assert!(
+        !err.to_string().contains("echoed-credential-value"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("HTTP 400"), "{err}");
+    server.verify().await;
+    let entries = &ledger.0.lock().unwrap().entries;
+    assert!(entries.iter().all(|e| {
+        !e.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("echoed-credential-value")
+    }));
+}
+
 fn ok_body() -> serde_json::Value {
     json!({
         "choices": [{"message": {"role": "assistant", "content": null,
@@ -249,6 +321,30 @@ fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
         session_header: None,
         script: None,
         reasoning: Default::default(),
+    }
+}
+
+#[test]
+fn adapter_labels_hide_base_url_query_values() {
+    let base = "https://h.example/v1?key=s3cr3t-value";
+    let labels = [
+        OpenAiChatAdapter::from_route(route_for(base, Protocol::OpenaiChat, "m"))
+            .unwrap()
+            .label(),
+        OpenAiResponsesAdapter::from_route(route_for(base, Protocol::OpenaiResponses, "m"))
+            .unwrap()
+            .label(),
+        AnthropicAdapter::from_route(route_for(base, Protocol::Anthropic, "m"))
+            .unwrap()
+            .label(),
+        GeminiAdapter::from_route(route_for(base, Protocol::Gemini, "m"))
+            .unwrap()
+            .label(),
+    ];
+
+    for label in labels {
+        assert!(!label.contains("s3cr3t-value"), "{label}");
+        assert!(label.contains("key"), "{label}");
     }
 }
 

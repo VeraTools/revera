@@ -728,7 +728,9 @@ async fn doctor(
                 println!(
                     "{name}: {} via {} (key env {env} set)",
                     r.model,
-                    r.base_url.as_deref().unwrap_or("(default base url)")
+                    crate::config::identity_url(
+                        r.base_url.as_deref().unwrap_or("(default base url)")
+                    )
                 );
             } else {
                 println!("{name}: FAIL — key env {env} missing or empty");

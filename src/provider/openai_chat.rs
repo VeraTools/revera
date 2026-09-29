@@ -90,7 +90,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
     fn label(&self) -> String {
         format!(
             "openai-chat:{}",
-            self.route.base_url.as_deref().unwrap_or("")
+            crate::config::identity_url(self.route.base_url.as_deref().unwrap_or(""))
         )
     }
 

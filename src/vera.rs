@@ -293,8 +293,8 @@ impl VeraClient {
             }
         };
         if !out.status.success() {
-            let tail = String::from_utf8_lossy(&out.stderr);
-            let tail: String = tail
+            let stderr = crate::redact::diagnostic(&String::from_utf8_lossy(&out.stderr));
+            let tail: String = stderr
                 .chars()
                 .rev()
                 .take(500)
@@ -503,5 +503,19 @@ impl VeraClient {
 
     pub async fn overview(&self) -> Result<Value> {
         self.run_json(&["overview", "--json"]).await
+    }
+}
+
+#[cfg(test)]
+mod url_query_tests {
+    #[test]
+    fn url_queries_are_removed_from_vera_errors() {
+        let err = "error sending request for url (https://h.example/v1/embeddings?key=abc%2Fdef&x=1): timeout";
+        let out = crate::redact::diagnostic(err);
+        assert!(!out.contains("abc"), "{out}");
+        assert!(
+            out.contains("https://h.example/v1/embeddings?[query removed]"),
+            "{out}"
+        );
     }
 }
