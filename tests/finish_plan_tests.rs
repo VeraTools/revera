@@ -1,19 +1,19 @@
 //! Regressions for truthful terminal outcomes, exact review reuse, finding
 //! lifecycle, owned summary comments and Vera-independent lexical discovery.
 
-use revera::agent::{run_agent_checked, AgentBudget, StopReason};
+use revera::agent::{AgentBudget, StopReason, run_agent_checked};
 use revera::diff::DiffSet;
 use revera::findings::{Finding, Severity, ValidationStatus};
 use revera::github::api::GhComment;
-use revera::github::publish::{encode_state, find_managed, Identity};
+use revera::github::publish::{Identity, encode_state, find_managed};
 use revera::pipeline::common::{findings_terminal_check, parse_findings_checked};
 use revera::provider::{
     ChatMessage, Completion, LedgerHandle, ModelClient, ProviderError, Role, ToolCall, ToolSpec,
     Usage,
 };
 use revera::report::RunStatus;
-use revera::state::{review_key, FindingState, ReviewState, STATE_VERSION};
-use revera::tools::{terminal_submit_findings_spec, ToolBox};
+use revera::state::{FindingState, ReviewState, STATE_VERSION, review_key};
+use revera::tools::{ToolBox, terminal_submit_findings_spec};
 use revera::vera::VeraClient;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -172,9 +172,11 @@ async fn malformed_terminal_gets_exactly_one_repair() {
     assert_eq!(r.final_call.unwrap().arguments["coverage"], "fixed");
     // the repair round fed the error back as a tool result
     let second = &stub.seen.lock().unwrap()[1];
-    assert!(second
-        .iter()
-        .any(|m| m.role == Role::Tool && m.content.as_deref().unwrap_or("").contains("findings")));
+    assert!(
+        second.iter().any(
+            |m| m.role == Role::Tool && m.content.as_deref().unwrap_or("").contains("findings")
+        )
+    );
 }
 
 #[tokio::test]
@@ -355,7 +357,8 @@ vera: {enabled: false}
 "#;
     let f = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(f.path(), yaml).unwrap();
-    std::env::set_var("SOME_KEY_ENV", "sk-dummy-value-for-test");
+    // SAFETY: test-only; tests that share a variable all write the same value
+    unsafe { std::env::set_var("SOME_KEY_ENV", "sk-dummy-value-for-test") };
     let c = revera::config::Config::load(f.path()).unwrap();
     let fp = c.review_fingerprint("baseline").to_string();
     assert!(!fp.contains("SOME_KEY_ENV"), "{fp}");

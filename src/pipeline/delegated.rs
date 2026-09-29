@@ -1,6 +1,6 @@
 use super::common::{
-    findings_terminal_check, finish, investigator_user, parse_candidate_findings,
-    parse_findings_checked, prepare, PrepareOut, ReviewRequest,
+    PrepareOut, ReviewRequest, findings_terminal_check, finish, investigator_user,
+    parse_candidate_findings, parse_findings_checked, prepare,
 };
 use super::make_client;
 use crate::agent::{run_agent, run_agent_checked};
@@ -462,7 +462,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn cfg() -> Config {
-        std::env::set_var("REVERA_TEST_KEY", "sk-test");
+        // SAFETY: test-only; tests that share a variable all write the same value
+        unsafe { std::env::set_var("REVERA_TEST_KEY", "sk-test") };
         serde_yaml::from_str(
             r#"
 review: {strategy: delegated, concurrency: 2}
@@ -595,9 +596,10 @@ vera: {}
             prep.partial_reasons
                 .push(format!("run budget exhausted before {skipped} lanes"));
         }
-        assert!(prep
-            .partial_reasons
-            .iter()
-            .any(|r| r == "run budget exhausted before 3 lanes"));
+        assert!(
+            prep.partial_reasons
+                .iter()
+                .any(|r| r == "run budget exhausted before 3 lanes")
+        );
     }
 }

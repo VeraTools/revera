@@ -3,7 +3,7 @@
 //! the way and the target itself must not be a symlink; replacement is
 //! atomic (temp file in the same directory, fsync, rename).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 

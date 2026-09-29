@@ -1,12 +1,12 @@
 use super::make_client;
-use crate::agent::{run_agent, AgentBudget, AgentRun, StopReason};
+use crate::agent::{AgentBudget, AgentRun, StopReason, run_agent};
 use crate::config::Config;
 use crate::diff::DiffSet;
 use crate::findings::{Finding, ValidationStatus, Verdict};
 use crate::prompts;
 use crate::provider::{LedgerHandle, ToolSpec};
 use crate::timing::Recorder;
-use crate::tools::{terminal_submit_verdict_spec, ToolBox};
+use crate::tools::{ToolBox, terminal_submit_verdict_spec};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -97,7 +97,7 @@ pub async fn validate_candidates(
                         exec_start,
                         queue_ms,
                         true,
-                    )
+                    );
                 }
             };
             let client = match client {

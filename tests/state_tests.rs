@@ -1,6 +1,6 @@
 use revera::findings::{Finding, Severity, ValidationStatus};
-use revera::report::{surfaced_ids, LedgerReport, PublicationPlan, RunReport, RunStatus};
-use revera::state::{recheck_transition, FindingState, ReviewState};
+use revera::report::{LedgerReport, PublicationPlan, RunReport, RunStatus, surfaced_ids};
+use revera::state::{FindingState, ReviewState, recheck_transition};
 
 fn finding(file: &str, key: &str, line: u32) -> Finding {
     Finding {

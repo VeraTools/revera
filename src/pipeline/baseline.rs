@@ -1,6 +1,6 @@
 use super::common::{
-    findings_terminal_check, finish, investigator_user, parse_findings_checked, parse_not_checked,
-    prepare, PrepareOut, Prepared, ReviewRequest,
+    PrepareOut, Prepared, ReviewRequest, findings_terminal_check, finish, investigator_user,
+    parse_findings_checked, parse_not_checked, prepare,
 };
 use super::make_client;
 use crate::agent::run_agent_checked;

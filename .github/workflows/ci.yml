@@ -55,6 +55,26 @@ jobs:
           fi
           REVERA_CI_MISSING_TOKEN=placeholder cargo run -q -- doctor --config "$cfg"
 
+  # Same static build as release.yml, so a dependency that breaks the musl
+  # target (e.g. a C-backed crypto provider) fails here, not at release time.
+  release-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Static binary runs
+        run: |
+          bin=target/x86_64-unknown-linux-musl/release/revera
+          file "$bin" | grep -Eq 'static(ally|-pie) linked'
+          "$bin" --version
+
   # Live: scripted models but a real Vera index built through a hosted endpoint
   # embeddings. Shown as *skipped* (not passed) when the secret is absent,
   # e.g. on fork PRs. The offline composite-Action proof is action-smoke.yml.

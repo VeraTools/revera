@@ -1,10 +1,10 @@
 use super::http::{
-    capped_effort, detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec,
-    HttpTransport, Parse, ProtocolAdapter,
+    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    capped_effort, detect_400_fallback, route_headers,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::{ModelRoute, ReasoningEffort};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// OpenAI Responses API adapter (POST {base}/responses).
 pub struct OpenAiResponsesAdapter {
@@ -219,10 +219,10 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     Some("message") => {
                         if let Some(content) = item["content"].as_array() {
                             for c in content {
-                                if c["type"].as_str() == Some("output_text") {
-                                    if let Some(t) = c["text"].as_str() {
-                                        text_parts.push(t.to_string());
-                                    }
+                                if c["type"].as_str() == Some("output_text")
+                                    && let Some(t) = c["text"].as_str()
+                                {
+                                    text_parts.push(t.to_string());
                                 }
                             }
                         }

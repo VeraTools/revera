@@ -1,6 +1,6 @@
 use super::common::{
-    findings_terminal_check, finish, investigator_user, parse_findings_checked, parse_not_checked,
-    prepare, PrepareOut, ReviewRequest,
+    PrepareOut, ReviewRequest, findings_terminal_check, finish, investigator_user,
+    parse_findings_checked, parse_not_checked, prepare,
 };
 use super::make_client;
 use crate::agent::run_agent_checked;
@@ -284,12 +284,14 @@ mod tests {
         assert_eq!(lanes[0].1.model, "a");
         assert_eq!(lanes[1].1.model, "b");
         // mismatch -> error
-        assert!(scout_lanes(
-            &[route("a"), route("b"), route("c")],
-            &focuses,
-            &route("inv")
-        )
-        .is_err());
+        assert!(
+            scout_lanes(
+                &[route("a"), route("b"), route("c")],
+                &focuses,
+                &route("inv")
+            )
+            .is_err()
+        );
     }
 
     #[test]

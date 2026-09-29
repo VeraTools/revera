@@ -1,10 +1,10 @@
 use super::http::{
-    detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec, HttpTransport,
-    Parse, ProtocolAdapter,
+    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    detect_400_fallback, route_headers,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::ModelRoute;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Anthropic Messages API adapter (POST {base}/v1/messages).
 pub struct AnthropicAdapter {
@@ -69,10 +69,8 @@ fn to_blocks(messages: &[ChatMessage], drop_reasoning: bool) -> (Vec<String>, Ve
                 // verbatim thinking/redacted_thinking blocks lead the
                 // assistant message (required for echo-back); skipped once
                 // a 400 has dropped thinking for this attempt
-                if !drop_reasoning {
-                    if let Some(Value::Array(items)) = &m.provider_state {
-                        parts.extend(items.iter().cloned());
-                    }
+                if !drop_reasoning && let Some(Value::Array(items)) = &m.provider_state {
+                    parts.extend(items.iter().cloned());
                 }
                 if let Some(c) = &m.content {
                     parts.push(json!({"type": "text", "text": c}));
@@ -95,16 +93,15 @@ fn to_blocks(messages: &[ChatMessage], drop_reasoning: bool) -> (Vec<String>, Ve
                     "tool_use_id": m.tool_call_id,
                     "content": m.content.clone().unwrap_or_default(),
                 });
-                if let Some(last) = out.last_mut() {
-                    if last["role"] == "user"
-                        && last["content"]
-                            .as_array()
-                            .map(|a| a.iter().all(|b| b["type"] == "tool_result"))
-                            .unwrap_or(false)
-                    {
-                        last["content"].as_array_mut().unwrap().push(blk);
-                        continue;
-                    }
+                if let Some(last) = out.last_mut()
+                    && last["role"] == "user"
+                    && last["content"]
+                        .as_array()
+                        .map(|a| a.iter().all(|b| b["type"] == "tool_result"))
+                        .unwrap_or(false)
+                {
+                    last["content"].as_array_mut().unwrap().push(blk);
+                    continue;
                 }
                 out.push(json!({"role": "user", "content": [blk]}));
             }
@@ -123,13 +120,12 @@ fn to_blocks(messages: &[ChatMessage], drop_reasoning: bool) -> (Vec<String>, Ve
 /// Append `parts` under `role`, merging into the previous message when the
 /// roles match (keeps strict alternation).
 fn push_role(out: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
-    if let Some(last) = out.last_mut() {
-        if last["role"] == role {
-            if let Some(a) = last["content"].as_array_mut() {
-                a.extend(parts);
-                return;
-            }
-        }
+    if let Some(last) = out.last_mut()
+        && last["role"] == role
+        && let Some(a) = last["content"].as_array_mut()
+    {
+        a.extend(parts);
+        return;
     }
     out.push(json!({"role": role, "content": parts}));
 }

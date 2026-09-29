@@ -4,7 +4,7 @@
 
 use revera::config::Config;
 use revera::vera::{RerankState, VeraClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -98,8 +98,10 @@ async fn setup() -> Option<(MockServer, PathBuf)> {
         eprintln!("skipping: no vera executable (set REVERA_TEST_VERA)");
         return None;
     };
-    std::env::set_var("REVERA_IT_EMBED_KEY", EMBED_KEY);
-    std::env::set_var("REVERA_IT_RERANK_KEY", RERANK_KEY);
+    // SAFETY: test-only; tests that share a variable all write the same value
+    unsafe { std::env::set_var("REVERA_IT_EMBED_KEY", EMBED_KEY) };
+    // SAFETY: test-only; tests that share a variable all write the same value
+    unsafe { std::env::set_var("REVERA_IT_RERANK_KEY", RERANK_KEY) };
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/embeddings"))
@@ -132,7 +134,8 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
     let repo = fixture_repo();
     let home = tempfile::tempdir().unwrap();
     // ambient overrides must not reach the child
-    std::env::set_var("RERANKER_MODEL_BASE_URL", "http://127.0.0.1:9/ambient");
+    // SAFETY: test-only; no other test in this binary sets or reads this variable
+    unsafe { std::env::set_var("RERANKER_MODEL_BASE_URL", "http://127.0.0.1:9/ambient") };
     let cfg = config(&server.uri(), home.path(), &exe, true);
     let vera = VeraClient::from_config(&cfg.vera, repo.path()).unwrap();
     assert_eq!(vera.home, home.path());
@@ -189,7 +192,8 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
             .unwrap(),
         format!("Bearer {RERANK_KEY}")
     );
-    std::env::remove_var("RERANKER_MODEL_BASE_URL");
+    // SAFETY: see the matching set_var above
+    unsafe { std::env::remove_var("RERANKER_MODEL_BASE_URL") };
 }
 
 #[tokio::test]

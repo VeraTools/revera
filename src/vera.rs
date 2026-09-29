@@ -1,5 +1,5 @@
 use crate::config::{VeraBackend, VeraConfig};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -380,14 +380,12 @@ impl VeraClient {
     pub async fn ensure_index(&self) -> Result<Value> {
         let index_dir = self.repo_root.join(".vera");
         let mut indexed = index_dir.exists();
-        if indexed {
-            if let Some(why) = self.cache_incompatibility() {
-                tracing::warn!("discarding incompatible vera index: {why}");
-                std::fs::remove_dir_all(&index_dir)
-                    .with_context(|| format!("remove {}", index_dir.display()))?;
-                let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
-                indexed = false;
-            }
+        if indexed && let Some(why) = self.cache_incompatibility() {
+            tracing::warn!("discarding incompatible vera index: {why}");
+            std::fs::remove_dir_all(&index_dir)
+                .with_context(|| format!("remove {}", index_dir.display()))?;
+            let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
+            indexed = false;
         }
         let verb = if indexed { "update" } else { "index" };
         let mut args = vec![verb, ".", "--json"];

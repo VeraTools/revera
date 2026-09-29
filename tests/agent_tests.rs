@@ -1,4 +1,4 @@
-use revera::agent::{run_agent, AgentBudget, StopReason};
+use revera::agent::{AgentBudget, StopReason, run_agent};
 use revera::diff::DiffSet;
 use revera::provider::{
     ChatMessage, Completion, LedgerHandle, ModelClient, ProviderError, Role, ToolCall, ToolSpec,

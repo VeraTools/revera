@@ -1,6 +1,6 @@
 use revera::config::Config;
 use revera::git::{current_head, materialize_head};
-use revera::pipeline::common::{prepare, PrepareOut, ReviewRequest};
+use revera::pipeline::common::{PrepareOut, ReviewRequest, prepare};
 use serde_json::json;
 use std::path::Path;
 use std::process::Command;

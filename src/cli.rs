@@ -1,7 +1,7 @@
 use crate::config::{Config, PublishMode, Strategy};
 use crate::pipeline::common::ReviewRequest;
 use crate::pipeline::run as pipeline_run;
-use crate::report::{surfaced_ids, RunStatus};
+use crate::report::{RunStatus, surfaced_ids};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -356,11 +356,11 @@ async fn review(a: ReviewArgs) -> i32 {
         },
         None => None,
     };
-    if let Some(e) = &ev {
-        if !crate::git::is_oid(&e.base_sha) || !crate::git::is_oid(&e.head_sha) {
-            eprintln!("error: event base/head are not full commit ids");
-            return 1;
-        }
+    if let Some(e) = &ev
+        && (!crate::git::is_oid(&e.base_sha) || !crate::git::is_oid(&e.head_sha))
+    {
+        eprintln!("error: event base/head are not full commit ids");
+        return 1;
     }
     // credentials are not checked here: the fork guard must run (and emit
     // its partial report) before any credential check can abort the run
@@ -382,16 +382,16 @@ async fn review(a: ReviewArgs) -> i32 {
         Err(err) => {
             // no trusted base config: a fork cannot be reviewed with
             // credentials anyway, so report the skip instead of failing
-            if let Some(e) = ev.as_ref().filter(|e| e.is_fork()) {
-                if a.publish.is_some_and(|p| matches!(p, PublishArg::Comment)) {
-                    eprintln!("config: {err}");
-                    let reason = "fork PR: review skipped (no trusted base config)";
-                    eprintln!(
-                        "revera: {reason} ({} -> {})",
-                        e.head_repo_full_name, e.repo_full_name
-                    );
-                    return fork_skip(&a, e, strategy.unwrap_or_default(), reason);
-                }
+            if let Some(e) = ev.as_ref().filter(|e| e.is_fork())
+                && a.publish.is_some_and(|p| matches!(p, PublishArg::Comment))
+            {
+                eprintln!("config: {err}");
+                let reason = "fork PR: review skipped (no trusted base config)";
+                eprintln!(
+                    "revera: {reason} ({} -> {})",
+                    e.head_repo_full_name, e.repo_full_name
+                );
+                return fork_skip(&a, e, strategy.unwrap_or_default(), reason);
             }
             eprintln!("error: {err}");
             return 1;
@@ -410,15 +410,17 @@ async fn review(a: ReviewArgs) -> i32 {
     }
 
     // Fork guard: no model or Vera calls at all — return partial immediately.
-    if let Some(e) = &ev {
-        if e.is_fork() && publish == PublishMode::Comment && !cfg.github.allow_forks {
-            let reason = "fork PR: review skipped (github.allow_forks=false)";
-            eprintln!(
-                "revera: {reason} ({} -> {})",
-                e.head_repo_full_name, e.repo_full_name
-            );
-            return fork_skip(&a, e, effective_strategy, reason);
-        }
+    if let Some(e) = &ev
+        && e.is_fork()
+        && publish == PublishMode::Comment
+        && !cfg.github.allow_forks
+    {
+        let reason = "fork PR: review skipped (github.allow_forks=false)";
+        eprintln!(
+            "revera: {reason} ({} -> {})",
+            e.head_repo_full_name, e.repo_full_name
+        );
+        return fork_skip(&a, e, effective_strategy, reason);
     }
     // trust before credentials: no secret is resolved for an endpoint or
     // env name that fails these checks
@@ -727,7 +729,9 @@ async fn doctor(
     }
 
     if !cfg.vera.enabled {
-        println!("vera: disabled (repository search is lexical-only; add a vera: block with an embedding endpoint to enable)");
+        println!(
+            "vera: disabled (repository search is lexical-only; add a vera: block with an embedding endpoint to enable)"
+        );
     } else {
         match crate::vera::VeraClient::from_config(&cfg.vera, std::path::Path::new(".")) {
             Ok(v) => match v.version().await {
@@ -788,11 +792,7 @@ async fn doctor(
         ok = false;
     }
     println!("{}", if ok { "doctor: ok" } else { "doctor: FAIL" });
-    if ok {
-        0
-    } else {
-        1
-    }
+    if ok { 0 } else { 1 }
 }
 
 /// Prints the Vera index cache identity, or `disabled` when Vera is off so

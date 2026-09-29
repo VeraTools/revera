@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -243,10 +243,10 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String> {
             .await
             .map(|s| s.trim().to_string())
     };
-    if let Ok(mb) = find().await {
-        if is_oid(&mb) {
-            return Ok(mb);
-        }
+    if let Ok(mb) = find().await
+        && is_oid(&mb)
+    {
+        return Ok(mb);
     }
     if is_shallow(repo).await {
         for deepen in ["--deepen=200", "--unshallow"] {
@@ -257,10 +257,10 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String> {
             {
                 continue;
             }
-            if let Ok(mb) = find().await {
-                if is_oid(&mb) {
-                    return Ok(mb);
-                }
+            if let Ok(mb) = find().await
+                && is_oid(&mb)
+            {
+                return Ok(mb);
             }
         }
     }

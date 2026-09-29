@@ -2,7 +2,7 @@ use crate::diff::DiffSet;
 use crate::provider::ToolSpec;
 use crate::vera::VeraClient;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -436,10 +436,10 @@ impl ToolBox {
             if ln < start {
                 continue;
             }
-            if let Some(e) = end {
-                if ln > e {
-                    break;
-                }
+            if let Some(e) = end
+                && ln > e
+            {
+                break;
             }
             if n >= 400 {
                 out.push_str("...[max 400 lines per call]\n");
@@ -624,18 +624,18 @@ impl ToolBox {
     }
 
     async fn call_checked(&self, name: &str, args: &Value) -> (String, bool) {
-        if let Some(names) = &self.allowed {
-            if !names.iter().any(|n| n == name) {
-                return (
-                    json!({"error": format!("tool {name} not available in this step")}).to_string(),
-                    true,
-                );
-            }
+        if let Some(names) = &self.allowed
+            && !names.iter().any(|n| n == name)
+        {
+            return (
+                json!({"error": format!("tool {name} not available in this step")}).to_string(),
+                true,
+            );
         }
-        if name.starts_with("vera_") {
-            if let Some(r) = self.vera_disabled.lock().unwrap().clone() {
-                return (json!({"error": r}).to_string(), true);
-            }
+        if name.starts_with("vera_")
+            && let Some(r) = self.vera_disabled.lock().unwrap().clone()
+        {
+            return (json!({"error": r}).to_string(), true);
         }
         match self.call_inner(name, args).await {
             Ok(s) => (self.truncate(crate::redact::text(&s).into_owned()), false),
