@@ -33,6 +33,7 @@ fn retry_after_supports_delta_dates_and_caps() {
     );
 }
 
+// REVERA_TEST_KEY is set by .cargo/config.toml, so run these through cargo test
 fn route(url: &str) -> ModelRoute {
     ModelRoute {
         protocol: Protocol::OpenaiChat,

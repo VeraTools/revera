@@ -169,7 +169,11 @@ async fn event_config_comes_from_base_not_head() {
 
 #[test]
 fn redaction_masks_registered_and_recognizable_secrets() {
-    assert!(redact::secret_env("REVERA_TEST_SECRET_REDACT").is_some());
+    assert_eq!(
+        redact::secret_env("REVERA_TEST_SECRET_REDACT").as_deref(),
+        Some("zz-secret-value-12345"),
+        "REVERA_TEST_SECRET_REDACT comes from .cargo/config.toml; run through cargo test"
+    );
     let s = "key=zz-secret-value-12345 gh=ghp_abcdefghijklmnopqrstuvwxyz0123456789 or=sk-or-v1-0123456789abcdef0123456789abcdef";
     let out = redact::text(s);
     assert!(!out.contains("zz-secret-value-12345"), "{out}");

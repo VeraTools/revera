@@ -12,12 +12,14 @@ async fn https_works_without_system_roots() {
     );
     let client = revera::tls::with_bundled_roots(reqwest::Client::builder())
         .user_agent("revera-tls-test")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("client builds with bundled roots");
-    let resp = client
+    // any HTTP response proves the handshake; the status (e.g. a 403 rate
+    // limit on shared runner IPs) is irrelevant
+    client
         .get("https://api.github.com/")
         .send()
         .await
         .expect("TLS handshake with bundled roots");
-    assert!(resp.status().is_success(), "{}", resp.status());
 }

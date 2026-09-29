@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-const EMBED_KEY: &str = env!("REVERA_IT_EMBED_KEY");
-const RERANK_KEY: &str = env!("REVERA_IT_RERANK_KEY");
+// must match .cargo/config.toml, which exports them to the Vera child
+const EMBED_KEY: &str = "sk-embed-test-0123456789abcdef";
+const RERANK_KEY: &str = "sk-rerank-test-0123456789abcdef";
 
 fn vera_exe() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("REVERA_TEST_VERA") {
@@ -98,6 +99,16 @@ async fn setup() -> Option<(MockServer, PathBuf)> {
         eprintln!("skipping: no vera executable (set REVERA_TEST_VERA)");
         return None;
     };
+    for (var, want) in [
+        ("REVERA_IT_EMBED_KEY", EMBED_KEY),
+        ("REVERA_IT_RERANK_KEY", RERANK_KEY),
+    ] {
+        assert_eq!(
+            std::env::var(var).as_deref(),
+            Ok(want),
+            "{var} comes from .cargo/config.toml; run through cargo test"
+        );
+    }
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/embeddings"))
