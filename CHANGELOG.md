@@ -16,6 +16,11 @@
 - Event-mode configuration now comes from the base commit and trust checks
   precede credential resolution. Publication and state ownership fail closed;
   repository-sensitive content is excluded from model tools and diffs.
+- Vera tool results are limited to tracked files at the reviewed head, like
+  every other tool, so untracked working-tree files never reach a model.
+  Endpoint query values (which may carry credentials) no longer enter review
+  identity or prompt-cache keys. Written reports drop the investigator's
+  `suggested_fix` and fixes on rejected findings unless validation is off.
 - Replaced `serde_yaml` with `serde-saphyr`, refreshed the HTTP/TLS stack and
   added bundled Mozilla trust roots so HTTPS works on hosts without a system
   CA bundle. Minimum supported Rust was lowered to 1.89.

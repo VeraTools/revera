@@ -619,8 +619,26 @@ fn write_report(
     report: &crate::report::RunReport,
 ) -> anyhow::Result<()> {
     let mut v = serde_json::to_value(report)?;
+    sanitize_report_fixes(&mut v);
     crate::redact::json(&mut v);
     crate::fsutil::write_output(repo, out, serde_json::to_string_pretty(&v)?.as_bytes())
+}
+
+fn sanitize_report_fixes(report: &mut serde_json::Value) {
+    if report["stats"]["validation"].as_str() == Some("disabled") {
+        return;
+    }
+    let Some(findings) = report["findings"].as_array_mut() else {
+        return;
+    };
+    for finding in findings {
+        if let Some(object) = finding.as_object_mut() {
+            object.remove("suggested_fix");
+            if object.get("validation_status").and_then(|v| v.as_str()) == Some("rejected") {
+                object.remove("validated_fix");
+            }
+        }
+    }
 }
 
 /// Checks exactly what a review with this config would need: the routes
@@ -859,5 +877,39 @@ fn cache_info(repo: &std::path::Path) -> i32 {
             eprintln!("no cache info at {}", p.display());
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod report_fix_tests {
+    use super::sanitize_report_fixes;
+    use serde_json::json;
+
+    #[test]
+    fn sanitized_validated_reports_hide_investigator_and_rejected_fixes() {
+        let mut report = json!({
+            "stats": {"validation": "fresh"},
+            "findings": [
+                {"validation_status":"rejected","suggested_fix":"candidate","validated_fix":"rejected fix"},
+                {"validation_status":"accepted","suggested_fix":"candidate","validated_fix":"accepted fix"}
+            ]
+        });
+        sanitize_report_fixes(&mut report);
+        assert!(report["findings"][0].get("suggested_fix").is_none());
+        assert!(report["findings"][0].get("validated_fix").is_none());
+        assert!(report["findings"][1].get("suggested_fix").is_none());
+        assert_eq!(report["findings"][1]["validated_fix"], "accepted fix");
+    }
+
+    #[test]
+    fn evaluation_reports_keep_candidate_fixes() {
+        let mut report = json!({
+            "stats": {"validation": "disabled"},
+            "findings": [
+                {"validation_status":null,"suggested_fix":"candidate","validated_fix":null}
+            ]
+        });
+        sanitize_report_fixes(&mut report);
+        assert_eq!(report["findings"][0]["suggested_fix"], "candidate");
     }
 }

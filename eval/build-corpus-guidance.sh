@@ -458,4 +458,3 @@ cat > "$D/truth.json" <<'EOF'
 EOF
 
 echo "guidance corpus built in $ROOT"
-echo "Reminder: eval/corpus-guidance is not in .gitignore; add it if the generated repos should remain ignored."

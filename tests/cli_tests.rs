@@ -141,7 +141,7 @@ fn validator_requests(rep: &serde_json::Value) -> u64 {
 fn validation_disabled_run_does_not_recheck_prior_findings() {
     let repo = two_commit_repo();
     let w = tempfile::tempdir().unwrap();
-    let finding = r#"{"defect_key": "div-zero", "severity": "high", "file": "src/lib.rs", "start_line": 2, "title": "division by zero when b == 1", "claim": "b - 1 is zero for b == 1"}"#;
+    let finding = r#"{"defect_key": "div-zero", "severity": "high", "file": "src/lib.rs", "start_line": 2, "title": "division by zero when b == 1", "claim": "b - 1 is zero for b == 1", "suggested_fix": "candidate remedy"}"#;
     let inv = format!(
         r#"{{"roles": {{"investigator": [[{{"tool_calls": [{{"name": "submit_findings", "arguments": {{"findings": [{finding}], "coverage": "x"}}}}]}}]]}}}}"#
     );
@@ -173,6 +173,7 @@ fn validation_disabled_run_does_not_recheck_prior_findings() {
     assert_eq!(second["stats"]["accepted"], 0, "{second}");
     for f in second["findings"].as_array().unwrap() {
         assert!(f["validation_status"].is_null(), "{f}");
+        assert_eq!(f["suggested_fix"], "candidate remedy", "{f}");
     }
     assert!(second["plan"]["inline"].as_array().unwrap().is_empty());
 }
@@ -237,9 +238,10 @@ fn validator_fix_replaces_unsafe_investigator_fix_and_reuse_drops_it() {
         "{body}"
     );
     assert!(!body.contains("return 0; // unsafe suggestion"), "{body}");
-    assert_eq!(
-        first["findings"][0]["suggested_fix"],
-        "return 0; // unsafe suggestion"
+    assert!(
+        first["findings"][0].get("suggested_fix").is_none(),
+        "{}",
+        first["findings"][0]
     );
     assert_eq!(
         first["findings"][0]["validated_fix"],

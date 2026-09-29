@@ -19,14 +19,15 @@ g commit -qam head
 cat > "$W/candidates.json" <<'JSON'
 {"stats": {"validation": "disabled"}, "findings": [
  {"defect_key": "div-zero", "severity": "high", "file": "src/lib.rs", "start_line": 2,
-  "title": "division by zero when b == 1", "claim": "b - 1 is zero for b == 1"},
+  "title": "division by zero when b == 1", "claim": "b - 1 is zero for b == 1",
+  "suggested_fix": "Use checked_div and handle None."},
  {"defect_key": "overflow", "severity": "low", "file": "src/lib.rs", "start_line": 2,
   "title": "overflow", "claim": "i32::MIN / -1 overflows"}]}
 JSON
 verdict() { printf '[{"tool_calls": [{"name": "submit_verdict", "arguments": {"validation_status": "%s", "rationale": "r", "counterevidence_checked": ["src/lib.rs callers"]%s}}]}]' "$1" "${2:-}"; }
 # the accept arm also corrects a line and downgrades below its threshold:
 # the candidate identity must not change
-printf '{"roles": {"validator": [%s, %s]}}' "$(verdict accepted ', "start_line": 3, "severity": "low"')" "$(verdict accepted ', "severity": "low"')" > "$W/accept.json"
+printf '{"roles": {"validator": [%s, %s]}}' "$(verdict accepted ', "start_line": 3, "severity": "low", "fix": "Use checked_div and handle None."')" "$(verdict accepted ', "severity": "low"')" > "$W/accept.json"
 printf '{"roles": {"validator": [%s, %s]}}' "$(verdict rejected)" "$(verdict rejected)" > "$W/reject.json"
 for arm in accept reject; do
 cat > "$W/$arm.yaml" <<YAML
@@ -39,7 +40,7 @@ done
 sed -i 's/min_severity: low/min_severity: medium/' "$W/accept.yaml"
 
 cat > "$W/truth.json" <<'JSON'
-{"div-zero": {"label": "true", "high_impact": true}, "overflow": {"label": "false"}}
+{"div-zero": {"label": "true", "high_impact": true, "fix_safe": false}, "overflow": {"label": "false"}}
 JSON
 
 # the two arms differ in min_severity, a controlled setting: refused
@@ -80,6 +81,17 @@ assert (p["base"], p["head"]) == (sys.argv[3], sys.argv[4]), p
 assert p["binary"]["sha256"] and p["binary"]["version"].startswith("revera"), p
 assert p["config_differences"] == {"reject": ["review.min_severity"]}, p
 assert p["arms"]["accept"]["validator"]["model"] == "accept", p
+PY
+
+python3 - "$HERE/frozen.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("frozen", sys.argv[1])
+frozen = importlib.util.module_from_spec(spec); spec.loader.exec_module(frozen)
+finding = {"defect_key": "div-zero", "validation_status": "accepted",
+           "severity": "high", "validated_fix": "candidate remedy"}
+scores, _ = frozen.score([finding], {"div-zero": {"label": "true", "fix_safe": False}},
+                         "low", {"div-zero": "candidate remedy"})
+assert scores["unsafe_fix_published"] == 1, scores
 PY
 
 # an arm with only an investigator route inherits it as the validator: the

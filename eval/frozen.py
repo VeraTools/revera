@@ -143,7 +143,7 @@ def diff_keys(a, b, prefix=""):
     return [] if a == b else [prefix.rstrip(".")]
 
 
-def score(findings, truth, min_sev):
+def score(findings, truth, min_sev, candidate_fixes):
     """Per-arm scores against external truth labels. Uncertain verdicts and
     validator failures are counted separately, never as rejections."""
     s = {
@@ -209,7 +209,7 @@ def score(findings, truth, min_sev):
             s["fix_published"] += 1
             if (
                 label.get("fix_safe") is False
-                and fix.strip() == (f.get("suggested_fix") or "").strip()
+                and fix.strip() == (candidate_fixes.get(f.get("defect_key")) or "").strip()
             ):
                 s["unsafe_fix_published"] += 1
     return s, cases
@@ -235,6 +235,7 @@ def main():
     a = ap.parse_args()
 
     frozen = candidates(json.load(open(a.candidates)))
+    candidate_fixes = {c["defect_key"]: c.get("suggested_fix", "") for c in frozen}
     want = digest(frozen)
     payload = payload_hash(frozen)
     truth = json.load(open(a.truth)) if a.truth else None
@@ -432,7 +433,7 @@ def main():
             "identical_candidates": got == want and st.get("candidates") == len(frozen),
         }
         if truth is not None:
-            row["score"], cases = score(rep["findings"], truth, min_sev)
+            row["score"], cases = score(rep["findings"], truth, min_sev, candidate_fixes)
             json.dump(cases, open(os.path.join(a.out, f"{name}.cases.json"), "w"), indent=2)
         # validator errors make the run partial; explicit uncertain
         # verdicts keep it complete

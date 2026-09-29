@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -165,6 +166,24 @@ pub async fn read_blob(
         bail!("git cat-file {oid} failed: {err}");
     }
     Ok(Some(out))
+}
+
+/// Regular tracked files in the tree at `rev` (matching `read_blob` modes).
+pub async fn tracked_files(repo: &Path, rev: &str) -> Result<HashSet<String>> {
+    if !is_oid(rev) {
+        bail!("tracked_files: {rev:?} is not a resolved object id");
+    }
+    let listing = git(repo, &["ls-tree", "-r", "-z", "--full-tree", rev]).await?;
+    let mut files = HashSet::new();
+    for entry in listing.split('\0').filter(|entry| !entry.is_empty()) {
+        let (meta, path) = entry.split_once('\t').context("malformed ls-tree output")?;
+        let mut parts = meta.split_whitespace();
+        let (mode, kind) = (parts.next(), parts.next());
+        if kind == Some("blob") && matches!(mode, Some("100644") | Some("100755")) {
+            files.insert(path.to_string());
+        }
+    }
+    Ok(files)
 }
 
 pub async fn current_head(repo: &Path) -> Result<String> {
@@ -402,4 +421,52 @@ pub async fn ls_files(repo: &Path, glob: Option<&str>, exclude: &[String]) -> Re
 
 pub fn repo_root(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tracked_files_lists_only_regular_files_at_the_requested_revision() {
+        use std::os::unix::fs::symlink;
+
+        let repo = tempfile::tempdir().unwrap();
+        run_git(repo.path(), &["init", "-q"]);
+        std::fs::write(repo.path().join("tracked file.rs"), "tracked\n").unwrap();
+        symlink("tracked file.rs", repo.path().join("link.rs")).unwrap();
+        run_git(repo.path(), &["add", "--", "."]);
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        );
+        let head = resolve_commit(repo.path(), "HEAD").await.unwrap();
+        std::fs::write(repo.path().join("untracked.rs"), "not in head\n").unwrap();
+
+        let files = tracked_files(repo.path(), &head).await.unwrap();
+
+        assert_eq!(files, HashSet::from(["tracked file.rs".to_string()]));
+    }
 }
