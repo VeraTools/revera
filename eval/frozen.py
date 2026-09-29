@@ -249,10 +249,7 @@ def main():
             if not isinstance(v, dict) or v.get("label") not in ("true", "false")
         ]
         if bad:
-            sys.exit(
-                "truth entries must be objects with label 'true' or 'false': "
-                f"{bad}"
-            )
+            sys.exit(f"truth entries must be objects with label 'true' or 'false': {bad}")
     a.out = os.path.abspath(a.out)
     src = os.path.realpath(a.repo)
     base_oid, head_oid = git_oid(src, a.base), git_oid(src, a.head)
