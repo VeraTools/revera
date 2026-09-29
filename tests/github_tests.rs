@@ -1,6 +1,6 @@
 use revera::findings::{Finding, Severity, ValidationStatus};
 use revera::github::api::GitHubApi;
-use revera::github::event::{parse as parse_event, PrEvent};
+use revera::github::event::{PrEvent, parse as parse_event};
 use revera::github::publish::{decode_state, encode_state, publish};
 use revera::report::{InlineComment, LedgerReport, PublicationPlan, RunReport, RunStatus};
 use revera::state::{FindingState, ReviewState};
@@ -154,7 +154,9 @@ async fn head_moved_refuses() {
     .unwrap();
     assert_eq!(
         p.skipped_reason.as_deref(),
-        Some("head moved aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> cccccccccccccccccccccccccccccccccccccccc")
+        Some(
+            "head moved aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -> cccccccccccccccccccccccccccccccccccccccc"
+        )
     );
     assert!(p.review_id.is_none());
     assert_eq!(rep.status, RunStatus::Partial);
@@ -373,15 +375,18 @@ async fn summary_only_finding_marked_posted() {
     assert!(p.review_id.is_none());
     assert_eq!(p.summary_comment_id, Some(555));
     assert!(st.findings[0].posted);
-    assert!(!st
-        .findings
-        .iter()
-        .any(|f| f.status == FindingState::Open && !f.posted));
+    assert!(
+        !st.findings
+            .iter()
+            .any(|f| f.status == FindingState::Open && !f.posted)
+    );
 
     let reqs = server.received_requests().await.unwrap();
-    assert!(!reqs
-        .iter()
-        .any(|r| r.url.path() == "/repos/acme/widgets/pulls/42/reviews"));
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.url.path() == "/repos/acme/widgets/pulls/42/reviews")
+    );
     let summary_req = reqs
         .iter()
         .find(|r| r.url.path() == "/repos/acme/widgets/issues/42/comments" && r.method == "POST")
@@ -418,17 +423,19 @@ async fn summary_failure_leaves_finding_unposted() {
     let mut rep = report_with_findings(vec![], vec![f.clone()]);
     let mut st = ReviewState::default();
     st.upsert(&f, FindingState::Open);
-    assert!(publish(
-        &api,
-        &event(),
-        &mut rep,
-        &mut st,
-        10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
-    )
-    .await
-    .is_err());
+    assert!(
+        publish(
+            &api,
+            &event(),
+            &mut rep,
+            &mut st,
+            10,
+            "<!-- revera-summary -->",
+            "github-actions[bot]",
+        )
+        .await
+        .is_err()
+    );
     assert!(!st.findings[0].posted);
 }
 
@@ -483,17 +490,19 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
     let mut rep = report_with_findings(inline(), vec![f.clone()]);
     let mut st = ReviewState::default();
     st.upsert(&f, FindingState::Open);
-    assert!(publish(
-        &api,
-        &event(),
-        &mut rep,
-        &mut st,
-        10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
-    )
-    .await
-    .is_err());
+    assert!(
+        publish(
+            &api,
+            &event(),
+            &mut rep,
+            &mut st,
+            10,
+            "<!-- revera-summary -->",
+            "github-actions[bot]",
+        )
+        .await
+        .is_err()
+    );
     assert!(st.findings[0].posted, "in-memory state records the post");
     drop(first);
 
@@ -695,17 +704,19 @@ async fn inline_review_500_still_fails_and_leaves_unposted() {
     );
     let mut st = ReviewState::default();
     st.upsert(&f, FindingState::Open);
-    assert!(publish(
-        &api,
-        &event(),
-        &mut rep,
-        &mut st,
-        10,
-        "<!-- revera-summary -->",
-        "github-actions[bot]",
-    )
-    .await
-    .is_err());
+    assert!(
+        publish(
+            &api,
+            &event(),
+            &mut rep,
+            &mut st,
+            10,
+            "<!-- revera-summary -->",
+            "github-actions[bot]",
+        )
+        .await
+        .is_err()
+    );
     assert!(!st.findings[0].posted);
 }
 

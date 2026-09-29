@@ -1,10 +1,10 @@
 use super::http::{
-    detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec, HttpTransport,
-    Parse, ProtocolAdapter,
+    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    detect_400_fallback, route_headers,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::ModelRoute;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Google AI (Gemini) generateContent adapter.
 pub struct GeminiAdapter {
@@ -74,13 +74,12 @@ fn contents(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
     let mut system: Vec<String> = vec![];
     let mut out: Vec<Value> = vec![];
     let push = |role: &str, parts: Vec<Value>, out: &mut Vec<Value>| {
-        if let Some(last) = out.last_mut() {
-            if last["role"] == role {
-                if let Some(a) = last["parts"].as_array_mut() {
-                    a.extend(parts);
-                    return;
-                }
-            }
+        if let Some(last) = out.last_mut()
+            && last["role"] == role
+            && let Some(a) = last["parts"].as_array_mut()
+        {
+            a.extend(parts);
+            return;
         }
         out.push(json!({"role": role, "parts": parts}));
     };
@@ -254,17 +253,17 @@ impl ProtocolAdapter for GeminiAdapter {
                 thinking_cfg = Some(json!({"thinkingBudget": 0, "includeThoughts": false}));
             }
         }
-        let mut gen = json!({"maxOutputTokens": effective_max_out});
+        let mut generation_config = json!({"maxOutputTokens": effective_max_out});
         if !attempt.drop_temperature {
-            gen["temperature"] = json!(self.route.temperature);
+            generation_config["temperature"] = json!(self.route.temperature);
         }
         if let Some(t) = thinking_cfg {
-            gen["thinkingConfig"] = t;
+            generation_config["thinkingConfig"] = t;
         }
         let mut body = json!({
             "contents": contents,
             "tools": [{"functionDeclarations": decls}],
-            "generationConfig": gen,
+            "generationConfig": generation_config,
         });
         if !system.is_empty() {
             body["systemInstruction"] = json!({"parts": [{"text": system.join("\n\n")}]});

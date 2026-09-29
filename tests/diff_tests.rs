@@ -1,4 +1,4 @@
-use revera::diff::{parse_unified, DiffLineKind, FileStatus};
+use revera::diff::{DiffLineKind, FileStatus, parse_unified};
 
 const BASIC: &str = "\
 diff --git a/src/a.rs b/src/a.rs

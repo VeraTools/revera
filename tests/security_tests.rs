@@ -49,7 +49,9 @@ fn validation_disabled_cannot_publish() {
 #[test]
 fn index_identity_ignores_reranker_models_and_credentials() {
     let plain = cfg("");
-    let rr = cfg("  reranker: {base_url: \"https://openrouter.ai/api/v1\", model: cohere/rerank-4-pro, api_key_env: REVERA_EMBEDDING_API_KEY}\n");
+    let rr = cfg(
+        "  reranker: {base_url: \"https://openrouter.ai/api/v1\", model: cohere/rerank-4-pro, api_key_env: REVERA_EMBEDDING_API_KEY}\n",
+    );
     let other_key = Config::parse(
         &BASE_YAML.replace(
             "api_key_env: REVERA_EMBEDDING_API_KEY",
@@ -127,7 +129,9 @@ fn event_mode_rejects_plain_http_and_reserved_env() {
 #[test]
 fn reranker_endpoint_path_is_validated() {
     for p in ["rerank", "https://x/rerank", "/../rerank"] {
-        let c = cfg(&format!("  reranker: {{base_url: \"https://x.example/v1\", model: r, api_key_env: K_RR, endpoint_path: \"{p}\"}}\n"));
+        let c = cfg(&format!(
+            "  reranker: {{base_url: \"https://x.example/v1\", model: r, api_key_env: K_RR, endpoint_path: \"{p}\"}}\n"
+        ));
         assert!(c.check_trust(true).is_err(), "{p}");
     }
 }
@@ -165,8 +169,11 @@ async fn event_config_comes_from_base_not_head() {
 
 #[test]
 fn redaction_masks_registered_and_recognizable_secrets() {
-    std::env::set_var("REVERA_TEST_SECRET_REDACT", "zz-secret-value-12345");
-    assert!(redact::secret_env("REVERA_TEST_SECRET_REDACT").is_some());
+    assert_eq!(
+        redact::secret_env("REVERA_TEST_SECRET_REDACT").as_deref(),
+        Some("zz-secret-value-12345"),
+        "REVERA_TEST_SECRET_REDACT comes from .cargo/config.toml: run through cargo test, with it unset in the shell"
+    );
     let s = "key=zz-secret-value-12345 gh=ghp_abcdefghijklmnopqrstuvwxyz0123456789 or=sk-or-v1-0123456789abcdef0123456789abcdef";
     let out = redact::text(s);
     assert!(!out.contains("zz-secret-value-12345"), "{out}");
@@ -298,10 +305,12 @@ async fn revisions_are_validated_object_ids() {
         b"a\n"
     );
     assert!(git::read_blob(r, &head, "a.txt", 1).await.is_err());
-    assert!(git::read_blob(r, &head, "missing", 100)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        git::read_blob(r, &head, "missing", 100)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(git::is_oid(&head) && !git::is_oid("HEAD") && !git::is_oid(&head[..39]));
 }
 
@@ -315,10 +324,12 @@ async fn read_blob_refuses_symlink_entries() {
     sh_git(r, &["add", "."]);
     sh_git(r, &["commit", "-qm", "link"]);
     let head = sh_git(r, &["rev-parse", "HEAD"]);
-    assert!(git::read_blob(r, &head, "revera.yaml", 1 << 20)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        git::read_blob(r, &head, "revera.yaml", 1 << 20)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

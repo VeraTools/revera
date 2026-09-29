@@ -1,5 +1,5 @@
 use crate::findings::Severity;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -803,10 +803,10 @@ fn check_route_shape(name: &str, r: &ModelRoute) -> Result<()> {
             return Ok(());
         }
     }
-    if let Some(h) = &r.session_header {
-        if h.trim().is_empty() || reqwest::header::HeaderName::from_bytes(h.as_bytes()).is_err() {
-            bail!("models.{name}: session_header {h:?} is not a valid HTTP header name");
-        }
+    if let Some(h) = &r.session_header
+        && (h.trim().is_empty() || reqwest::header::HeaderName::from_bytes(h.as_bytes()).is_err())
+    {
+        bail!("models.{name}: session_header {h:?} is not a valid HTTP header name");
     }
     if r.protocol.is_http() && r.api_key_env.as_deref().unwrap_or_default().is_empty() {
         bail!(
@@ -1031,18 +1031,21 @@ impl Config {
                 if let Some(e) = e {
                     check_endpoint_url(&format!("{name}.base_url"), &e.base_url, event_mode)?;
                     check_env(&format!("{name}.api_key_env"), &e.api_key_env)?;
-                    if let Some(p) = &e.endpoint_path {
-                        if !p.starts_with('/') || p.contains("://") || p.contains("..") {
-                            bail!("{name}.endpoint_path must be an absolute path like /rerank");
-                        }
+                    if let Some(p) = &e.endpoint_path
+                        && (!p.starts_with('/') || p.contains("://") || p.contains(".."))
+                    {
+                        bail!("{name}.endpoint_path must be an absolute path like /rerank");
                     }
                 }
             }
-            if let Some(e) = &self.vera.embedding {
-                if e.protocol.is_some() || e.endpoint_path.is_some() || e.return_documents.is_some()
-                {
-                    bail!("vera.embedding: protocol/endpoint_path/return_documents apply to vera.reranker only");
-                }
+            if let Some(e) = &self.vera.embedding
+                && (e.protocol.is_some()
+                    || e.endpoint_path.is_some()
+                    || e.return_documents.is_some())
+            {
+                bail!(
+                    "vera.embedding: protocol/endpoint_path/return_documents apply to vera.reranker only"
+                );
             }
             if self.vera.backend == VeraBackend::Api && self.vera.embedding.is_none() {
                 bail!("vera.backend: api requires vera.embedding");
@@ -1055,10 +1058,10 @@ impl Config {
                         self.vera.executable
                     );
                 }
-                if let Some(h) = &self.vera.home {
-                    if !h.is_absolute() {
-                        bail!("vera.home must be an absolute path in event mode");
-                    }
+                if let Some(h) = &self.vera.home
+                    && !h.is_absolute()
+                {
+                    bail!("vera.home must be an absolute path in event mode");
                 }
             }
         }

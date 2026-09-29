@@ -15,5 +15,6 @@ pub mod report;
 pub mod state;
 pub mod text;
 pub mod timing;
+pub mod tls;
 pub mod tools;
 pub mod vera;

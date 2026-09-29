@@ -1,10 +1,10 @@
 [package]
 name = "revera"
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 description = "Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval."
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.98"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -12,13 +12,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.11"
 hex = "0.4"
+webpki-root-certs = "1"
 base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"

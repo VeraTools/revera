@@ -1,7 +1,7 @@
-use revera::agent::{run_agent, AgentBudget, StopReason};
-use revera::diff::{parse_unified, DiffSet};
-use revera::findings::{collapse, Finding, Severity};
-use revera::pipeline::anchor::{anchor, Placement};
+use revera::agent::{AgentBudget, StopReason, run_agent};
+use revera::diff::{DiffSet, parse_unified};
+use revera::findings::{Finding, Severity, collapse};
+use revera::pipeline::anchor::{Placement, anchor};
 use revera::provider::{
     ChatMessage, Completion, LedgerEntry, LedgerHandle, ModelClient, ProviderError, ToolCall,
     ToolSpec, Usage,
@@ -283,11 +283,12 @@ async fn batch_capped_at_remaining_budget() {
     let tool_results: Vec<&ChatMessage> =
         msgs.iter().filter(|m| m.tool_call_id.is_some()).collect();
     assert_eq!(tool_results.len(), 3, "all calls need a tool result");
-    assert!(tool_results.iter().any(|m| m
-        .content
-        .as_deref()
-        .unwrap_or("")
-        .contains("not executed: budget")));
+    assert!(tool_results.iter().any(|m| {
+        m.content
+            .as_deref()
+            .unwrap_or("")
+            .contains("not executed: budget")
+    }));
     // after the cap + notice, next completion must be terminal or stop
     assert!(matches!(
         r.stopped,
@@ -327,7 +328,6 @@ models:
   validator: {protocol: openai-chat, model: m, base_url: "http://127.0.0.1:1", api_key_env: REVERA_TEST_KEY}
 vera: {executable: "true", version: "1.4.1", backend: api}
 "#;
-    std::env::set_var("REVERA_TEST_KEY", "sk-test");
     let cfg: Config = serde_yaml::from_str(yaml).unwrap();
     let diff = Arc::new(DiffSet::default());
     let toolbox = Arc::new(tb());
@@ -394,7 +394,9 @@ vera: {executable: "true", version: "1.4.1", backend: api}
     )
     .await;
     assert_eq!(reason.as_deref(), Some("run time budget exhausted"));
-    assert!(cands
-        .iter()
-        .all(|c| c.validation_status == Some(revera::findings::ValidationStatus::Uncertain)));
+    assert!(
+        cands
+            .iter()
+            .all(|c| c.validation_status == Some(revera::findings::ValidationStatus::Uncertain))
+    );
 }

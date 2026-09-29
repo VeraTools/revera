@@ -33,8 +33,8 @@ fn retry_after_supports_delta_dates_and_caps() {
     );
 }
 
+// REVERA_TEST_KEY is set by .cargo/config.toml, so run these through cargo test
 fn route(url: &str) -> ModelRoute {
-    std::env::set_var("REVERA_TEST_KEY", "sk-test");
     ModelRoute {
         protocol: Protocol::OpenaiChat,
         base_url: Some(url.to_string()),
@@ -235,7 +235,6 @@ use revera::provider::openai_responses::OpenAiResponsesAdapter;
 use revera::provider::{Role, ToolCall};
 
 fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
-    std::env::set_var("REVERA_TEST_KEY", "sk-test");
     ModelRoute {
         protocol: proto,
         base_url: Some(url.to_string()),

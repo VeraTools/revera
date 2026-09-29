@@ -1,6 +1,6 @@
 use revera::diff::parse_unified;
-use revera::findings::{collapse, finding_id, Finding, Severity, ValidationStatus};
-use revera::pipeline::anchor::{anchor, Placement};
+use revera::findings::{Finding, Severity, ValidationStatus, collapse, finding_id};
+use revera::pipeline::anchor::{Placement, anchor};
 
 fn finding(file: &str, key: &str, line: u32, sev: Severity) -> Finding {
     Finding {

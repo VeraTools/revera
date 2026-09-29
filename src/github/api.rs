@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -130,7 +130,7 @@ impl GitHubApi {
             .unwrap_or_else(|_| "https://api.github.com".into())
             .trim_end_matches('/')
             .to_string();
-        let http = reqwest::Client::builder()
+        let http = crate::tls::with_bundled_roots(reqwest::Client::builder())
             .user_agent("revera")
             .timeout(Duration::from_secs(60))
             .build()
@@ -368,12 +368,12 @@ impl GitHubApi {
                     "side": "RIGHT",
                     "body": crate::redact::text(&c.body),
                 });
-                if let Some(end) = c.end_line {
-                    if end > c.line.max(1) {
-                        v["line"] = json!(end);
-                        v["start_line"] = json!(c.line.max(1));
-                        v["start_side"] = json!("RIGHT");
-                    }
+                if let Some(end) = c.end_line
+                    && end > c.line.max(1)
+                {
+                    v["line"] = json!(end);
+                    v["start_line"] = json!(c.line.max(1));
+                    v["start_side"] = json!("RIGHT");
                 }
                 v
             })

@@ -4,11 +4,12 @@
 
 use revera::config::Config;
 use revera::vera::{RerankState, VeraClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
+// must match .cargo/config.toml, which exports them to the Vera child
 const EMBED_KEY: &str = "sk-embed-test-0123456789abcdef";
 const RERANK_KEY: &str = "sk-rerank-test-0123456789abcdef";
 
@@ -98,8 +99,16 @@ async fn setup() -> Option<(MockServer, PathBuf)> {
         eprintln!("skipping: no vera executable (set REVERA_TEST_VERA)");
         return None;
     };
-    std::env::set_var("REVERA_IT_EMBED_KEY", EMBED_KEY);
-    std::env::set_var("REVERA_IT_RERANK_KEY", RERANK_KEY);
+    for (var, want) in [
+        ("REVERA_IT_EMBED_KEY", EMBED_KEY),
+        ("REVERA_IT_RERANK_KEY", RERANK_KEY),
+    ] {
+        assert_eq!(
+            std::env::var(var).as_deref(),
+            Ok(want),
+            "{var} comes from .cargo/config.toml: run through cargo test, with {var} unset in the shell"
+        );
+    }
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/embeddings"))
@@ -131,8 +140,9 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
     };
     let repo = fixture_repo();
     let home = tempfile::tempdir().unwrap();
-    // ambient overrides must not reach the child
-    std::env::set_var("RERANKER_MODEL_BASE_URL", "http://127.0.0.1:9/ambient");
+    // RERANKER_MODEL_BASE_URL is set ambiently (.cargo/config.toml) and
+    // must not reach the child
+    assert!(std::env::var_os("RERANKER_MODEL_BASE_URL").is_some());
     let cfg = config(&server.uri(), home.path(), &exe, true);
     let vera = VeraClient::from_config(&cfg.vera, repo.path()).unwrap();
     assert_eq!(vera.home, home.path());
@@ -189,7 +199,6 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
             .unwrap(),
         format!("Bearer {RERANK_KEY}")
     );
-    std::env::remove_var("RERANKER_MODEL_BASE_URL");
 }
 
 #[tokio::test]

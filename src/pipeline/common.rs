@@ -1,19 +1,19 @@
 use super::validate::{recheck_prompt, validate_candidates, validator_prompt, validator_terminal};
 use crate::config::{Config, Strategy};
-use crate::diff::{parse_unified, DiffSet};
-use crate::findings::{collapse, Finding};
+use crate::diff::{DiffSet, parse_unified};
+use crate::findings::{Finding, collapse};
 use crate::git;
-use crate::pipeline::anchor::{anchor, is_publishable, Placement};
+use crate::pipeline::anchor::{Placement, anchor, is_publishable};
 use crate::provider::LedgerHandle;
 use crate::report::{
-    finding_body, ledger_report, summary_markdown, InlineComment, PublicationPlan, RunReport,
-    RunStats, RunStatus, Summary,
+    InlineComment, PublicationPlan, RunReport, RunStats, RunStatus, Summary, finding_body,
+    ledger_report, summary_markdown,
 };
-use crate::state::{recheck_transition, review_key, FindingState, ReviewState};
+use crate::state::{FindingState, ReviewState, recheck_transition, review_key};
 use crate::timing::Recorder;
 use crate::tools::ToolBox;
 use crate::vera::VeraClient;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -109,26 +109,25 @@ pub enum PrepareOut {
 fn normalize_finding_json(v: &serde_json::Value) -> serde_json::Value {
     let mut v = v.clone();
     if let Some(o) = v.as_object_mut() {
-        if !o.contains_key("file") {
-            if let Some(p) = o
+        if !o.contains_key("file")
+            && let Some(p) = o
                 .remove("path")
                 .and_then(|p| p.as_str().map(str::to_string))
-            {
-                match p.rsplit_once(':') {
-                    Some((f, l)) if l.parse::<u32>().is_ok() => {
-                        o.insert("start_line".into(), json!(l.parse::<u32>().unwrap()));
-                        o.insert("file".into(), json!(f));
-                    }
-                    _ => {
-                        o.insert("file".into(), json!(p));
-                    }
+        {
+            match p.rsplit_once(':') {
+                Some((f, l)) if l.parse::<u32>().is_ok() => {
+                    o.insert("start_line".into(), json!(l.parse::<u32>().unwrap()));
+                    o.insert("file".into(), json!(f));
+                }
+                _ => {
+                    o.insert("file".into(), json!(p));
                 }
             }
         }
-        if !o.contains_key("claim") {
-            if let Some(d) = o.remove("description") {
-                o.insert("claim".into(), d);
-            }
+        if !o.contains_key("claim")
+            && let Some(d) = o.remove("description")
+        {
+            o.insert("claim".into(), d);
         }
     }
     v

@@ -57,10 +57,10 @@ impl DiffSet {
         if let Some(f) = self.file(path) {
             for h in &f.hunks {
                 for l in &h.lines {
-                    if matches!(l.kind, DiffLineKind::Add | DiffLineKind::Ctx) {
-                        if let Some(n) = l.new_no {
-                            out.insert(n);
-                        }
+                    if matches!(l.kind, DiffLineKind::Add | DiffLineKind::Ctx)
+                        && let Some(n) = l.new_no
+                    {
+                        out.insert(n);
                     }
                 }
             }

@@ -162,7 +162,7 @@ impl HttpTransport {
         retries: u32,
         role: &str,
     ) -> Result<Self, ProviderError> {
-        let http = reqwest::Client::builder()
+        let http = crate::tls::with_bundled_roots(reqwest::Client::builder())
             .user_agent(concat!("revera/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(120))
             .build()

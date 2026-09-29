@@ -1,6 +1,6 @@
-use super::api::{is_ambiguous, GhComment, GitHubApi, GitHubHttpError, ReviewComment};
+use super::api::{GhComment, GitHubApi, GitHubHttpError, ReviewComment, is_ambiguous};
 use super::event::PrEvent;
-use crate::report::{surfaced_ids, Publication, RunReport};
+use crate::report::{Publication, RunReport, surfaced_ids};
 use crate::state::{FindingState, ReviewState};
 use anyhow::Result;
 use base64::Engine;
@@ -72,10 +72,10 @@ pub fn find_managed<'a>(
     let mut cands = comments.iter().filter(|c| {
         c.body.trim_start().starts_with(marker) && decode_state(&c.body).is_some() && me.owns(c)
     });
-    if let Some(id) = expected_id {
-        if let Some(c) = cands.clone().find(|c| c.id == id) {
-            return Some(c);
-        }
+    if let Some(id) = expected_id
+        && let Some(c) = cands.clone().find(|c| c.id == id)
+    {
+        return Some(c);
     }
     cands.next()
 }
@@ -235,7 +235,9 @@ pub async fn publish(
                 review_outcome = "ok:inline-rejected";
             }
             Err(err) if is_ambiguous(&err) && reconcile_review(api, ev, &me, &posted_ids).await => {
-                tracing::warn!("inline review POST failed ambiguously ({err:#}) but its comments are on the PR");
+                tracing::warn!(
+                    "inline review POST failed ambiguously ({err:#}) but its comments are on the PR"
+                );
                 review_outcome = "ok:reconciled";
                 state.mark_posted(&posted_ids);
             }

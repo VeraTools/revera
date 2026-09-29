@@ -1,10 +1,10 @@
 use super::http::{
-    capped_effort, detect_400_fallback, route_headers, AttemptState, HttpClient, HttpRequestSpec,
-    HttpTransport, Parse, ProtocolAdapter,
+    AttemptState, HttpClient, HttpRequestSpec, HttpTransport, Parse, ProtocolAdapter,
+    capped_effort, detect_400_fallback, route_headers,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
 use crate::config::{ModelRoute, ReasoningEffort, ReasoningField};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// OpenAI chat-completions adapter. Wire format unchanged from before the
 /// transport split; the max_tokens -> max_completion_tokens fallback rides
@@ -243,11 +243,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                     .filter_map(|p| p["text"].as_str())
                     .collect::<Vec<_>>()
                     .join("\n");
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(text)
-                }
+                if text.is_empty() { None } else { Some(text) }
             }
             _ => None,
         };

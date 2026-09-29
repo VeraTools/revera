@@ -1,0 +1,17 @@
+# Test-only environment, set at process start. Tests must not call
+# std::env::set_var: it is unsafe under edition 2024 because other test
+# threads (and C code such as aws-lc or getaddrinfo) read the environment
+# concurrently. Existing values in the caller's environment win. Cargo
+# applies [env] to every process it starts in this checkout, `cargo run`
+# included: REVERA_TEST_*/REVERA_IT_* are test-only names, but
+# RERANKER_MODEL_BASE_URL is a real Vera variable (Revera strips it from
+# Vera children; never point a config's api_key_env at it).
+[env]
+REVERA_TEST_X = "hello"
+REVERA_TEST_KEY = "sk-test"
+REVERA_TEST_SOME_KEY = "sk-dummy-value-for-test"
+REVERA_TEST_SECRET_REDACT = "zz-secret-value-12345"
+REVERA_IT_EMBED_KEY = "sk-embed-test-0123456789abcdef"
+REVERA_IT_RERANK_KEY = "sk-rerank-test-0123456789abcdef"
+# an ambient override that Revera must never pass to a Vera child
+RERANKER_MODEL_BASE_URL = "http://127.0.0.1:9/ambient"
