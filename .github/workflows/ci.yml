@@ -74,13 +74,17 @@ jobs:
           bin=target/x86_64-unknown-linux-musl/release/revera
           file "$bin" | grep -Eq 'static(ally|-pie) linked'
           "$bin" --version
-      # empty (not missing) paths: cargo swaps missing ones for the system bundle
+      # build first: cargo itself must be able to download crates, so only
+      # the test run sees the empty CA bundle. Empty (not missing) paths,
+      # since cargo swaps missing ones for the probed system bundle.
       - name: HTTPS works without a system CA bundle
         run: |
+          test=(cargo test --release --locked --target x86_64-unknown-linux-musl --test tls_roots)
+          "${test[@]}" --no-run
           mkdir -p "$RUNNER_TEMP/no-ca"
           : > "$RUNNER_TEMP/no-ca.pem"
           SSL_CERT_FILE="$RUNNER_TEMP/no-ca.pem" SSL_CERT_DIR="$RUNNER_TEMP/no-ca" \
-            cargo test --release --locked --target x86_64-unknown-linux-musl --test tls_roots -- --ignored
+            "${test[@]}" --offline -- --ignored
 
   # Live: scripted models but a real Vera index built through a hosted endpoint
   # embeddings. Shown as *skipped* (not passed) when the secret is absent,
