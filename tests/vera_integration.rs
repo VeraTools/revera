@@ -106,7 +106,7 @@ async fn setup() -> Option<(MockServer, PathBuf)> {
         assert_eq!(
             std::env::var(var).as_deref(),
             Ok(want),
-            "{var} comes from .cargo/config.toml; run through cargo test"
+            "{var} comes from .cargo/config.toml: run through cargo test, with {var} unset in the shell"
         );
     }
     let server = MockServer::start().await;
