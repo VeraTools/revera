@@ -507,16 +507,17 @@ def route_evidence(report: dict[str, Any]) -> list[str]:
         requests = entry.get("requests", 0)
         if not isinstance(requests, int) or isinstance(requests, bool) or requests < 0:
             requests = 0
+        route = str(entry.get("route", "unknown"))
+        protocol = route.split(":", 1)[0]
         evidence.append(
             "- "
             + markdown_value(str(entry.get("role", "unknown")))
-            + ": `"
-            + markdown_value(str(entry.get("route", "unknown")))
-            + "` (model `"
+            + ": protocol `"
+            + markdown_value(protocol)
+            + "`, model `"
             + markdown_value(str(entry.get("model", "unknown")))
             + "`, requests "
             + str(requests)
-            + ")"
         )
     return evidence or ["- (no routes recorded)"]
 

@@ -6,9 +6,9 @@ review:
 models:
   investigator:
     protocol: openai-chat
-    base_url: ${REVERA_EMBEDDING_BASE_URL}
-    api_key_env: REVERA_EMBEDDING_API_KEY
-    model: meta/muse-spark-1.3-contributor
+    base_url: ${REVERA_MODEL_BASE_URL}
+    api_key_env: REVERA_MODEL_API_KEY
+    model: glm-5.3
     max_output_tokens: 6000
     temperature: 0.2
     reasoning: high

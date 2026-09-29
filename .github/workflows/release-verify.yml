@@ -43,13 +43,17 @@ jobs:
       EXPECT_TERMS: ${{ inputs.expect_terms }}
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
+      REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
       REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+      REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
       REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
     steps:
       - name: Require live credentials
         run: |
           missing=()
+          [ -n "$REVERA_EMBEDDING_BASE_URL" ] || missing+=(REVERA_EMBEDDING_BASE_URL)
           [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
+          [ -n "$REVERA_MODEL_BASE_URL" ] || missing+=(REVERA_MODEL_BASE_URL)
           [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::release verification needs ${missing[*]}; this is a failure, not a skip"; exit 1
@@ -201,11 +205,35 @@ jobs:
             --out-summary "$RUNNER_TEMP/release-proof.md"
           cat "$RUNNER_TEMP/release-proof.md" >> "$GITHUB_STEP_SUMMARY"
 
+      # Artifacts are not log-masked: publish report copies with every
+      # configured endpoint (full URL and host) replaced.
+      - name: Endpoint-free report copies
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import os, sys, urllib.parse
+          from pathlib import Path
+          subs = []
+          for var in ("REVERA_MODEL_BASE_URL", "REVERA_EMBEDDING_BASE_URL"):
+              url = os.environ.get(var, "").strip()
+              if url:
+                  subs.append((url.rstrip("/"), f"[{var}]"))
+                  host = urllib.parse.urlsplit(url).hostname
+                  if host:
+                      subs.append((host, f"[{var} host]"))
+          subs.sort(key=lambda s: len(s[0]), reverse=True)
+          for src in Path(sys.argv[1]).glob("report-[0-9].json"):
+              text = src.read_text(encoding="utf-8", errors="replace")
+              for old, new in subs:
+                  text = text.replace(old, new)
+              src.with_suffix(".public.json").write_text(text, encoding="utf-8")
+          PY
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: release-verify-reports
           path: |
-            ${{ runner.temp }}/report-*.json
+            ${{ runner.temp }}/report-*.public.json
             ${{ runner.temp }}/release-proof.md
           if-no-files-found: ignore

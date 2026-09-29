@@ -38,8 +38,8 @@ bash eval/test-run-all.sh && bash eval/test-frozen.sh
 Static analysis (deny, machete, shellcheck, ruff, actionlint, zizmor, MSRV)
 and the release sequence are listed in CONTRIBUTING.md.
 
-Public files (README, docs, prompts, skills, AGENTS.md) name model providers,
-not routing intermediaries (`check-docs-hygiene.sh`). Workflow `uses:` pins
-are full commit SHAs with a version comment. Live-provider checks are listed
-in CONTRIBUTING.md; report them as run, skipped or blocked, never as passed
-when they did not run.
+Public files (README, docs, prompts, skills, AGENTS.md) name model providers;
+`check-docs-hygiene.sh` checks every tracked text file for routing
+intermediaries using hashes. Workflow `uses:` pins are full commit SHAs with a
+version comment. Live-provider checks are listed in CONTRIBUTING.md; report
+them as run, skipped or blocked, never as passed when they did not run.

@@ -20,11 +20,15 @@ jobs:
       - id: c
         shell: bash
         env:
+          REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+          REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
         run: |
           missing=()
+          [ -n "$REVERA_EMBEDDING_BASE_URL" ] || missing+=(REVERA_EMBEDDING_BASE_URL)
           [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
+          [ -n "$REVERA_MODEL_BASE_URL" ] || missing+=(REVERA_MODEL_BASE_URL)
           [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
           if [ ${#missing[@]} -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
@@ -33,7 +37,7 @@ jobs:
             echo "::warning title=live self-review skipped::secrets not available to this run: ${missing[*]} (expected for fork PRs). This is a SKIP, not a passing review; offline proof is action-smoke.yml."
           fi
 
-  # Builds and runs the PR's own source with provider secrets, so only for
+  # Builds and runs the PR's own source with hosted model credentials, so only for
   # same-repository branches (fork PRs never receive secrets anyway).
   revera:
     needs: has-key
@@ -64,5 +68,7 @@ jobs:
           target/release/revera review --event "$GITHUB_EVENT_PATH" --config .github/revera-self-review.yaml --publish dry-run --out .revera/report.json || [ $? -eq 2 ]
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+          REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}

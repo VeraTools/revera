@@ -702,7 +702,7 @@ pub async fn finish(
         .unwrap()
         .entries
         .iter()
-        .map(crate::report::ledger_route_label)
+        .map(crate::report::footer_route_label)
         .collect();
     let coverage = if prep.coverage.is_empty() {
         "(none reported)".to_string()

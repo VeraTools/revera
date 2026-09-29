@@ -119,7 +119,10 @@ fn event_mode_rejects_plain_http_and_reserved_env() {
     .unwrap();
     assert!(gh.check_trust(false).is_err());
     let bad = Config::parse(
-        &BASE_YAML.replace("api_key_env: REVERA_EMBEDDING_API_KEY", "api_key_env: \"A;B\""),
+        &BASE_YAML.replace(
+            "api_key_env: REVERA_EMBEDDING_API_KEY",
+            "api_key_env: \"A;B\"",
+        ),
         "t",
     )
     .unwrap();

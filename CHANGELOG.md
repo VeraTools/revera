@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.2
+
+- Public review footers now show only `role=model@effort` (and an effective
+  effort when it differs); reused reviews no longer print an empty models list.
+- Release verification evidence and uploaded artifacts omit endpoints.
+- Workflows read model and embedding endpoints and keys from the
+  `REVERA_MODEL_*` and `REVERA_EMBEDDING_*` secrets.
+- The release workflow serializes runs per tag.
+
 ## v0.4.1
 
 - Security: query values in model, embedding and reranker `base_url`s
