@@ -179,7 +179,7 @@ impl GeminiAdapter {
 
 impl ProtocolAdapter for GeminiAdapter {
     fn label(&self) -> String {
-        format!("gemini:{}", self.base)
+        format!("gemini:{}", crate::config::identity_url(&self.base))
     }
 
     fn model(&self) -> &str {

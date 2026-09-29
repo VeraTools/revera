@@ -126,7 +126,10 @@ fn to_input(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
 
 impl ProtocolAdapter for OpenAiResponsesAdapter {
     fn label(&self) -> String {
-        format!("openai-responses:{}", self.base)
+        format!(
+            "openai-responses:{}",
+            crate::config::identity_url(&self.base)
+        )
     }
 
     fn model(&self) -> &str {

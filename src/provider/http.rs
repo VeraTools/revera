@@ -363,13 +363,14 @@ impl HttpTransport {
                 }
                 Err(e) => {
                     let transient = e.is_timeout() || e.is_connect();
+                    let message = e.without_url().to_string();
                     if transient && attempts <= self.retries {
                         self.record(
                             &tel,
                             &effective,
                             LedgerEntry {
                                 latency_ms: start.elapsed().as_millis() as u64,
-                                error: Some(format!("{e} (will retry)")),
+                                error: Some(format!("{message} (will retry)")),
                                 ..Default::default()
                             },
                         );
@@ -377,7 +378,7 @@ impl HttpTransport {
                         tokio::time::sleep(Self::retry_delay(None, retries_used, Utc::now())).await;
                         continue;
                     }
-                    let err = ProviderError::Http(e.to_string());
+                    let err = ProviderError::Http(message);
                     self.record(
                         &tel,
                         &effective,

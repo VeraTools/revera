@@ -145,7 +145,7 @@ impl AnthropicAdapter {
 
 impl ProtocolAdapter for AnthropicAdapter {
     fn label(&self) -> String {
-        format!("anthropic:{}", self.base)
+        format!("anthropic:{}", crate::config::identity_url(&self.base))
     }
 
     fn model(&self) -> &str {
