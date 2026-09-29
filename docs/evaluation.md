@@ -152,6 +152,33 @@ Large subset (ripgrep cases, 1 rep, `agent_max_seconds: 300`):
 - Not measured: validator choice (one validator model throughout), more
   than two reps, real-dollar cost.
 
+## Frozen-candidate harness
+
+`eval/frozen.py` implements item 1 below. Capture candidates once with a
+`review.validate: false` config (the report's `findings[]` are then
+unvalidated candidates; a validated report is refused), then:
+
+```sh
+eval/frozen.py --candidates report.json --repo <corpus> --base base --head head \
+    --out out/ arm-a.yaml arm-b.yaml
+```
+
+Each arm config keeps its own validator route and review settings; its
+investigator is replaced by a scripted route replaying the frozen
+candidates, and each arm reviews its own copy of the repository with no
+prior state. The arm's `review.min_severity` is recorded and applied only
+when scoring (`accepted_at_min_severity`); the run itself keeps every
+severity so a validator downgrade cannot drop a candidate from the
+report. Arm config file names must be distinct. The run fails unless
+every arm validated the identical candidate set (same digest), with
+validation `fresh`, at least one validator request per candidate, and no
+rechecks; one JSON row per arm is printed and written to
+`out/summary.json`. `eval/test-frozen.sh` checks
+the mechanics offline with scripted validators. No live frozen comparison
+has been run yet; guidance (`review.guidance`) affects only the
+investigator, so it is compared with ordinary paired runs, not this
+harness.
+
 ## What a fair next evaluation looks like
 
 1. **Validator comparison on frozen candidates.** Record the investigator's

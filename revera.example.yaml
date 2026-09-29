@@ -22,6 +22,11 @@ models:
   #   api_key_env: ANTHROPIC_API_KEY
   #   model: claude-sonnet-4-6
 
+# Optional: give the investigator REVIEW.md (or AGENTS.md) conventions from
+# the base commit. Off by default; not yet shown to improve results.
+# review:
+#   guidance: review               # off | review | agents
+
 # Optional: semantic repository retrieval through Vera, on top of the
 # built-in lexical search. Needs the `vera` binary (the Action installs it)
 # and an embedding endpoint. Worth enabling for repositories above a few

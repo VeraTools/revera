@@ -7,7 +7,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-public=(README.md CONTRIBUTING.md SECURITY.md action.yml revera.example.yaml docs prompts)
+public=(README.md CONTRIBUTING.md SECURITY.md AGENTS.md action.yml revera.example.yaml docs prompts skills)
 forbidden=('model-gateway')
 
 status=0

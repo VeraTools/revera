@@ -51,6 +51,7 @@ pub struct Prepared {
     /// Why vera retrieval is unavailable (`None` when it works or is off).
     pub retrieval_unavailable: Option<String>,
     pub stats: RunStats,
+    pub guidance: crate::guidance::Guidance,
     pub coverage: String,
     pub coverage_gaps: Vec<String>,
     /// Strategy-specific line appended to the summary (e.g. panel stats).
@@ -459,7 +460,18 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             coverage_gaps.push(format!("`{f}` diff omitted (exceeds max_diff_bytes)"));
         }
     }
+    let changed: Vec<String> = diff.files.iter().map(|f| f.new_path.clone()).collect();
+    let guidance = crate::guidance::load(
+        &repo,
+        &base_sha,
+        &changed,
+        cfg.review.guidance,
+        cfg.review.guidance_max_bytes,
+    )
+    .await?;
     let stats = RunStats {
+        guidance: (cfg.review.guidance != crate::config::GuidanceMode::Off)
+            .then(|| guidance.clone()),
         retrieval,
         resolved: resolved_titles.len(),
         ..Default::default()
@@ -481,6 +493,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         partial_reasons,
         retrieval_unavailable,
         stats,
+        guidance,
         coverage: String::new(),
         coverage_gaps,
         report_note: None,

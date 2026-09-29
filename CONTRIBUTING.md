@@ -11,6 +11,7 @@ scripts/test-install-revera.sh && scripts/test-install-vera.sh && scripts/test-a
 scripts/check-versions.sh          # Cargo.toml and action.yml agree
 scripts/check-docs-hygiene.sh      # public docs name providers, not routing services
 eval/test-run-all.sh               # eval runner plan (no API calls)
+eval/test-frozen.sh                # frozen-candidate harness with scripted validators
 ```
 
 Live checks, run when the relevant key is available:
