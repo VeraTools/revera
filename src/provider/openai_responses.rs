@@ -11,6 +11,7 @@ pub struct OpenAiResponsesAdapter {
     route: ModelRoute,
     api_key: String,
     base: String,
+    cache_key: Option<String>,
 }
 
 pub type OpenAiResponsesClient = HttpClient<OpenAiResponsesAdapter>;
@@ -30,7 +31,13 @@ impl OpenAiResponsesAdapter {
             route,
             api_key,
             base,
+            cache_key: None,
         })
+    }
+
+    pub fn with_cache_key(mut self, cache_key: Option<String>) -> Self {
+        self.cache_key = cache_key;
+        self
     }
 
     /// Effort `build()` emits for this attempt state.
@@ -158,6 +165,12 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
             "max_output_tokens": self.route.max_output_tokens,
             "store": false,
         });
+        if self.route.cache
+            && !attempt.drop_cache_hint
+            && let Some(cache_key) = &self.cache_key
+        {
+            body["prompt_cache_key"] = json!(cache_key);
+        }
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions.join("\n\n"));
         }
@@ -185,6 +198,15 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
+        if status == 400
+            && self.route.cache
+            && !attempt.drop_cache_hint
+            && self.cache_key.is_some()
+            && body.contains("prompt_cache_key")
+        {
+            attempt.drop_cache_hint = true;
+            return Parse::RetrySameSlot("400: retrying without prompt cache hint".into());
+        }
         // reasoning or temperature 400 -> drop the named field, same slot
         if let Some(p) = detect_400_fallback(
             status,
@@ -262,6 +284,10 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         let usage = Usage {
             prompt_tokens: parsed["usage"]["input_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            cached_prompt_tokens: parsed["usage"]["input_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .unwrap_or(0),
+            cache_write_tokens: 0,
             reasoning_tokens: parsed["usage"]["output_tokens_details"]["reasoning_tokens"]
                 .as_u64()
                 .unwrap_or(0),

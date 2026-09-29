@@ -98,6 +98,24 @@ pub async fn run_agent(
     .await
 }
 
+/// Capability note appended to every system prompt, derived from the tool
+/// specs actually sent so the prompt never claims tools the run lacks.
+/// Depends only on the tool set, so it keeps the cached prefix stable.
+pub fn tool_note(specs: &[ToolSpec]) -> String {
+    let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+    if names.is_empty() {
+        return "Tool note: no repository tools in this step.".into();
+    }
+    let list = names.join(", ");
+    if names.iter().any(|n| n.starts_with("vera_")) {
+        format!("Tool note: tools in this run: {list}. The Vera index is available.")
+    } else {
+        format!(
+            "Tool note: tools in this run: {list}. No semantic index is available: find callers and related code with lexical search, and do not claim semantic or repository-wide coverage."
+        )
+    }
+}
+
 /// Minimum time that must remain for a repair round to be attempted.
 const REPAIR_MIN_LEFT: Duration = Duration::from_secs(15);
 
@@ -119,8 +137,9 @@ pub async fn run_agent_checked(
     budget: &AgentBudget,
     check: TerminalCheck<'_>,
 ) -> Result<AgentRun, ProviderError> {
-    let mut messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
     let mut specs = toolbox.specs();
+    let system = format!("{system}\n\n{}", tool_note(&specs));
+    let mut messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
     specs.push(terminal_tool.clone());
     let mut tool_calls = 0u32;
     let mut nudged = false;

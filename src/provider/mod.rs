@@ -91,8 +91,19 @@ pub struct ToolSpec {
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Prompt tokens served from the provider's cache; included in prompt_tokens.
+    #[serde(default)]
+    pub cached_prompt_tokens: u64,
+    /// Prompt tokens written to the provider's cache.
+    #[serde(default)]
+    pub cache_write_tokens: u64,
     /// Reasoning/thinking tokens, where the provider reports them.
     pub reasoning_tokens: u64,
+}
+
+/// Cached prompt fraction, or None when the prompt usage is unavailable.
+pub fn cache_hit_rate(cached: u64, prompt: u64) -> Option<f64> {
+    (prompt > 0).then(|| cached as f64 / prompt as f64)
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +142,8 @@ pub struct LedgerEntry {
     pub effective_reasoning: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    pub cached_prompt_tokens: u64,
+    pub cache_write_tokens: u64,
     pub latency_ms: u64,
     pub retries: u32,
     pub error: Option<String>,

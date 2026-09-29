@@ -18,6 +18,7 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
         counterevidence_checked: vec![],
         validation_status: Some(ValidationStatus::Accepted),
         suggested_fix: None,
+        validated_fix: None,
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
@@ -61,6 +62,18 @@ fn upsert_preserves_posted() {
 }
 
 #[test]
+fn state_roundtrip_drops_validated_fix() {
+    let mut s = ReviewState::default();
+    let mut f = finding("f.rs", "k", 1);
+    f.validated_fix = Some("verified replacement".into());
+    s.upsert(&f, FindingState::Open);
+
+    let back = s.findings[0].to_finding();
+    assert_eq!(back.validated_fix, None);
+    assert_eq!(back.suggested_fix, None);
+}
+
+#[test]
 fn recheck_transitions() {
     assert_eq!(
         recheck_transition(ValidationStatus::Rejected),
@@ -99,6 +112,8 @@ fn surfaced_ids_only_returns_accepted_findings() {
             requests: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_prompt_tokens: 0,
+            cache_write_tokens: 0,
             reasoning_tokens: 0,
             by_route: vec![],
             wall_ms: 0,

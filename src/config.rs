@@ -225,6 +225,9 @@ pub struct ModelRoute {
     pub model: String,
     #[serde(default = "default_max_output")]
     pub max_output_tokens: u32,
+    /// Send explicit provider prompt-cache hints where supported.
+    #[serde(default = "default_true")]
+    pub cache: bool,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
     #[serde(default)]
@@ -1076,6 +1079,7 @@ impl Config {
             // header names only: values may be interpolated from env vars
             let mut headers: Vec<&str> = r.extra_headers.keys().map(String::as_str).collect();
             headers.sort_unstable();
+            // Cache hints do not change model output, so toggling them must not invalidate stored reviews.
             serde_json::json!({
                 "extra_headers": headers,
                 "session_header": r.session_header,

@@ -44,6 +44,7 @@ pub async fn validate_candidates(
     deadline: std::time::Instant,
     timing: &Recorder,
     wall: std::time::Instant,
+    strategy_name: &str,
     phase_name: &str,
 ) -> Option<String> {
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
@@ -68,9 +69,18 @@ pub async fn validate_candidates(
         let cand = c.clone();
         let cand_id = c.id();
         let excerpt = diff.file_excerpt(&cand.file);
+        let cache_key = super::cache_key(cfg, strategy_name, &role, Some(&cand.file));
         // create the client in candidate order (before the semaphore race)
         // so scripted validators are matched to candidates deterministically
-        let client = make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name);
+        let client = make_client(
+            &cfg_models,
+            &role,
+            Some(cache_key),
+            ledger,
+            max_req,
+            retries,
+            &terminal.name,
+        );
         set.spawn(async move {
             let queued_at = std::time::Instant::now();
             let _permit = sem.acquire().await.unwrap();
@@ -150,6 +160,8 @@ pub async fn validate_candidates(
         let (i, run, cand_id, exec_start, queue_ms, skipped) =
             res.expect("validator task panicked");
         let cand = &mut candidates[i];
+        // only this run's verdict may approve a remedy
+        cand.validated_fix = None;
         let outcome: String = if skipped {
             // the deadline passed while this task queued on the semaphore
             clean = false;
@@ -176,6 +188,7 @@ pub async fn validate_candidates(
                             cand.end_line = Some(l);
                         }
                         cand.rationale = Some(v.rationale);
+                        cand.validated_fix = v.fix;
                         if v.validation_status == ValidationStatus::Accepted {
                             "ok:accepted".to_string()
                         } else {

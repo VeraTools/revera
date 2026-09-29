@@ -46,6 +46,7 @@ different provider family).
 | `api_key_env` | required for HTTP protocols | *name* of the environment variable holding the key; the value is never logged or fingerprinted |
 | `max_output_tokens` | `4000` | |
 | `temperature` | `0.2` | |
+| `cache` | `true` | send explicit prompt-cache hints where the provider supports them |
 | `reasoning` | `medium` | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`, or the long form below |
 | `extra_headers` | `{}` | header name → value (values may use `${VAR}`) |
 | `session_header` | — | header that carries a stable per-run session id (set automatically for `opencode.ai` hosts) |

@@ -5,7 +5,7 @@
 Cover the whole changed surface with no special emphasis.
 
 ## cross-file
-Concentrate on effects outside the diff: every changed public symbol's callers, implementors of changed traits/interfaces, tests and fixtures encoding the old behavior, and config/serialization consumers. Spend most tool calls on `vera_references`, `vera_grep`, and reading the callers you find. Do not spend effort on defects fully visible inside a single hunk.
+Concentrate on effects outside the diff: every changed public symbol's callers, implementors of changed traits/interfaces, tests and fixtures encoding the old behavior, and config/serialization consumers. Spend most tool calls on finding and reading those callers and consumers. Do not spend effort on defects fully visible inside a single hunk.
 
 ## security
 Concentrate on trust boundaries the PR touches: input validation removed or weakened, authorization checks, path/URL/shell/SQL construction from untrusted data, secret handling, deserialization of external data, and error paths that leak or fail open. Report only reachable issues with a concrete attacker-controlled input.

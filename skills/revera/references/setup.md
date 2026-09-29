@@ -28,5 +28,6 @@ jobs:
 - Fork PRs get no secrets; with `publish: comment` Revera skips them
   (status `partial`, reason in the report) unless `github.allow_forks: true`.
 - Inputs: `config`, `profile`, `strategy`, `publish`, `fail-on`
-  (`failed` | `partial` | `never`), `revera-version`, `vera-version`, `cache`.
+  (`failed` | `partial` | `never`), `revera-version`, `vera-version`, `github-token`,
+  `cache`.
   Outputs: `status`, `report-path`, `findings`.

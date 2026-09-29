@@ -30,9 +30,13 @@ async fn scripted_ordering_and_conversations() {
     let m = c2.complete(&[], &[]).await.unwrap();
     assert_eq!(m.message.content.as_deref(), Some("second"));
     // third session exhausted -> terminal call
-    let c3 = ScriptedClient::new(f.path(), "investigator", ledger, "submit_findings").unwrap();
+    let c3 =
+        ScriptedClient::new(f.path(), "investigator", ledger.clone(), "submit_findings").unwrap();
     let m = c3.complete(&[], &[]).await.unwrap();
     assert_eq!(m.message.tool_calls[0].name, "submit_findings");
+    let report = revera::report::ledger_report(&ledger.0.lock().unwrap(), 0);
+    assert_eq!(report.cached_prompt_tokens, 0);
+    assert_eq!(report.by_route[0].cached_prompt_tokens, 0);
 }
 
 #[tokio::test]
@@ -88,6 +92,7 @@ fn summary_rendering() {
         counterevidence_checked: vec![],
         validation_status: Some(ValidationStatus::Accepted),
         suggested_fix: None,
+        validated_fix: None,
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
@@ -118,6 +123,7 @@ fn summary_rendering() {
         counterevidence_checked: vec![],
         validation_status: Some(ValidationStatus::Accepted),
         suggested_fix: None,
+        validated_fix: None,
         source: "investigator".into(),
         rationale: None,
         sources: vec![],

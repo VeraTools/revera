@@ -179,6 +179,7 @@ pub fn parse_findings_checked(args: &serde_json::Value) -> ParsedFindings {
                 f.validation_status = None;
                 f.rationale = None;
                 f.counterevidence_checked.clear();
+                f.validated_fix = None;
                 out.findings.push(f)
             }
             Err(e) => {
@@ -312,6 +313,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             timing: timing.finish(wall),
             stats: RunStats {
                 reused: true,
+                validation: "reused".into(),
                 retrieval: "not needed".into(),
                 ..Default::default()
             },
@@ -381,7 +383,9 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         cfg.review.max_tool_output_bytes,
     )
     .with_head(&head_sha);
-    if !cfg.vera.enabled {
+    // a failed index leaves no usable vera_* tools; hiding them keeps the
+    // tool note honest about lexical-only coverage
+    if !cfg.vera.enabled || vera_err.is_some() {
         tb.hide_vera_tools();
     }
     let toolbox = Arc::new(tb);
@@ -424,6 +428,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             deadline,
             &timing,
             wall,
+            strategy_name,
             "recheck",
         )
         .await;
@@ -571,6 +576,7 @@ pub async fn finish(
             prep.deadline,
             &prep.timing,
             prep.wall,
+            &prep.strategy_name,
             "validate",
         )
         .await;

@@ -5,7 +5,7 @@ Read the JSON report (`report-path` output or `--out`). Key fields:
 | field | meaning |
 |---|---|
 | `status` | `complete`, `partial` (budget/provider/coverage problem) or `failed` |
-| `stats.validation` | `fresh`, `reused` or `disabled` |
+| `stats.validation` | `fresh`, `reused` (identical content, `stats.reused: true`) or `disabled` |
 | `stats.accepted` / `rejected` / `uncertain` / `unvalidated` | verdict counts |
 | `coverage_gaps` | files not reviewed (content policy, `max_diff_bytes`, budget) |
 | `stats.retrieval` | `lexical-only`, `vera`, `vera+rerank`, `vera (rerank degraded)`, `unavailable: …` |

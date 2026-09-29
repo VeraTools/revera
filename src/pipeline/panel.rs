@@ -110,8 +110,16 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 );
                 return (focus, None, lane_start);
             }
-            let client = match make_client(&route, &focus, ledger, max_req, retries, &terminal.name)
-            {
+            let key = super::cache_key(cfg, "panel", &focus, None);
+            let client = match make_client(
+                &route,
+                &focus,
+                Some(key),
+                ledger,
+                max_req,
+                retries,
+                &terminal.name,
+            ) {
                 Ok(c) => c,
                 Err(e) => return (focus, Some(Err(e)), lane_start),
             };
@@ -250,6 +258,7 @@ mod tests {
             api_key_env: Some("REVERA_TEST_KEY".into()),
             model: model.into(),
             max_output_tokens: 100,
+            cache: false,
             temperature: 0.0,
             extra_headers: HashMap::new(),
             session_header: None,

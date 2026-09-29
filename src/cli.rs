@@ -316,6 +316,8 @@ fn fork_skip(
             requests: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_prompt_tokens: 0,
+            cache_write_tokens: 0,
             reasoning_tokens: 0,
             by_route: vec![],
             wall_ms: 0,
@@ -584,6 +586,17 @@ async fn review(a: ReviewArgs) -> i32 {
                 }
             }
             eprintln!("report: {}", out.display());
+            if let Some(rate) = crate::provider::cache_hit_rate(
+                report.ledger.cached_prompt_tokens,
+                report.ledger.prompt_tokens,
+            ) {
+                eprintln!(
+                    "usage: {} prompt tokens · cache {:.0}% of prompt tokens · {} cache-write tokens",
+                    report.ledger.prompt_tokens,
+                    rate * 100.0,
+                    report.ledger.cache_write_tokens,
+                );
+            }
             match report.status {
                 _ if publish_failed => 2,
                 RunStatus::Complete => 0,

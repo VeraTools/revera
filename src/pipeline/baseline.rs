@@ -32,6 +32,12 @@ pub(crate) async fn investigate(
     let investigator = make_client(
         &cfg.models.investigator,
         "investigator",
+        Some(super::cache_key(
+            cfg,
+            &prep.strategy_name,
+            "investigator",
+            None,
+        )),
         prep.ledger.clone(),
         cfg.budget.run_max_requests,
         cfg.budget.retries,

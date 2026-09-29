@@ -168,6 +168,7 @@ pub fn terminal_submit_verdict_spec() -> ToolSpec {
                 "start_line": {"type": "integer"},
                 "end_line": {"type": "integer"},
                 "rationale": {"type": "string"},
+                "fix": {"type": "string", "description": "Remedy you verified against the code; omit unless you checked it"},
             }),
             &["validation_status", "rationale"],
         ),

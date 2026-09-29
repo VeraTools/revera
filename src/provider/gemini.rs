@@ -347,6 +347,8 @@ impl ProtocolAdapter for GeminiAdapter {
         let usage = Usage {
             prompt_tokens: u["promptTokenCount"].as_u64().unwrap_or(0),
             completion_tokens: u["candidatesTokenCount"].as_u64().unwrap_or(0),
+            cached_prompt_tokens: u["cachedContentTokenCount"].as_u64().unwrap_or(0),
+            cache_write_tokens: 0,
             reasoning_tokens: u["thoughtsTokenCount"].as_u64().unwrap_or(0),
         };
         // keep an ordered per-part record only when a signature was
