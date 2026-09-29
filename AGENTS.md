@@ -31,8 +31,12 @@ REVERA_TEST_VERA=$(command -v vera) cargo test
 ./scripts/check-versions.sh && ./scripts/check-docs-hygiene.sh
 bash scripts/test-install-revera.sh && bash scripts/test-install-vera.sh
 bash scripts/test-action-outcome.sh
+bash scripts/test-verify-release-report.sh
 bash eval/test-run-all.sh && bash eval/test-frozen.sh
 ```
+
+Static analysis (deny, machete, shellcheck, ruff, actionlint, zizmor, MSRV)
+and the release sequence are listed in CONTRIBUTING.md.
 
 Public files (README, docs, prompts, skills, AGENTS.md) name model providers,
 not routing intermediaries (`check-docs-hygiene.sh`). Workflow `uses:` pins

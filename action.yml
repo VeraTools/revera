@@ -59,7 +59,8 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         REVERA_VERSION: ${{ inputs.revera-version }}
-      run: |
+      # GITHUB_PATH gets a fixed runner-owned directory, never user input.
+      run: | # zizmor: ignore[github-env]
         set -euo pipefail
         mkdir -p "$RUNNER_TEMP/bin"
         "$ACTION_PATH/scripts/install-revera.sh" "$REVERA_VERSION" "$RUNNER_TEMP/bin"

@@ -30,8 +30,8 @@ open(p, "w").write(s.replace(old, new))
 PY
 }
 
-build() { # build <name> <commit-msg>; edits are done by the caller via `apply`
-    local name="$1" msg="$2"
+build() { # build <name> <description>; edits are done by the caller via `apply`
+    local name="$1"
     local d="$CORPUS_ROOT/$name"
     rm -rf "$d"
     git clone -q --no-checkout "$src" "$d"
@@ -51,7 +51,6 @@ mkdir -p "$CORPUS_ROOT"
 
 # ============ L1 linestep-terminator ============
 D="$(build linestep-terminator "searcher: LineStep yields lines without their terminator")"
-F="$D/crates/searcher/src/lines.rs"
 apply "$D" crates/searcher/src/lines.rs \
 "    /// The range returned includes the line terminator. Ranges are always
     /// non-empty." \

@@ -1,0 +1,6 @@
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "B"]
+# the formatter owns line length; long string literals stay readable
+ignore = ["E501"]

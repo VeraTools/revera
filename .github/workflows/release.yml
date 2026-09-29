@@ -1,9 +1,9 @@
 name: release
 
-# Runs for release tags only. A stable vX.Y.Z tag publishes a release and
-# moves the vX major tag; vX.Y.Z-<pre> publishes a pre-release and leaves the
-# major tag alone; anything else (including the moving v0 tag itself) fails
-# fast before building.
+# Runs for release tags only. A stable vX.Y.Z tag publishes a non-latest
+# release; vX.Y.Z-<pre> publishes a pre-release. Major-tag and latest-release
+# promotion are deliberate, separately dispatched operations in
+# release-promote.yml.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
@@ -17,6 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Validate tag against Cargo.toml
@@ -68,6 +69,7 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          make_latest: false
           generate_release_notes: true
           body: |
             Static `x86_64-unknown-linux-musl` binary. Verify with
@@ -76,10 +78,3 @@ jobs:
           files: |
             revera-x86_64-unknown-linux-musl.tar.gz
             revera-x86_64-unknown-linux-musl.tar.gz.sha256
-
-      - name: Move major tag
-        if: steps.tag.outputs.prerelease == 'false'
-        run: |
-          major="${GITHUB_REF_NAME%%.*}"
-          git tag -f "$major" "$GITHUB_SHA"
-          git push -f origin "$major"
