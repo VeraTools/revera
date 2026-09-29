@@ -237,6 +237,7 @@ impl HttpTransport {
                 Ok(s) => s,
                 Err(e) => {
                     self.ledger.release();
+                    let e = diagnostic_error(e);
                     self.record(
                         &tel,
                         &adapter.effective_reasoning(&attempt),
@@ -286,10 +287,10 @@ impl HttpTransport {
                             tokio::time::sleep(d).await;
                             continue;
                         }
-                        let err = ProviderError::RetryExhausted(format!(
+                        let err = diagnostic_error(ProviderError::RetryExhausted(format!(
                             "HTTP {status}: {}",
                             crate::text::excerpt_bytes(&text, 400)
-                        ));
+                        )));
                         self.record(
                             &tel,
                             &effective,
@@ -347,6 +348,7 @@ impl HttpTransport {
                             continue;
                         }
                         Parse::Err(e) => {
+                            let e = diagnostic_error(e);
                             self.record(
                                 &tel,
                                 &effective,
@@ -363,7 +365,7 @@ impl HttpTransport {
                 }
                 Err(e) => {
                     let transient = e.is_timeout() || e.is_connect();
-                    let message = e.without_url().to_string();
+                    let message = crate::redact::diagnostic(&e.without_url().to_string());
                     if transient && attempts <= self.retries {
                         self.record(
                             &tel,
@@ -378,7 +380,7 @@ impl HttpTransport {
                         tokio::time::sleep(Self::retry_delay(None, retries_used, Utc::now())).await;
                         continue;
                     }
-                    let err = ProviderError::Http(message);
+                    let err = diagnostic_error(ProviderError::Http(message));
                     self.record(
                         &tel,
                         &effective,
@@ -393,6 +395,21 @@ impl HttpTransport {
                 }
             }
         }
+    }
+}
+
+/// Provider error text can echo request URLs or credentials from the
+/// response body; it reaches the ledger, reports and logs.
+fn diagnostic_error(e: ProviderError) -> ProviderError {
+    use crate::redact::diagnostic;
+    match e {
+        ProviderError::Http(s) => ProviderError::Http(diagnostic(&s)),
+        ProviderError::RetryExhausted(s) => ProviderError::RetryExhausted(diagnostic(&s)),
+        ProviderError::BudgetExhausted => ProviderError::BudgetExhausted,
+        ProviderError::ScriptExpectationFailed(s) => {
+            ProviderError::ScriptExpectationFailed(diagnostic(&s))
+        }
+        ProviderError::Other(s) => ProviderError::Other(diagnostic(&s)),
     }
 }
 

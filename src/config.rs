@@ -686,16 +686,6 @@ impl VeraConfig {
 /// need no GPU and no API key).
 pub const LOCAL_VERA_BACKEND: &str = "potion-code";
 
-/// Endpoint query values may be credentials (`?key=...`): register them so
-/// every redacted output surface masks them, whatever URL form it prints.
-pub fn register_query_secrets(input: &str) {
-    if let Ok(url) = url::Url::parse(input) {
-        for (_, value) in url.query_pairs() {
-            crate::redact::register(&value);
-        }
-    }
-}
-
 /// URL identity that retains routing and query names but never query values.
 pub fn identity_url(input: &str) -> String {
     let Ok(mut url) = url::Url::parse(input) else {
@@ -762,7 +752,6 @@ pub fn expand_env(s: &str) -> Result<String> {
 fn expand_route(r: &mut ModelRoute) -> Result<()> {
     if let Some(b) = &mut r.base_url {
         *b = expand_env(b)?;
-        register_query_secrets(b);
     }
     if let Some(s) = &mut r.script {
         let e = expand_env(&s.to_string_lossy())?;
@@ -1255,21 +1244,5 @@ vera: {{enabled: false}}
         let changed_name =
             Config::parse(&template("sensitive-alpha", "token"), "identity-test").unwrap();
         assert_ne!(first_fp, changed_name.review_fingerprint("baseline"));
-    }
-
-    #[test]
-    fn query_values_are_redacted_everywhere() {
-        let yaml = r#"
-models:
-  investigator:
-    protocol: openai-chat
-    base_url: "https://api.example.com/v1?key=query-secret-gamma"
-    api_key_env: IDENTITY_TEST_KEY
-    model: test
-vera: {enabled: false}
-"#;
-        Config::parse(yaml, "identity-test").unwrap();
-        let err = "GET https://api.example.com/v1/chat/completions?key=query-secret-gamma failed";
-        assert!(!crate::redact::text(err).contains("query-secret-gamma"));
     }
 }

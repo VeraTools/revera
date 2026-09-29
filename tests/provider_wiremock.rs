@@ -89,6 +89,43 @@ async fn request_errors_and_ledger_hide_base_url_query_values() {
     );
 }
 
+#[tokio::test]
+async fn provider_error_bodies_echoing_the_url_hide_query_values() {
+    let server = MockServer::start().await;
+    let echoed = format!(
+        "unsupported parameter in {}/v1/chat/completions?key=echoed-credential-value",
+        server.uri()
+    );
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(echoed))
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = OpenAiChatClient::new(
+        route(&format!("{}/v1?key=echoed-credential-value", server.uri())),
+        ledger.clone(),
+        2,
+        0,
+        "test",
+    )
+    .unwrap();
+    let err = c
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap_err();
+    assert!(
+        !err.to_string().contains("echoed-credential-value"),
+        "{err}"
+    );
+    let entries = &ledger.0.lock().unwrap().entries;
+    assert!(entries.iter().all(|e| {
+        !e.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("echoed-credential-value")
+    }));
+}
+
 fn ok_body() -> serde_json::Value {
     json!({
         "choices": [{"message": {"role": "assistant", "content": null,

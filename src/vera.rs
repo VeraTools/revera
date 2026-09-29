@@ -158,7 +158,6 @@ impl VeraClient {
                 .embedding
                 .as_ref()
                 .context("vera.backend = api needs a vera.embedding endpoint")?;
-            crate::config::register_query_secrets(&e.base_url);
             env.push(("EMBEDDING_MODEL_BASE_URL".into(), e.base_url.clone()));
             env.push(("EMBEDDING_MODEL_ID".into(), e.model.clone()));
             env.push((
@@ -170,7 +169,6 @@ impl VeraClient {
         // embeddings with a remote reranker are supported by Vera
         let rerank = match &cfg.reranker {
             Some(r) => {
-                crate::config::register_query_secrets(&r.base_url);
                 env.push(("RERANKER_MODEL_BASE_URL".into(), r.base_url.clone()));
                 env.push(("RERANKER_MODEL_ID".into(), r.model.clone()));
                 env.push((
@@ -295,14 +293,7 @@ impl VeraClient {
             }
         };
         if !out.status.success() {
-            let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-            for key in ["EMBEDDING_MODEL_BASE_URL", "RERANKER_MODEL_BASE_URL"] {
-                if let Some((_, base_url)) = self.env.iter().find(|(name, _)| name == key) {
-                    let identity = crate::config::identity_url(base_url);
-                    stderr = stderr.replace(base_url, &identity);
-                }
-            }
-            let stderr = crate::redact::text(&stderr);
+            let stderr = crate::redact::diagnostic(&String::from_utf8_lossy(&out.stderr));
             let tail: String = stderr
                 .chars()
                 .rev()
@@ -512,5 +503,19 @@ impl VeraClient {
 
     pub async fn overview(&self) -> Result<Value> {
         self.run_json(&["overview", "--json"]).await
+    }
+}
+
+#[cfg(test)]
+mod url_query_tests {
+    #[test]
+    fn url_queries_are_removed_from_vera_errors() {
+        let err = "error sending request for url (https://h.example/v1/embeddings?key=abc%2Fdef&x=1): timeout";
+        let out = crate::redact::diagnostic(err);
+        assert!(!out.contains("abc"), "{out}");
+        assert!(
+            out.contains("https://h.example/v1/embeddings?[query removed]"),
+            "{out}"
+        );
     }
 }

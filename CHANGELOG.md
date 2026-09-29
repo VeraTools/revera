@@ -5,8 +5,8 @@
 - Security: query values in model, embedding and reranker `base_url`s
   (for example `?key=...`) no longer appear in reports, PR comment footers,
   `revera doctor` output, provider errors or logs. Route labels keep query
-  names only, request errors drop their URL, and query values are masked
-  wherever output is redacted. Earlier releases printed the full URL; keep
+  names only, request errors drop their URL, and provider and Vera error
+  text drops URL queries. Earlier releases printed the full URL; keep
   keys in `api_key_env` and rotate any key that was placed in a URL.
 - `release-verify.yml` installs the Vera version from `action.yml` instead of
   the Revera version.

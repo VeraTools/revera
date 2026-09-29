@@ -81,6 +81,15 @@ pub fn text(s: &str) -> Cow<'_, str> {
     out
 }
 
+/// Error text from providers and Vera may echo endpoint URLs whose query
+/// values are credentials, in any path or encoding: drop every URL query and
+/// mask the rest. Only for diagnostics, never for model input or output.
+pub fn diagnostic(s: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r#"(https?://[^\s?#"'<>()]+)\?[^\s#"'<>()]*"#).unwrap());
+    text(&re.replace_all(s, "$1?[query removed]")).into_owned()
+}
+
 /// Redact every string inside a JSON value in place.
 pub fn json(v: &mut serde_json::Value) {
     match v {
