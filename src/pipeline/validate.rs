@@ -27,6 +27,12 @@ fn validator_budget_at(
     })
 }
 
+fn approved_fix(verdict: &Verdict) -> Option<String> {
+    (verdict.validation_status == ValidationStatus::Accepted)
+        .then(|| verdict.fix.clone())
+        .flatten()
+}
+
 /// Run one fresh-context validator agent per candidate, bounded by a
 /// concurrency semaphore. Failures mark the candidate uncertain; returns
 /// Some(partial_reason) when any candidate could not be conclusively validated.
@@ -44,6 +50,7 @@ pub async fn validate_candidates(
     deadline: std::time::Instant,
     timing: &Recorder,
     wall: std::time::Instant,
+    strategy_name: &str,
     phase_name: &str,
 ) -> Option<String> {
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
@@ -68,9 +75,18 @@ pub async fn validate_candidates(
         let cand = c.clone();
         let cand_id = c.id();
         let excerpt = diff.file_excerpt(&cand.file);
+        let cache_key = super::cache_key(cfg, strategy_name, &role, Some(&cand.file));
         // create the client in candidate order (before the semaphore race)
         // so scripted validators are matched to candidates deterministically
-        let client = make_client(&cfg_models, &role, ledger, max_req, retries, &terminal.name);
+        let client = make_client(
+            &cfg_models,
+            &role,
+            Some(cache_key),
+            ledger,
+            max_req,
+            retries,
+            &terminal.name,
+        );
         set.spawn(async move {
             let queued_at = std::time::Instant::now();
             let _permit = sem.acquire().await.unwrap();
@@ -150,6 +166,8 @@ pub async fn validate_candidates(
         let (i, run, cand_id, exec_start, queue_ms, skipped) =
             res.expect("validator task panicked");
         let cand = &mut candidates[i];
+        // only this run's verdict may approve a remedy
+        cand.validated_fix = None;
         let outcome: String = if skipped {
             // the deadline passed while this task queued on the semaphore
             clean = false;
@@ -164,6 +182,7 @@ pub async fn validate_candidates(
                     ..
                 }) => match serde_json::from_value::<Verdict>(call.arguments) {
                     Ok(v) => {
+                        let approved_fix = approved_fix(&v);
                         cand.validation_status = Some(v.validation_status);
                         cand.counterevidence_checked = v.counterevidence_checked;
                         if let Some(s) = v.severity {
@@ -175,6 +194,7 @@ pub async fn validate_candidates(
                         if let Some(l) = v.end_line {
                             cand.end_line = Some(l);
                         }
+                        cand.validated_fix = approved_fix;
                         cand.rationale = Some(v.rationale);
                         if v.validation_status == ValidationStatus::Accepted {
                             "ok:accepted".to_string()
@@ -248,7 +268,8 @@ pub fn recheck_prompt() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::validator_budget_at;
+    use super::{approved_fix, validator_budget_at};
+    use crate::findings::{ValidationStatus, Verdict};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -263,5 +284,24 @@ mod tests {
         assert!(validator_budget_at(4, 30, now, now + Duration::from_millis(400)).is_none());
         let b = validator_budget_at(4, 30, now, now + Duration::from_secs(5)).unwrap();
         assert_eq!(b.max_seconds, 5);
+    }
+
+    #[test]
+    fn only_accepted_verdict_approves_a_fix() {
+        let verdict = |validation_status| Verdict {
+            validation_status,
+            counterevidence_checked: vec![],
+            severity: None,
+            start_line: None,
+            end_line: None,
+            rationale: String::new(),
+            fix: Some("verified remedy".into()),
+        };
+        assert_eq!(
+            approved_fix(&verdict(ValidationStatus::Accepted)).as_deref(),
+            Some("verified remedy")
+        );
+        assert_eq!(approved_fix(&verdict(ValidationStatus::Rejected)), None);
+        assert_eq!(approved_fix(&verdict(ValidationStatus::Uncertain)), None);
     }
 }

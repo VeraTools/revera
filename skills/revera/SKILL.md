@@ -23,8 +23,10 @@ findings. Use this skill only for Revera itself.
    config, the routes and that the named key variables are set. It makes no
    provider calls, so a passing doctor does not prove a key or model works.
 5. **Live run** (spends provider tokens; confirm with the user first):
-   `revera review --repo . --base origin/main --head HEAD` prints a dry-run
-   plan. Only `publish: comment` (the Action's default) posts to a PR.
+   `revera review --config revera.yaml --repo . --base origin/main --head HEAD --publish dry-run --out report.json`
+   runs the full review with live model calls and prints what it would
+   publish, without posting to GitHub. Only `--publish comment` (the Action's
+   default) posts to a PR.
 6. **Action setup** — see `references/setup.md`.
 7. **Diagnose** a `partial`/`failed` run — see `references/troubleshooting.md`.
 

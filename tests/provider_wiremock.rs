@@ -41,6 +41,7 @@ fn route(url: &str) -> ModelRoute {
         api_key_env: Some("REVERA_TEST_KEY".into()),
         model: "test-model".into(),
         max_output_tokens: 100,
+        cache: false,
         temperature: 0.2,
         extra_headers: HashMap::new(),
         session_header: None,
@@ -230,8 +231,9 @@ async fn run_budget_blocks_second_attempt_on_retry() {
 
 use revera::provider::anthropic::AnthropicAdapter;
 use revera::provider::gemini::GeminiAdapter;
-use revera::provider::http::{HttpClient, HttpTransport};
-use revera::provider::openai_responses::OpenAiResponsesAdapter;
+use revera::provider::http::{AttemptState, HttpClient, HttpTransport, ProtocolAdapter};
+use revera::provider::openai_chat::OpenAiChatAdapter;
+use revera::provider::openai_responses::{OpenAiResponsesAdapter, OpenAiResponsesClient};
 use revera::provider::{Role, ToolCall};
 
 fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
@@ -241,6 +243,7 @@ fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
         api_key_env: Some("REVERA_TEST_KEY".into()),
         model: model.into(),
         max_output_tokens: 100,
+        cache: false,
         temperature: 0.2,
         extra_headers: HashMap::new(),
         session_header: None,
@@ -1800,4 +1803,541 @@ async fn ledger_entry_records_reasoning_tokens() {
     let entries = ledger.0.lock().unwrap().entries.clone();
     assert_eq!(entries[0].reasoning_tokens, 7);
     assert_eq!(ledger.totals().3, 7);
+}
+
+fn cache_route_for(url: &str, proto: Protocol, model: &str, cache: bool) -> ModelRoute {
+    let mut rt = route_for(url, proto, model);
+    rt.cache = cache;
+    rt
+}
+
+fn cache_key() -> Option<String> {
+    Some("revera-0123456789abcdef".into())
+}
+
+fn cache_client(
+    url: &str,
+    proto: Protocol,
+    model: &str,
+    cache: bool,
+    ledger: LedgerHandle,
+) -> Box<dyn ModelClient> {
+    match proto {
+        Protocol::OpenaiChat => Box::new(
+            OpenAiChatClient::new_with_cache_key(
+                cache_route_for(url, proto, model, cache),
+                ledger,
+                10,
+                0,
+                "cache-test",
+                cache_key(),
+            )
+            .unwrap(),
+        ),
+        Protocol::OpenaiResponses => Box::new(
+            OpenAiResponsesClient::new_responses_with_cache_key(
+                cache_route_for(url, proto, model, cache),
+                ledger,
+                10,
+                0,
+                "cache-test",
+                cache_key(),
+            )
+            .unwrap(),
+        ),
+        Protocol::Anthropic => Box::new(HttpClient {
+            adapter: AnthropicAdapter::from_route(cache_route_for(url, proto, model, cache))
+                .unwrap(),
+            transport: HttpTransport::new(ledger, 10, 0, "cache-test").unwrap(),
+        }),
+        Protocol::Gemini => Box::new(HttpClient {
+            adapter: GeminiAdapter::from_route(cache_route_for(url, proto, model, cache)).unwrap(),
+            transport: HttpTransport::new(ledger, 10, 0, "cache-test").unwrap(),
+        }),
+        Protocol::Scripted => unreachable!(),
+    }
+}
+
+fn count_cache_controls(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(count_cache_controls).sum::<usize>()
+        }
+        serde_json::Value::Array(items) => items.iter().map(count_cache_controls).sum(),
+        _ => 0,
+    }
+}
+
+#[tokio::test]
+async fn openai_chat_cache_hint_is_keyed_and_disabled_when_configured_off() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let msgs = [ChatMessage::user("hi")];
+    cache_client(
+        &server.uri(),
+        Protocol::OpenaiChat,
+        "m",
+        true,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &[])
+    .await
+    .unwrap();
+    cache_client(
+        &server.uri(),
+        Protocol::OpenaiChat,
+        "m",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let enabled: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let disabled: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(enabled["prompt_cache_key"], "revera-0123456789abcdef");
+    assert!(disabled.get("prompt_cache_key").is_none());
+}
+
+#[tokio::test]
+async fn openai_responses_cache_hint_is_keyed_and_disabled_when_configured_off() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let msgs = [ChatMessage::user("hi")];
+    cache_client(
+        &server.uri(),
+        Protocol::OpenaiResponses,
+        "m",
+        true,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &[])
+    .await
+    .unwrap();
+    cache_client(
+        &server.uri(),
+        Protocol::OpenaiResponses,
+        "m",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let enabled: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let disabled: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(enabled["prompt_cache_key"], "revera-0123456789abcdef");
+    assert!(disabled.get("prompt_cache_key").is_none());
+}
+
+#[tokio::test]
+async fn anthropic_cache_hints_use_at_most_four_breakpoints_and_disable_cleanly() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let (mut msgs, tools) = convo();
+    msgs[2].provider_state = Some(json!([
+        {"type": "thinking", "thinking": "private", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "opaque"}
+    ]));
+    cache_client(
+        &server.uri(),
+        Protocol::Anthropic,
+        "claude",
+        true,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &tools)
+    .await
+    .unwrap();
+    cache_client(
+        &server.uri(),
+        Protocol::Anthropic,
+        "claude",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &tools)
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let enabled: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let disabled: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(enabled["system"].is_array(), "{enabled}");
+    assert_eq!(enabled["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(enabled["tools"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(count_cache_controls(&enabled), 4, "{enabled}");
+    assert!(
+        enabled["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_none(),
+        "{enabled}"
+    );
+    assert_eq!(
+        enabled["messages"][1]["content"][3]["cache_control"]["type"], "ephemeral",
+        "{enabled}"
+    );
+    assert_eq!(disabled["system"], "you review", "{disabled}");
+    assert_eq!(count_cache_controls(&disabled), 0, "{disabled}");
+}
+
+#[tokio::test]
+async fn gemini_uses_only_implicit_caching_with_cache_enabled_or_disabled() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let msgs = [ChatMessage::user("hi")];
+    cache_client(
+        &server.uri(),
+        Protocol::Gemini,
+        "gemini-2.5-pro",
+        true,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &[])
+    .await
+    .unwrap();
+    cache_client(
+        &server.uri(),
+        Protocol::Gemini,
+        "gemini-2.5-pro",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&msgs, &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    for req in reqs {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert!(body.get("prompt_cache_key").is_none(), "{body}");
+        assert_eq!(count_cache_controls(&body), 0, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn openai_chat_retries_without_rejected_cache_key_and_records_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"prompt_cache_key": "revera-0123456789abcdef"}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unsupported prompt_cache_key"))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    cache_client(
+        &server.uri(),
+        Protocol::OpenaiChat,
+        "m",
+        true,
+        ledger.clone(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(second.get("prompt_cache_key").is_none(), "{second}");
+    let entries = ledger.0.lock().unwrap().entries.clone();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0].error.as_deref(),
+        Some("400: retrying without prompt cache hint")
+    );
+}
+
+#[tokio::test]
+async fn openai_responses_retries_without_rejected_cache_key_and_records_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"prompt_cache_key": "revera-0123456789abcdef"}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unsupported prompt_cache_key"))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    cache_client(
+        &server.uri(),
+        Protocol::OpenaiResponses,
+        "m",
+        true,
+        ledger.clone(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(second.get("prompt_cache_key").is_none(), "{second}");
+    let entries = ledger.0.lock().unwrap().entries.clone();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0].error.as_deref(),
+        Some("400: retrying without prompt cache hint")
+    );
+}
+
+#[tokio::test]
+async fn anthropic_retries_without_rejected_cache_control_and_records_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "system": [{"cache_control": {"type": "ephemeral"}}]
+        })))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unsupported cache_control"))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    cache_client(
+        &server.uri(),
+        Protocol::Anthropic,
+        "claude",
+        true,
+        ledger.clone(),
+    )
+    .complete(
+        &[ChatMessage::system("system"), ChatMessage::user("hi")],
+        &[],
+    )
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(second["system"], "system", "{second}");
+    assert_eq!(count_cache_controls(&second), 0, "{second}");
+    let entries = ledger.0.lock().unwrap().entries.clone();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0].error.as_deref(),
+        Some("400: retrying without prompt cache hint")
+    );
+}
+
+#[tokio::test]
+async fn provider_usage_parses_cached_tokens_for_all_protocols() {
+    let chat_server = MockServer::start().await;
+    let mut chat_body = ok_body();
+    chat_body["usage"] = json!({
+        "prompt_tokens": 12,
+        "prompt_tokens_details": {"cached_tokens": 5},
+        "completion_tokens": 2
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_body))
+        .mount(&chat_server)
+        .await;
+    let chat = cache_client(
+        &chat_server.uri(),
+        Protocol::OpenaiChat,
+        "m",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    assert_eq!(chat.usage.prompt_tokens, 12);
+    assert_eq!(chat.usage.cached_prompt_tokens, 5);
+    assert_eq!(chat.usage.cache_write_tokens, 0);
+
+    let responses_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {
+                "input_tokens": 20,
+                "input_tokens_details": {"cached_tokens": 8},
+                "output_tokens": 2
+            }
+        })))
+        .mount(&responses_server)
+        .await;
+    let responses = cache_client(
+        &responses_server.uri(),
+        Protocol::OpenaiResponses,
+        "m",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    assert_eq!(responses.usage.prompt_tokens, 20);
+    assert_eq!(responses.usage.cached_prompt_tokens, 8);
+
+    let anthropic_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {
+                "input_tokens": 3,
+                "cache_read_input_tokens": 4,
+                "cache_creation_input_tokens": 2,
+                "output_tokens": 1
+            }
+        })))
+        .mount(&anthropic_server)
+        .await;
+    let anthropic = cache_client(
+        &anthropic_server.uri(),
+        Protocol::Anthropic,
+        "claude",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    assert_eq!(anthropic.usage.prompt_tokens, 9);
+    assert_eq!(anthropic.usage.cached_prompt_tokens, 4);
+    assert_eq!(anthropic.usage.cache_write_tokens, 2);
+
+    let gemini_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 13,
+                "cachedContentTokenCount": 5,
+                "candidatesTokenCount": 1
+            }
+        })))
+        .mount(&gemini_server)
+        .await;
+    let gemini = cache_client(
+        &gemini_server.uri(),
+        Protocol::Gemini,
+        "gemini-2.5-pro",
+        true,
+        LedgerHandle::new(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    assert_eq!(gemini.usage.prompt_tokens, 13);
+    assert_eq!(gemini.usage.cached_prompt_tokens, 5);
+    assert_eq!(gemini.usage.cache_write_tokens, 0);
+}
+
+#[tokio::test]
+async fn openai_chat_parses_deepseek_cache_hit_fallback() {
+    let server = MockServer::start().await;
+    let mut body = ok_body();
+    body["usage"] = json!({
+        "prompt_tokens": 11,
+        "prompt_cache_hit_tokens": 4,
+        "completion_tokens": 2
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let result = cache_client(
+        &server.uri(),
+        Protocol::OpenaiChat,
+        "m",
+        false,
+        LedgerHandle::new(),
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    assert_eq!(result.usage.prompt_tokens, 11);
+    assert_eq!(result.usage.cached_prompt_tokens, 4);
+}
+
+#[test]
+fn cache_hint_request_is_deterministic_and_turns_are_append_only() {
+    let adapter = OpenAiChatAdapter::from_route(cache_route_for(
+        "https://api.example.com/v1",
+        Protocol::OpenaiChat,
+        "m",
+        true,
+    ))
+    .unwrap()
+    .with_cache_key(cache_key());
+    let (msgs, tools) = convo();
+    let first = adapter
+        .build(&msgs, &tools, &mut AttemptState::default())
+        .unwrap();
+    let repeat = adapter
+        .build(&msgs, &tools, &mut AttemptState::default())
+        .unwrap();
+    assert_eq!(
+        serde_json::to_string(&first.body).unwrap(),
+        serde_json::to_string(&repeat.body).unwrap()
+    );
+    let mut turn_two = msgs.clone();
+    turn_two.push(ChatMessage::user("next turn"));
+    let second = adapter
+        .build(&turn_two, &tools, &mut AttemptState::default())
+        .unwrap();
+    let first_messages = first.body["messages"].as_array().unwrap();
+    let second_messages = second.body["messages"].as_array().unwrap();
+    assert_eq!(
+        &second_messages[..first_messages.len()],
+        first_messages.as_slice()
+    );
 }

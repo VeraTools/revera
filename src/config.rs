@@ -225,6 +225,9 @@ pub struct ModelRoute {
     pub model: String,
     #[serde(default = "default_max_output")]
     pub max_output_tokens: u32,
+    /// Send explicit provider prompt-cache hints where supported.
+    #[serde(default = "default_true")]
+    pub cache: bool,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
     #[serde(default)]
@@ -606,10 +609,9 @@ impl VeraConfig {
     /// invalidate a warm index.
     pub fn index_identity(&self) -> serde_json::Value {
         let embedding = match self.backend {
-            VeraBackend::Api => self
-                .embedding
-                .as_ref()
-                .map(|e| serde_json::json!({"base_url": e.base_url.trim_end_matches('/'), "model": e.model})),
+            VeraBackend::Api => self.embedding.as_ref().map(
+                |e| serde_json::json!({"base_url": identity_url(&e.base_url), "model": e.model}),
+            ),
             VeraBackend::Local => Some(serde_json::json!({"local": LOCAL_VERA_BACKEND})),
         };
         serde_json::json!({
@@ -651,7 +653,7 @@ impl VeraConfig {
         match &self.reranker {
             None => serde_json::Value::Null,
             Some(r) => serde_json::json!({
-                "base_url": r.base_url.trim_end_matches('/'),
+                "base_url": identity_url(&r.base_url),
                 "model": r.model,
                 "protocol": r.protocol.map(|p| p.as_str()),
                 "endpoint_path": r.endpoint_path,
@@ -683,6 +685,28 @@ impl VeraConfig {
 /// Vera backend used for `vera.backend: local` (CPU static embeddings that
 /// need no GPU and no API key).
 pub const LOCAL_VERA_BACKEND: &str = "potion-code";
+
+/// URL identity that retains routing and query names but never query values.
+pub fn identity_url(input: &str) -> String {
+    let Ok(mut url) = url::Url::parse(input) else {
+        let base = input.split(['?', '#']).next().unwrap_or(input);
+        return base.trim_end_matches('/').to_string();
+    };
+    let mut names: Vec<String> = url
+        .query_pairs()
+        .map(|(name, _)| name.into_owned())
+        .collect();
+    names.sort();
+    url.set_query(None);
+    url.set_fragment(None);
+    // trailing-slash variants keep one identity (and a warm Vera index)
+    let base = url.as_str().trim_end_matches('/').to_string();
+    if names.is_empty() {
+        base
+    } else {
+        format!("{base}?names={}", serde_json::to_string(&names).unwrap())
+    }
+}
 
 impl Default for GithubConfig {
     fn default() -> Self {
@@ -1076,11 +1100,12 @@ impl Config {
             // header names only: values may be interpolated from env vars
             let mut headers: Vec<&str> = r.extra_headers.keys().map(String::as_str).collect();
             headers.sort_unstable();
+            // Cache hints do not change model output, so toggling them must not invalidate stored reviews.
             serde_json::json!({
                 "extra_headers": headers,
                 "session_header": r.session_header,
                 "protocol": format!("{:?}", r.protocol).to_lowercase(),
-                "base_url": r.base_url,
+                "base_url": r.base_url.as_deref().map(identity_url),
                 "model": r.model,
                 "max_output_tokens": r.max_output_tokens,
                 "temperature": r.temperature,
@@ -1184,5 +1209,40 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::Config;
+
+    #[test]
+    fn query_values_do_not_enter_review_or_cache_identity() {
+        let template = |value: &str, name: &str| {
+            format!(
+                r#"
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: "https://api.example.com/v1?{name}={value}&tenant=x#fragment"
+    api_key_env: IDENTITY_TEST_KEY
+    model: test
+vera: {{enabled: false}}
+"#
+            )
+        };
+        let first = Config::parse(&template("sensitive-alpha", "key"), "identity-test").unwrap();
+        let second = Config::parse(&template("sensitive-beta", "key"), "identity-test").unwrap();
+        let first_fp = first.review_fingerprint("baseline");
+        assert_eq!(first_fp, second.review_fingerprint("baseline"));
+        assert!(!first_fp.to_string().contains("sensitive-alpha"));
+        assert!(!first_fp.to_string().contains("sensitive-beta"));
+        assert_eq!(
+            crate::pipeline::cache_key(&first, "baseline", "investigator", None),
+            crate::pipeline::cache_key(&second, "baseline", "investigator", None)
+        );
+        let changed_name =
+            Config::parse(&template("sensitive-alpha", "token"), "identity-test").unwrap();
+        assert_ne!(first_fp, changed_name.review_fingerprint("baseline"));
     }
 }

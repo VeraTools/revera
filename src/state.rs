@@ -137,6 +137,7 @@ impl StateFinding {
             counterevidence_checked: vec![],
             validation_status: None,
             suggested_fix: None,
+            validated_fix: None,
             source: "prior".into(),
             rationale: None,
             sources: vec!["prior".into()],

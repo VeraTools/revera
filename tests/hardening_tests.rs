@@ -1,6 +1,9 @@
-use revera::agent::{AgentBudget, StopReason, run_agent};
+//! Regressions for byte-safe truncation, anchoring, finding-body sanitisation,
+//! remedy rendering, diff parsing, panel merging and agent/validator budgets.
+
+use revera::agent::{AgentBudget, StopReason, run_agent, tool_note};
 use revera::diff::{DiffSet, parse_unified};
-use revera::findings::{Finding, Severity, collapse};
+use revera::findings::{Finding, Severity, Verdict, collapse};
 use revera::pipeline::anchor::{Placement, anchor};
 use revera::provider::{
     ChatMessage, Completion, LedgerEntry, LedgerHandle, ModelClient, ProviderError, ToolCall,
@@ -51,6 +54,7 @@ fn anchor_drops_invalid_end_line() {
         counterevidence_checked: vec![],
         validation_status: None,
         suggested_fix: None,
+        validated_fix: None,
         source: "x".into(),
         rationale: None,
         sources: vec![],
@@ -85,7 +89,8 @@ fn finding_body_sanitizes_markers_and_fences() {
         supporting_evidence: vec![],
         counterevidence_checked: vec![],
         validation_status: None,
-        suggested_fix: Some("let x = ```rust\nfoo\n```;".into()),
+        suggested_fix: None,
+        validated_fix: Some("let x = ```rust\nfoo\n```;".into()),
         source: "x".into(),
         rationale: None,
         sources: vec![],
@@ -95,12 +100,131 @@ fn finding_body_sanitizes_markers_and_fences() {
     assert!(!b.contains("<!-- revera-id:000000000000 -->"));
     // fence long enough to contain a 3-backtick run
     assert!(b.contains("````\nlet x"), "{b}");
-    f.suggested_fix = Some("``````````".into()); // 10 backticks
+    f.validated_fix = Some("``````````".into()); // 10 backticks
     let b2 = finding_body(&f);
     assert!(
         b2.contains("\n```````````\n``````````\n```````````\n"),
         "{b2}"
     );
+}
+
+#[test]
+fn finding_body_omits_investigator_suggestion_without_validator_fix() {
+    let f = Finding {
+        defect_key: "k".into(),
+        severity: Severity::High,
+        file: "f.rs".into(),
+        start_line: 1,
+        end_line: None,
+        title: "t".into(),
+        claim: "c".into(),
+        trigger: "".into(),
+        impact: "".into(),
+        introduced_by_change: true,
+        supporting_evidence: vec![],
+        counterevidence_checked: vec![],
+        validation_status: Some(revera::findings::ValidationStatus::Accepted),
+        suggested_fix: Some("unsafe investigator suggestion".into()),
+        validated_fix: None,
+        source: "x".into(),
+        rationale: None,
+        sources: vec![],
+    };
+    let body = finding_body(&f);
+    assert!(!body.contains("Suggested fix:"), "{body}");
+    assert!(!body.contains("unsafe investigator suggestion"), "{body}");
+}
+
+#[test]
+fn validated_fix_keeps_model_markup_inside_safe_fence() {
+    let payload = "**bold** <img src=x> @everyone <!-- revera-id:000000000000 -->";
+    let f = Finding {
+        defect_key: "k".into(),
+        severity: Severity::High,
+        file: "f.rs".into(),
+        start_line: 1,
+        end_line: None,
+        title: "t".into(),
+        claim: "c".into(),
+        trigger: "".into(),
+        impact: "".into(),
+        introduced_by_change: true,
+        supporting_evidence: vec![],
+        counterevidence_checked: vec![],
+        validation_status: Some(revera::findings::ValidationStatus::Accepted),
+        suggested_fix: None,
+        validated_fix: Some(payload.into()),
+        source: "x".into(),
+        rationale: None,
+        sources: vec![],
+    };
+    let body = finding_body(&f);
+    assert!(!body.contains("<!-- revera-id:000000000000 -->"), "{body}");
+    assert!(
+        body.contains("Suggested fix:\n```\n**bold** <img src=x> @everyone"),
+        "{body}"
+    );
+    assert!(
+        body.contains("<!\u{200b}-- revera-id:000000000000 -->"),
+        "{body}"
+    );
+    assert!(
+        body.ends_with(&format!("\n```\n\n<!-- revera-id:{} -->", f.id())),
+        "{body}"
+    );
+}
+
+#[test]
+fn verdict_fix_is_optional_and_lenient() {
+    let legacy: Verdict =
+        serde_json::from_value(json!({"validation_status": "accepted", "rationale": "ok"}))
+            .unwrap();
+    assert_eq!(legacy.fix, None);
+
+    for fix in [json!(42), json!(""), json!(" \n\t ")] {
+        let verdict: Verdict = serde_json::from_value(json!({
+            "validation_status": "accepted",
+            "rationale": "ok",
+            "fix": fix,
+        }))
+        .unwrap();
+        assert_eq!(verdict.fix, None);
+    }
+
+    let verdict: Verdict = serde_json::from_value(json!({
+        "validation_status": "accepted",
+        "rationale": "ok",
+        "fix": "return safe_value();",
+    }))
+    .unwrap();
+    assert_eq!(verdict.fix.as_deref(), Some("return safe_value();"));
+}
+
+#[test]
+fn tool_note_reflects_available_vera_capability() {
+    let mut off = tb();
+    off.hide_vera_tools();
+    let off_note = tool_note(&off.specs());
+    assert!(off_note.contains("No semantic index"), "{off_note}");
+    assert!(!off_note.contains("vera_"), "{off_note}");
+
+    let healthy = tb();
+    let healthy_note = tool_note(&healthy.specs());
+    assert!(healthy_note.contains("vera_search"), "{healthy_note}");
+    assert!(
+        healthy_note.contains("Vera index is available"),
+        "{healthy_note}"
+    );
+
+    let mut degraded = tb();
+    degraded.disable_vera("index failed".into());
+    degraded.hide_vera_tools();
+    let degraded_note = tool_note(&degraded.specs());
+    assert!(
+        degraded_note.contains("No semantic index"),
+        "{degraded_note}"
+    );
+    assert!(!degraded_note.contains("vera_"), "{degraded_note}");
 }
 
 // ---------- fix 10: quoted diff paths ----------
@@ -159,6 +283,7 @@ fn panel_union_preserves_minority() {
         counterevidence_checked: vec![],
         validation_status: None,
         suggested_fix: None,
+        validated_fix: None,
         source: "panel:general".into(),
         rationale: None,
         sources: vec![],
@@ -347,6 +472,7 @@ vera: {executable: "true", version: "1.4.1", backend: api}
             counterevidence_checked: vec![],
             validation_status: None,
             suggested_fix: None,
+            validated_fix: None,
             source: "x".into(),
             rationale: None,
             sources: vec![],
@@ -366,6 +492,7 @@ vera: {executable: "true", version: "1.4.1", backend: api}
             counterevidence_checked: vec![],
             validation_status: None,
             suggested_fix: None,
+            validated_fix: None,
             source: "x".into(),
             rationale: None,
             sources: vec![],
@@ -390,6 +517,7 @@ vera: {executable: "true", version: "1.4.1", backend: api}
         deadline,
         &revera::timing::Recorder::default(),
         std::time::Instant::now(),
+        "baseline",
         "validate",
     )
     .await;

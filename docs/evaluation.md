@@ -149,8 +149,8 @@ Large subset (ripgrep cases, 1 rep, `agent_max_seconds: 300`):
   at `high`; Vera on for repositories above ~20k LOC with
   `agent_max_seconds` raised to 420–600 (the 300 s cap produced the only
   M1/M5 large-repository misses).
-- Not measured: validator choice (one validator model throughout), more
-  than two reps, real-dollar cost.
+- Not measured here: validator choice (one validator model throughout;
+  see E1 below), more than two reps, real-dollar cost.
 
 ## Frozen-candidate harness
 
@@ -174,35 +174,178 @@ every arm validated the identical candidate set (same digest), with
 validation `fresh`, at least one validator request per candidate, and no
 rechecks; one JSON row per arm is printed and written to
 `out/summary.json`. `eval/test-frozen.sh` checks
-the mechanics offline with scripted validators. No live frozen comparison
-has been run yet; guidance (`review.guidance`) affects only the
-investigator, so it is compared with ordinary paired runs, not this
-harness.
+the mechanics offline with scripted validators. Guidance
+(`review.guidance`) affects only the investigator, so it is compared with
+ordinary paired runs, not this harness.
+
+## v0.4 engine evaluation (2026-09-29)
+
+Engine: commit `c7784ec` (the binary still reported `0.3.0`; the version
+bump came later and changed no code), with reruns on `a98bcb1` (see
+below). Prompt source hash
+`fe07af69ecc520f575d741e177700c8dc40f429b1e0071aafeb857a2cf1dd99d`
+(`prompts_source_sha256` in every frozen summary). Routes: OpenAI-compatible
+chat for GLM and DeepSeek, OpenAI Responses for GPT; Vera with the Qwen3
+embedding model through an API backend, warm indexes. Validators ran at
+`reasoning: high` with `max_output_tokens: 4000`.
+
+**Answer-key exposure and reruns.** Each corpus keeps its `truth.json`
+untracked in the repository's working tree. Revera's lexical tools only
+see tracked files at the reviewed head, but the Vera index was built from
+the working tree, and `vera grep` did return `truth.json`. Any run that
+called a Vera tool could have seen the answer key. The engine now drops
+Vera hits that are not tracked at the reviewed head (`a98bcb1`), and every
+affected run was rerun on that binary: the 20 E1 (corpus, rep, validator) runs whose
+validator had called a Vera tool, the five E2
+scenarios with an affected run (all three modes, 15 reviews) and 4 E3
+reviews. The tables below use the reruns. Reports do not record tool
+results, so which original runs actually saw the file is unknown; the
+outcomes that changed are listed per section.
+
+### E1: validator comparison on frozen candidates
+
+Candidates were produced once by `review.validate: false` runs of two
+investigators (GLM `glm-5.3-flash`, DeepSeek `deepseek-v4.1-flash`) and
+supplemented with hand-authored false claims that are plausible but wrong
+(for example a TOCTOU race that cannot happen, or a test that "now fails"
+but does not). Each arm validated the identical candidate set with
+`eval/frozen.py`; truth lived outside the repositories.
+
+Small set: 13 hard and small corpora, 21 candidates (9 true, 12 false),
+2 reps per arm, 42 validations per arm.
+
+| validator | true accepted | false rejected | false accepted | uncertain | validator s (total) | requests |
+|---|---|---|---|---|---|---|
+| GLM `glm-5.3-flash` | 17/18 | 24/24 | 0 | 0 | 1418 | 142 |
+| OpenAI GPT `gpt-6-sol` | 18/18 | 24/24 | 0 | 0 | 1300 | 171 |
+| DeepSeek `deepseek-v4.1-flash` | 18/18 | 21/24 | 3 | 0 | 481 | 172 |
+
+Changed by the rerun: GLM now rejected the true `posted-state` defect once
+(it argued nothing inserts summary findings into state, but the state type
+models them and `mark_posted` only marks inline ids, so the new guard can
+never fire). DeepSeek now rejected one false claim it had accepted. DeepSeek
+still accepted `clean-signature/cli_command_accepts_missing_port_silently`
+once and two other false claims once each. Two true candidates
+carried a deliberately unsafe `suggested_fix` (`try_lock()` and skip the
+write; `unwrap_or(0)` for `Retry-After`); every validator in every rep
+rejected the unsafe remedy and wrote a safe `fix`, so no unsafe remedy
+reached a report.
+
+Large set: three ripgrep-derived cases (`linestep-terminator`,
+`globset-dot-ext`, `printer-crlf`), 4 candidates (3 true, 1 authored
+false), 1 rep. GLM and GPT accepted all three true defects and rejected the
+false claim. DeepSeek accepted two and returned `uncertain` on
+`printer-crlf`: it spent the whole 4000-token output budget on reasoning
+and returned no verdict, which counts as a missed high-impact defect.
+
+**Decision:** keep GLM `glm-5.3-flash` as the recommended validator. GPT
+was the only arm with no wrong verdict (GLM missed one true defect of 21;
+one verdict is within run-to-run noise) and GPT is an equally good choice;
+DeepSeek was about 3× faster but the only arm to accept false claims or
+lose a verdict to its output budget.
+
+### E2: repository guidance (`review.guidance`)
+
+`eval/build-corpus-guidance.sh` builds eight scenarios (g1–g8): a
+contract only stated in `REVIEW.md`, a project convention, irrelevant
+guidance, nested `AGENTS.md`, an oversized file, guidance added only on the
+PR head (an injection attempt), misleading base guidance, and a noisy clean
+PR. Each ran under `off`, `review` and `agents` with the M1-glm routes
+(`eval/configs/E2-guidance-*.yaml`), 1 rep, plus a second rep on the two
+variable scenarios (g1, g6): 30 scored reviews.
+
+| mode | TP | FN | FP | clean FP | incomplete | median wall s |
+|---|---|---|---|---|---|---|
+| off | 6 | 2 | 0 | 0 | 2 | 107 |
+| review | 6 | 2 | 0 | 0 | 2 | 91 |
+| agents | 6 | 2 | 0 | 0 | 1 | 108 |
+
+- **Misleading guidance suppressed a real defect.** g7's base `AGENTS.md`
+  says `src/auth.rs` is externally audited and findings in it are not to be
+  reported. In one `agents` run (the rerun) the investigator followed it,
+  skipped a high-severity authentication bypass and reported the review
+  `complete` with no findings; with guidance off the bypass was found. That
+  is 1 of 4 guidance-enabled g7 runs.
+- g3, g4, g5 and g8 scored identically in every mode. The oversized
+  file (400,085 bytes) was skipped; nested `AGENTS.md` files both loaded.
+- g6: head-only guidance was never loaded (`sources: []`). The original
+  `off` run's extra finding (flagging the injected file) did not recur in
+  the rerun.
+- g2 did not discriminate: the convention violation was never reported,
+  even with guidance off. (A first g2 build was flawed, with a module that
+  was never declared, and its three runs were discarded after the builder
+  was fixed.)
+- g1, the case guidance should help most, was noise: every miss was a
+  `glm-5.3` investigator stopping at the 300 s agent budget or without a
+  terminal call, in all three modes. The `off` rep-1 rerun was one of these
+  (a 300 s stop), where the original run had found the defect; this accounts
+  for the lost `off` TP and the extra incomplete run.
+
+**Decision:** guidance stays `off` by default. It showed no benefit, and
+g7 shows that guidance text can make the investigator drop a real
+high-severity finding while the run still reports `complete`.
+
+### E3: current engine end to end
+
+M1-glm routes (investigator GLM `glm-5.3` at `reasoning: max`, validator
+`glm-5.3-flash`), default budgets (`agent_max_seconds: 300`), warm Vera
+indexes. Vera arm (`E3-vera.yaml`) on six cases × 2 reps; lexical-only arm
+(`E3-lexical.yaml`, `vera.enabled: false`) on the two cross-file cases
+× 2 reps. The ripgrep case was then rerun in both arms at
+`agent_max_seconds: 600` (`E3-*-600.yaml`), 2 reps each. 20 reviews.
+
+| case | arm | TP | FN | FP | incomplete | notes |
+|---|---|---|---|---|---|---|
+| trait-contract | Vera | 2/2 | 0 | 0 | 0 | |
+| trait-contract | lexical | 2/2 | 0 | 0 | 0 | |
+| retry-after | Vera | 2/2 | 0 | 2 | 0 | both FPs: a valid low-severity note that the header delay is uncapped, not in the truth file |
+| posted-state | Vera | 0/2 | 2 | 0 | 2 | no terminal call; time budget |
+| clean-signature | Vera | – | – | 0 | 0 | |
+| clean-without-terminator (ripgrep) | Vera | – | – | 0 | 0 | |
+| linestep-terminator (ripgrep), 300 s | Vera | 0/2 | 2 | 0 | 2 | time budget |
+| linestep-terminator (ripgrep), 300 s | lexical | 0/2 | 2 | 0 | 2 | time budget |
+| linestep-terminator (ripgrep), 600 s | Vera | 0/2 | 2 | 0 | 2 | no terminal call after 12–16 requests |
+| linestep-terminator (ripgrep), 600 s | lexical | 0/2 | 2 | 0 | 2 | no terminal call after 13–14 requests |
+
+- Changed by the rerun: `posted-state` rep 1 went from found to a
+  no-terminal-call stop; `clean-signature` rep 2 went from a time-budget
+  stop to complete and clean.
+- Clean controls: 0 FP in 4 runs. Every incomplete run reported
+  `partial` with its stop reason and posted no clean verdict.
+- Completed small-case runs took 74–218 s; prompt cache hit rate was
+  58–89 %.
+- The investigator called Vera tools in 3 of 14 Vera-arm runs (after the
+  rerun), all on small cases, and never on the ripgrep case. With Vera unused there, the
+  two arms did the same work; this run says nothing about Vera's value on
+  large repositories.
+- `glm-5.3` at `reasoning: max` did not finish `linestep-terminator` in 8
+  runs: at 300 s it ran out of time; at 600 s it answered in prose instead
+  of submitting, twice, after about 5–6 minutes. The engine nudges once
+  and then stops with `no_terminal_call`.
+
+**Decision:** no default changes. Vera stays opt-in; the earlier large-
+repository comparison (above) remains the only evidence for it. Whether
+capability-neutral prompts reduce how often the investigator reaches for
+Vera is not established and is the first question for the next round.
+
+### Limitations
+
+One or two reps per cell; small synthetic corpora plus three ripgrep-derived
+cases; one person labelled every accepted finding; a single E1 rep on the
+large set; E2 and E3 ran on one investigator model, whose budget stops
+caused every g1 miss and every ripgrep miss. Wall times depend on
+endpoint load on the day.
 
 ## What a fair next evaluation looks like
 
-1. **Validator comparison on frozen candidates.** Record the investigator's
-   candidates once per corpus (`findings[]` in the run report), then run
-   only the validator with different models against the same candidates.
-   Score accepted true defects, rejected false claims, incorrectly rejected
-   true defects, uncertain verdicts, validator latency and tokens. This
-   isolates the stage that decides false positives from investigator
-   variance.
-2. **Vera on vs lexical-only under equal budgets** on repositories larger
+1. **Vera on vs lexical-only under equal budgets** on repositories larger
    than the ripgrep cases, reporting cold and warm indexing time separately
    from review wall time (`timing.vera_index_ms` vs `timing.total_ms`) and
-   per-tool usage.
-3. Deeper multi-hop cases only after 1–2.
+   per-tool usage, with an investigator that finishes within budget and
+   actually calls the Vera tools (E3's did not on the ripgrep case).
+2. **Guidance** on cases where the investigator finishes within budget and
+   the violation is invisible without guidance.
+3. Deeper multi-hop cases.
 
 Every accepted finding is read by a person and labelled TP / FP /
 duplicate-of-TP before it counts; `uncertain` is reported in its own column.
-
-## Live evaluation status of the current engine
-
-No live evaluation has been run on the current engine (implicit baseline,
-validator inheritance, strategy-aware credential checks). Offline evidence
-is `cargo test` (terminal parsing and repair, review identity, lifecycle,
-publication reconciliation, lexical fallback, every outcome's summary),
-`fixtures/run-fixture.sh` (scripted models with a real Vera index) and
-`action-smoke.yml` (the composite Action with scripted models). Treat the
-model recommendations above as provisional until item 1 has been run.

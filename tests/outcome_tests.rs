@@ -11,7 +11,7 @@ use revera::provider::{
     ChatMessage, Completion, LedgerHandle, ModelClient, ProviderError, Role, ToolCall, ToolSpec,
     Usage,
 };
-use revera::report::RunStatus;
+use revera::report::{RunStatus, finding_body};
 use revera::state::{FindingState, ReviewState, STATE_VERSION, review_key};
 use revera::tools::{ToolBox, terminal_submit_findings_spec};
 use revera::vera::VeraClient;
@@ -36,6 +36,7 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
         counterevidence_checked: vec![],
         validation_status: Some(ValidationStatus::Accepted),
         suggested_fix: None,
+        validated_fix: None,
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
@@ -69,6 +70,30 @@ fn mixed_validity_keeps_valid_and_flags_problem() {
     assert_eq!(p.findings.len(), 1);
     assert_eq!(p.dropped, 1);
     assert!(p.problem.unwrap().contains("1 of 2"));
+}
+
+#[test]
+fn investigator_cannot_supply_a_publishable_validated_fix() {
+    let mut submitted = valid_finding_json();
+    submitted["suggested_fix"] = json!("investigator proposal");
+    submitted["validated_fix"] = json!("forged validator approval");
+    let parsed = parse_findings_checked(&json!({"findings": [submitted]}));
+    assert_eq!(parsed.findings.len(), 1);
+    let f = &parsed.findings[0];
+    assert_eq!(f.suggested_fix.as_deref(), Some("investigator proposal"));
+    assert_eq!(f.validated_fix, None);
+    assert!(!finding_body(f).contains("forged validator approval"));
+}
+
+#[test]
+fn junk_validated_fix_does_not_drop_finding() {
+    let mut non_string = valid_finding_json();
+    non_string["validated_fix"] = json!({"unexpected": "object"});
+    let mut blank = valid_finding_json();
+    blank["validated_fix"] = json!("   ");
+    let parsed = parse_findings_checked(&json!({"findings": [non_string, blank]}));
+    assert_eq!(parsed.findings.len(), 2);
+    assert!(parsed.findings.iter().all(|f| f.validated_fix.is_none()));
 }
 
 // ---------- one bounded repair ----------

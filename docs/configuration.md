@@ -46,6 +46,7 @@ different provider family).
 | `api_key_env` | required for HTTP protocols | *name* of the environment variable holding the key; the value is never logged or fingerprinted |
 | `max_output_tokens` | `4000` | |
 | `temperature` | `0.2` | |
+| `cache` | `true` | send explicit prompt-cache hints where the provider supports them |
 | `reasoning` | `medium` | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`, or the long form below |
 | `extra_headers` | `{}` | header name → value (values may use `${VAR}`) |
 | `session_header` | — | header that carries a stable per-run session id (set automatically for `opencode.ai` hosts) |
@@ -78,6 +79,18 @@ Protocol wire formats:
 All HTTP protocols share one transport: retries with `Retry-After`, the run
 request budget, the run deadline and the ledger. Routes can mix protocols.
 
+### Prompt caching
+
+Each model route has `cache: true` by default. Revera sends
+`prompt_cache_key` on OpenAI-compatible chat and Responses requests, and
+ephemeral `cache_control` hints on Anthropic requests. If a provider returns
+HTTP 400 identifying an unsupported cache hint, Revera retries without that
+hint. An endpoint that rejects the hint with an HTTP 400 that does not name it
+needs `cache: false` on that route. Cache hints do not affect the review fingerprint, so changing `cache`
+alone does not invalidate a completed review. Where providers report them,
+cached-prompt and cache-write token usage is recorded in the run ledger,
+both per route and in the totals.
+
 ## `review`
 
 | key | default | notes |
@@ -104,7 +117,12 @@ contributes nothing; it never falls back to `AGENTS.md`. Sources, their
 sha256 and truncation are recorded under
 `stats.guidance` in the run report and are never rendered into PR comments.
 The mode is part of the review fingerprint, not the Vera index identity.
-It stays `off` by default until an evaluation shows it helps.
+It stays `off` by default; evaluation found no benefit so far
+([evaluation](evaluation.md)). Guidance is text the investigator may
+follow: in one evaluation run, a base `AGENTS.md` claiming a file was
+externally audited and out of scope made it skip a real high-severity defect while the
+review still reported `complete`. Enable it only for guidance you would
+accept as review policy.
 
 ## `budget`
 
@@ -160,13 +178,13 @@ shown to models; excluded changed files are listed as coverage gaps.
 vera:
   backend: api
   embedding:
-    base_url: ${REVERA_EMBEDDING_BASE_URL}
-    model: qwen/qwen3-embedding-8b
-    api_key_env: REVERA_EMBEDDING_API_KEY
+    base_url: https://api.example.com/v1
+    model: your-embedding-model
+    api_key_env: EMBEDDING_API_KEY
   reranker:
-    base_url: ${REVERA_EMBEDDING_BASE_URL}
-    model: qwen/qwen3-reranker-8b
-    api_key_env: REVERA_EMBEDDING_API_KEY
+    base_url: https://api.example.com/v1
+    model: your-reranker-model
+    api_key_env: RERANKER_API_KEY
 ```
 
 `revera cache-key` prints a hash of the index-shaping settings (backend,

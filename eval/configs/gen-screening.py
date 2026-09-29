@@ -7,6 +7,7 @@ passed through unchanged to every route; on a provider 400 the adapter
 steps down to `high` (then drops reasoning), and the ledger records
 requested vs effective effort per role.
 """
+
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -110,9 +111,7 @@ CONFIGS = {
     "M4-hy4": baseline(HY4),
     "M5-muse": baseline(muse()),
     # two independent samples of the same cheap model, identical focus
-    "M6-panel-2xflash": panel(
-        [("flash-a", "general", FLASH), ("flash-b", "general", FLASH)], 2
-    ),
+    "M6-panel-2xflash": panel([("flash-a", "general", FLASH), ("flash-b", "general", FLASH)], 2),
     # three complementary heterogeneous lanes
     "M7-panel-3het": panel(
         [

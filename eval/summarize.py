@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Summarize eval/results.jsonl into a markdown table (stdout)."""
+
 import json
 import statistics
 import sys
 from collections import defaultdict
 
 path = sys.argv[1] if len(sys.argv) > 1 else "eval/results.jsonl"
-rows = [json.loads(l) for l in open(path) if l.strip()]
+rows = [json.loads(line) for line in open(path) if line.strip()]
 
 CLEAN = {"clean-refactor", "clean-docs"}
 CORPORA = set(sys.argv[2].split(",")) if len(sys.argv) > 2 else None
@@ -22,16 +23,22 @@ def is_clean(r):
     return r.get("clean", r["corpus"] in CLEAN)
 
 
-HEADER = "| config | TP | TP high/crit | FN | FP | xf | clean-PR commented | rejected | uncertain | incomplete | median wall s | median first-validated s | incomplete phases | mean req | mean tok | total cost |"
-DELIM = "|" + "---|" * 16
+HEADER = "| config | TP | TP high/crit | FN | FP | xf | clean-PR commented | rejected | uncertain | incomplete | median wall s | median first-validated s | incomplete phases | mean req | mean tok | cache hit % | total cost |"
+DELIM = "|" + "---|" * 17
 assert len(HEADER.split("|")) == len(DELIM.split("|")), (
     len(HEADER.split("|")),
     len(DELIM.split("|")),
 )
 print(HEADER)
 print(DELIM)
-order = ["A-baseline", "B-baseline-novera", "C-baseline-norerank",
-         "D-candidate-only", "E-panel-2scouts", "F-delegated"]
+order = [
+    "A-baseline",
+    "B-baseline-novera",
+    "C-baseline-norerank",
+    "D-candidate-only",
+    "E-panel-2scouts",
+    "F-delegated",
+]
 for cfg in order + sorted(set(agg) - set(order)):
     rs = agg.get(cfg, [])
     if not rs:
@@ -51,12 +58,18 @@ for cfg in order + sorted(set(agg) - set(order)):
     inc_phases = sum(r.get("incomplete_phases") or 0 for r in rs)
     reqs = [r["requests"] for r in rs]
     toks = [r["prompt_tokens"] + r["completion_tokens"] for r in rs]
+    cache_prompt_tokens = sum(r.get("prompt_tokens", 0) for r in rs)
+    cache_hit = (
+        f"{sum(r.get('cached_prompt_tokens', 0) for r in rs) / cache_prompt_tokens * 100:.0f}%"
+        if cache_prompt_tokens
+        else "-"
+    )
     cost = sum(r["est_cost"] for r in rs)
     row = (
         f"| {cfg} | {tp} | {tp_high} | {fn} | {fp} | {xf} | {clean_commented} | {rejected} | {uncertain} | {incomplete} | "
         f"{statistics.median(walls):.1f} | {fv_str} | {inc_phases} | "
         f"{statistics.mean(reqs):.1f} | "
-        f"{statistics.mean(toks):.0f} | ${cost:.4f} |"
+        f"{statistics.mean(toks):.0f} | {cache_hit} | ${cost:.4f} |"
     )
     assert len(row.split("|")) == len(HEADER.split("|")), row
     print(row)
@@ -65,5 +78,4 @@ fails = [r for r in rows if r["status"] != "complete"]
 if fails:
     print("\nFailed/incomplete runs:")
     for r in fails:
-        print(f"- {r['config']} x {r['corpus']} rep {r['rep']}: "
-              f"{r['status']} — {r.get('reason')}")
+        print(f"- {r['config']} x {r['corpus']} rep {r['rep']}: {r['status']} — {r.get('reason')}")

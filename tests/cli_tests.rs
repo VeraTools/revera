@@ -98,10 +98,25 @@ fn review_run(
     cfg: &std::path::Path,
     out: &std::path::Path,
 ) -> serde_json::Value {
-    let res = Command::new(env!("CARGO_BIN_EXE_revera"))
+    review_run_with_force(repo, cfg, out, true)
+}
+
+fn review_run_with_force(
+    repo: &std::path::Path,
+    cfg: &std::path::Path,
+    out: &std::path::Path,
+    force: bool,
+) -> serde_json::Value {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_revera"));
+    command
         .args(["review", "--repo"])
         .arg(repo)
-        .args(["--base", "HEAD~1", "--head", "HEAD", "--force", "--config"])
+        .args(["--base", "HEAD~1", "--head", "HEAD"]);
+    if force {
+        command.arg("--force");
+    }
+    let res = command
+        .args(["--config"])
         .arg(cfg)
         .arg("--out")
         .arg(out)
@@ -126,7 +141,7 @@ fn validator_requests(rep: &serde_json::Value) -> u64 {
 fn validation_disabled_run_does_not_recheck_prior_findings() {
     let repo = two_commit_repo();
     let w = tempfile::tempdir().unwrap();
-    let finding = r#"{"defect_key": "div-zero", "severity": "high", "file": "src/lib.rs", "start_line": 2, "title": "division by zero when b == 1", "claim": "b - 1 is zero for b == 1"}"#;
+    let finding = r#"{"defect_key": "div-zero", "severity": "high", "file": "src/lib.rs", "start_line": 2, "title": "division by zero when b == 1", "claim": "b - 1 is zero for b == 1", "suggested_fix": "candidate remedy"}"#;
     let inv = format!(
         r#"{{"roles": {{"investigator": [[{{"tool_calls": [{{"name": "submit_findings", "arguments": {{"findings": [{finding}], "coverage": "x"}}}}]}}]]}}}}"#
     );
@@ -156,10 +171,96 @@ fn validation_disabled_run_does_not_recheck_prior_findings() {
     assert_eq!(second["stats"]["validation"], "disabled", "{second}");
     assert_eq!(validator_requests(&second), 0, "{second}");
     assert_eq!(second["stats"]["accepted"], 0, "{second}");
-    for f in second["findings"].as_array().unwrap() {
+    let findings = second["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{second}");
+    for f in findings {
         assert!(f["validation_status"].is_null(), "{f}");
+        assert_eq!(f["suggested_fix"], "candidate remedy", "{f}");
     }
     assert!(second["plan"]["inline"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn validator_fix_replaces_unsafe_investigator_fix_and_reuse_drops_it() {
+    let repo = two_commit_repo();
+    let w = tempfile::tempdir().unwrap();
+    let inv = serde_json::json!({
+        "roles": {
+            "investigator": [[{
+                "tool_calls": [{
+                    "name": "submit_findings",
+                    "arguments": {
+                        "findings": [{
+                            "defect_key": "div-zero",
+                            "severity": "high",
+                            "file": "src/lib.rs",
+                            "start_line": 2,
+                            "title": "division can fail",
+                            "claim": "b - 1 can be zero",
+                            "introduced_by_change": true,
+                            "suggested_fix": "return 0; // unsafe suggestion"
+                        }],
+                        "coverage": "checked"
+                    }
+                }]
+            }]]
+        }
+    });
+    let val = serde_json::json!({
+        "roles": {
+            "validator": [[{
+                "tool_calls": [{
+                    "name": "submit_verdict",
+                    "arguments": {
+                        "validation_status": "accepted",
+                        "rationale": "confirmed",
+                        "fix": "return a / b; // verified replacement"
+                    }
+                }]
+            }]]
+        }
+    });
+    std::fs::write(w.path().join("inv.json"), inv.to_string()).unwrap();
+    std::fs::write(w.path().join("val.json"), val.to_string()).unwrap();
+    let cfg = w.path().join("cfg.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "review: {{min_severity: low, validate: true}}\nmodels:\n  investigator: {{protocol: scripted, script: \"{}\", model: i}}\n  validator: {{protocol: scripted, script: \"{}\", model: v}}\n",
+            w.path().join("inv.json").display(),
+            w.path().join("val.json").display()
+        ),
+    )
+    .unwrap();
+
+    let first = review_run(repo.path(), &cfg, &w.path().join("r1.json"));
+    let body = first["plan"]["inline"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("return a / b; // verified replacement"),
+        "{body}"
+    );
+    assert!(!body.contains("return 0; // unsafe suggestion"), "{body}");
+    assert!(
+        first["findings"][0].get("suggested_fix").is_none(),
+        "{}",
+        first["findings"][0]
+    );
+    assert_eq!(
+        first["findings"][0]["validated_fix"],
+        "return a / b; // verified replacement"
+    );
+
+    // A completed identical review is short-circuited. Its state projection
+    // is rebuilt from StateFinding::to_finding, which intentionally has no
+    // remedy text.
+    let reused = review_run_with_force(repo.path(), &cfg, &w.path().join("r2.json"), false);
+    assert_eq!(reused["stats"]["reused"], true, "{reused}");
+    assert_eq!(reused["stats"]["validation"], "reused", "{reused}");
+    assert!(reused["findings"].as_array().unwrap().is_empty());
+    assert!(
+        reused["plan"]["state"]["findings"][0]["validated_fix"].is_null(),
+        "{reused}"
+    );
 }
 
 #[test]

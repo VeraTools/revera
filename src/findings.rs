@@ -62,8 +62,17 @@ pub struct Finding {
     pub counterevidence_checked: Vec<String>,
     #[serde(default)]
     pub validation_status: Option<ValidationStatus>,
+    /// The investigator's proposal. Never published: only `validated_fix`
+    /// is rendered.
     #[serde(default)]
     pub suggested_fix: Option<String>,
+    /// Remedy text the fresh validator approved or wrote in this run.
+    #[serde(
+        default,
+        deserialize_with = "lenient_fix",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub validated_fix: Option<String>,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -100,6 +109,18 @@ pub struct Verdict {
     pub end_line: Option<u32>,
     #[serde(default)]
     pub rationale: String,
+    /// Approved or replacement remedy. Anything but a non-blank string is
+    /// treated as absent so a malformed optional field cannot discard the
+    /// verdict itself.
+    #[serde(default, deserialize_with = "lenient_fix")]
+    pub fix: Option<String>,
+}
+
+fn lenient_fix<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s),
+        _ => None,
+    })
 }
 
 fn normalize_title(t: &str) -> Vec<String> {

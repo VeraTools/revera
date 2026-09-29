@@ -12,6 +12,7 @@ models:
     base_url: https://api.example.com/v1
     api_key_env: REVIEW_API_KEY   # env var / Actions secret holding the key
     model: your-model-id
+    # cache: true                  # explicit prompt-cache hints where supported (default true)
     # reasoning: medium           # none | minimal | low | medium | high | xhigh | max
 
   # Re-derives every candidate in a fresh context before anything is
@@ -23,7 +24,8 @@ models:
   #   model: claude-sonnet-4-6
 
 # Optional: give the investigator REVIEW.md (or AGENTS.md) conventions from
-# the base commit. Off by default; not yet shown to improve results.
+# the base commit. Off by default; evaluation found no benefit yet (see
+# docs/evaluation.md).
 # review:
 #   guidance: review               # off | review | agents
 

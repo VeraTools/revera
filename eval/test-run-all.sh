@@ -4,14 +4,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
-
 out="$(CORPORA="crossfile linestep-terminator" CONFIGS="A-baseline" \
     RUN_ALL_DRY_RUN=1 bash "$HERE/run-all.sh" 1)"
 
 grep -q "build: easy" <<<"$out"
 grep -q "build: large" <<<"$out"
-! grep -q "build: hard" <<<"$out"
+if grep -q "build: hard" <<<"$out"; then echo "FAIL: hard corpus built" >&2; exit 1; fi
 grep -q "run: A-baseline crossfile 1" <<<"$out"
 grep -q "run: A-baseline linestep-terminator 1" <<<"$out"
 

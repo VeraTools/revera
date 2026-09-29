@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check package and Action versions
         run: ./scripts/check-versions.sh
       - name: Public docs hygiene
@@ -23,6 +25,8 @@ jobs:
           bash scripts/test-install-vera.sh
       - name: Action outcome normalisation test
         run: bash scripts/test-action-outcome.sh
+      - name: Release verification helper test
+        run: bash scripts/test-verify-release-report.sh
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -55,12 +59,65 @@ jobs:
           fi
           REVERA_CI_MISSING_TOKEN=placeholder cargo run -q -- doctor --config "$cfg"
 
+  # Static analysis with pinned tool versions (checksums verified by the
+  # installers); none of this needs credentials.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-deny@0.19.0,cargo-machete@0.9.1,shellcheck@0.11.0,zizmor@1.30.1
+      - name: Install actionlint and ruff
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          RUFF_VERSION: 0.16.9
+          RUFF_SHA256: 1bfbb819b5d4f9af501748862276b60e412d336034d99387691a4d4bce7a6f13
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/lint-bin"; mkdir -p "$bin"; cd "$RUNNER_TEMP"
+          curl -fsSLo actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  actionlint.tgz" | sha256sum -c -
+          tar -xzf actionlint.tgz -C "$bin" actionlint
+          curl -fsSLo ruff.tgz "https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$RUFF_SHA256  ruff.tgz" | sha256sum -c -
+          tar -xzf ruff.tgz -C "$bin" --strip-components=1 ruff-x86_64-unknown-linux-gnu/ruff
+          echo "$bin" >> "$GITHUB_PATH"
+      - run: cargo deny --locked check
+      - run: cargo machete
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+      - run: ruff check . && ruff format --check .
+      - run: actionlint
+      - run: zizmor --offline --min-severity medium .github/workflows action.yml
+
+  # rust-version in Cargo.toml is a promise; keep it compiling.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo +1.89 check --all-targets --locked
+
   # Same static build as release.yml, so a dependency that breaks the musl
   # target (e.g. a C-backed crypto provider) fails here, not at release time.
   release-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -113,6 +170,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable

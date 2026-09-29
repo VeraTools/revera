@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 pub struct OpenAiChatAdapter {
     route: ModelRoute,
     api_key: String,
+    cache_key: Option<String>,
 }
 
 pub type OpenAiChatClient = HttpClient<OpenAiChatAdapter>;
@@ -21,7 +22,16 @@ impl OpenAiChatAdapter {
         let env_name = route.api_key_env.clone().unwrap_or_default();
         let api_key = crate::redact::secret_env(&env_name)
             .ok_or_else(|| ProviderError::Other(format!("api_key_env {env_name} is not set")))?;
-        Ok(Self { route, api_key })
+        Ok(Self {
+            route,
+            api_key,
+            cache_key: None,
+        })
+    }
+
+    pub fn with_cache_key(mut self, cache_key: Option<String>) -> Self {
+        self.cache_key = cache_key;
+        self
     }
 
     /// Reasoning field spelling for this route (auto -> openrouter host).
@@ -58,8 +68,19 @@ impl OpenAiChatClient {
         retries: u32,
         role: &str,
     ) -> Result<Self, ProviderError> {
+        Self::new_with_cache_key(route, ledger, max_requests, retries, role, None)
+    }
+
+    pub fn new_with_cache_key(
+        route: ModelRoute,
+        ledger: LedgerHandle,
+        max_requests: u32,
+        retries: u32,
+        role: &str,
+        cache_key: Option<String>,
+    ) -> Result<Self, ProviderError> {
         Ok(Self {
-            adapter: OpenAiChatAdapter::from_route(route)?,
+            adapter: OpenAiChatAdapter::from_route(route)?.with_cache_key(cache_key),
             transport: HttpTransport::new(ledger, max_requests, retries, role)?,
         })
     }
@@ -160,6 +181,12 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             "tool_choice": "auto",
             attempt.tokens_key.clone(): self.route.max_output_tokens,
         });
+        if self.route.cache
+            && !attempt.drop_cache_hint
+            && let Some(cache_key) = &self.cache_key
+        {
+            body["prompt_cache_key"] = json!(cache_key);
+        }
         if !attempt.drop_temperature {
             body["temperature"] = json!(self.route.temperature);
         }
@@ -194,6 +221,15 @@ impl ProtocolAdapter for OpenAiChatAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
+        if status == 400
+            && self.route.cache
+            && !attempt.drop_cache_hint
+            && self.cache_key.is_some()
+            && body.contains("prompt_cache_key")
+        {
+            attempt.drop_cache_hint = true;
+            return Parse::RetrySameSlot("400: retrying without prompt cache hint".into());
+        }
         if status == 400
             && attempt.tokens_key == "max_tokens"
             && body.contains("max_completion_tokens")
@@ -272,6 +308,11 @@ impl ProtocolAdapter for OpenAiChatAdapter {
         let usage = Usage {
             prompt_tokens: parsed["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
             completion_tokens: parsed["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+            cached_prompt_tokens: parsed["usage"]["prompt_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .or_else(|| parsed["usage"]["prompt_cache_hit_tokens"].as_u64())
+                .unwrap_or(0),
+            cache_write_tokens: 0,
             // response `reasoning_content`/`reasoning` fields are ignored
             // except usage accounting (completion_tokens_details)
             reasoning_tokens: parsed["usage"]["completion_tokens_details"]["reasoning_tokens"]

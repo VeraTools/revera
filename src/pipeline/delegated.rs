@@ -93,6 +93,7 @@ async fn delegated_candidates(
     let lead = make_client(
         &lead_route,
         "lead",
+        Some(super::cache_key(cfg, "delegated", "lead", None)),
         prep.ledger.clone(),
         cfg.budget.run_max_requests,
         cfg.budget.retries,
@@ -171,6 +172,7 @@ async fn delegated_candidates(
         let c = match make_client(
             route,
             "workers",
+            Some(super::cache_key(cfg, "delegated", "workers", None)),
             prep.ledger.clone(),
             cfg.budget.run_max_requests,
             cfg.budget.retries,
@@ -355,6 +357,7 @@ async fn delegated_candidates(
     let lead2 = make_client(
         &lead_route,
         "lead",
+        Some(super::cache_key(cfg, "delegated", "lead", None)),
         prep.ledger.clone(),
         cfg.budget.run_max_requests,
         cfg.budget.retries,

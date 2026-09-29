@@ -176,8 +176,8 @@ impl ProtocolAdapter for AnthropicAdapter {
         tools: &[ToolSpec],
         attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
-        let (system, msgs) = to_blocks(messages, attempt.drop_reasoning);
-        let tool_specs: Vec<Value> = tools
+        let (system, mut msgs) = to_blocks(messages, attempt.drop_reasoning);
+        let mut tool_specs: Vec<Value> = tools
             .iter()
             .map(|t| {
                 json!({
@@ -187,6 +187,25 @@ impl ProtocolAdapter for AnthropicAdapter {
                 })
             })
             .collect();
+        let cache_hint = self.route.cache && !attempt.drop_cache_hint;
+        if cache_hint {
+            if let Some(last) = tool_specs.last_mut() {
+                last["cache_control"] = json!({"type": "ephemeral"});
+            }
+            let len = msgs.len();
+            for message in msgs.iter_mut().skip(len.saturating_sub(2)) {
+                if let Some(blocks) = message["content"].as_array_mut()
+                    && let Some(block) = blocks.iter_mut().rev().find(|block| {
+                        !matches!(
+                            block["type"].as_str(),
+                            Some("thinking" | "redacted_thinking")
+                        )
+                    })
+                {
+                    block["cache_control"] = json!({"type": "ephemeral"});
+                }
+            }
+        }
         let max_out = self.route.max_output_tokens as u64;
         let r = &self.route.reasoning;
         let thinking_on = r.enabled() && !attempt.drop_reasoning;
@@ -212,7 +231,18 @@ impl ProtocolAdapter for AnthropicAdapter {
         }
         body["max_tokens"] = json!(max_tokens);
         if !system.is_empty() {
-            body["system"] = json!(system.join("\n\n"));
+            if cache_hint {
+                let mut system_blocks: Vec<Value> = system
+                    .into_iter()
+                    .map(|text| json!({"type": "text", "text": text}))
+                    .collect();
+                if let Some(last) = system_blocks.last_mut() {
+                    last["cache_control"] = json!({"type": "ephemeral"});
+                }
+                body["system"] = Value::Array(system_blocks);
+            } else {
+                body["system"] = json!(system.join("\n\n"));
+            }
         }
         let mut headers = vec![
             ("x-api-key".to_string(), self.api_key.clone()),
@@ -228,6 +258,14 @@ impl ProtocolAdapter for AnthropicAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
+        if status == 400
+            && self.route.cache
+            && !attempt.drop_cache_hint
+            && body.contains("cache_control")
+        {
+            attempt.drop_cache_hint = true;
+            return Parse::RetrySameSlot("400: retrying without prompt cache hint".into());
+        }
         if let Some(p) = detect_400_fallback(
             status,
             body,
@@ -287,8 +325,26 @@ impl ProtocolAdapter for AnthropicAdapter {
             ));
         }
         let usage = Usage {
-            prompt_tokens: parsed["usage"]["input_tokens"].as_u64().unwrap_or(0),
+            prompt_tokens: parsed["usage"]["input_tokens"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_add(
+                    parsed["usage"]["cache_read_input_tokens"]
+                        .as_u64()
+                        .unwrap_or(0),
+                )
+                .saturating_add(
+                    parsed["usage"]["cache_creation_input_tokens"]
+                        .as_u64()
+                        .unwrap_or(0),
+                ),
             completion_tokens: parsed["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            cached_prompt_tokens: parsed["usage"]["cache_read_input_tokens"]
+                .as_u64()
+                .unwrap_or(0),
+            cache_write_tokens: parsed["usage"]["cache_creation_input_tokens"]
+                .as_u64()
+                .unwrap_or(0),
             // anthropic reports thinking under output_tokens; no split
             reasoning_tokens: 0,
         };

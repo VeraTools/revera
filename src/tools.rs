@@ -3,10 +3,11 @@ use crate::provider::ToolSpec;
 use crate::vera::VeraClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::OnceCell;
 
 /// Per-call cap for local git-backed tools.
 const LOCAL_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,6 +44,8 @@ pub struct ToolBox {
     head: Option<String>,
     /// Corpus policy shared with Vera indexing and lexical tools.
     excluded: globset::GlobSet,
+    /// Vera indexes the working tree, so hits may include paths absent at head.
+    head_files: Arc<OnceCell<HashSet<String>>>,
 }
 
 /// Largest file `read_file` will load.
@@ -168,6 +171,7 @@ pub fn terminal_submit_verdict_spec() -> ToolSpec {
                 "start_line": {"type": "integer"},
                 "end_line": {"type": "integer"},
                 "rationale": {"type": "string"},
+                "fix": {"type": "string", "description": "Remedy you verified against the code; omit unless you checked it"},
             }),
             &["validation_status", "rationale"],
         ),
@@ -193,6 +197,7 @@ impl ToolBox {
             stats: Arc::new(Mutex::new(Stats::default())),
             head: None,
             excluded,
+            head_files: Arc::new(OnceCell::new()),
         }
     }
 
@@ -245,6 +250,7 @@ impl ToolBox {
             stats: self.stats.clone(),
             head: self.head.clone(),
             excluded: self.excluded.clone(),
+            head_files: self.head_files.clone(),
         }
     }
 
@@ -521,6 +527,37 @@ impl ToolBox {
         Ok(s)
     }
 
+    async fn render_vera_results(&self, v: Value) -> Result<String, String> {
+        let tracked = match self.head.as_deref() {
+            Some(head) => Some(
+                self.head_files
+                    .get_or_try_init(|| async {
+                        crate::git::tracked_files(&self.repo_root, head).await
+                    })
+                    .await
+                    .map_err(|e| format!("list tracked files at reviewed head: {e}"))?,
+            ),
+            None => None,
+        };
+        let (v, omitted) = filter_search(v, tracked, |path| self.is_excluded(path));
+        let mut output = render_search(&v);
+        if omitted > 0 {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            if self.head.is_some() {
+                output.push_str(&format!(
+                    "[{omitted} result(s) outside the reviewed head or excluded by content policy omitted]\n"
+                ));
+            } else {
+                output.push_str(&format!(
+                    "[{omitted} result(s) excluded by content policy omitted]\n"
+                ));
+            }
+        }
+        Ok(output)
+    }
+
     async fn call_inner(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
             "read_file" => self.read_file(args).await,
@@ -570,7 +607,7 @@ impl ToolBox {
                     )
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(render_search(&v))
+                self.render_vera_results(v).await
             }
             "vera_references" => {
                 let sym = args["symbol"].as_str().ok_or("missing symbol")?;
@@ -581,7 +618,7 @@ impl ToolBox {
                     .references(sym, callees, limit)
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(render_search(&v))
+                self.render_vera_results(v).await
             }
             "vera_grep" => {
                 let pat = args["pattern"].as_str().ok_or("missing pattern")?;
@@ -591,7 +628,7 @@ impl ToolBox {
                     .grep(pat, args["path_glob"].as_str(), limit)
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(render_search(&v))
+                self.render_vera_results(v).await
             }
             "vera_overview" => {
                 let v = self.vera.overview().await.map_err(|e| e.to_string())?;
@@ -688,4 +725,211 @@ fn render_search(v: &Value) -> String {
         out.push_str(&format!("{path}:{start}-{end} [{st} {sn}]\n{content}\n\n"));
     }
     out
+}
+
+fn filter_search(
+    mut v: Value,
+    tracked: Option<&HashSet<String>>,
+    is_excluded: impl Fn(&str) -> bool,
+) -> (Value, usize) {
+    let omitted = if v.is_array() {
+        filter_search_items(
+            v.as_array_mut().expect("array checked above"),
+            tracked,
+            &is_excluded,
+        )
+    } else if v["results"].is_array() {
+        filter_search_items(
+            v["results"].as_array_mut().expect("array checked above"),
+            tracked,
+            &is_excluded,
+        )
+    } else if v["matches"].is_array() {
+        filter_search_items(
+            v["matches"].as_array_mut().expect("array checked above"),
+            tracked,
+            &is_excluded,
+        )
+    } else {
+        0
+    };
+    (v, omitted)
+}
+
+fn filter_search_items(
+    items: &mut Vec<Value>,
+    tracked: Option<&HashSet<String>>,
+    is_excluded: &impl Fn(&str) -> bool,
+) -> usize {
+    let original_len = items.len();
+    items.retain(|item| {
+        let path = item["path"]
+            .as_str()
+            .or_else(|| item["file_path"].as_str())
+            .or_else(|| item["file"].as_str());
+        match path {
+            Some(path) => !is_excluded(path) && tracked.is_none_or(|files| files.contains(path)),
+            None => tracked.is_none(),
+        }
+    });
+    original_len - items.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::DiffSet;
+    use crate::vera::VeraClient;
+    use serde_json::json;
+    use std::path::Path;
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vera_tools_filter_working_tree_and_excluded_hits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempfile::tempdir().unwrap();
+        run_git(repo.path(), &["init", "-q"]);
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+        std::fs::write(repo.path().join("src/lib.rs"), "tracked\n").unwrap();
+        std::fs::write(repo.path().join(".env"), "secret\n").unwrap();
+        run_git(repo.path(), &["add", "--", "src/lib.rs", ".env"]);
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        );
+        let head = crate::git::resolve_commit(repo.path(), "HEAD")
+            .await
+            .unwrap();
+        std::fs::write(repo.path().join("working-only.rs"), "untracked\n").unwrap();
+        let exe = repo.path().join("fake-vera");
+        std::fs::write(
+            &exe,
+            r#"#!/bin/sh
+cat <<'JSON'
+{"results":[
+  {"path":"src/lib.rs","start_line":1,"content":"tracked result"},
+  {"file_path":"working-only.rs","start_line":1,"content":"untracked result"},
+  {"file":".env","start_line":1,"content":"excluded result"},
+  {"content":"pathless result"}
+]}
+JSON
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let vera = VeraClient {
+            exe,
+            repo_root: repo.path().to_path_buf(),
+            env: vec![],
+            backend: "local".into(),
+            exclude: vec![".env".into()],
+            home: repo.path().join(".vera"),
+            rerank: None,
+            index_key: String::new(),
+            rerank_fallbacks: Default::default(),
+            deadline: None,
+        };
+        let toolbox = ToolBox::new(
+            repo.path().to_path_buf(),
+            Arc::new(DiffSet::default()),
+            Arc::new(vera),
+            10_000,
+        )
+        .with_head(&head);
+
+        for (name, args) in [
+            ("vera_search", json!({"query":"test"})),
+            ("vera_references", json!({"symbol":"test"})),
+            ("vera_grep", json!({"pattern":"test"})),
+        ] {
+            let output = toolbox.call(name, args).await;
+            assert!(output.contains("src/lib.rs:1-1"), "{output}");
+            assert!(output.contains("tracked result"), "{output}");
+            assert!(
+                output.contains(
+                    "[3 result(s) outside the reviewed head or excluded by content policy omitted]"
+                ),
+                "{output}"
+            );
+            assert!(!output.contains("working-only.rs"), "{output}");
+            assert!(!output.contains(".env"), "{output}");
+            assert!(!output.contains("pathless result"), "{output}");
+            assert!(!output.contains("excluded result"), "{output}");
+        }
+
+        let invalid_head = ToolBox::new(
+            repo.path().to_path_buf(),
+            Arc::new(DiffSet::default()),
+            toolbox.vera.clone(),
+            10_000,
+        )
+        .with_head("not-a-resolved-commit");
+        let output = invalid_head
+            .call("vera_search", json!({"query":"test"}))
+            .await;
+        assert!(
+            output.contains("list tracked files at reviewed head"),
+            "{output}"
+        );
+        assert!(!output.contains("tracked result"), "{output}");
+
+        let no_head = ToolBox::new(
+            repo.path().to_path_buf(),
+            Arc::new(DiffSet::default()),
+            toolbox.vera.clone(),
+            10_000,
+        );
+        let output = no_head.call("vera_search", json!({"query":"test"})).await;
+        assert!(output.contains("src/lib.rs:1-1"), "{output}");
+        assert!(output.contains("working-only.rs:1-1"), "{output}");
+        assert!(output.contains("pathless result"), "{output}");
+        assert!(
+            output.contains("[1 result(s) excluded by content policy omitted]"),
+            "{output}"
+        );
+        assert!(!output.contains(".env"), "{output}");
+        assert!(!output.contains("excluded result"), "{output}");
+    }
+
+    #[test]
+    fn filter_search_handles_array_and_matches_shapes() {
+        let files = HashSet::from(["tracked.rs".to_string()]);
+        for value in [
+            json!([{"path":"tracked.rs"},{"file":"loose.rs"}]),
+            json!({"matches":[{"file_path":"tracked.rs"},{"file":"loose.rs"}]}),
+        ] {
+            let (filtered, omitted) = filter_search(value, Some(&files), |path| path == ".env");
+            assert_eq!(omitted, 1);
+            assert_eq!(
+                filtered
+                    .as_array()
+                    .or_else(|| filtered["matches"].as_array())
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
 }

@@ -49,6 +49,10 @@ pub struct RouteLedger {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     #[serde(default)]
+    pub cached_prompt_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
     pub reasoning_tokens: u64,
 }
 
@@ -57,6 +61,10 @@ pub struct LedgerReport {
     pub requests: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub cached_prompt_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
     pub by_route: Vec<RouteLedger>,
@@ -186,7 +194,7 @@ pub fn finding_body(f: &Finding) -> String {
             .collect();
         b.push_str(&format!("Evidence: {}\n", ev.join(", ")));
     }
-    if let Some(fix) = &f.suggested_fix {
+    if let Some(fix) = &f.validated_fix {
         let fix = sanitize(fix);
         let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
         b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
@@ -472,7 +480,7 @@ pub fn ledger_route_label(e: &crate::provider::LedgerEntry) -> String {
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     use std::collections::BTreeMap;
     let mut by: BTreeMap<(String, String, String, String, String), RouteLedger> = BTreeMap::new();
-    let (mut pr, mut cr, mut rr) = (0u64, 0u64, 0u64);
+    let (mut pr, mut cr, mut cpr, mut cwr, mut rr) = (0u64, 0u64, 0u64, 0u64, 0u64);
     for e in &ledger.entries {
         let key = (
             e.role.clone(),
@@ -490,20 +498,28 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
             requests: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_prompt_tokens: 0,
+            cache_write_tokens: 0,
             reasoning_tokens: 0,
         });
         r.requests += 1;
         r.prompt_tokens += e.prompt_tokens;
         r.completion_tokens += e.completion_tokens;
+        r.cached_prompt_tokens += e.cached_prompt_tokens;
+        r.cache_write_tokens += e.cache_write_tokens;
         r.reasoning_tokens += e.reasoning_tokens;
         pr += e.prompt_tokens;
         cr += e.completion_tokens;
+        cpr += e.cached_prompt_tokens;
+        cwr += e.cache_write_tokens;
         rr += e.reasoning_tokens;
     }
     LedgerReport {
         requests: ledger.entries.len() as u64,
         prompt_tokens: pr,
         completion_tokens: cr,
+        cached_prompt_tokens: cpr,
+        cache_write_tokens: cwr,
         reasoning_tokens: rr,
         by_route: by.into_values().collect(),
         wall_ms,
@@ -543,6 +559,39 @@ mod tests {
                 "validator=openai-chat:https://api.example.com/v1:m@high",
             ]
         );
+    }
+
+    #[test]
+    fn ledger_sums_cached_prompt_and_write_tokens() {
+        let mut l = RunLedger::default();
+        let mut e = entry("investigator", "max", "max");
+        e.prompt_tokens = 20;
+        e.cached_prompt_tokens = 7;
+        e.cache_write_tokens = 3;
+        l.entries.push(e);
+        let rep = ledger_report(&l, 0);
+        assert_eq!(rep.prompt_tokens, 20);
+        assert_eq!(rep.cached_prompt_tokens, 7);
+        assert_eq!(rep.cache_write_tokens, 3);
+        assert_eq!(rep.by_route[0].cached_prompt_tokens, 7);
+        assert_eq!(rep.by_route[0].cache_write_tokens, 3);
+    }
+
+    #[test]
+    fn old_ledger_reports_default_cache_token_fields_to_zero() {
+        let rep: LedgerReport = serde_json::from_str(
+            r#"{"requests":0,"prompt_tokens":0,"completion_tokens":0,"reasoning_tokens":0,"by_route":[],"wall_ms":0}"#,
+        )
+        .unwrap();
+        assert_eq!(rep.cached_prompt_tokens, 0);
+        assert_eq!(rep.cache_write_tokens, 0);
+
+        let route: RouteLedger = serde_json::from_str(
+            r#"{"route":"r","role":"worker","model":"m","requested_reasoning":"none","effective_reasoning":"none","requests":1,"prompt_tokens":0,"completion_tokens":0,"reasoning_tokens":0}"#,
+        )
+        .unwrap();
+        assert_eq!(route.cached_prompt_tokens, 0);
+        assert_eq!(route.cache_write_tokens, 0);
     }
 
     #[test]

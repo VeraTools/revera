@@ -6,7 +6,6 @@ on:
   pull_request:
 
 permissions:
-  pull-requests: write
   contents: read
 
 # One publisher per PR: a new push cancels the in-flight review so two runs
@@ -46,13 +45,18 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
+    permissions:
+      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
       - id: rv
-        uses: VeraTools/revera@v0
+        # Deliberately the moving major tag: this job tests what users of @v0 get.
+        uses: VeraTools/revera@v0 # zizmor: ignore[unpinned-uses]
         with:
           config: .github/revera-self-review.yaml
           publish: ${{ matrix.os == 'ubuntu-latest' && 'comment' || 'dry-run' }}

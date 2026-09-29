@@ -34,6 +34,8 @@ pub struct AttemptState {
     pub tokens_key: String,
     pub drop_temperature: bool,
     pub drop_reasoning: bool,
+    /// Omit provider prompt-cache hints after a provider rejects them.
+    pub drop_cache_hint: bool,
     /// After a 400 that rejected the requested effort, cap subsequent
     /// attempts to this level before falling back to dropping reasoning.
     pub reasoning_cap: Option<ReasoningEffort>,
@@ -45,6 +47,7 @@ impl Default for AttemptState {
             tokens_key: "max_tokens".into(),
             drop_temperature: false,
             drop_reasoning: false,
+            drop_cache_hint: false,
             reasoning_cap: None,
         }
     }
@@ -308,6 +311,8 @@ impl HttpTransport {
                                 LedgerEntry {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
+                                    cached_prompt_tokens: usage.cached_prompt_tokens,
+                                    cache_write_tokens: usage.cache_write_tokens,
                                     reasoning_tokens: usage.reasoning_tokens,
                                     latency_ms: latency,
                                     retries: retries_used,
