@@ -468,25 +468,9 @@ pub fn refresh_timing_line(summary: &str, t: &Timing) -> String {
     out
 }
 
-/// `<role>=<route>:<model>@<requested>` (+ `-><effective>` when the sent
-/// effort differs from the requested one, e.g. after a 400 step-down).
-pub fn ledger_route_label(e: &crate::provider::LedgerEntry) -> String {
-    if e.effective_reasoning != e.requested_reasoning {
-        format!(
-            "{}={}:{}@{}->{}",
-            e.role, e.route, e.model, e.requested_reasoning, e.effective_reasoning
-        )
-    } else {
-        format!(
-            "{}={}:{}@{}",
-            e.role, e.route, e.model, e.requested_reasoning
-        )
-    }
-}
-
-/// `<role>=<model>@<requested>` (+ `-><effective>` when the sent
-/// effort differs from the requested one). This is the endpoint-free label
-/// used in the human-facing review footer.
+/// `<role>=<model>@<requested>` (+ `-><effective>` when the sent effort
+/// differs from the requested one, e.g. after a 400 step-down). Public
+/// output, so it never carries the protocol or endpoint.
 pub fn footer_route_label(e: &crate::provider::LedgerEntry) -> String {
     if e.effective_reasoning != e.requested_reasoning {
         format!(
@@ -572,14 +556,6 @@ mod tests {
         l.entries.push(entry("validator", "high", "high"));
         let rep = ledger_report(&l, 0);
         assert_eq!(rep.by_route.len(), 2);
-        let labels: Vec<String> = l.entries.iter().map(ledger_route_label).collect();
-        assert_eq!(
-            labels,
-            vec![
-                "investigator=openai-chat:https://api.example.com/v1:m@max",
-                "validator=openai-chat:https://api.example.com/v1:m@high",
-            ]
-        );
         let footer_labels: Vec<String> = l.entries.iter().map(footer_route_label).collect();
         assert_eq!(
             footer_labels,
@@ -623,10 +599,6 @@ mod tests {
     #[test]
     fn step_down_renders_arrow() {
         let e = entry("investigator", "max", "high");
-        assert_eq!(
-            ledger_route_label(&e),
-            "investigator=openai-chat:https://api.example.com/v1:m@max->high"
-        );
         assert_eq!(footer_route_label(&e), "investigator=m@max->high");
         let mut l = RunLedger::default();
         l.entries.push(e);

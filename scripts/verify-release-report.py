@@ -518,7 +518,6 @@ def route_evidence(report: dict[str, Any]) -> list[str]:
             + markdown_value(str(entry.get("model", "unknown")))
             + "`, requests "
             + str(requests)
-            + ")"
         )
     return evidence or ["- (no routes recorded)"]
 

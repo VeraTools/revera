@@ -35,9 +35,9 @@ for raw_path in paths:
         print(f"docs hygiene: could not read {path}: {exc}", file=sys.stderr)
         status = 1
         continue
-    if b"\0" in data:
-        continue
-    normalized = NON_TEXT.sub("", data.decode("utf-8", errors="replace").lower())
+    # latin-1 maps bytes 1:1, so ASCII names survive any encoding (UTF-16
+    # NULs and non-ASCII bytes are dropped by NON_TEXT).
+    normalized = NON_TEXT.sub("", data.decode("latin-1").lower())
     for length, hashes in FORBIDDEN.items():
         if any(
             hashlib.sha256(normalized[i : i + length].encode("ascii")).hexdigest()
