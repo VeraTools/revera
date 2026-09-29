@@ -9,8 +9,6 @@ fn write_tmp(yaml: &str) -> tempfile::NamedTempFile {
 
 #[test]
 fn env_expansion_and_missing_var() {
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVERA_TEST_X", "hello") };
     assert_eq!(expand_env("a-${REVERA_TEST_X}-b").unwrap(), "a-hello-b");
     let e = expand_env("x-${REVERA_TEST_MISSING_VAR}-y").unwrap_err();
     assert!(e.to_string().contains("REVERA_TEST_MISSING_VAR"), "{e}");
@@ -81,8 +79,6 @@ profiles:
 
 #[test]
 fn reasoning_bare_and_long_forms_parse() {
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVERA_TEST_KEY", "sk-test") };
     let yaml = r#"
 review: {strategy: baseline}
 models:
@@ -156,8 +152,6 @@ vera: {backend: local}
 
 #[test]
 fn opencode_ai_base_url_defaults_session_header() {
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVERA_TEST_KEY", "sk-test") };
     let yaml = r#"
 review: {strategy: baseline}
 models:
@@ -199,8 +193,6 @@ fn is_opencode_host_matches_exact_and_subdomain() {
 
 #[test]
 fn session_header_must_be_a_valid_http_header_name() {
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVERA_TEST_KEY", "sk-test") };
     let yaml = |header: &str| {
         format!(
             r#"
@@ -382,8 +374,6 @@ vera: {enabled: false}
 
 #[test]
 fn example_config_loads() {
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVIEW_BASE_URL", "https://api.example.com/v1") };
     let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/revera.example.yaml"));
     Config::load(p).unwrap();
 }

@@ -462,8 +462,6 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn cfg() -> Config {
-        // SAFETY: test-only; tests that share a variable all write the same value
-        unsafe { std::env::set_var("REVERA_TEST_KEY", "sk-test") };
         serde_yaml::from_str(
             r#"
 review: {strategy: delegated, concurrency: 2}

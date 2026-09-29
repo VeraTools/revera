@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-const EMBED_KEY: &str = "sk-embed-test-0123456789abcdef";
-const RERANK_KEY: &str = "sk-rerank-test-0123456789abcdef";
+const EMBED_KEY: &str = env!("REVERA_IT_EMBED_KEY");
+const RERANK_KEY: &str = env!("REVERA_IT_RERANK_KEY");
 
 fn vera_exe() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("REVERA_TEST_VERA") {
@@ -98,10 +98,6 @@ async fn setup() -> Option<(MockServer, PathBuf)> {
         eprintln!("skipping: no vera executable (set REVERA_TEST_VERA)");
         return None;
     };
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVERA_IT_EMBED_KEY", EMBED_KEY) };
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("REVERA_IT_RERANK_KEY", RERANK_KEY) };
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/embeddings"))
@@ -133,9 +129,9 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
     };
     let repo = fixture_repo();
     let home = tempfile::tempdir().unwrap();
-    // ambient overrides must not reach the child
-    // SAFETY: test-only; no other test in this binary sets or reads this variable
-    unsafe { std::env::set_var("RERANKER_MODEL_BASE_URL", "http://127.0.0.1:9/ambient") };
+    // RERANKER_MODEL_BASE_URL is set ambiently (.cargo/config.toml) and
+    // must not reach the child
+    assert!(std::env::var_os("RERANKER_MODEL_BASE_URL").is_some());
     let cfg = config(&server.uri(), home.path(), &exe, true);
     let vera = VeraClient::from_config(&cfg.vera, repo.path()).unwrap();
     assert_eq!(vera.home, home.path());
@@ -192,8 +188,6 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
             .unwrap(),
         format!("Bearer {RERANK_KEY}")
     );
-    // SAFETY: see the matching set_var above
-    unsafe { std::env::remove_var("RERANKER_MODEL_BASE_URL") };
 }
 
 #[tokio::test]

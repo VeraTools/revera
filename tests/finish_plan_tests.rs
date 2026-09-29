@@ -351,17 +351,15 @@ fn review_key_is_sensitive_to_tree_and_config_not_secrets() {
     let yaml = r#"
 review: {strategy: baseline}
 models:
-  investigator: {protocol: openai-chat, base_url: "http://x", model: m, api_key_env: SOME_KEY_ENV}
-  validator: {protocol: openai-chat, base_url: "http://x", model: m, api_key_env: SOME_KEY_ENV}
+  investigator: {protocol: openai-chat, base_url: "http://x", model: m, api_key_env: REVERA_TEST_SOME_KEY}
+  validator: {protocol: openai-chat, base_url: "http://x", model: m, api_key_env: REVERA_TEST_SOME_KEY}
 vera: {enabled: false}
 "#;
     let f = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(f.path(), yaml).unwrap();
-    // SAFETY: test-only; tests that share a variable all write the same value
-    unsafe { std::env::set_var("SOME_KEY_ENV", "sk-dummy-value-for-test") };
     let c = revera::config::Config::load(f.path()).unwrap();
     let fp = c.review_fingerprint("baseline").to_string();
-    assert!(!fp.contains("SOME_KEY_ENV"), "{fp}");
+    assert!(!fp.contains("REVERA_TEST_SOME_KEY"), "{fp}");
     assert!(!fp.contains("sk-dummy"), "{fp}");
     assert!(fp.contains("baseline"));
     // every behaviour-shaping knob changes the key, header values do not

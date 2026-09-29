@@ -130,7 +130,7 @@ impl GitHubApi {
             .unwrap_or_else(|_| "https://api.github.com".into())
             .trim_end_matches('/')
             .to_string();
-        let http = reqwest::Client::builder()
+        let http = crate::tls::with_bundled_roots(reqwest::Client::builder())
             .user_agent("revera")
             .timeout(Duration::from_secs(60))
             .build()

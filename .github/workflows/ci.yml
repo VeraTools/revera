@@ -74,6 +74,13 @@ jobs:
           bin=target/x86_64-unknown-linux-musl/release/revera
           file "$bin" | grep -Eq 'static(ally|-pie) linked'
           "$bin" --version
+      # empty (not missing) paths: cargo swaps missing ones for the system bundle
+      - name: HTTPS works without a system CA bundle
+        run: |
+          mkdir -p "$RUNNER_TEMP/no-ca"
+          : > "$RUNNER_TEMP/no-ca.pem"
+          SSL_CERT_FILE="$RUNNER_TEMP/no-ca.pem" SSL_CERT_DIR="$RUNNER_TEMP/no-ca" \
+            cargo test --release --locked --target x86_64-unknown-linux-musl --test tls_roots -- --ignored
 
   # Live: scripted models but a real Vera index built through a hosted endpoint
   # embeddings. Shown as *skipped* (not passed) when the secret is absent,
