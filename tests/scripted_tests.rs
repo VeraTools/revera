@@ -102,7 +102,7 @@ fn summary_rendering() {
         coverage: "checked callers",
         status: Some(revera::report::RunStatus::Complete),
         strategy: "baseline",
-        routes: &["openai-chat:http://x:m".into()],
+        routes: &["investigator=m@max".into()],
         ..Default::default()
     });
     assert!(md.contains("Revera review"));

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate the M* model-screening configs (eval/configs/M*.yaml).
 
-All configs share the same validator (glm-5.3-flash @ high via the model gateway)
+All configs share the same validator (glm-5.3-flash @ high via the model
+endpoint)
 so the comparison isolates the investigator/scout side. Reasoning `max` is
 passed through unchanged to every route; on a provider 400 the adapter
 steps down to `high` (then drops reasoning), and the ledger records
@@ -13,7 +14,6 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_URL = "${REVERA_MODEL_BASE_URL}"
-INVESTIGATOR_URL = "${REVERA_INVESTIGATOR_BASE_URL}"
 
 
 def gateway(model, effort, max_out=6000):
@@ -29,8 +29,8 @@ def gateway(model, effort, max_out=6000):
 
 def muse(max_out=6000):
     return f"""    protocol: openai-responses
-    base_url: {INVESTIGATOR_URL}
-    api_key_env: REVERA_INVESTIGATOR_API_KEY
+    base_url: {MODEL_URL}
+    api_key_env: REVERA_MODEL_API_KEY
     model: muse-spark-1.3-contributor
     max_output_tokens: {max_out}
     temperature: 0.2

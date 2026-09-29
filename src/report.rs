@@ -381,10 +381,17 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         r.dedup();
         r.join(", ")
     };
-    s.push_str(&format!(
-        "\n<sub>revera · strategy {} · models: {routes}</sub>\n",
-        inp.strategy
-    ));
+    if routes.is_empty() {
+        s.push_str(&format!(
+            "\n<sub>revera · strategy {}</sub>\n",
+            inp.strategy
+        ));
+    } else {
+        s.push_str(&format!(
+            "\n<sub>revera · strategy {} · models: {routes}</sub>\n",
+            inp.strategy
+        ));
+    }
     s
 }
 
@@ -477,6 +484,20 @@ pub fn ledger_route_label(e: &crate::provider::LedgerEntry) -> String {
     }
 }
 
+/// `<role>=<model>@<requested>` (+ `-><effective>` when the sent
+/// effort differs from the requested one). This is the endpoint-free label
+/// used in the human-facing review footer.
+pub fn footer_route_label(e: &crate::provider::LedgerEntry) -> String {
+    if e.effective_reasoning != e.requested_reasoning {
+        format!(
+            "{}={}@{}->{}",
+            e.role, e.model, e.requested_reasoning, e.effective_reasoning
+        )
+    } else {
+        format!("{}={}@{}", e.role, e.model, e.requested_reasoning)
+    }
+}
+
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     use std::collections::BTreeMap;
     let mut by: BTreeMap<(String, String, String, String, String), RouteLedger> = BTreeMap::new();
@@ -559,6 +580,11 @@ mod tests {
                 "validator=openai-chat:https://api.example.com/v1:m@high",
             ]
         );
+        let footer_labels: Vec<String> = l.entries.iter().map(footer_route_label).collect();
+        assert_eq!(
+            footer_labels,
+            vec!["investigator=m@max", "validator=m@high",]
+        );
     }
 
     #[test]
@@ -601,11 +627,36 @@ mod tests {
             ledger_route_label(&e),
             "investigator=openai-chat:https://api.example.com/v1:m@max->high"
         );
+        assert_eq!(footer_route_label(&e), "investigator=m@max->high");
         let mut l = RunLedger::default();
         l.entries.push(e);
         let rep = ledger_report(&l, 0);
         assert_eq!(rep.by_route[0].requested_reasoning, "max");
         assert_eq!(rep.by_route[0].effective_reasoning, "high");
+    }
+
+    #[test]
+    fn summary_omits_empty_models_segment() {
+        let summary = summary_markdown(&Summary {
+            strategy: "baseline",
+            ..Default::default()
+        });
+        assert!(summary.contains("<sub>revera · strategy baseline</sub>"));
+        assert!(!summary.contains(" · models:"));
+    }
+
+    #[test]
+    fn summary_footer_uses_endpoint_free_route_labels() {
+        let e = entry("investigator", "max", "high");
+        let route = footer_route_label(&e);
+        let summary = summary_markdown(&Summary {
+            strategy: "baseline",
+            routes: &[route],
+            ..Default::default()
+        });
+        assert!(summary.contains("investigator=m@max->high"));
+        assert!(!summary.contains("https://"));
+        assert!(!summary.contains("openai-chat:"));
     }
 
     #[test]

@@ -289,9 +289,19 @@ try:
     if not summary_path.exists():
         raise AssertionError("good case did not write the proof summary")
     summary_text = summary_path.read_text(encoding="utf-8")
-    for expected in ("v0.4.0", "c" * 64, BASE, HEAD, FINDING_ID, "investigator-model"):
+    for expected in (
+        "v0.4.0",
+        "c" * 64,
+        BASE,
+        HEAD,
+        FINDING_ID,
+        "investigator-model",
+        "protocol `openai-chat`",
+    ):
         if expected not in summary_text:
             raise AssertionError(f"proof summary omitted expected evidence {expected!r}")
+    if "provider.example" in summary_text or "validator.example" in summary_text:
+        raise AssertionError("proof summary leaked a route URL")
 
     unrelated = report(1)
     unrelated["findings"][0]["title"] = "Unrelated accepted finding"

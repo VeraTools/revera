@@ -11,8 +11,8 @@ export PATH="$HOME/.local/bin:$PATH"
 VERA_HOME="${VERA_HOME:-$HOME/.vera-revera}"
 export VERA_HOME
 
-if [ -z "${REVERA_EMBEDDING_API_KEY:-}" ]; then
-    echo "SKIP: REVERA_EMBEDDING_API_KEY not set; fixture needs Vera API mode" >&2
+if [ -z "${REVERA_EMBEDDING_BASE_URL:-}" ] || [ -z "${REVERA_EMBEDDING_API_KEY:-}" ]; then
+    echo "SKIP: REVERA_EMBEDDING_BASE_URL and REVERA_EMBEDDING_API_KEY are required; fixture needs Vera API mode" >&2
     exit 0
 fi
 

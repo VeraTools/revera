@@ -143,8 +143,8 @@ jobs:
           SSL_CERT_FILE="$RUNNER_TEMP/no-ca.pem" SSL_CERT_DIR="$RUNNER_TEMP/no-ca" \
             "${test[@]}" --offline -- --ignored
 
-  # Live: scripted models but a real Vera index built through a hosted endpoint
-  # embeddings. Shown as *skipped* (not passed) when the secret is absent,
+  # Live: scripted models but a real Vera index built through a hosted
+  # embedding endpoint. Shown as *skipped* (not passed) when credentials are absent,
   # e.g. on fork PRs. The offline composite-Action proof is action-smoke.yml.
   has-key:
     runs-on: ubuntu-latest
@@ -155,13 +155,14 @@ jobs:
       - id: c
         shell: bash
         env:
+          REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
         run: |
-          if [ -n "$REVERA_EMBEDDING_API_KEY" ]; then
+          if [ -n "$REVERA_EMBEDDING_BASE_URL" ] && [ -n "$REVERA_EMBEDDING_API_KEY" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=live fixtures skipped::REVERA_EMBEDDING_API_KEY is not available to this run (expected for fork PRs); the live-fixtures job is skipped, not passed."
+            echo "::warning title=live fixtures skipped::REVERA_EMBEDDING_BASE_URL and/or REVERA_EMBEDDING_API_KEY is not available to this run (expected for fork PRs); the live-fixtures job is skipped, not passed."
           fi
 
   live-fixtures:
@@ -181,8 +182,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Fixture run (Vera + a hosted endpoint)
+      - name: Fixture run (Vera + hosted embedding endpoint)
         env:
+          REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
           VERA_HOME: ${{ runner.temp }}/.vera-revera
         run: fixtures/run-fixture.sh

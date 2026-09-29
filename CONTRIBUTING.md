@@ -10,7 +10,7 @@ cargo test
 scripts/test-install-revera.sh && scripts/test-install-vera.sh && scripts/test-action-outcome.sh
 scripts/test-verify-release-report.sh  # release-verify report checks (mock GitHub)
 scripts/check-versions.sh          # Cargo.toml and action.yml agree
-scripts/check-docs-hygiene.sh      # public docs name providers, not routing services
+scripts/check-docs-hygiene.sh      # tracked text has no routing intermediary names
 eval/test-run-all.sh               # eval runner plan (no API calls)
 eval/test-frozen.sh                # frozen-candidate harness with scripted validators
 ```
@@ -25,13 +25,15 @@ actionlint && zizmor --offline --min-severity medium .github/workflows action.ym
 cargo +1.89 check --all-targets --locked   # rust-version in Cargo.toml
 ```
 
-Live checks, run when the relevant key is available:
+Live checks, run when the relevant endpoint and key are available:
 
-- `REVERA_EMBEDDING_API_KEY=… VERA_HOME=$HOME/.vera-revera fixtures/run-fixture.sh`
+- `REVERA_EMBEDDING_BASE_URL=… REVERA_EMBEDDING_API_KEY=… VERA_HOME=$HOME/.vera-revera fixtures/run-fixture.sh`
   — scripted models against a real Vera index (break → fix → clean →
   delegated → panel).
-- `revera review --repo <path> --base <rev> --config <cfg>` against a real
-  provider for a manual end-to-end run; `revera doctor` first.
+- `REVERA_MODEL_BASE_URL=… REVERA_MODEL_API_KEY=… revera review --repo <path> --base <rev> --config <cfg>`
+  against a real model endpoint for a manual end-to-end run; `revera doctor`
+  first. Configurations using Vera also need
+  `REVERA_EMBEDDING_BASE_URL=… REVERA_EMBEDDING_API_KEY=…`.
 
 Report live checks as run, skipped or blocked; never count a check that did
 not run as passed.

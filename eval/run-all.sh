@@ -48,8 +48,14 @@ if [ "${RUN_ALL_DRY_RUN:-0}" = "1" ]; then
     exit 0
 fi
 
-if [ -z "${REVERA_EMBEDDING_API_KEY:-}" ]; then
-    echo "SKIP: REVERA_EMBEDDING_API_KEY not set" >&2
+missing=()
+for var in \
+    REVERA_MODEL_BASE_URL REVERA_MODEL_API_KEY \
+    REVERA_EMBEDDING_BASE_URL REVERA_EMBEDDING_API_KEY; do
+    [ -n "${!var:-}" ] || missing+=("$var")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "SKIP: evaluation requires ${missing[*]}" >&2
     exit 0
 fi
 
