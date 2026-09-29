@@ -113,7 +113,7 @@ Details: [docs/how-it-works.md](docs/how-it-works.md).
 
 | protocol | endpoint | examples |
 |---|---|---|
-| `openai-chat` | `{base_url}/chat/completions` | OpenAI, a hosted endpoint, Z.ai, DeepSeek, most self-hosted servers |
+| `openai-chat` | `{base_url}/chat/completions` | OpenAI, Z.ai, DeepSeek, most OpenAI-compatible servers |
 | `openai-responses` | `{base_url}/responses` | OpenAI Responses API and compatible hosts |
 | `anthropic` | `{base_url}/v1/messages` | Anthropic Claude |
 | `gemini` | `{base_url}/v1beta/models/{model}:generateContent` | Google Gemini |

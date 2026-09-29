@@ -24,7 +24,8 @@ models:
   #   model: claude-sonnet-4-6
 
 # Optional: give the investigator REVIEW.md (or AGENTS.md) conventions from
-# the base commit. Off by default; not yet shown to improve results.
+# the base commit. Off by default; evaluation found no benefit yet (see
+# docs/evaluation.md).
 # review:
 #   guidance: review               # off | review | agents
 

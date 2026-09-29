@@ -33,7 +33,10 @@ unavailable".
 a tool-call and wall-clock budget, and ends by calling `submit_findings`
 with structured candidates. A malformed submission gets exactly one repair
 round; still-malformed output makes the run `partial` while valid findings
-from a mixed list are kept.
+from a mixed list are kept. Prompts are capability-neutral: Revera appends a
+note to each system prompt listing the tools actually available in that run.
+If Vera is disabled or index setup fails, its tools are hidden and the note
+describes lexical-only retrieval.
 
 **Validate.** Candidates are first collapsed (same file, overlapping lines,
 same `defect_key`), then each one is given to a validator agent that starts
@@ -81,6 +84,8 @@ report (`--out`, default `.revera/last-report.json`) carries `status`,
 `reason`, `findings`, `coverage_gaps`, per-phase `timing`, a per-route
 `ledger` (requests, tokens, requested vs effective reasoning) and `stats`
 (candidates before/after validation, retrieval mode, tool calls, reuse).
+When a completed review is reused for identical content and effective
+configuration, `stats.reused` is `true` and `stats.validation` is `"reused"`.
 
 ## Findings
 
@@ -89,7 +94,9 @@ id                    12 hex chars = sha256(file + "\0" + defect_key)[..12]
 defect_key            model-supplied snake_case identity of the defect
 severity              high | medium | low
 file, start_line, end_line?
-title, claim, trigger, impact, suggested_fix?
+title, claim, trigger, impact
+suggested_fix?        investigator's proposal; never published
+validated_fix?        remedy supplied or approved by the validator
 introduced_by_change  bool
 supporting_evidence[] { path, start_line, end_line, note }
 counterevidence_checked[]   filled by the validator
@@ -98,7 +105,10 @@ source                investigator | scout:<name> | worker:<n> | prior
 ```
 
 Identity is `file + defect_key`, not wording, so a rephrased finding on the
-next push is the same finding.
+next push is the same finding. The investigator cannot set a publishable
+remedy: its `suggested_fix` is only a proposal, and any investigator-supplied
+`validated_fix` is discarded. The validator's `Verdict.fix` becomes
+`validated_fix`; reports and comments render only that validator-owned value.
 
 ## State and re-review
 
