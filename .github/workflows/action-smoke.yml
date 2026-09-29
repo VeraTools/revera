@@ -38,7 +38,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
+      # per-image cache: aws-lc-sys C objects built against 24.04's glibc
+      # fail to link on 22.04 (__isoc23_* symbols)
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.os }}
 
       - name: Build revera and stage fake releases for the Action's installers
         shell: bash
