@@ -27,7 +27,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn config() -> Config {
-    serde_yaml::from_str(
+    serde_saphyr::from_str(
         r#"
 review: {strategy: baseline}
 models:

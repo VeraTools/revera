@@ -328,7 +328,7 @@ models:
   validator: {protocol: openai-chat, model: m, base_url: "http://127.0.0.1:1", api_key_env: REVERA_TEST_KEY}
 vera: {executable: "true", version: "1.4.1", backend: api}
 "#;
-    let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+    let cfg: Config = serde_saphyr::from_str(yaml).unwrap();
     let diff = Arc::new(DiffSet::default());
     let toolbox = Arc::new(tb());
     let mut cands = vec![

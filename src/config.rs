@@ -849,7 +849,7 @@ impl Config {
     pub fn parse(text: &str, label: &str) -> Result<Self> {
         let text = expand_env(text)?;
         let mut cfg: Config =
-            serde_yaml::from_str(&text).with_context(|| format!("invalid config {label}"))?;
+            serde_saphyr::from_str(&text).with_context(|| format!("invalid config {label}"))?;
         cfg.expand_and_validate()?;
         Ok(cfg)
     }

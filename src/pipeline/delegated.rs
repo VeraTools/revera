@@ -462,7 +462,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn cfg() -> Config {
-        serde_yaml::from_str(
+        serde_saphyr::from_str(
             r#"
 review: {strategy: delegated, concurrency: 2}
 models:
