@@ -139,8 +139,8 @@ jobs:
         run: |
           set -euo pipefail
           sha=$(git -C released rev-parse HEAD)
-          version=$(sed -n '/revera-version:/,/default:/ s/.*default: *"\([^"]*\)".*/\1/p' released/action.yml | head -n1)
-          vera_version=$(sed -n '/vera-version:/,/default:/ s/.*default: *"\([^"]*\)".*/\1/p' released/action.yml | head -n1)
+          version=$(sed -n '/^  revera-version:/,/default:/ s/.*default: *"\([^"]*\)".*/\1/p' released/action.yml | head -n1)
+          vera_version=$(sed -n '/^  vera-version:/,/default:/ s/.*default: *"\([^"]*\)".*/\1/p' released/action.yml | head -n1)
           mkdir -p "$RUNNER_TEMP/bin"
           released/scripts/install-revera.sh "$version" "$RUNNER_TEMP/bin"
           released/scripts/install-vera.sh "$vera_version" "$RUNNER_TEMP/bin"
