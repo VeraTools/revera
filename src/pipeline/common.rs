@@ -544,6 +544,7 @@ pub async fn finish(
     // dedupe against findings still tracked as open/uncertain (posted or
     // awaiting recheck). Resolved/rejected ids are *not* filtered: the same
     // defect coming back is a reintroduction and must be validated again.
+    // Validation-disabled runs skip this so every candidate is scored.
     collapsed.retain(|f| {
         let id = f.id();
         !(cfg.review.validate && prep.state.is_tracked_open(&id) && !reenter_ids.contains(&id))

@@ -135,7 +135,7 @@ open(port_file, "w").write(str(s.server_port))
 s.serve_forever()
 PY
 MOCK=$!
-trap 'kill "$MOCK" 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$W"' EXIT
+trap 'kill "$MOCK" 2>/dev/null || true; [ -n "${KEEP:-}" ] || cleanup' EXIT
 for _ in $(seq 50); do [ -s "$PORTF" ] && break; sleep 0.1; done
 cat > "$W/inherit.yaml" <<YAML
 review: {min_severity: low}

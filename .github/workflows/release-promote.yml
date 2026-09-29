@@ -31,8 +31,14 @@ jobs:
 
       - name: Verify release tag exists
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null \
-            || { echo "::error::tag $TAG does not exist"; exit 1; }
+          if ! out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1); then
+            if [[ "$out" == *"HTTP 404"* ]]; then
+              echo "::error::tag $TAG does not exist"
+            else
+              echo "::error::cannot verify tag $TAG: $out"
+            fi
+            exit 1
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

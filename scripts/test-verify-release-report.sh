@@ -108,6 +108,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 items = [managed, other_managed]
             elif mode == "nonprefix-managed-summary":
                 items = [managed, nonprefix_managed]
+            elif mode == "other-pr-summary":
+                items = [dict(managed, id=SUMMARY_ID + 2)]
             else:
                 items = [managed]
             return json_response(self, items)
@@ -345,6 +347,7 @@ try:
     )
     expect_fail("missing-review", "reviews by --author for the expected head; expected exactly one")
     expect_fail("wrong-review-id", "does not match run 1 review_id")
+    expect_fail("other-pr-summary", "managed summary comment is not the one named by run 1")
     expect_fail(
         "nonzero-exit",
         "run 1 exited with status 2",

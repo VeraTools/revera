@@ -195,7 +195,8 @@ see tracked files at the reviewed head, but the Vera index was built from
 the working tree, and `vera grep` did return `truth.json`. Any run that
 called a Vera tool could have seen the answer key. The engine now drops
 Vera hits that are not tracked at the reviewed head (`a98bcb1`), and every
-affected run was rerun on that binary: 20 E1 validator arms, the five E2
+affected run was rerun on that binary: the 20 E1 (corpus, rep, validator) runs whose
+validator had called a Vera tool, the five E2
 scenarios with an affected run (all three modes, 15 reviews) and 4 E3
 reviews. The tables below use the reruns. Reports do not record tool
 results, so which original runs actually saw the file is unknown; the
@@ -276,7 +277,9 @@ variable scenarios (g1, g6): 30 scored reviews.
   was fixed.)
 - g1, the case guidance should help most, was noise: every miss was a
   `glm-5.3` investigator stopping at the 300 s agent budget or without a
-  terminal call, in all three modes.
+  terminal call, in all three modes. The `off` rep-1 rerun was one of these
+  (a 300 s stop), where the original run had found the defect; this accounts
+  for the lost `off` TP and the extra incomplete run.
 
 **Decision:** guidance stays `off` by default. It showed no benefit, and
 g7 shows that guidance text can make the investigator drop a real

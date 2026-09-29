@@ -398,6 +398,10 @@ def verify_remote(
         len(managed) == 1,
         f"GitHub PR has {len(managed)} issue comments containing the managed marker; expected exactly one",
     )
+    require(
+        managed[0].get("id") == summary_id,
+        "the PR's managed summary comment is not the one named by run 1",
+    )
 
     inline = run1.get("plan", {}).get("inline", [])
     ids: set[str] = set()
