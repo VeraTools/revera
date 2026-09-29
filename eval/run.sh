@@ -48,7 +48,9 @@ err = open(errlog).read()[-300:]
 print(json.dumps({"config": config, "corpus": corpus, "rep": int(rep),
     "status": "failed", "reason": f"review exited {rc}: {err}",
     "tp": 0, "fp": 0, "fn": -1, "requests": 0, "prompt_tokens": 0,
-    "completion_tokens": 0, "wall_ms": 0, "est_cost": 0}))
+    "completion_tokens": 0, "cached_prompt_tokens": 0,
+    "cache_write_tokens": 0, "cache_hit_rate": None,
+    "wall_ms": 0, "est_cost": 0}))
 PY
     fi
     rm -rf "$TMP"

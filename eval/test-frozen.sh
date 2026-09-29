@@ -38,23 +38,99 @@ YAML
 done
 sed -i 's/min_severity: low/min_severity: medium/' "$W/accept.yaml"
 
+cat > "$W/truth.json" <<'JSON'
+{"div-zero": {"label": "true", "high_impact": true}, "overflow": {"label": "false"}}
+JSON
+
+# the two arms differ in min_severity, a controlled setting: refused
+# before any arm runs unless explicitly allowed
+if python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" --repo "$R" \
+    --base HEAD~1 --out "$W/out5" "$W/accept.yaml" "$W/reject.yaml" 2>/dev/null; then
+    echo "FAIL: non-validator config difference accepted" >&2; exit 1
+fi
+[ ! -e "$W/out5/accept.repo" ] || { echo "FAIL: arm ran despite config difference" >&2; exit 1; }
+
 # --out inside --repo must not be copied into each arm's repository
 out="$(python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" \
-    --repo "$R" --base HEAD~1 --head HEAD --out "$R/out" "$W/accept.yaml" "$W/reject.yaml")"
+    --repo "$R" --base HEAD~1 --head HEAD --out "$R/out" --truth "$W/truth.json" \
+    --allow-config-diff "$W/accept.yaml" "$W/reject.yaml")"
 [ ! -e "$R/out/accept.repo/out" ] || { echo "FAIL: output dir copied into arm repo" >&2; exit 1; }
 echo "$out"
-python3 - "$out" <<'PY'
+python3 - "$out" "$R/out/summary.json" "$(git -C "$R" rev-parse HEAD~1)" "$(git -C "$R" rev-parse HEAD)" <<'PY'
 import json, sys
 rows = {r["arm"]: r for r in map(json.loads, sys.argv[1].splitlines())}
 a, r = rows["accept"], rows["reject"]
 assert a["identical_candidates"] and r["identical_candidates"], rows
 assert a["candidate_digest"] == r["candidate_digest"], rows
+assert a["candidate_payload_sha256"] == r["candidate_payload_sha256"], rows
 assert (a["candidates"], a["accepted"], a["rejected"]) == (2, 2, 0), a
 assert (r["candidates"], r["accepted"], r["rejected"]) == (2, 0, 2), r
 assert a["validation"] == r["validation"] == "fresh", rows
+assert a["validator_models"] == r["validator_models"] == ["scripted"], rows
 assert (a["min_severity"], a["accepted_at_min_severity"]) == ("medium", 0), a
 assert (r["min_severity"], r["accepted_at_min_severity"]) == ("low", 0), r
+# the true high-impact defect was accepted but downgraded below the arm's
+# threshold: not surfaced, so a miss, not a success
+sa, sr = a["score"], r["score"]
+assert (sa["true_below_threshold"], sa["high_impact_missed"], sa["false_accepted"]) == (1, 1, 0), sa
+assert (sr["true_rejected"], sr["false_rejected"], sr["high_impact_missed"]) == (1, 1, 1), sr
+s = json.load(open(sys.argv[2]))
+p = s["provenance"]
+assert (p["base"], p["head"]) == (sys.argv[3], sys.argv[4]), p
+assert p["binary"]["sha256"] and p["binary"]["version"].startswith("revera"), p
+assert p["config_differences"] == {"reject": ["review.min_severity"]}, p
+assert p["arms"]["accept"]["validator"]["model"] == "accept", p
 PY
+
+# an arm with only an investigator route inherits it as the validator: the
+# harness must keep that model after replacing the investigator with replay
+PORTF="$W/port"; LOG="$W/mock-requests.jsonl"
+python3 - "$PORTF" "$LOG" <<'PY' &
+import http.server, json, sys
+port_file, log = sys.argv[1], sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        with open(log, "a") as f:
+            f.write(json.dumps({"path": self.path, "model": body.get("model")}) + "\n")
+        out = json.dumps({"choices": [{"finish_reason": "tool_calls", "message": {
+            "role": "assistant", "content": None, "tool_calls": [{
+                "id": "c1", "type": "function", "function": {"name": "submit_verdict",
+                "arguments": json.dumps({"validation_status": "accepted", "rationale": "r",
+                                         "counterevidence_checked": ["src/lib.rs:2"]})}}]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2}}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(out))); self.end_headers(); self.wfile.write(out)
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(port_file, "w").write(str(s.server_port))
+s.serve_forever()
+PY
+MOCK=$!
+trap 'kill $MOCK 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$W"' EXIT
+for _ in $(seq 50); do [ -s "$PORTF" ] && break; sleep 0.1; done
+cat > "$W/inherit.yaml" <<YAML
+review: {min_severity: low}
+models:
+  investigator: {protocol: openai-chat, base_url: "http://127.0.0.1:$(cat "$PORTF")/v1", model: inherited-model, api_key_env: FROZEN_TEST_KEY, reasoning: none}
+YAML
+out="$(FROZEN_TEST_KEY=dummy python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" \
+    --repo "$R" --base HEAD~1 --out "$W/out6" --allow-config-diff "$W/inherit.yaml")"
+python3 - "$out" "$LOG" <<'PY'
+import json, sys
+row = json.loads(sys.argv[1])
+reqs = [json.loads(l) for l in open(sys.argv[2])]
+assert row["validator_models"] == ["inherited-model"], row
+assert row["accepted"] == 2 and row["validator_requests"] == 2, row
+assert len(reqs) == 2 and all(q["model"] == "inherited-model" for q in reqs), reqs
+PY
+
+# malformed truth labels are refused
+echo '{"div-zero": {"label": "yes"}}' > "$W/badtruth.json"
+if python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" --repo "$R" \
+    --base HEAD~1 --out "$W/out7" --truth "$W/badtruth.json" "$W/reject.yaml" 2>/dev/null; then
+    echo "FAIL: malformed truth label accepted" >&2; exit 1
+fi
 
 # arms whose config file names collide are refused before any arm runs
 mkdir -p "$W/dup"; cp "$W/accept.yaml" "$W/dup/accept.yaml"

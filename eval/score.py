@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Score one revera report against a corpus truth.json; prints one JSON line."""
+
 import json
 import re
 import sys
@@ -23,21 +24,14 @@ def main():
     r = json.load(open(report_path))
     truth = json.load(open(truth_path))
 
-    accepted = [
-        f for f in r.get("findings", [])
-        if f.get("validation_status") == "accepted"
-    ]
+    accepted = [f for f in r.get("findings", []) if f.get("validation_status") == "accepted"]
     tp = fp = 0
     # defect index -> matched finding index (keeps the association so
     # per-defect fields like cross_file_keywords stay attributable)
     matches = {}
     for di, d in enumerate(truth["defects"]):
         hit = next(
-            (
-                i
-                for i, f in enumerate(accepted)
-                if i not in matches.values() and is_tp(f, d)
-            ),
+            (i for i, f in enumerate(accepted) if i not in matches.values() and is_tp(f, d)),
             None,
         )
         if hit is not None:
@@ -46,19 +40,14 @@ def main():
     fn = len(truth["defects"]) - tp
     fp = len(accepted) - len(matches)
     tp_high = sum(
-        1
-        for i in matches.values()
-        if accepted[i].get("severity") in ("high", "critical")
+        1 for i in matches.values() if accepted[i].get("severity") in ("high", "critical")
     )
     statuses = [f.get("validation_status") for f in r.get("findings", [])]
     # cross-file evidence: a matched finding counts when its text mentions
     # a keyword from ITS OWN defect's cross_file_keywords
     xf = 0
     for di, i in matches.items():
-        xf_kw = [
-            k.lower()
-            for k in truth["defects"][di].get("cross_file_keywords", [])
-        ]
+        xf_kw = [k.lower() for k in truth["defects"][di].get("cross_file_keywords", [])]
         if not xf_kw:
             continue
         f = accepted[i]
@@ -84,6 +73,9 @@ def main():
     ptok = led.get("prompt_tokens", 0)
     ctok = led.get("completion_tokens", 0)
     rtok = led.get("reasoning_tokens", 0)
+    cached_prompt_tokens = led.get("cached_prompt_tokens", 0)
+    cache_write_tokens = led.get("cache_write_tokens", 0)
+    cache_hit_rate = cached_prompt_tokens / ptok if ptok else None
     out = {
         "config": config,
         "corpus": corpus,
@@ -101,6 +93,9 @@ def main():
         "prompt_tokens": ptok,
         "completion_tokens": ctok,
         "reasoning_tokens": rtok,
+        "cached_prompt_tokens": cached_prompt_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "cache_hit_rate": cache_hit_rate,
         "wall_ms": led.get("wall_ms", 0),
         "xf": xf,
         "first_validated_s": _t("first_validated_ms"),
