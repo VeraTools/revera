@@ -9,7 +9,8 @@ investigator variance.
 REPORT.json must come from a `review.validate: false` run (its findings are
 unvalidated candidates). Each arm config is used as-is except that its
 investigator route is replaced by a scripted route replaying the frozen
-candidates and `review.validate` is forced on. The script fails unless every
+candidates, `review.validate` is forced on, and `review.min_severity` is
+recorded for scoring but lowered to `low` for the run. The script fails unless every
 arm validated the identical candidate set (same digest) with one fresh
 validator session per candidate; it prints one JSON line per arm.
 """
@@ -19,6 +20,7 @@ import yaml
 CANDIDATE_FIELDS = ("defect_key", "severity", "file", "start_line", "end_line",
                     "title", "claim", "trigger", "impact", "introduced_by_change",
                     "supporting_evidence", "suggested_fix")
+SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 
 
 def candidates(report):
@@ -58,14 +60,25 @@ def main():
         "arguments": {"findings": frozen, "coverage": "frozen candidates"}}]}]]}},
         open(script, "w"))
 
+    names = [os.path.splitext(os.path.basename(arm))[0] for arm in a.arms]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        # arm names key the copied repo, config, report and log paths
+        sys.exit(f"duplicate arm names {dupes}: give each arm config a distinct file name")
+
     rows, ok = [], True
-    for arm in a.arms:
-        name = os.path.splitext(os.path.basename(arm))[0]
-        cfg = yaml.safe_load(open(arm))
+    for name, arm in zip(names, a.arms):
+        cfg = yaml.safe_load(open(arm)) or {}
         cfg.setdefault("models", {})["investigator"] = {
             "protocol": "scripted", "script": script, "model": "frozen"}
         review = cfg.setdefault("review", {})
-        review.update({"validate": True, "publish": "dry-run", "strategy": "baseline"})
+        # the threshold would drop validator-downgraded candidates from the
+        # report and break the identity check; it is applied when scoring
+        min_sev = str(review.get("min_severity", "low")).lower()
+        if min_sev not in SEVERITY_RANK:
+            sys.exit(f"{arm}: unknown review.min_severity {min_sev!r}")
+        review.update({"validate": True, "publish": "dry-run", "strategy": "baseline",
+                       "min_severity": "low"})
         cfg.pop("profiles", None)
         arm_cfg = os.path.join(a.out, f"{name}.config.yaml")
         yaml.safe_dump(cfg, open(arm_cfg, "w"), sort_keys=False)
@@ -104,6 +117,11 @@ def main():
                "rejected": st.get("rejected"), "uncertain": st.get("uncertain"),
                "rechecked": st.get("resolved", 0) + st.get("reopened", 0),
                "validation": st.get("validation"), "validator_requests": vreq,
+               "min_severity": min_sev,
+               "accepted_at_min_severity": sum(
+                   1 for f in rep["findings"]
+                   if f.get("validation_status") == "accepted"
+                   and SEVERITY_RANK.get(f.get("severity"), -1) >= SEVERITY_RANK[min_sev]),
                "candidate_digest": got,
                "identical_candidates": got == want and st.get("candidates") == len(frozen)}
         # validator errors make the run partial; explicit uncertain

@@ -24,8 +24,9 @@ cat > "$W/candidates.json" <<'JSON'
   "title": "overflow", "claim": "i32::MIN / -1 overflows"}]}
 JSON
 verdict() { printf '[{"tool_calls": [{"name": "submit_verdict", "arguments": {"validation_status": "%s", "rationale": "r", "counterevidence_checked": ["src/lib.rs callers"]%s}}]}]' "$1" "${2:-}"; }
-# the accept arm also corrects a line: the candidate identity must not change
-printf '{"roles": {"validator": [%s, %s]}}' "$(verdict accepted ', "start_line": 3')" "$(verdict accepted)" > "$W/accept.json"
+# the accept arm also corrects a line and downgrades below its threshold:
+# the candidate identity must not change
+printf '{"roles": {"validator": [%s, %s]}}' "$(verdict accepted ', "start_line": 3, "severity": "low"')" "$(verdict accepted ', "severity": "low"')" > "$W/accept.json"
 printf '{"roles": {"validator": [%s, %s]}}' "$(verdict rejected)" "$(verdict rejected)" > "$W/reject.json"
 for arm in accept reject; do
 cat > "$W/$arm.yaml" <<YAML
@@ -35,6 +36,7 @@ models:
   validator: {protocol: scripted, script: $W/$arm.json, model: $arm}
 YAML
 done
+sed -i 's/min_severity: low/min_severity: medium/' "$W/accept.yaml"
 
 # --out inside --repo must not be copied into each arm's repository
 out="$(python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" \
@@ -50,7 +52,17 @@ assert a["candidate_digest"] == r["candidate_digest"], rows
 assert (a["candidates"], a["accepted"], a["rejected"]) == (2, 2, 0), a
 assert (r["candidates"], r["accepted"], r["rejected"]) == (2, 0, 2), r
 assert a["validation"] == r["validation"] == "fresh", rows
+assert (a["min_severity"], a["accepted_at_min_severity"]) == ("medium", 0), a
+assert (r["min_severity"], r["accepted_at_min_severity"]) == ("low", 0), r
 PY
+
+# arms whose config file names collide are refused before any arm runs
+mkdir -p "$W/dup"; cp "$W/accept.yaml" "$W/dup/accept.yaml"
+if python3 "$HERE/frozen.py" --bin "$BIN" --candidates "$W/candidates.json" --repo "$R" \
+    --base HEAD~1 --out "$W/out4" "$W/accept.yaml" "$W/dup/accept.yaml" 2>/dev/null; then
+    echo "FAIL: duplicate arm names accepted" >&2; exit 1
+fi
+[ ! -e "$W/out4/accept.repo" ] || { echo "FAIL: arm ran despite duplicate names" >&2; exit 1; }
 
 # a validated report is refused as frozen input
 sed 's/"disabled"/"fresh"/' "$W/candidates.json" > "$W/bad.json"

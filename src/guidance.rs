@@ -22,6 +22,9 @@ pub struct GuidanceSource {
     pub included_bytes: usize,
     #[serde(default)]
     pub truncated: bool,
+    /// Why an existing source was left out entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -100,6 +103,10 @@ pub async fn load(
     if mode == GuidanceMode::Off {
         return Ok(g);
     }
+    if !crate::git::is_oid(base) {
+        tracing::warn!("guidance: base {base:?} is not a resolved object id; none loaded");
+        return Ok(g);
+    }
     let names: &[&str] = match mode {
         GuidanceMode::Agents => &["REVIEW.md", "AGENTS.md"],
         _ => &["REVIEW.md"],
@@ -108,17 +115,25 @@ pub async fn load(
     'dirs: for dir in search_dirs(changed) {
         for name in names {
             let path = join(&dir, name);
-            let bytes = match crate::git::read_blob(repo, base, &path, MAX_BLOB_BYTES).await {
-                Ok(Some(b)) => b,
+            // a file that exists but cannot be used (oversized, unreadable,
+            // not UTF-8) still claims its directory: falling back to
+            // AGENTS.md would override the repository's review rules
+            let text = match crate::git::read_blob(repo, base, &path, MAX_BLOB_BYTES).await {
                 Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!("guidance {path}: {e}");
-                    continue;
-                }
+                Ok(Some(b)) => String::from_utf8(b).map_err(|_| "not UTF-8".to_string()),
+                Err(e) => Err(e.to_string()),
             };
-            let Ok(text) = String::from_utf8(bytes) else {
-                tracing::warn!("guidance {path}: not UTF-8; skipped");
-                continue;
+            let text = match text {
+                Ok(t) => t,
+                Err(reason) => {
+                    tracing::warn!("guidance {path}: {reason}; directory skipped");
+                    g.sources.push(GuidanceSource {
+                        path,
+                        skipped: Some(reason),
+                        ..Default::default()
+                    });
+                    continue 'dirs;
+                }
             };
             let sha = hex::encode(Sha256::digest(text.as_bytes()));
             let header = format!("\n--- {path} ---\n");
@@ -139,6 +154,7 @@ pub async fn load(
                 sha256: sha,
                 included_bytes: cut,
                 truncated: cut < text.len(),
+                skipped: None,
             });
             // REVIEW.md takes precedence over AGENTS.md in one directory
             break;

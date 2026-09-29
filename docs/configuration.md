@@ -98,7 +98,10 @@ request budget, the run deadline and the ledger. Routes can mix protocols.
 the **base commit** (never the PR head): the root directory and each
 ancestor directory of a changed file are searched; `review` reads
 `REVIEW.md`, `agents` reads `REVIEW.md` or, when a directory has none,
-`AGENTS.md`. Sources, their sha256 and truncation are recorded under
+`AGENTS.md`. A `REVIEW.md` that exists but cannot be used (over 256 KiB,
+unreadable or not UTF-8) is recorded as `skipped` and its directory
+contributes nothing; it never falls back to `AGENTS.md`. Sources, their
+sha256 and truncation are recorded under
 `stats.guidance` in the run report and are never rendered into PR comments.
 The mode is part of the review fingerprint, not the Vera index identity.
 It stays `off` by default until an evaluation shows it helps.

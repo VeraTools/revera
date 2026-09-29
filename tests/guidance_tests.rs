@@ -124,6 +124,30 @@ async fn guidance_is_bounded_and_marked_truncated() {
 }
 
 #[tokio::test]
+async fn oversized_review_md_keeps_precedence_over_agents_md() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    git(p, &["init", "-q"]);
+    write(p, "src/REVIEW.md", &"x".repeat(257 * 1024));
+    write(p, "src/AGENTS.md", "src agent notes\n");
+    write(p, "src/lib.rs", "fn a() {}\n");
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-qm", "base"]);
+    let base = git(p, &["rev-parse", "HEAD"]);
+    let g = load(p, &base, &["src/lib.rs".into()], GuidanceMode::Agents, 4096)
+        .await
+        .unwrap();
+    assert!(!g.text.contains("src agent notes"), "{}", g.text);
+    let s = g
+        .sources
+        .iter()
+        .find(|s| s.path == "src/REVIEW.md")
+        .expect("omission recorded");
+    assert!(s.skipped.is_some() && s.included_bytes == 0, "{s:?}");
+    assert!(g.sources.iter().all(|s| s.path != "src/AGENTS.md"));
+}
+
+#[tokio::test]
 async fn guidance_rejects_unresolved_revisions() {
     let (d, _) = repo();
     let g = load(d.path(), "HEAD", &[], GuidanceMode::Review, 4096)

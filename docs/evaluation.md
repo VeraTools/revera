@@ -166,10 +166,14 @@ eval/frozen.py --candidates report.json --repo <corpus> --base base --head head 
 Each arm config keeps its own validator route and review settings; its
 investigator is replaced by a scripted route replaying the frozen
 candidates, and each arm reviews its own copy of the repository with no
-prior state. The run fails unless every arm validated the identical
-candidate set (same digest), with validation `fresh`, at least one
-validator request per candidate, and no rechecks; one JSON row per arm is
-printed and written to `out/summary.json`. `eval/test-frozen.sh` checks
+prior state. The arm's `review.min_severity` is recorded and applied only
+when scoring (`accepted_at_min_severity`); the run itself keeps every
+severity so a validator downgrade cannot drop a candidate from the
+report. Arm config file names must be distinct. The run fails unless
+every arm validated the identical candidate set (same digest), with
+validation `fresh`, at least one validator request per candidate, and no
+rechecks; one JSON row per arm is printed and written to
+`out/summary.json`. `eval/test-frozen.sh` checks
 the mechanics offline with scripted validators. No live frozen comparison
 has been run yet; guidance (`review.guidance`) affects only the
 investigator, so it is compared with ordinary paired runs, not this
