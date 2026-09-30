@@ -519,6 +519,8 @@ fn commit_all(dir: &Path, msg: &str) {
             "user.name=t",
             "-c",
             "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-q",
             "-m",

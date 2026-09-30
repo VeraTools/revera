@@ -206,6 +206,16 @@ fn embedding_throughput_settings_are_embedding_only_and_positive() {
         "api_key_env: REVERA_EMBEDDING_API_KEY, timeout_secs: -1}",
     );
     assert!(Config::parse(&neg, "t").is_err());
+    let local = Config::parse(
+        &BASE_YAML.replace("backend: api", "backend: local").replace(
+            "api_key_env: REVERA_EMBEDDING_API_KEY}",
+            "api_key_env: REVERA_EMBEDDING_API_KEY, timeout_secs: 90}",
+        ),
+        "t",
+    )
+    .unwrap();
+    let e = local.check_trust(false).unwrap_err().to_string();
+    assert!(e.contains("vera.backend: api only"), "{e}");
 }
 
 #[test]

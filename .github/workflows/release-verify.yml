@@ -160,6 +160,12 @@ jobs:
           revera_sha=$(sha256sum "$RUNNER_TEMP/bin/revera" | cut -d' ' -f1)
           echo "REVERA_VERSION_OUTPUT=$revera_version" >> "$GITHUB_ENV"
           echo "BINARY_SHA256=$revera_sha" >> "$GITHUB_ENV"
+          # releases before 0.4.3 report an active reranker as plain "vera"
+          if [ "$REQUIRE_RERANK" = true ] \
+            && [ "$(printf '%s\n' "$version" 0.4.3 | sort -V | head -n1)" != 0.4.3 ]; then
+            echo "::notice::revera $version predates the vera+rerank report; reranked-search check skipped"
+            echo "REQUIRE_RERANK=false" >> "$GITHUB_ENV"
+          fi
           {
             echo "## Release verification"
             echo "- release: \`$RELEASE_REF\` -> \`$sha\`"

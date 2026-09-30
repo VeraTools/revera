@@ -1136,6 +1136,9 @@ impl Config {
                     if v == Some(0) {
                         bail!("vera.embedding.{k} must be a positive integer");
                     }
+                    if v.is_some() && self.vera.backend != VeraBackend::Api {
+                        bail!("vera.embedding.{k} applies to vera.backend: api only");
+                    }
                 }
             }
             if self.vera.backend == VeraBackend::Api && self.vera.embedding.is_none() {
