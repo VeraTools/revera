@@ -139,6 +139,113 @@ fn reranker_endpoint_path_is_validated() {
     }
 }
 
+fn with_embedding_extra(extra: &str) -> Config {
+    Config::parse(
+        &BASE_YAML.replace(
+            "api_key_env: REVERA_EMBEDDING_API_KEY}",
+            &format!("api_key_env: REVERA_EMBEDDING_API_KEY, {extra}}}"),
+        ),
+        "t",
+    )
+    .unwrap()
+}
+
+#[test]
+fn embedding_throughput_settings_parse_and_default() {
+    let plain = cfg("");
+    let e = plain.vera.embedding.as_ref().unwrap();
+    assert_eq!(
+        e.embedding_config_pairs(),
+        vec![
+            ("embedding.max_concurrent_requests", "2".to_string()),
+            ("embedding.max_in_flight_inputs", "128".to_string()),
+            ("embedding.timeout_secs", "120".to_string()),
+        ]
+    );
+    let tuned = with_embedding_extra(
+        "max_concurrent_requests: 4, max_in_flight_inputs: 64, timeout_secs: 300",
+    );
+    assert!(tuned.check_trust(false).is_ok());
+    let e = tuned.vera.embedding.as_ref().unwrap();
+    assert_eq!(
+        e.embedding_config_pairs(),
+        vec![
+            ("embedding.max_concurrent_requests", "4".to_string()),
+            ("embedding.max_in_flight_inputs", "64".to_string()),
+            ("embedding.timeout_secs", "300".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn embedding_throughput_settings_are_embedding_only_and_positive() {
+    for extra in [
+        "max_concurrent_requests: 2",
+        "max_in_flight_inputs: 128",
+        "timeout_secs: 120",
+    ] {
+        let c = cfg(&format!(
+            "  reranker: {{base_url: \"https://x.example/v1\", model: r, api_key_env: K_RR, {extra}}}\n"
+        ));
+        let e = c.check_trust(false).unwrap_err().to_string();
+        assert!(e.contains("vera.embedding only"), "{extra}: {e}");
+    }
+    for extra in [
+        "max_concurrent_requests: 0",
+        "max_in_flight_inputs: 0",
+        "timeout_secs: 0",
+    ] {
+        let e = with_embedding_extra(extra)
+            .check_trust(false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("positive integer"), "{extra}: {e}");
+    }
+    let neg = BASE_YAML.replace(
+        "api_key_env: REVERA_EMBEDDING_API_KEY}",
+        "api_key_env: REVERA_EMBEDDING_API_KEY, timeout_secs: -1}",
+    );
+    assert!(Config::parse(&neg, "t").is_err());
+}
+
+#[test]
+fn embedding_throughput_settings_keep_index_and_review_identity() {
+    let plain = cfg("");
+    let tuned = with_embedding_extra(
+        "max_concurrent_requests: 4, max_in_flight_inputs: 64, timeout_secs: 300",
+    );
+    assert_eq!(plain.vera.index_key(), tuned.vera.index_key());
+    assert_eq!(
+        plain.review_fingerprint("baseline"),
+        tuned.review_fingerprint("baseline")
+    );
+}
+
+#[test]
+fn embedding_throughput_pairs_apply_to_api_backend_only() {
+    let repo = tempfile::tempdir().unwrap();
+    let api = Config::parse(
+        &BASE_YAML.replace(
+            "api_key_env: REVERA_EMBEDDING_API_KEY}",
+            "api_key_env: REVERA_TEST_KEY, timeout_secs: 90}",
+        ),
+        "t",
+    )
+    .unwrap();
+    let client = revera::vera::VeraClient::from_config(&api.vera, repo.path()).unwrap();
+    assert_eq!(
+        client.embedding_pairs,
+        vec![
+            ("embedding.max_concurrent_requests", "2".to_string()),
+            ("embedding.max_in_flight_inputs", "128".to_string()),
+            ("embedding.timeout_secs", "90".to_string()),
+        ]
+    );
+    let local = Config::parse(&BASE_YAML.replace("backend: api", "backend: local"), "t").unwrap();
+    let client = revera::vera::VeraClient::from_config(&local.vera, repo.path()).unwrap();
+    assert!(client.embedding_pairs.is_empty());
+}
+
 #[tokio::test]
 async fn event_config_comes_from_base_not_head() {
     let d = tempfile::tempdir().unwrap();

@@ -185,6 +185,11 @@ def report(number):
         "stats": {
             "validation": "reused" if number == 2 else "fresh",
             "reused": number == 2,
+            "retrieval": "vera+rerank",
+            "tools": [
+                {"name": "read_file", "calls": 4, "errors": 0, "latency_ms": 1},
+                {"name": "vera_search", "calls": 3, "errors": 0, "latency_ms": 9},
+            ],
         },
         "publication": {
             "mode": "comment",
@@ -210,6 +215,7 @@ def invoke(
     tag="v0.4.0",
     version_output="revera 0.4.0",
     api=None,
+    extra=(),
 ):
     scenario["name"] = name
     save_reports(first, second)
@@ -252,6 +258,7 @@ def invoke(
         api or api_url,
         "--out-summary",
         str(summary_path),
+        *extra,
     ]
     return subprocess.run(
         cmd,
@@ -263,8 +270,8 @@ def invoke(
     )
 
 
-def expect_pass(name):
-    result = invoke(name)
+def expect_pass(name, **kwargs):
+    result = invoke(name, **kwargs)
     if result.returncode != 0 or "release proof: PASS" not in result.stdout:
         raise AssertionError(
             f"{name}: expected PASS, got rc={result.returncode}; "
@@ -297,6 +304,7 @@ try:
         FINDING_ID,
         "investigator-model",
         "protocol `openai-chat`",
+        "Retrieval: `vera+rerank`, vera_search calls 3",
     ):
         if expected not in summary_text:
             raise AssertionError(f"proof summary omitted expected evidence {expected!r}")
@@ -434,6 +442,67 @@ try:
     expect_fail(
         "wrong-state-head",
         "state does not reference the expected head",
+    )
+
+    rerank = ["--require-rerank"]
+    expect_pass("require-rerank", extra=rerank)
+    unreranked = report(1)
+    unreranked["stats"]["retrieval"] = "vera"
+    # without the flag an unreranked run still proves the release
+    expect_pass("unreranked-without-flag", first=unreranked)
+    for retrieval in (
+        "vera",
+        "vera (rerank degraded)",
+        "vera+rerank (rerank fell back on 1 searches)",
+        "lexical-only",
+    ):
+        variant = report(1)
+        variant["stats"]["retrieval"] = retrieval
+        expect_fail(
+            f"require-rerank-{retrieval}",
+            "run 1 stats.retrieval is not exactly vera+rerank",
+            first=variant,
+            extra=rerank,
+        )
+    no_retrieval = report(1)
+    del no_retrieval["stats"]["retrieval"]
+    expect_fail(
+        "require-rerank-missing-retrieval",
+        "run 1 stats.retrieval is not exactly vera+rerank",
+        first=no_retrieval,
+        extra=rerank,
+    )
+    no_search = report(1)
+    no_search["stats"]["tools"] = no_search["stats"]["tools"][:1]
+    expect_fail(
+        "require-rerank-no-search-tool",
+        "run 1 stats.tools has no vera_search entry",
+        first=no_search,
+        extra=rerank,
+    )
+    no_tools = report(1)
+    del no_tools["stats"]["tools"]
+    expect_fail(
+        "require-rerank-no-tools",
+        "run 1 stats.tools has no vera_search entry",
+        first=no_tools,
+        extra=rerank,
+    )
+    zero_calls = report(1)
+    zero_calls["stats"]["tools"][1]["calls"] = 0
+    expect_fail(
+        "require-rerank-zero-calls",
+        "run 1 vera_search was not called",
+        first=zero_calls,
+        extra=rerank,
+    )
+    search_errors = report(1)
+    search_errors["stats"]["tools"][1]["errors"] = 1
+    expect_fail(
+        "require-rerank-search-errors",
+        "run 1 vera_search reported errors",
+        first=search_errors,
+        extra=rerank,
     )
 
     print("test-verify-release-report.sh OK")

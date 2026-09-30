@@ -22,6 +22,11 @@ on:
       expect_terms:
         description: Required comma-separated term groups; | separates alternatives within a group
         required: true
+      require_rerank:
+        description: Require a reranked vera_search in run 1
+        type: boolean
+        default: true
+        required: true
 
 permissions:
   contents: read
@@ -41,6 +46,7 @@ jobs:
       PR: ${{ inputs.pr }}
       EXPECT_FILE: ${{ inputs.expect_file }}
       EXPECT_TERMS: ${{ inputs.expect_terms }}
+      REQUIRE_RERANK: ${{ inputs.require_rerank }}
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
@@ -66,6 +72,7 @@ jobs:
           [[ "$EXPECT_TERMS" != *$'\n'* ]] || { echo "::error::expect_terms must be comma-separated"; exit 1; }
           [[ "$EXPECT_TERMS" != ,* && "$EXPECT_TERMS" != *, && "$EXPECT_TERMS" != *,,* ]] \
             || { echo "::error::expect_terms contains an empty comma-separated group"; exit 1; }
+          [[ "$REQUIRE_RERANK" =~ ^(true|false)$ ]] || { echo "::error::require_rerank must be true or false"; exit 1; }
 
       - name: Fixture PR event
         run: |
@@ -187,6 +194,10 @@ jobs:
           for group in "${groups[@]}"; do
             term_args+=(--expect-term "$group")
           done
+          rerank_args=()
+          if [ "$REQUIRE_RERANK" = true ]; then
+            rerank_args+=(--require-rerank)
+          fi
           python3 "$GITHUB_WORKSPACE/verifier/scripts/verify-release-report.py" \
             --report1 "$RUNNER_TEMP/report-1.json" \
             --report2 "$RUNNER_TEMP/report-2.json" \
@@ -201,6 +212,7 @@ jobs:
             --binary-sha256 "$BINARY_SHA256" \
             --expect-file "$EXPECT_FILE" \
             "${term_args[@]}" \
+            "${rerank_args[@]}" \
             --author github-actions[bot] \
             --out-summary "$RUNNER_TEMP/release-proof.md"
           cat "$RUNNER_TEMP/release-proof.md" >> "$GITHUB_STEP_SUMMARY"

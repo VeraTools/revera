@@ -388,9 +388,14 @@ async fn legacy_cache_without_identity_is_rebuilt() {
 async fn failed_reranker_shutdown_is_a_configuration_error() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    // a vera whose `config set` always fails
+    // a vera whose `config set retrieval.*` always fails (embedding
+    // settings apply, so the reranker path is what fails)
     let exe = dir.path().join("vera");
-    std::fs::write(&exe, "#!/bin/sh\necho 'config locked' >&2\nexit 1\n").unwrap();
+    std::fs::write(
+        &exe,
+        "#!/bin/sh\ncase \"$3\" in retrieval.*) echo 'config locked' >&2; exit 1;; esac\nexit 0\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     let repo = fixture_repo();
     let home = tempfile::tempdir().unwrap();
@@ -405,4 +410,169 @@ async fn failed_reranker_shutdown_is_a_configuration_error() {
             "reranking state unknown ({rr:?}) must not be reported as usable"
         );
     }
+}
+
+/// A fake `vera` that logs each invocation and fails `config set` for keys
+/// matching the shell pattern `fail`.
+#[cfg(unix)]
+fn logging_vera(dir: &Path, fail: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let exe = dir.join("vera");
+    let log = dir.join("calls.log");
+    std::fs::write(
+        &exe,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$3\" in {fail}) echo 'refused' >&2; exit 1;; esac\nexit 0\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (exe, log)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configure_applies_embedding_throughput_for_api_backend_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (exe, log) = logging_vera(dir.path(), "__none__");
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    let api = VeraClient::from_config(
+        &config_with("http://127.0.0.1:9", home.path(), &exe, None).vera,
+        repo.path(),
+    )
+    .unwrap();
+    assert_eq!(api.configure().await.unwrap(), RerankState::Off);
+    let calls = std::fs::read_to_string(&log).unwrap();
+    for want in [
+        "config set embedding.max_concurrent_requests 2",
+        "config set embedding.max_in_flight_inputs 128",
+        "config set embedding.timeout_secs 120",
+        "config set retrieval.reranking_enabled false",
+    ] {
+        assert!(calls.lines().any(|l| l == want), "{want} missing: {calls}");
+    }
+    std::fs::remove_file(&log).unwrap();
+
+    let yaml = format!(
+        "models:\n  investigator: {{protocol: scripted, script: /dev/null, model: m}}\nvera:\n  executable: \"{}\"\n  backend: local\n  home: \"{}\"\n",
+        exe.display(),
+        home.path().display()
+    );
+    let local =
+        VeraClient::from_config(&Config::parse(&yaml, "t").unwrap().vera, repo.path()).unwrap();
+    assert_eq!(local.configure().await.unwrap(), RerankState::Off);
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(!calls.contains("embedding."), "{calls}");
+    assert!(calls.contains("retrieval.reranking_enabled"), "{calls}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_embedding_setting_is_a_configuration_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (exe, _) = logging_vera(dir.path(), "embedding.*");
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    // with a reranker configured this must not be mistaken for a degraded
+    // reranker
+    let v = VeraClient::from_config(
+        &config_with(
+            "http://127.0.0.1:9",
+            home.path(),
+            &exe,
+            Some("protocol: generic"),
+        )
+        .vera,
+        repo.path(),
+    )
+    .unwrap();
+    let e = v.configure().await.unwrap_err();
+    assert!(format!("{e:#}").contains("embedding"), "{e:#}");
+}
+
+#[tokio::test]
+async fn embedding_throughput_reaches_the_vera_home() {
+    let Some((server, exe)) = setup().await else {
+        return;
+    };
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    let cfg = config(&server.uri(), home.path(), &exe, false);
+    let vera = VeraClient::from_config(&cfg.vera, repo.path()).unwrap();
+    vera.configure().await.unwrap();
+    let stored: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.path().join("config.json")).unwrap())
+            .unwrap();
+    let emb = &stored["core_config"]["embedding"];
+    assert_eq!(emb["max_concurrent_requests"], 2, "{stored}");
+    assert_eq!(emb["max_in_flight_inputs"], 128, "{stored}");
+    assert_eq!(emb["timeout_secs"], 120, "{stored}");
+}
+
+fn commit_all(dir: &Path, msg: &str) {
+    git(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            msg,
+        ],
+    );
+}
+
+#[tokio::test]
+async fn prepared_run_reports_active_reranker() {
+    use revera::pipeline::common::{PrepareOut, ReviewRequest, prepare};
+    let Some((server, exe)) = setup().await else {
+        return;
+    };
+    let repo = fixture_repo();
+    git(repo.path(), &["add", "src/lib.rs"]);
+    commit_all(repo.path(), "base");
+    let base = String::from_utf8(
+        std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    std::fs::write(
+        repo.path().join("src/lib.rs"),
+        "pub fn apply_discount(price: u32, pct: u32) -> u32 {\n    price - price * pct / 10\n}\n",
+    )
+    .unwrap();
+    git(repo.path(), &["add", "src/lib.rs"]);
+    commit_all(repo.path(), "head");
+    let home = tempfile::tempdir().unwrap();
+    let cfg = config(&server.uri(), home.path(), &exe, true);
+    let req = ReviewRequest {
+        repo: repo.path().to_path_buf(),
+        base,
+        head: None,
+        title: None,
+        body: String::new(),
+        strategy_override: None,
+        force: true,
+    };
+    let PrepareOut::Ready(p) = prepare(&cfg, &req, "baseline").await.unwrap() else {
+        panic!("a fresh review must not short-circuit");
+    };
+    assert_eq!(p.stats.retrieval, "vera+rerank");
+    assert!(p.retrieval_unavailable.is_none());
+    assert!(
+        !p.partial_reasons.iter().any(|r| r.contains("reranker")),
+        "{:?}",
+        p.partial_reasons
+    );
 }

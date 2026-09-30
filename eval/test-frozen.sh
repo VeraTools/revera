@@ -136,7 +136,11 @@ s.serve_forever()
 PY
 MOCK=$!
 trap 'kill "$MOCK" 2>/dev/null || true; [ -n "${KEEP:-}" ] || cleanup' EXIT
-for _ in $(seq 50); do [ -s "$PORTF" ] && break; sleep 0.1; done
+for _ in $(seq 300); do [ -s "$PORTF" ] && break; sleep 0.1; done
+if [ ! -s "$PORTF" ]; then
+    echo "FAIL: mock model server did not report a port within 30s" >&2
+    exit 1
+fi
 cat > "$W/inherit.yaml" <<YAML
 review: {min_severity: low}
 models:

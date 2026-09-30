@@ -152,7 +152,7 @@ key or index is needed. Present: enabled unless `enabled: false`.
 | `executable` | `vera` | binary name or path |
 | `version` | — | expected Vera version; mismatch is reported by `doctor` |
 | `backend` | `local` | `local` (on-device embeddings) or `api` |
-| `embedding` | — | `api` backend: `{base_url, model, api_key_env}` |
+| `embedding` | — | `api` backend: `{base_url, model, api_key_env, max_concurrent_requests?, max_in_flight_inputs?, timeout_secs?}` |
 | `reranker` | — | optional `{base_url, model, api_key_env, protocol?, endpoint_path?, return_documents?}` |
 | `exclude` | `[]` | glob patterns excluded from indexing and lexical tools |
 
@@ -160,7 +160,15 @@ Reranker options: `protocol` is `generic` (`/rerank`, `top_n`) or `voyage`
 (`top_k`); unset lets Vera infer it from the base URL. `endpoint_path` is
 joined onto `base_url` (default `/rerank`). `return_documents` is `true` or
 `false` (sent explicitly; default `false`) or `omit` (field left out for
-providers that reject it).
+providers that reject it). These options are rejected on `embedding`.
+
+Embedding options (`api` backend only; rejected on `reranker`):
+`max_concurrent_requests` (default `2`), `max_in_flight_inputs` (default
+`128`) and `timeout_secs` (default `120`) are positive integers applied with
+`vera config set embedding.*`. The defaults replace Vera's own (8 / 16 / 60 s),
+which can time out on hosted endpoints before a cold index completes. They
+change indexing speed only, so they are not part of the index identity or
+the review fingerprint.
 
 Revera runs Vera with its own `VERA_HOME` under `.revera/`, strips ambient
 `VERA_*`/`EMBEDDING_MODEL_*`/`RERANKER_MODEL_*` variables from the child,
