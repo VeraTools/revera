@@ -69,7 +69,10 @@ otherwise).
    dispatch `release-verify.yml` with the exact tag, the PR number,
    `expect_file` and `expect_terms`. The fixture head must not have been
    reviewed before: the first run has to be a fresh review, and the
-   second run proves identical-head reuse.
+   second run proves identical-head reuse. `require_rerank` (default on)
+   also requires the first run to report `retrieval: vera+rerank` with an
+   error-free `vera_search` call; turn it off only for fixtures without a
+   reranker.
 5. Dispatch `release-promote.yml` with the tag. It moves `vX`, marks the
    release Latest and reads both back.
 6. Open a small follow-up PR so `dogfood-released.yml` exercises the

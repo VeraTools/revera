@@ -847,6 +847,7 @@ JSON
             exclude: vec![".env".into()],
             home: repo.path().join(".vera"),
             rerank: None,
+            embedding_pairs: vec![],
             index_key: String::new(),
             rerank_fallbacks: Default::default(),
             deadline: None,

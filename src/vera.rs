@@ -81,6 +81,8 @@ pub struct VeraClient {
     pub home: PathBuf,
     /// `Some` when a reranker is configured.
     pub rerank: Option<RerankSettings>,
+    /// Embedding throughput pairs for `vera config set` (api backend only).
+    pub embedding_pairs: Vec<(&'static str, String)>,
     /// Hash of the index-shaping config; stored with the index.
     pub index_key: String,
     /// Searches where Vera fell back to unreranked results.
@@ -115,6 +117,7 @@ impl VeraClient {
             exclude: vec![],
             home: PathBuf::new(),
             rerank: None,
+            embedding_pairs: vec![],
             index_key: String::new(),
             rerank_fallbacks: Default::default(),
             deadline: None,
@@ -153,6 +156,7 @@ impl VeraClient {
             crate::redact::secret_env(name)
                 .with_context(|| format!("vera.{what}.api_key_env {name} is not set"))
         };
+        let mut embedding_pairs = vec![];
         if cfg.backend == VeraBackend::Api {
             let e = cfg
                 .embedding
@@ -164,6 +168,7 @@ impl VeraClient {
                 "EMBEDDING_MODEL_API_KEY".into(),
                 key("embedding", &e.api_key_env)?,
             ));
+            embedding_pairs = e.embedding_config_pairs();
         }
         // the reranker is independent of the embedding backend: local
         // embeddings with a remote reranker are supported by Vera
@@ -191,6 +196,7 @@ impl VeraClient {
             exclude: cfg.effective_excludes(),
             home,
             rerank,
+            embedding_pairs,
             index_key: cfg.index_key(),
             rerank_fallbacks: Default::default(),
             deadline: None,
@@ -217,16 +223,21 @@ impl VeraClient {
         cmd
     }
 
-    /// Apply reranker settings to the Revera-owned Vera home through the
-    /// public `vera config set` interface. With no reranker configured,
-    /// reranking is explicitly disabled (Vera would otherwise fall back to
-    /// a local reranker model).
+    /// Apply embedding throughput (api backend) and reranker settings to
+    /// the Revera-owned Vera home through the public `vera config set`
+    /// interface. With no reranker configured, reranking is explicitly
+    /// disabled (Vera would otherwise fall back to a local reranker model).
     pub async fn configure(&self) -> Result<RerankState> {
         if self.backend == "disabled" {
             return Ok(RerankState::Off);
         }
         std::fs::create_dir_all(&self.home)
             .with_context(|| format!("create vera home {}", self.home.display()))?;
+        for (k, v) in &self.embedding_pairs {
+            self.run_bounded(&["config", "set", k, v], Some(QUERY_TIMEOUT))
+                .await
+                .context("vera config set (embedding)")?;
+        }
         let pairs = RerankSettings::config_pairs(self.rerank.as_ref());
         for (k, v) in &pairs {
             let r = self

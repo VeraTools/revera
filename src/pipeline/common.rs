@@ -346,12 +346,11 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
                 Err(e.context("vera configuration failed"))
             }
         };
-        if configured
-            .as_ref()
-            .is_ok_and(|r| *r == crate::vera::RerankState::Degraded)
-        {
-            rerank = crate::vera::RerankState::Degraded;
-            partial_reasons.push("vera reranker configured but not activated".into());
+        if let Ok(r) = &configured {
+            rerank = *r;
+            if *r == crate::vera::RerankState::Degraded {
+                partial_reasons.push("vera reranker configured but not activated".into());
+            }
         }
         let indexed = match configured {
             Ok(_) => vera.ensure_index().await,

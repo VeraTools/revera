@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.3
+
+- Fixed: reports show `retrieval: vera+rerank` when the configured reranker
+  is active; earlier releases reported `vera` even though searches were
+  reranked.
+- With `vera.backend: api`, Revera sets Vera's embedding concurrency,
+  in-flight batch size and request timeout (defaults 2 / 128 / 120 s instead
+  of Vera's 8 / 16 / 60 s, which timed out on hosted endpoints and left no
+  index). Override them with `vera.embedding.max_concurrent_requests`,
+  `max_in_flight_inputs` and `timeout_secs`; they do not change the index
+  identity.
+- Release verification can require a reranked, error-free `vera_search` in
+  the first run (`require_rerank`, on by default).
+- The frozen-evaluation test waits up to 30 s for its mock server and fails
+  clearly if it does not start.
+
 ## v0.4.2
 
 - Public review footers now show only `role=model@effort` (and an effective

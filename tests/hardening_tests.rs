@@ -378,6 +378,7 @@ fn tb() -> ToolBox {
             exclude: vec![],
             home: std::env::temp_dir(),
             rerank: None,
+            embedding_pairs: vec![],
             index_key: String::new(),
             rerank_fallbacks: Default::default(),
             deadline: None,

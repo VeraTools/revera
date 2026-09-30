@@ -289,6 +289,53 @@ pub struct VeraEndpoint {
     /// Vera's default (`false`).
     #[serde(default)]
     pub return_documents: Option<ReturnDocuments>,
+    /// Embedding only: concurrent embedding requests (Revera default
+    /// [`DEFAULT_EMBED_MAX_CONCURRENT`]).
+    #[serde(default)]
+    pub max_concurrent_requests: Option<u32>,
+    /// Embedding only: inputs in flight across requests (Revera default
+    /// [`DEFAULT_EMBED_MAX_IN_FLIGHT`]).
+    #[serde(default)]
+    pub max_in_flight_inputs: Option<u32>,
+    /// Embedding only: per-request timeout in seconds (Revera default
+    /// [`DEFAULT_EMBED_TIMEOUT_SECS`]).
+    #[serde(default)]
+    pub timeout_secs: Option<u32>,
+}
+
+// Vera's own defaults (8 concurrent / 16 in flight / 60 s) timed out on a
+// hosted endpoint and left no index; fewer, larger batches with a longer
+// timeout completed a cold index of the same repository.
+pub const DEFAULT_EMBED_MAX_CONCURRENT: u32 = 2;
+pub const DEFAULT_EMBED_MAX_IN_FLIGHT: u32 = 128;
+pub const DEFAULT_EMBED_TIMEOUT_SECS: u32 = 120;
+
+impl VeraEndpoint {
+    /// `vera config set` pairs tuning embedding throughput. Not part of the
+    /// index identity: they change how fast the index is built, not what it
+    /// contains.
+    pub fn embedding_config_pairs(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "embedding.max_concurrent_requests",
+                self.max_concurrent_requests
+                    .unwrap_or(DEFAULT_EMBED_MAX_CONCURRENT)
+                    .to_string(),
+            ),
+            (
+                "embedding.max_in_flight_inputs",
+                self.max_in_flight_inputs
+                    .unwrap_or(DEFAULT_EMBED_MAX_IN_FLIGHT)
+                    .to_string(),
+            ),
+            (
+                "embedding.timeout_secs",
+                self.timeout_secs
+                    .unwrap_or(DEFAULT_EMBED_TIMEOUT_SECS)
+                    .to_string(),
+            ),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1070,6 +1117,29 @@ impl Config {
                 bail!(
                     "vera.embedding: protocol/endpoint_path/return_documents apply to vera.reranker only"
                 );
+            }
+            if let Some(r) = &self.vera.reranker
+                && (r.max_concurrent_requests.is_some()
+                    || r.max_in_flight_inputs.is_some()
+                    || r.timeout_secs.is_some())
+            {
+                bail!(
+                    "vera.reranker: max_concurrent_requests/max_in_flight_inputs/timeout_secs apply to vera.embedding only"
+                );
+            }
+            if let Some(e) = &self.vera.embedding {
+                for (k, v) in [
+                    ("max_concurrent_requests", e.max_concurrent_requests),
+                    ("max_in_flight_inputs", e.max_in_flight_inputs),
+                    ("timeout_secs", e.timeout_secs),
+                ] {
+                    if v == Some(0) {
+                        bail!("vera.embedding.{k} must be a positive integer");
+                    }
+                    if v.is_some() && self.vera.backend != VeraBackend::Api {
+                        bail!("vera.embedding.{k} applies to vera.backend: api only");
+                    }
+                }
             }
             if self.vera.backend == VeraBackend::Api && self.vera.embedding.is_none() {
                 bail!("vera.backend: api requires vera.embedding");

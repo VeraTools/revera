@@ -103,6 +103,37 @@ def match_designated_finding(
     return target, target_id
 
 
+def vera_search_stat(stats: dict[str, Any]) -> dict[str, Any] | None:
+    tools = stats.get("tools")
+    if not isinstance(tools, list):
+        return None
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("name") == "vera_search":
+            return tool
+    return None
+
+
+def require_reranked_search(stats1: dict[str, Any]) -> None:
+    retrieval = stats1.get("retrieval")
+    require(
+        retrieval == "vera+rerank",
+        "run 1 stats.retrieval is not exactly vera+rerank (reranker inactive, degraded, "
+        "or fell back)",
+    )
+    search = vera_search_stat(stats1)
+    if search is None:
+        raise ProofFailure("run 1 stats.tools has no vera_search entry")
+    require(
+        positive_integer(search.get("calls")),
+        "run 1 vera_search was not called (calls must be >= 1)",
+    )
+    errors = search.get("errors")
+    require(
+        isinstance(errors, int) and not isinstance(errors, bool) and errors == 0,
+        "run 1 vera_search reported errors (errors must be 0)",
+    )
+
+
 def validate_report_pair(
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
@@ -155,6 +186,9 @@ def validate_report_pair(
         stats1.get("validation") == "fresh",
         "run 1 validation is not fresh",
     )
+
+    if args.require_rerank:
+        require_reranked_search(stats1)
 
     ledger = report1.get("ledger")
     routes = ledger.get("by_route") if isinstance(ledger, dict) else None
@@ -532,6 +566,12 @@ def write_summary(
     publication = report1.get("publication", {})
     review_id = publication.get("review_id") if isinstance(publication, dict) else None
     route_lines = "\n".join(route_evidence(report1))
+    stats = report1.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    retrieval = markdown_value(str(stats.get("retrieval", "unknown")))
+    search = vera_search_stat(stats)
+    calls = search.get("calls") if search else 0
+    search_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else 0
     title = markdown_value(str(finding.get("title", "")))
     version_output = markdown_value(args.version_output)
     content = (
@@ -543,6 +583,7 @@ def write_summary(
         f"- Head: `{markdown_value(args.head)}`\n"
         "- Routes/models used:\n"
         f"{route_lines}\n"
+        f"- Retrieval: `{retrieval}`, vera_search calls {search_calls}\n"
         f"- Summary comment ID: `{publication['summary_comment_id']}`\n"
         f"- Review ID: `{review_id if positive_integer(review_id) else 'none'}`\n"
         f"- Matched finding ID: `{matched_id}` — {title}\n"
@@ -571,6 +612,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--author", required=True)
     parser.add_argument("--api-url", default="https://api.github.com")
     parser.add_argument("--out-summary", required=True)
+    parser.add_argument(
+        "--require-rerank",
+        action="store_true",
+        help="require run 1 to report vera+rerank and an error-free vera_search call",
+    )
     args = parser.parse_args()
     require(
         re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) is not None,
