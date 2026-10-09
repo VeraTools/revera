@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The Action installs Vera 2.0.1 by default (was 1.4.1). The Vera cache key
+  includes this version, so the first run after upgrading rebuilds the index.
+
 ## v0.4.3
 
 - Fixed: reports show `retrieval: vera+rerank` when the configured reranker

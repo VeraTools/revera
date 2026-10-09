@@ -39,7 +39,7 @@ jobs:
       - name: Install vera (offline integration tests)
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
+          scripts/install-vera.sh 2.0.1 "$RUNNER_TEMP/bin"
           echo "REVERA_TEST_VERA=$RUNNER_TEMP/bin/vera" >> "$GITHUB_ENV"
       - run: cargo test
       - name: Offline evaluation harness tests
@@ -180,7 +180,7 @@ jobs:
       - name: Install vera
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
+          scripts/install-vera.sh 2.0.1 "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Fixture run (Vera + hosted embedding endpoint)
         env:
