@@ -222,6 +222,30 @@ async fn post_budget_tool_call_gets_one_reminder() {
 }
 
 #[tokio::test]
+async fn post_budget_text_gets_one_reminder() {
+    let mut replies: VecDeque<ChatMessage> = (0..2)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    replies.push_back(assistant_text("Let me summarise what I found so far."));
+    replies.push_back(assistant_calls(vec![(
+        "submit_findings",
+        json!({"findings": [], "coverage": "c"}),
+    )]));
+    let stub = Stub {
+        replies: Mutex::new(replies),
+    };
+    let b = AgentBudget {
+        max_tool_calls: 2,
+        max_seconds: 600,
+    };
+    let r = run_agent(&stub, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(r.tool_calls, 2);
+}
+
+#[tokio::test]
 async fn text_json_fallback() {
     let stub = Stub {
         replies: Mutex::new(VecDeque::from(vec![assistant_text(
@@ -259,4 +283,60 @@ fn ledger_records() {
     });
     assert_eq!(l.request_count(), 1);
     assert_eq!(l.totals(), (1, 1, 0, 0));
+}
+
+struct Recorder {
+    inner: Stub,
+    user_turns: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for Recorder {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        if let Some(last) = m.last().filter(|x| x.role == Role::User) {
+            self.user_turns
+                .lock()
+                .unwrap()
+                .push(last.content.clone().unwrap_or_default());
+        }
+        self.inner.complete(m, t).await
+    }
+    fn route_label(&self) -> String {
+        "recorder".into()
+    }
+}
+
+#[tokio::test]
+async fn low_tool_budget_is_announced_once_before_exhaustion() {
+    let replies = (0..10)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    let rec = Recorder {
+        inner: Stub {
+            replies: Mutex::new(replies),
+        },
+        user_turns: Mutex::new(vec![]),
+    };
+    let b = AgentBudget {
+        max_tool_calls: 10,
+        max_seconds: 600,
+    };
+    run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    let turns = rec.user_turns.lock().unwrap();
+    let warnings: Vec<_> = turns
+        .iter()
+        .filter(|t| t.contains("tool calls left"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{turns:?}");
+    assert!(warnings[0].starts_with("2 tool calls left"), "{turns:?}");
+    assert!(
+        turns.iter().any(|t| t.starts_with("Budget exhausted")),
+        "{turns:?}"
+    );
 }

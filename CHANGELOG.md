@@ -16,9 +16,11 @@
 - Vera 2's `.vera.build/`, `.vera.old/` and `.vera.resume/` directories are
   covered by the content policy like `.vera/`: excluded from the index, the
   diff and every file tool.
-- An investigator that answers the tool-budget notice with more tool calls
-  is told once that they were not run and can still submit its findings;
-  before, the lane ended as `partial` with nothing reported.
+- Agents are told when a fifth of their tool budget remains, and once the
+  budget is spent only the submission tool is offered, with one reminder if
+  the model still tries to research. In this repository's self-review,
+  4 of 5 runs without the early notice ended `partial` with nothing
+  submitted; with it, 2 of 2 completed.
 - `check-versions.sh` also checks that every Vera pin matches the Action's
   `vera-version` default.
 - Dependencies: `yoke-derive` 0.8.4 (0.8.3 was yanked), `uuid` 1.27.0,
