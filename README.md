@@ -1,14 +1,14 @@
 # Revera
 
-Provider-agnostic AI code review for GitHub pull requests, with independent
-validation and optional repository-aware retrieval.
+Revera reviews GitHub pull requests with the models you choose and posts
+only the findings that survive an independent second check.
 
 [![ci](https://github.com/VeraTools/revera/actions/workflows/ci.yml/badge.svg)](https://github.com/VeraTools/revera/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Revera runs as a GitHub Action (or a local CLI). Deterministic Rust owns the
-diff, review identity, state and publication; the models you configure do
-the reasoning:
+It runs as a GitHub Action or a local CLI. The models do the reasoning;
+plain Rust code computes the diff, tracks findings across pushes and talks
+to GitHub.
 
 - **Bring your own model.** Any OpenAI-compatible chat endpoint, plus native
   Anthropic, Google Gemini and OpenAI Responses protocols. One route is
@@ -66,6 +66,26 @@ the reasoning:
 3. Open a pull request. Accepted findings are posted as inline comments plus
    one managed summary comment; later pushes update them instead of
    re-posting.
+
+A posted finding names the defect, how to trigger it, its impact and the
+lines it rests on. This one, shortened, came from a release test where a
+single line of ownership checking was flipped:
+
+> **[high] owns() returns true for comments with missing author, allowing
+> finding suppression via forged revera-id markers**
+>
+> Changing the `(None, _) => true` arm makes `posted_revera_ids` treat any
+> inline review comment whose author is missing as Revera's own. […] GitHub
+> returns `user: null` for comments by deleted users.
+>
+> Trigger: a PR has an inline comment from a deleted account whose body
+> contains a revera-id marker matching a finding Revera is about to post.
+> Impact: the finding is silently suppressed.
+> Evidence: src/github/publish.rs:87, src/github/publish.rs:184,
+> src/github/api.rs:102, tests/outcome_tests.rs:530
+
+The summary comment states whether the review is `complete` or `partial`
+and lists open, resolved and reopened findings.
 
 `@v0` follows the latest 0.x release; pin `@vX.Y.Z` for an exact version.
 Check a configuration before the first run with
@@ -182,7 +202,7 @@ revera cache-key [--config revera.yaml]                              # Vera inde
 Local runs keep their state in `.revera/` and, with Vera enabled, the index
 in `.vera/` (Vera 2 also creates `.vera.build/`, `.vera.old/` and, after an
 interrupted API index, `.vera.resume/`); add `.revera/` and `.vera*/` to
-`.gitignore`. Use Vera 2.0 or later.
+`.gitignore`. With Vera enabled, local runs need Vera 2.0 or later.
 
 Prebuilt binaries are attached to
 [releases](https://github.com/VeraTools/revera/releases); or

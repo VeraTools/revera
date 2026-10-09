@@ -14,12 +14,15 @@ jobs:
       - uses: actions/checkout@<full-sha> # vX.Y.Z
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: VeraTools/revera@<full-sha> # vX.Y.Z
         env:
           REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
 ```
 
 - Pin both actions to a full commit SHA with a version comment.
+- Check out the PR head (`ref:` above), not the default merge commit; Revera
+  refuses to review a tree that is not exactly the head.
 - The secret name must match `api_key_env` in `revera.yaml`; the user adds the
   value under Settings → Secrets and variables → Actions.
 - On `pull_request` events Revera reads `revera.yaml` from the **base**
