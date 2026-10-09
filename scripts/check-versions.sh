@@ -33,8 +33,10 @@ if [[ -z "$vera_version" ]]; then
   exit 1
 fi
 mismatch=0
+pins=0
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
+  pins=$((pins + 1))
   found=${line##*install-vera.sh }
   found=${found%% *}
   if [[ "$found" != "$vera_version" ]]; then
@@ -42,6 +44,10 @@ while IFS= read -r line; do
     mismatch=1
   fi
 done < <(grep -Ho 'scripts/install-vera.sh [^ ]*' .github/workflows/ci.yml .github/workflows/self-review.yml || true)
+if [[ "$pins" == 0 ]]; then
+  echo "no Vera install pins found in ci.yml or self-review.yml" >&2
+  mismatch=1
+fi
 self_review=$(sed -n 's/^  version: "\([^"]*\)"/\1/p' .github/revera-self-review.yaml)
 if [[ "$self_review" != "$vera_version" ]]; then
   echo "Vera version mismatch: .github/revera-self-review.yaml=$self_review action.yml=$vera_version" >&2

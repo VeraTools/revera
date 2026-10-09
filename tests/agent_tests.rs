@@ -206,19 +206,32 @@ async fn post_budget_tool_call_gets_one_reminder() {
         "submit_findings",
         json!({"findings": [], "coverage": "c"}),
     )]));
-    let stub = Stub {
-        replies: Mutex::new(replies),
-    };
+    let rec = Recorder::new(replies);
     let b = AgentBudget {
         max_tool_calls: 2,
         max_seconds: 600,
     };
-    let r = run_agent(&stub, "s", "u", &toolbox(), &terminal(), &b)
+    let r = run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
         .await
         .unwrap();
     assert_eq!(r.stopped, StopReason::Terminal);
     assert_eq!(r.tool_calls, 2);
     assert_eq!(r.final_call.unwrap().arguments["coverage"], "c");
+    let reqs = rec.requests.lock().unwrap();
+    // the reminder answers the post-notice tool call, and only the
+    // terminal tool is offered after the notice
+    let last = reqs.last().unwrap();
+    let reminder = last.0.last().unwrap();
+    assert_eq!(reminder.role, Role::Tool);
+    assert!(
+        reminder
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("tool budget exhausted"),
+        "{reminder:?}"
+    );
+    assert_eq!(last.1, vec!["submit_findings".to_string()]);
 }
 
 #[tokio::test]
@@ -231,18 +244,27 @@ async fn post_budget_text_gets_one_reminder() {
         "submit_findings",
         json!({"findings": [], "coverage": "c"}),
     )]));
-    let stub = Stub {
-        replies: Mutex::new(replies),
-    };
+    let rec = Recorder::new(replies);
     let b = AgentBudget {
         max_tool_calls: 2,
         max_seconds: 600,
     };
-    let r = run_agent(&stub, "s", "u", &toolbox(), &terminal(), &b)
+    let r = run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
         .await
         .unwrap();
     assert_eq!(r.stopped, StopReason::Terminal);
     assert_eq!(r.tool_calls, 2);
+    let reqs = rec.requests.lock().unwrap();
+    let reminder = reqs.last().unwrap().0.last().unwrap();
+    assert_eq!(reminder.role, Role::User);
+    assert!(
+        reminder
+            .content
+            .as_deref()
+            .unwrap()
+            .starts_with("Tool budget exhausted"),
+        "{reminder:?}"
+    );
 }
 
 #[tokio::test]
@@ -285,9 +307,21 @@ fn ledger_records() {
     assert_eq!(l.totals(), (1, 1, 0, 0));
 }
 
+/// Stub that also records every request (messages and offered tool names).
 struct Recorder {
     inner: Stub,
-    user_turns: Mutex<Vec<String>>,
+    requests: Mutex<Vec<(Vec<ChatMessage>, Vec<String>)>>,
+}
+
+impl Recorder {
+    fn new(replies: VecDeque<ChatMessage>) -> Self {
+        Recorder {
+            inner: Stub {
+                replies: Mutex::new(replies),
+            },
+            requests: Mutex::new(vec![]),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -297,12 +331,8 @@ impl ModelClient for Recorder {
         m: &[ChatMessage],
         t: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
-        if let Some(last) = m.last().filter(|x| x.role == Role::User) {
-            self.user_turns
-                .lock()
-                .unwrap()
-                .push(last.content.clone().unwrap_or_default());
-        }
+        let names = t.iter().map(|s| s.name.clone()).collect();
+        self.requests.lock().unwrap().push((m.to_vec(), names));
         self.inner.complete(m, t).await
     }
     fn route_label(&self) -> String {
@@ -315,12 +345,7 @@ async fn low_tool_budget_is_announced_once_before_exhaustion() {
     let replies = (0..10)
         .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
         .collect();
-    let rec = Recorder {
-        inner: Stub {
-            replies: Mutex::new(replies),
-        },
-        user_turns: Mutex::new(vec![]),
-    };
+    let rec = Recorder::new(replies);
     let b = AgentBudget {
         max_tool_calls: 10,
         max_seconds: 600,
@@ -328,15 +353,21 @@ async fn low_tool_budget_is_announced_once_before_exhaustion() {
     run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
         .await
         .unwrap();
-    let turns = rec.user_turns.lock().unwrap();
-    let warnings: Vec<_> = turns
+    let reqs = rec.requests.lock().unwrap();
+    let all = &reqs.last().unwrap().0;
+    let user: Vec<&str> = all
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    let warnings: Vec<_> = user
         .iter()
         .filter(|t| t.contains("tool calls left"))
         .collect();
-    assert_eq!(warnings.len(), 1, "{turns:?}");
-    assert!(warnings[0].starts_with("2 tool calls left"), "{turns:?}");
+    assert_eq!(warnings.len(), 1, "{user:?}");
+    assert!(warnings[0].starts_with("2 tool calls left"), "{user:?}");
     assert!(
-        turns.iter().any(|t| t.starts_with("Budget exhausted")),
-        "{turns:?}"
+        user.iter().any(|t| t.starts_with("Budget exhausted")),
+        "{user:?}"
     );
 }
