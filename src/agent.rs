@@ -145,6 +145,7 @@ pub async fn run_agent_checked(
     let mut nudged = false;
     let mut repaired = false;
     let mut budget_notice_sent = false;
+    let mut budget_reminded = false;
     let mut budget_stop = StopReason::ToolBudget;
     let start = Instant::now();
     let total = Duration::from_secs(budget.max_seconds);
@@ -287,9 +288,27 @@ pub async fn run_agent_checked(
             continue;
         }
 
-        // After the budget notice, a non-terminal completion ends the loop
-        // immediately — no further tool calls are executed.
+        // After the budget notice no further tool calls are executed. A model
+        // that answers a tool-budget notice with more tool calls gets one
+        // last reminder while time remains; anything else ends the loop.
         if budget_notice_sent {
+            let time_left = total.saturating_sub(start.elapsed()) >= REPAIR_MIN_LEFT;
+            if budget_stop == StopReason::ToolBudget && !budget_reminded && time_left {
+                budget_reminded = true;
+                let note = serde_json::json!({"error": format!(
+                    "not executed: tool budget exhausted; call {} now with what you have",
+                    terminal_tool.name
+                )})
+                .to_string();
+                for c in &msg.tool_calls {
+                    messages.push(ChatMessage::tool(
+                        c.id.clone(),
+                        c.name.clone(),
+                        note.clone(),
+                    ));
+                }
+                continue;
+            }
             return Ok(AgentRun {
                 final_call: None,
                 transcript_len: messages.len(),

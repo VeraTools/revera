@@ -22,9 +22,9 @@ means checking out `pull_request.head.sha`, not the merge ref.
 
 **Retrieval.** Every run has lexical tools over the tracked files of the
 head tree (`grep_repo`, `find_files`, `read_file`, `diff_context`,
-`list_changed_files`; `.git`, `.vera`, `.revera` excluded). When a `vera:`
-block is configured, Revera runs `vera update .` once before any model call
-and adds `vera_search`, `vera_references`, `vera_grep` and `vera_overview`.
+`list_changed_files`; `.git`, `.revera` and Vera's `.vera*` directories
+excluded). When a `vera:` block is configured, Revera runs `vera update .`
+once before any model call and adds `vera_search`, `vera_references`, `vera_grep` and `vera_overview`.
 Models cannot rebuild the index. If Vera is missing, fails or times out, the
 run continues lexical-only and is marked `partial` with "semantic retrieval
 unavailable".

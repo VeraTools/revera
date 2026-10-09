@@ -47,7 +47,7 @@ if [[ "$self_review" != "$vera_version" ]]; then
   echo "Vera version mismatch: .github/revera-self-review.yaml=$self_review action.yml=$vera_version" >&2
   mismatch=1
 fi
-if ! grep -q "^| \`vera-version\` | \`$vera_version\` |" docs/configuration.md; then
+if ! grep -qF "| \`vera-version\` | \`$vera_version\` |" docs/configuration.md; then
   echo "Vera version mismatch: docs/configuration.md does not list vera-version $vera_version" >&2
   mismatch=1
 fi

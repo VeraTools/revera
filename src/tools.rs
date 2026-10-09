@@ -458,11 +458,12 @@ impl ToolBox {
     }
 
     /// Git, Revera and Vera working directories (Vera 2 builds into
-    /// `.vera.build` and keeps failed-index checkpoints in `.vera.resume`).
+    /// `.vera.build`, swaps through `.vera.old` and keeps failed-index
+    /// checkpoints in `.vera.resume`).
     fn is_internal_dir(c: &str) -> bool {
         matches!(
             c,
-            ".git" | ".vera" | ".vera.build" | ".vera.resume" | ".revera"
+            ".git" | ".vera" | ".vera.build" | ".vera.old" | ".vera.resume" | ".revera"
         )
     }
 
@@ -929,6 +930,7 @@ JSON
             ".vera.build/x",
             ".vera.resume/embeddings.db",
             "sub/.revera/state.json",
+            ".vera.old/x",
             ".git/config",
         ] {
             assert!(ToolBox::is_internal_path(p), "{p}");

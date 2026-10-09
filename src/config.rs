@@ -645,6 +645,9 @@ pub const SENSITIVE_GLOBS: &[&str] = &[
     "**/.netrc",
     ".revera/**",
     ".vera/**",
+    ".vera.build/**",
+    ".vera.old/**",
+    ".vera.resume/**",
 ];
 
 /// Schema of the Revera-side index identity; bump when its meaning changes.

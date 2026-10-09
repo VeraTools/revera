@@ -175,8 +175,8 @@ async fn budget_exhaustion_path() {
 
 #[tokio::test]
 async fn post_budget_nonterminal_stops_without_tools() {
-    // Once the budget notice has been sent, a non-terminal completion must end
-    // the loop with ToolBudget without executing further tool calls.
+    // A model that keeps calling tools after the budget notice (and after
+    // the one reminder) ends with ToolBudget; no further tool calls run.
     let replies = (0..5)
         .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
         .collect();
@@ -193,6 +193,32 @@ async fn post_budget_nonterminal_stops_without_tools() {
     assert_eq!(r.stopped, StopReason::ToolBudget);
     assert_eq!(r.tool_calls, 2);
     assert!(r.final_call.is_none());
+}
+
+#[tokio::test]
+async fn post_budget_tool_call_gets_one_reminder() {
+    // a model that answers the tool-budget notice with another tool call is
+    // told once that it was not executed, and may still submit
+    let mut replies: VecDeque<ChatMessage> = (0..3)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    replies.push_back(assistant_calls(vec![(
+        "submit_findings",
+        json!({"findings": [], "coverage": "c"}),
+    )]));
+    let stub = Stub {
+        replies: Mutex::new(replies),
+    };
+    let b = AgentBudget {
+        max_tool_calls: 2,
+        max_seconds: 600,
+    };
+    let r = run_agent(&stub, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(r.tool_calls, 2);
+    assert_eq!(r.final_call.unwrap().arguments["coverage"], "c");
 }
 
 #[tokio::test]

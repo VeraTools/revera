@@ -180,8 +180,9 @@ revera cache-key [--config revera.yaml]                              # Vera inde
 ```
 
 Local runs keep their state in `.revera/` and, with Vera enabled, the index
-in `.vera/` (plus `.vera.resume/` after an interrupted API index); add them
-to `.gitignore`. Use Vera 2.0 or later.
+in `.vera/` (Vera 2 also creates `.vera.build/`, `.vera.old/` and, after an
+interrupted API index, `.vera.resume/`); add `.revera/` and `.vera*/` to
+`.gitignore`. Use Vera 2.0 or later.
 
 Prebuilt binaries are attached to
 [releases](https://github.com/VeraTools/revera/releases); or

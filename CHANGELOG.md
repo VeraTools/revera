@@ -13,8 +13,12 @@
   explicitly so the persistent Vera home does not keep older values.
 - The index or update summary (files, chunks, embedding requests, retries,
   timeouts, elapsed time) is logged after each successful refresh.
-- File tools treat Vera 2's `.vera.build/` and `.vera.resume/` directories
-  as internal, like `.vera/`.
+- Vera 2's `.vera.build/`, `.vera.old/` and `.vera.resume/` directories are
+  covered by the content policy like `.vera/`: excluded from the index, the
+  diff and every file tool.
+- An investigator that answers the tool-budget notice with more tool calls
+  is told once that they were not run and can still submit its findings;
+  before, the lane ended as `partial` with nothing reported.
 - `check-versions.sh` also checks that every Vera pin matches the Action's
   `vera-version` default.
 - Dependencies: `yoke-derive` 0.8.4 (0.8.3 was yanked), `uuid` 1.27.0,
