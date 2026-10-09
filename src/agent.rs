@@ -145,6 +145,8 @@ pub async fn run_agent_checked(
     let mut nudged = false;
     let mut repaired = false;
     let mut budget_notice_sent = false;
+    let mut budget_reminded = false;
+    let mut budget_warned = false;
     let mut budget_stop = StopReason::ToolBudget;
     let start = Instant::now();
     let total = Duration::from_secs(budget.max_seconds);
@@ -158,6 +160,9 @@ pub async fn run_agent_checked(
             rem.max(Duration::from_secs(1))
         }
     };
+
+    // a tool-budget stop gets one reminder only while a useful reply fits
+    let time_left = || total.saturating_sub(start.elapsed()) >= REPAIR_MIN_LEFT;
 
     loop {
         let time_up = start.elapsed() > total;
@@ -173,11 +178,30 @@ pub async fn run_agent_checked(
                 "Budget exhausted; call {} now with what you have",
                 terminal_tool.name
             )));
+        } else if !budget_warned
+            && budget.max_tool_calls >= 10
+            && budget.max_tool_calls - tool_calls <= budget.max_tool_calls / 5
+        {
+            // an early heads-up lets the model plan its submission instead
+            // of being cut off mid-investigation
+            budget_warned = true;
+            messages.push(ChatMessage::user(format!(
+                "{} tool calls left. Finish the checks that matter most, then call {}.",
+                budget.max_tool_calls - tool_calls,
+                terminal_tool.name
+            )));
         }
 
         let grace = budget_notice_sent && budget_stop == StopReason::TimeBudget;
+        // after the notice only the terminal tool is offered; some models
+        // keep calling research tools while any are available
+        let turn_specs = if budget_notice_sent {
+            std::slice::from_ref(terminal_tool)
+        } else {
+            &specs[..]
+        };
         let completion =
-            match tokio::time::timeout(left(grace), client.complete(&messages, &specs)).await {
+            match tokio::time::timeout(left(grace), client.complete(&messages, turn_specs)).await {
                 Ok(Ok(c)) => c,
                 Ok(Err(e)) => {
                     tracing::warn!("model request failed: {e}");
@@ -245,6 +269,20 @@ pub async fn run_agent_checked(
                     continue;
                 }
             }
+            if budget_notice_sent {
+                tracing::warn!(
+                    "model answered the budget notice with text instead of {}",
+                    terminal_tool.name
+                );
+                if budget_stop == StopReason::ToolBudget && !budget_reminded && time_left() {
+                    budget_reminded = true;
+                    messages.push(ChatMessage::user(format!(
+                        "Tool budget exhausted. Call `{}` now with what you have.",
+                        terminal_tool.name
+                    )));
+                    continue;
+                }
+            }
             return Ok(AgentRun {
                 final_call: None,
                 transcript_len: messages.len(),
@@ -287,9 +325,32 @@ pub async fn run_agent_checked(
             continue;
         }
 
-        // After the budget notice, a non-terminal completion ends the loop
-        // immediately — no further tool calls are executed.
+        // After the budget notice no further tool calls are executed. A model
+        // that answers a tool-budget notice with more tool calls gets one
+        // last reminder while time remains; anything else ends the loop.
         if budget_notice_sent {
+            let names: Vec<&str> = msg.tool_calls.iter().map(|c| c.name.as_str()).collect();
+            tracing::warn!(
+                "model answered the budget notice with {} instead of {}",
+                names.join(", "),
+                terminal_tool.name
+            );
+            if budget_stop == StopReason::ToolBudget && !budget_reminded && time_left() {
+                budget_reminded = true;
+                let note = serde_json::json!({"error": format!(
+                    "not executed: tool budget exhausted; call {} now with what you have",
+                    terminal_tool.name
+                )})
+                .to_string();
+                for c in &msg.tool_calls {
+                    messages.push(ChatMessage::tool(
+                        c.id.clone(),
+                        c.name.clone(),
+                        note.clone(),
+                    ));
+                }
+                continue;
+            }
             return Ok(AgentRun {
                 final_call: None,
                 transcript_len: messages.len(),

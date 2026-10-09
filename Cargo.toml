@@ -1,6 +1,6 @@
 [package]
 name = "revera"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 description = "Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval."
 license = "MIT"

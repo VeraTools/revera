@@ -1,9 +1,30 @@
 # Changelog
 
-## Unreleased
+## v0.4.4
 
-- The Action installs Vera 2.0.1 by default (was 1.4.1). The Vera cache key
-  includes this version, so the first run after upgrading rebuilds the index.
+- The Action installs Vera 2.0.1 by default (was 1.4.1). The Action's index
+  cache key includes the Vera version, so its first run after upgrading
+  builds a fresh index. Vera 2 keeps finished embeddings when an API index
+  fails, retries with backoff, and reads indexes built by 1.x.
+- Embedding defaults for `vera.backend: api` are now Vera 2's own (8 / 256 /
+  120 s: two 128-input requests at a time). The 0.4.3 values allowed only
+  one request in flight on Vera 2; a cold index of this repository took
+  60–64 s with them and 26–30 s with the new ones. Revera still sets them
+  explicitly so the persistent Vera home does not keep older values.
+- The index or update summary (files, chunks, embedding requests, retries,
+  timeouts, elapsed time) is logged after each successful refresh.
+- Vera 2's `.vera.build/`, `.vera.old/` and `.vera.resume/` directories are
+  covered by the content policy like `.vera/`: excluded from the index, the
+  diff and every file tool.
+- Agents are told when a fifth of their tool budget remains, and once the
+  budget is spent only the submission tool is offered, with one reminder (while
+  at least 15 s remain) if the model still tries to research. In this repository's self-review,
+  4 of 5 runs without the early notice ended `partial` with nothing
+  submitted; with it, 2 of 2 completed.
+- `check-versions.sh` also checks that every Vera pin matches the Action's
+  `vera-version` default.
+- Dependencies: `yoke-derive` 0.8.4 (0.8.3 was yanked), `uuid` 1.27.0,
+  `taiki-e/install-action` 2.87.23.
 
 ## v0.4.3
 

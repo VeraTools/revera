@@ -416,6 +416,7 @@ impl VeraClient {
             return Err(e.context(format!("vera {verb} left an unhealthy index")));
         }
         self.write_cache_info().await.ok();
+        tracing::info!("vera {verb}: {}", index_summary_line(&summary));
         Ok(summary)
     }
 
@@ -517,8 +518,43 @@ impl VeraClient {
     }
 }
 
+/// Counters from a `vera index|update --json` summary, in a fixed order;
+/// fields the installed Vera does not report are left out.
+fn index_summary_line(summary: &Value) -> String {
+    const KEYS: &[&str] = &[
+        "files_parsed",
+        "chunks_created",
+        "embeddings_generated",
+        "embeddings_reused",
+        "embedding_requests",
+        "embedding_retries",
+        "embedding_timeouts",
+        "embedding_failed_batches",
+    ];
+    let mut parts: Vec<String> = KEYS
+        .iter()
+        .filter_map(|k| summary[*k].as_u64().map(|n| format!("{k}={n}")))
+        .collect();
+    if let Some(s) = summary["elapsed_secs"].as_f64() {
+        parts.push(format!("elapsed={s:.1}s"));
+    }
+    parts.join(" ")
+}
+
 #[cfg(test)]
-mod url_query_tests {
+mod tests {
+    #[test]
+    fn index_summary_line_keeps_known_counters_only() {
+        let v = serde_json::json!({
+            "files_parsed": 168, "chunks_created": 1773, "embedding_retries": 0,
+            "elapsed_secs": 26.26, "parse_errors": [], "unknown": 5
+        });
+        assert_eq!(
+            super::index_summary_line(&v),
+            "files_parsed=168 chunks_created=1773 embedding_retries=0 elapsed=26.3s"
+        );
+    }
+
     #[test]
     fn url_queries_are_removed_from_vera_errors() {
         let err = "error sending request for url (https://h.example/v1/embeddings?key=abc%2Fdef&x=1): timeout";

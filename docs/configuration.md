@@ -155,6 +155,7 @@ key or index is needed. Present: enabled unless `enabled: false`.
 | `embedding` | — | `api` backend: `{base_url, model, api_key_env, max_concurrent_requests?, max_in_flight_inputs?, timeout_secs?}` |
 | `reranker` | — | optional `{base_url, model, api_key_env, protocol?, endpoint_path?, return_documents?}` |
 | `exclude` | `[]` | glob patterns excluded from indexing and lexical tools |
+| `home` | see below | Revera-owned Vera home (settings and local models) |
 
 Reranker options: `protocol` is `generic` (`/rerank`, `top_n`) or `voyage`
 (`top_k`); unset lets Vera infer it from the base URL. `endpoint_path` is
@@ -163,14 +164,18 @@ joined onto `base_url` (default `/rerank`). `return_documents` is `true` or
 providers that reject it). These options are rejected on `embedding`.
 
 Embedding options (`api` backend only; rejected on `reranker`):
-`max_concurrent_requests` (default `2`), `max_in_flight_inputs` (default
-`128`) and `timeout_secs` (default `120`) are positive integers applied with
-`vera config set embedding.*`. The defaults replace Vera's own (8 / 16 / 60 s),
-which can time out on hosted endpoints before a cold index completes. They
-change indexing speed only, so they are not part of the index identity or
-the review fingerprint.
+`max_concurrent_requests` (default `8`), `max_in_flight_inputs` (default
+`256`) and `timeout_secs` (default `120`) are positive integers applied with
+`vera config set embedding.*`. The defaults are Vera 2's own, so a cold index
+sends two 128-input requests at a time; Revera sets them explicitly so its
+persistent Vera home never keeps values from an earlier run. They change
+indexing speed only, so they are not part of the index identity or the
+review fingerprint. Use Vera 2.0 or later: with Vera 1.x a single failed
+embedding request discards the whole index, and the next run starts over.
 
-Revera runs Vera with its own `VERA_HOME` under `.revera/`, strips ambient
+Revera runs Vera with its own `VERA_HOME` (`vera.home`, else
+`$REVERA_VERA_HOME`, else `$XDG_CACHE_HOME/revera/vera-home`, else
+`~/.cache/revera/vera-home`), strips ambient
 `VERA_*`/`EMBEDDING_MODEL_*`/`RERANKER_MODEL_*` variables from the child,
 and applies the reranker with `vera config set retrieval.*`; with no
 reranker configured, reranking is explicitly disabled. The report's

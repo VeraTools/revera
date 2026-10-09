@@ -175,8 +175,8 @@ async fn budget_exhaustion_path() {
 
 #[tokio::test]
 async fn post_budget_nonterminal_stops_without_tools() {
-    // Once the budget notice has been sent, a non-terminal completion must end
-    // the loop with ToolBudget without executing further tool calls.
+    // A model that keeps calling tools after the budget notice (and after
+    // the one reminder) ends with ToolBudget; no further tool calls run.
     let replies = (0..5)
         .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
         .collect();
@@ -193,6 +193,78 @@ async fn post_budget_nonterminal_stops_without_tools() {
     assert_eq!(r.stopped, StopReason::ToolBudget);
     assert_eq!(r.tool_calls, 2);
     assert!(r.final_call.is_none());
+}
+
+#[tokio::test]
+async fn post_budget_tool_call_gets_one_reminder() {
+    // a model that answers the tool-budget notice with another tool call is
+    // told once that it was not executed, and may still submit
+    let mut replies: VecDeque<ChatMessage> = (0..3)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    replies.push_back(assistant_calls(vec![(
+        "submit_findings",
+        json!({"findings": [], "coverage": "c"}),
+    )]));
+    let rec = Recorder::new(replies);
+    let b = AgentBudget {
+        max_tool_calls: 2,
+        max_seconds: 600,
+    };
+    let r = run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(r.tool_calls, 2);
+    assert_eq!(r.final_call.unwrap().arguments["coverage"], "c");
+    let reqs = rec.requests.lock().unwrap();
+    // the reminder answers the post-notice tool call, and only the
+    // terminal tool is offered after the notice
+    let last = reqs.last().unwrap();
+    let reminder = last.0.last().unwrap();
+    assert_eq!(reminder.role, Role::Tool);
+    assert!(
+        reminder
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("tool budget exhausted"),
+        "{reminder:?}"
+    );
+    assert_eq!(last.1, vec!["submit_findings".to_string()]);
+}
+
+#[tokio::test]
+async fn post_budget_text_gets_one_reminder() {
+    let mut replies: VecDeque<ChatMessage> = (0..2)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    replies.push_back(assistant_text("Let me summarise what I found so far."));
+    replies.push_back(assistant_calls(vec![(
+        "submit_findings",
+        json!({"findings": [], "coverage": "c"}),
+    )]));
+    let rec = Recorder::new(replies);
+    let b = AgentBudget {
+        max_tool_calls: 2,
+        max_seconds: 600,
+    };
+    let r = run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(r.tool_calls, 2);
+    let reqs = rec.requests.lock().unwrap();
+    let reminder = reqs.last().unwrap().0.last().unwrap();
+    assert_eq!(reminder.role, Role::User);
+    assert!(
+        reminder
+            .content
+            .as_deref()
+            .unwrap()
+            .starts_with("Tool budget exhausted"),
+        "{reminder:?}"
+    );
 }
 
 #[tokio::test]
@@ -233,4 +305,69 @@ fn ledger_records() {
     });
     assert_eq!(l.request_count(), 1);
     assert_eq!(l.totals(), (1, 1, 0, 0));
+}
+
+/// Stub that also records every request (messages and offered tool names).
+struct Recorder {
+    inner: Stub,
+    requests: Mutex<Vec<(Vec<ChatMessage>, Vec<String>)>>,
+}
+
+impl Recorder {
+    fn new(replies: VecDeque<ChatMessage>) -> Self {
+        Recorder {
+            inner: Stub {
+                replies: Mutex::new(replies),
+            },
+            requests: Mutex::new(vec![]),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelClient for Recorder {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let names = t.iter().map(|s| s.name.clone()).collect();
+        self.requests.lock().unwrap().push((m.to_vec(), names));
+        self.inner.complete(m, t).await
+    }
+    fn route_label(&self) -> String {
+        "recorder".into()
+    }
+}
+
+#[tokio::test]
+async fn low_tool_budget_is_announced_once_before_exhaustion() {
+    let replies = (0..10)
+        .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+        .collect();
+    let rec = Recorder::new(replies);
+    let b = AgentBudget {
+        max_tool_calls: 10,
+        max_seconds: 600,
+    };
+    run_agent(&rec, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    let reqs = rec.requests.lock().unwrap();
+    let all = &reqs.last().unwrap().0;
+    let user: Vec<&str> = all
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    let warnings: Vec<_> = user
+        .iter()
+        .filter(|t| t.contains("tool calls left"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{user:?}");
+    assert!(warnings[0].starts_with("2 tool calls left"), "{user:?}");
+    assert!(
+        user.iter().any(|t| t.starts_with("Budget exhausted")),
+        "{user:?}"
+    );
 }

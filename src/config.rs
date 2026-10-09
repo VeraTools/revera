@@ -303,11 +303,13 @@ pub struct VeraEndpoint {
     pub timeout_secs: Option<u32>,
 }
 
-// Vera's own defaults (8 concurrent / 16 in flight / 60 s) timed out on a
-// hosted endpoint and left no index; fewer, larger batches with a longer
-// timeout completed a cold index of the same repository.
-pub const DEFAULT_EMBED_MAX_CONCURRENT: u32 = 2;
-pub const DEFAULT_EMBED_MAX_IN_FLIGHT: u32 = 128;
+// Vera 2's defaults (two 128-input requests at a time, 120 s timeout).
+// Revera sets them explicitly because `vera config set` cannot clear a
+// numeric key, so the persistent Vera home would otherwise keep whatever an
+// earlier run or Revera release stored; older Vera (8 / 16 / 60 s) timed out
+// on hosted endpoints.
+pub const DEFAULT_EMBED_MAX_CONCURRENT: u32 = 8;
+pub const DEFAULT_EMBED_MAX_IN_FLIGHT: u32 = 256;
 pub const DEFAULT_EMBED_TIMEOUT_SECS: u32 = 120;
 
 impl VeraEndpoint {
@@ -643,6 +645,9 @@ pub const SENSITIVE_GLOBS: &[&str] = &[
     "**/.netrc",
     ".revera/**",
     ".vera/**",
+    ".vera.build/**",
+    ".vera.old/**",
+    ".vera.resume/**",
 ];
 
 /// Schema of the Revera-side index identity; bump when its meaning changes.
