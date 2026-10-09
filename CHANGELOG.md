@@ -8,8 +8,8 @@
 - Breaking: `models.scouts[].focus` is removed. It was accepted but never
   used; scouts always took their focus from `panel.focuses` in order.
   Configs that set it now fail with an unknown-key error.
-- The skill's Action example checks out the PR head; without it every run
-  was refused because the checked-out tree was the merge commit.
+- The skill's Action example checks out the PR head, matching the README
+  quickstart.
 
 ## v0.4.4
 

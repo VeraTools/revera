@@ -492,9 +492,11 @@ try:
         encoding="utf-8",
     )
     with_probe = rerank + ["--rerank-probe", str(probe_ok)]
-    expect_pass("require-rerank-search-and-probe", extra=with_probe)
-    if "rerank probe reranked" not in summary_path.read_text(encoding="utf-8"):
-        raise AssertionError("proof summary omitted the rerank probe")
+    # run 1's own error-free search is the evidence; the probe is not consulted
+    expect_pass(
+        "require-rerank-search-wins-over-probe",
+        extra=rerank + ["--rerank-probe", str(probe_fell_back)],
+    )
     no_search = report(1)
     no_search["stats"]["tools"] = no_search["stats"]["tools"][:1]
     expect_fail(
@@ -505,6 +507,8 @@ try:
     )
     # the probe stands in for a search the investigator chose not to make
     expect_pass("require-rerank-probe-only", first=no_search, extra=with_probe)
+    if "reranking shown by the rerank probe" not in summary_path.read_text(encoding="utf-8"):
+        raise AssertionError("proof summary omitted the rerank probe")
     expect_fail(
         "require-rerank-probe-fell-back",
         "rerank probe did not return reranked results",
@@ -540,6 +544,12 @@ try:
         "run 1 vera_search reported errors",
         first=search_errors,
         extra=rerank,
+    )
+    expect_fail(
+        "require-rerank-search-errors-with-probe",
+        "run 1 vera_search reported errors",
+        first=search_errors,
+        extra=with_probe,
     )
 
     print("test-verify-release-report.sh OK")

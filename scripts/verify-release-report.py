@@ -115,8 +115,8 @@ def vera_search_stat(stats: dict[str, Any]) -> dict[str, Any] | None:
 
 def require_reranked_search(stats1: dict[str, Any], probe_path: str | None) -> None:
     """Run 1 must report an active reranker, and reranking must be shown by an
-    error-free vera_search call in run 1 or by a `vera search --json
-    --rerank-status` probe against the same Vera home and index."""
+    error-free vera_search call in run 1 or, when it made none, by a
+    `vera search --json --rerank-status` probe against the same Vera home."""
     retrieval = stats1.get("retrieval")
     require(
         retrieval == "vera+rerank",
@@ -124,22 +124,21 @@ def require_reranked_search(stats1: dict[str, Any], probe_path: str | None) -> N
         "or fell back)",
     )
     search = vera_search_stat(stats1)
-    searched = search is not None and positive_integer(search.get("calls"))
-    if searched:
+    if search is not None and positive_integer(search.get("calls")):
         errors = search.get("errors")
         require(
             isinstance(errors, int) and not isinstance(errors, bool) and errors == 0,
             "run 1 vera_search reported errors (errors must be 0)",
         )
-    if probe_path is not None:
-        probe = load_report(probe_path, "rerank probe")
-        require(
-            probe.get("reranked") is True and probe.get("rerank_fallback_reason") is None,
-            "rerank probe did not return reranked results",
-        )
+        return
     require(
-        searched or probe_path is not None,
+        probe_path is not None,
         "run 1 made no vera_search call and no --rerank-probe was given",
+    )
+    probe = load_report(probe_path, "rerank probe")
+    require(
+        probe.get("reranked") is True and probe.get("rerank_fallback_reason") is None,
+        "rerank probe did not return reranked results",
     )
 
 
@@ -581,7 +580,9 @@ def write_summary(
     search = vera_search_stat(stats)
     calls = search.get("calls") if search else 0
     search_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else 0
-    probe = ", rerank probe reranked" if args.require_rerank and args.rerank_probe else ""
+    probe = ""
+    if args.require_rerank and args.rerank_probe and search_calls == 0:
+        probe = ", reranking shown by the rerank probe"
     title = markdown_value(str(finding.get("title", "")))
     version_output = markdown_value(args.version_output)
     content = (
