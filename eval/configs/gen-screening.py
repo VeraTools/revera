@@ -90,8 +90,8 @@ def panel(scouts, concurrency):
         + VALIDATOR
         + "  scouts:\n"
     )
-    for name, focus, route in scouts:
-        s += f"    - name: {name}\n      focus: {focus}\n"
+    for name, _focus, route in scouts:
+        s += f"    - name: {name}\n"
         s += "".join("  " + line + "\n" for line in route.rstrip("\n").split("\n"))
     return s + VERA
 

@@ -1,8 +1,8 @@
 # How Revera works
 
 Revera is a single Rust binary. Deterministic code owns everything that
-touches the pull request — diffing, review identity, state, anchoring,
-publication — and configurable models own the reasoning. This document
+touches the pull request (diffing, review identity, state, anchoring and
+publication), and the configured models do the reasoning. This document
 describes the pipeline, its boundaries and the state it keeps.
 
 ## Pipeline
@@ -68,7 +68,7 @@ the PR head SHA and refuses to publish if it moved.
 4. Everything provider- or subprocess-facing is bounded by
    `budget.run_max_seconds`, with a reserve kept for validation and the
    final report. A budget breach yields `partial` with the reason in the
-   summary — never a silently truncated "clean" review.
+   summary, never a silently truncated "clean" review.
 
 ## Outcomes
 
@@ -115,7 +115,7 @@ remedy: its `suggested_fix` is only a proposal, and any investigator-supplied
 State lives in `.revera/state.json` locally and, on GitHub, inside the
 managed summary comment as `<!-- revera-state:<base64 json> -->`. That
 comment is selected by marker, decodable state *and* ownership (recorded
-comment id, or the authenticated viewer / configured bot login) — never by
+comment id, or the authenticated viewer / configured bot login), never by
 marker text alone. State is bounded to 200 findings (resolved and rejected
 pruned first); corrupt state is quarantined to `state.json.corrupt`.
 
@@ -123,7 +123,7 @@ Each run computes `review_key = sha256(base sha, exact head tree id, patch
 id, config fingerprint)`. The fingerprint covers the *effective*
 configuration: strategy, thresholds, budgets, concurrency, retries,
 delegated/panel settings, the model routes actually used (protocol, base
-URL, model, reasoning, extra-header names — no key names or values), prompt
+URL, model, reasoning, extra-header names; no key names or values), prompt
 hashes, engine version and Vera index identity. A prior review is reused
 only when it ran under the same key, finished `complete` and left no
 unposted findings; partial and failed runs are always redone.

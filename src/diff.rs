@@ -99,27 +99,7 @@ impl DiffSet {
     }
 
     pub fn render(&self) -> String {
-        let mut s = String::new();
-        for f in &self.files {
-            s.push_str(&format!("diff --git a/{} b/{}\n", f.old_path, f.new_path));
-            for h in &f.hunks {
-                s.push_str(&format!(
-                    "@@ -{},{} +{},{} @@\n",
-                    h.old_start, h.old_len, h.new_start, h.new_len
-                ));
-                for l in &h.lines {
-                    let p = match l.kind {
-                        DiffLineKind::Add => '+',
-                        DiffLineKind::Del => '-',
-                        DiffLineKind::Ctx => ' ',
-                    };
-                    s.push(p);
-                    s.push_str(&l.text);
-                    s.push('\n');
-                }
-            }
-        }
-        s
+        self.files.iter().map(Self::render_file).collect()
     }
 
     /// Files whose diff `render_truncated(max_bytes)` omits.
@@ -182,29 +162,11 @@ impl DiffSet {
 
     /// Per-file excerpt used for validator context.
     pub fn file_excerpt(&self, path: &str) -> String {
-        let mut s = String::new();
-        for f in &self.files {
-            if f.new_path == path || f.old_path == path {
-                s.push_str(&format!("diff --git a/{} b/{}\n", f.old_path, f.new_path));
-                for h in &f.hunks {
-                    s.push_str(&format!(
-                        "@@ -{},{} +{},{} @@\n",
-                        h.old_start, h.old_len, h.new_start, h.new_len
-                    ));
-                    for l in &h.lines {
-                        let p = match l.kind {
-                            DiffLineKind::Add => '+',
-                            DiffLineKind::Del => '-',
-                            DiffLineKind::Ctx => ' ',
-                        };
-                        s.push(p);
-                        s.push_str(&l.text);
-                        s.push('\n');
-                    }
-                }
-            }
-        }
-        s
+        self.files
+            .iter()
+            .filter(|f| f.new_path == path || f.old_path == path)
+            .map(Self::render_file)
+            .collect()
     }
 }
 

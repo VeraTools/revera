@@ -5,6 +5,9 @@
 - Release verification probes reranking with one direct
   `vera search --rerank-status` after the review, so the check no longer
   depends on the investigator choosing to call `vera_search`.
+- Breaking: `models.scouts[].focus` is removed. It was accepted but never
+  used; scouts always took their focus from `panel.focuses` in order.
+  Configs that set it now fail with an unknown-key error.
 - The skill's Action example checks out the PR head; without it every run
   was refused because the checked-out tree was the merge commit.
 

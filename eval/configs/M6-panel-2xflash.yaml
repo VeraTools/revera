@@ -32,7 +32,6 @@ models:
     reasoning: high
   scouts:
     - name: flash-a
-      focus: general
       protocol: openai-chat
       base_url: ${REVERA_MODEL_BASE_URL}
       api_key_env: REVERA_MODEL_API_KEY
@@ -41,7 +40,6 @@ models:
       temperature: 0.2
       reasoning: max
     - name: flash-b
-      focus: general
       protocol: openai-chat
       base_url: ${REVERA_MODEL_BASE_URL}
       api_key_env: REVERA_MODEL_API_KEY

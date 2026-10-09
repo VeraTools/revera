@@ -246,7 +246,6 @@ pub struct ModelRoute {
 #[serde(deny_unknown_fields)]
 pub struct ScoutRoute {
     pub name: String,
-    pub focus: Option<String>,
     #[serde(flatten)]
     pub route: ModelRoute,
 }
@@ -1223,7 +1222,7 @@ impl Config {
             "lead": self.models.lead.as_ref().map(route),
             "workers": self.models.workers.as_ref().map(|ws| ws.iter().map(route).collect::<Vec<_>>()),
             "scouts": self.models.scouts.as_ref().map(|ss| {
-                ss.iter().map(|s| serde_json::json!({"name": s.name, "focus": s.focus, "route": route(&s.route)})).collect::<Vec<_>>()
+                ss.iter().map(|s| serde_json::json!({"name": s.name, "route": route(&s.route)})).collect::<Vec<_>>()
             }),
             "vera": {
                 "enabled": self.vera.enabled,

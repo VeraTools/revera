@@ -105,9 +105,9 @@ diff (base…head)  →  investigator  →  candidates  →  fresh validator  �
 2. The investigator explores the change with read-only tools and submits
    structured candidate findings.
 3. Each candidate is handed to a validator that starts from an empty context
-   and must re-establish the claim from the code. This is what makes the
-   default safe with a single model: the validator inherits the
-   investigator's route but never its conversation.
+   and must re-establish the claim from the code. This is why one model is
+   enough to start: the validator reuses the investigator's route but never
+   its conversation.
 4. Rust anchors accepted findings to diff lines, reconciles them with the
    previous review (resolved / reopened / still open) and publishes.
 
@@ -184,7 +184,7 @@ Method, tables and caveats: [docs/evaluation.md](docs/evaluation.md).
 | revera exit | Action `status` | meaning |
 |---|---|---|
 | 0 | `complete` | every stage finished; `findings: 0` means "reviewed, nothing found" |
-| 2 | `partial` | something was not checked (budget, provider, retrieval, malformed model output) — zero findings is not a clean verdict |
+| 2 | `partial` | something was not checked (budget, provider, retrieval, malformed model output); zero findings is not a clean verdict |
 | other | `failed` | config/setup error or crash; no trustworthy report |
 
 `fail-on: failed | partial | never` (default `failed`) decides which of
@@ -210,10 +210,10 @@ Prebuilt binaries are attached to
 
 ## Documentation
 
-- [How it works](docs/how-it-works.md) — architecture, boundaries, state and re-review
-- [Configuration](docs/configuration.md) — every key with defaults
-- [Strategies](docs/strategies.md) — baseline, delegated, panel
-- [Evaluation](docs/evaluation.md) — what was measured and how to reproduce it
+- [How it works](docs/how-it-works.md): architecture, boundaries, state and re-review
+- [Configuration](docs/configuration.md): every key with defaults
+- [Strategies](docs/strategies.md): baseline, delegated, panel
+- [Evaluation](docs/evaluation.md): what was measured and how to reproduce it
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 ## License

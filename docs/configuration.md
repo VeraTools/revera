@@ -29,7 +29,7 @@ what a run would need.
 | `validator` | inherits `investigator` | route that re-derives each candidate in a fresh context |
 | `lead` | `investigator` | `delegated` only: plans questions and synthesises worker reports |
 | `workers` | `[investigator]` | `delegated` only: list of routes answering the lead's questions |
-| `scouts` | — | `panel` only: list of named routes (`name`, optional `focus`, plus route fields) |
+| `scouts` | — | `panel` only: list of named routes (`name` plus route fields) |
 
 Omitting `validator` does not skip validation: the investigator's route is
 called again with an empty conversation for every candidate. Set an
@@ -143,7 +143,7 @@ large-repository runs).
 
 ## `vera`
 
-Absent: disabled — repository search is lexical-only and no `vera` binary,
+Absent: disabled; repository search is lexical-only and no `vera` binary,
 key or index is needed. Present: enabled unless `enabled: false`.
 
 | key | default | notes |
@@ -233,7 +233,7 @@ variables, and `review.validate: true` for `publish: comment`.
 | `delegated.max_questions` | `4` | questions the lead may plan |
 | `delegated.worker_max_tool_calls` | `12` | |
 | `delegated.worker_max_seconds` | `120` | |
-| `panel.focuses` | `[general, cross-file]` | focus labels assigned to scouts without an explicit `focus` |
+| `panel.focuses` | `[general, cross-file]` | one focus label per scout, in order; a single scout runs once per label |
 | `panel.scout_max_tool_calls` | `15` | |
 
 ## `profiles`

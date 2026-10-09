@@ -339,25 +339,6 @@ pub async fn patch_id(repo: &Path, base: &str, head: &str) -> Result<String> {
         .to_string())
 }
 
-/// Files changed between base...head, one `path status` per line.
-pub async fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    let mb = merge_base(repo, base, head).await?;
-    let out = git(
-        repo,
-        &[
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--name-status",
-            "--end-of-options",
-            &mb,
-            head,
-        ],
-    )
-    .await?;
-    Ok(out.lines().map(|l| l.to_string()).collect())
-}
-
 /// Tree object id of `rev` — identifies exact content regardless of
 /// commit metadata.
 pub async fn tree_id(repo: &Path, rev: &str) -> Result<String> {
