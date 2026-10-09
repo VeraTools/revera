@@ -228,14 +228,6 @@ impl ToolBox {
         self.stats.lock().unwrap().files_read.len()
     }
 
-    /// Reason vera_* tools are currently unavailable, if any.
-    pub fn vera_unavailable(&self) -> Option<String> {
-        if self.hide_vera {
-            return Some("vera disabled by config".into());
-        }
-        self.vera_disabled.lock().unwrap().clone()
-    }
-
     /// A toolbox exposing only the named tools (e.g. synthesis gets read-only
     /// file access and nothing else).
     pub fn restricted(&self, names: &[&str]) -> ToolBox {

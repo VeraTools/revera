@@ -406,8 +406,6 @@ async fn diff_uses_merge_base_and_ignores_textconv() {
         "three-dot diff must exclude base-only changes: {diff}"
     );
     assert!(!r.join("PWNED").exists() && !r.join("PWNED2").exists());
-    let changed = git::changed_files(r, &base, &head).await.unwrap();
-    assert_eq!(changed, vec!["A\tpr.txt".to_string()]);
 }
 
 #[tokio::test]

@@ -113,7 +113,10 @@ def vera_search_stat(stats: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def require_reranked_search(stats1: dict[str, Any]) -> None:
+def require_reranked_search(stats1: dict[str, Any], probe_path: str | None) -> None:
+    """Run 1 must report an active reranker, and reranking must be shown by an
+    error-free vera_search call in run 1 or, when it made none, by a
+    `vera search --json --rerank-status` probe against the same Vera home."""
     retrieval = stats1.get("retrieval")
     require(
         retrieval == "vera+rerank",
@@ -121,16 +124,21 @@ def require_reranked_search(stats1: dict[str, Any]) -> None:
         "or fell back)",
     )
     search = vera_search_stat(stats1)
-    if search is None:
-        raise ProofFailure("run 1 stats.tools has no vera_search entry")
+    if search is not None and positive_integer(search.get("calls")):
+        errors = search.get("errors")
+        require(
+            isinstance(errors, int) and not isinstance(errors, bool) and errors == 0,
+            "run 1 vera_search reported errors (errors must be 0)",
+        )
+        return
     require(
-        positive_integer(search.get("calls")),
-        "run 1 vera_search was not called (calls must be >= 1)",
+        probe_path is not None,
+        "run 1 made no vera_search call and no --rerank-probe was given",
     )
-    errors = search.get("errors")
+    probe = load_report(probe_path, "rerank probe")
     require(
-        isinstance(errors, int) and not isinstance(errors, bool) and errors == 0,
-        "run 1 vera_search reported errors (errors must be 0)",
+        probe.get("reranked") is True and probe.get("rerank_fallback_reason") is None,
+        "rerank probe did not return reranked results",
     )
 
 
@@ -188,7 +196,7 @@ def validate_report_pair(
     )
 
     if args.require_rerank:
-        require_reranked_search(stats1)
+        require_reranked_search(stats1, args.rerank_probe)
 
     ledger = report1.get("ledger")
     routes = ledger.get("by_route") if isinstance(ledger, dict) else None
@@ -572,6 +580,9 @@ def write_summary(
     search = vera_search_stat(stats)
     calls = search.get("calls") if search else 0
     search_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else 0
+    probe = ""
+    if args.require_rerank and args.rerank_probe and search_calls == 0:
+        probe = ", reranking shown by the rerank probe"
     title = markdown_value(str(finding.get("title", "")))
     version_output = markdown_value(args.version_output)
     content = (
@@ -583,7 +594,7 @@ def write_summary(
         f"- Head: `{markdown_value(args.head)}`\n"
         "- Routes/models used:\n"
         f"{route_lines}\n"
-        f"- Retrieval: `{retrieval}`, vera_search calls {search_calls}\n"
+        f"- Retrieval: `{retrieval}`, vera_search calls {search_calls}{probe}\n"
         f"- Summary comment ID: `{publication['summary_comment_id']}`\n"
         f"- Review ID: `{review_id if positive_integer(review_id) else 'none'}`\n"
         f"- Matched finding ID: `{matched_id}` — {title}\n"
@@ -615,7 +626,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-rerank",
         action="store_true",
-        help="require run 1 to report vera+rerank and an error-free vera_search call",
+        help="require run 1 to report vera+rerank, plus an error-free vera_search call "
+        "or a passing --rerank-probe",
+    )
+    parser.add_argument(
+        "--rerank-probe",
+        help="`vera search --json --rerank-status` output from the run's Vera home",
     )
     args = parser.parse_args()
     require(

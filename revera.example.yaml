@@ -31,8 +31,9 @@ models:
 
 # Optional: semantic repository retrieval through Vera, on top of the
 # built-in lexical search. Needs the `vera` binary (the Action installs it)
-# and an embedding endpoint. Worth enabling for repositories above a few
-# thousand lines.
+# and an embedding endpoint. In the evaluation it made no difference on small
+# repositories and found one more defect than lexical search on a ~50k-line
+# one (a small sample), so it is aimed at larger codebases.
 # vera:
 #   backend: api
 #   embedding:

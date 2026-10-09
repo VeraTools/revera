@@ -114,12 +114,15 @@ fn normalize_finding_json(v: &serde_json::Value) -> serde_json::Value {
                 .remove("path")
                 .and_then(|p| p.as_str().map(str::to_string))
         {
-            match p.rsplit_once(':') {
-                Some((f, l)) if l.parse::<u32>().is_ok() => {
-                    o.insert("start_line".into(), json!(l.parse::<u32>().unwrap()));
+            match p
+                .rsplit_once(':')
+                .and_then(|(f, l)| Some((f, l.parse::<u32>().ok()?)))
+            {
+                Some((f, line)) => {
+                    o.insert("start_line".into(), json!(line));
                     o.insert("file".into(), json!(f));
                 }
-                _ => {
+                None => {
                     o.insert("file".into(), json!(p));
                 }
             }

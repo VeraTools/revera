@@ -21,9 +21,8 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> anyhow::Result<(RunReport
 }
 
 use crate::config::{ModelRoute, Protocol};
-use crate::provider::anthropic::AnthropicAdapter;
-use crate::provider::gemini::GeminiAdapter;
-use crate::provider::http::HttpClient;
+use crate::provider::anthropic::AnthropicClient;
+use crate::provider::gemini::GeminiClient;
 use crate::provider::openai_chat::OpenAiChatClient;
 use crate::provider::openai_responses::OpenAiResponsesClient;
 use crate::provider::scripted::ScriptedClient;
@@ -58,24 +57,20 @@ pub fn make_client(
                 cache_key,
             )?,
         )),
-        Protocol::Anthropic => Ok(Arc::new(HttpClient {
-            adapter: AnthropicAdapter::from_route(route.clone())?,
-            transport: crate::provider::http::HttpTransport::new(
-                ledger,
-                max_requests,
-                retries,
-                role,
-            )?,
-        })),
-        Protocol::Gemini => Ok(Arc::new(HttpClient {
-            adapter: GeminiAdapter::from_route(route.clone())?,
-            transport: crate::provider::http::HttpTransport::new(
-                ledger,
-                max_requests,
-                retries,
-                role,
-            )?,
-        })),
+        Protocol::Anthropic => Ok(Arc::new(AnthropicClient::new_anthropic(
+            route.clone(),
+            ledger,
+            max_requests,
+            retries,
+            role,
+        )?)),
+        Protocol::Gemini => Ok(Arc::new(GeminiClient::new_gemini(
+            route.clone(),
+            ledger,
+            max_requests,
+            retries,
+            role,
+        )?)),
         Protocol::Scripted => {
             let p = route.script.clone().ok_or_else(|| {
                 ProviderError::Other(format!("role {role}: scripted route needs script path"))

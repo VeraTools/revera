@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Release verification probes reranking with one direct
+  `vera search --rerank-status` after the review, so the check no longer
+  depends on the investigator choosing to call `vera_search`.
+- Breaking: `models.scouts[].focus` is removed. It was accepted but never
+  used; scouts always took their focus from `panel.focuses` in order.
+  Configs that set it now fail with an unknown-key error.
+- The skill's Action example checks out the PR head, matching the README
+  quickstart.
+
 ## v0.4.4
 
 - The Action installs Vera 2.0.1 by default (was 1.4.1). The Action's index
@@ -17,10 +28,10 @@
   covered by the content policy like `.vera/`: excluded from the index, the
   diff and every file tool.
 - Agents are told when a fifth of their tool budget remains, and once the
-  budget is spent only the submission tool is offered, with one reminder (while
-  at least 15 s remain) if the model still tries to research. In this repository's self-review,
-  4 of 5 runs without the early notice ended `partial` with nothing
-  submitted; with it, 2 of 2 completed.
+  budget is spent only the submission tool is offered, with one reminder
+  (while at least 15 s remain) if the model still tries to research. In
+  this repository's self-review, 4 of 5 runs without the early notice ended
+  `partial` with nothing submitted; with it, 2 of 2 completed.
 - `check-versions.sh` also checks that every Vera pin matches the Action's
   `vera-version` default.
 - Dependencies: `yoke-derive` 0.8.4 (0.8.3 was yanked), `uuid` 1.27.0,

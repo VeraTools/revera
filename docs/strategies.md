@@ -10,7 +10,7 @@ in the investigate step.
 One investigator agent explores the change with tools and submits
 candidates; one validator agent per candidate re-derives it from scratch.
 Two model calls' worth of context per finding, the lowest cost and latency,
-and — in every evaluation so far — the fewest false positives. With a
+and, in every evaluation so far, the fewest false positives. With a
 single configured route the validator reuses that route in a fresh
 conversation; configure `models.validator` to validate with a different
 model.
@@ -43,8 +43,8 @@ models:
 ## `panel` (advanced)
 
 Each configured scout runs the investigator prompt independently with a
-focus label (`panel.focuses` supplies labels for scouts without an explicit
-`focus`). Candidates are unioned and collapsed (same file, overlapping
+focus label from `panel.focuses`, assigned in order (a single scout runs
+once per label). Candidates are unioned and collapsed (same file, overlapping
 lines, same `defect_key`); there is no voting, so a finding from one scout
 survives until the validator rejects it.
 

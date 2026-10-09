@@ -289,13 +289,6 @@ impl ReviewState {
             .collect()
     }
 
-    pub fn resolved_findings(&self) -> Vec<&StateFinding> {
-        self.findings
-            .iter()
-            .filter(|f| f.status == FindingState::Resolved)
-            .collect()
-    }
-
     pub fn find(&self, id: &str) -> Option<&StateFinding> {
         self.findings.iter().find(|f| f.id == id)
     }
