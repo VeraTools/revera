@@ -23,7 +23,7 @@ on:
         description: Required comma-separated term groups; | separates alternatives within a group
         required: true
       require_rerank:
-        description: Require a reranked vera_search in run 1
+        description: Require reranked retrieval in run 1 (its vera_search calls or a direct probe)
         type: boolean
         default: true
         required: true
