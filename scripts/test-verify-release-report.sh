@@ -472,19 +472,56 @@ try:
         first=no_retrieval,
         extra=rerank,
     )
+    probe_ok = tmp / "probe-ok.json"
+    probe_ok.write_text(
+        json.dumps(
+            {"results": [], "reranked": True, "reranker": "api", "rerank_fallback_reason": None}
+        ),
+        encoding="utf-8",
+    )
+    probe_fell_back = tmp / "probe-fell-back.json"
+    probe_fell_back.write_text(
+        json.dumps(
+            {
+                "results": [],
+                "reranked": False,
+                "reranker": None,
+                "rerank_fallback_reason": "reranker unavailable",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with_probe = rerank + ["--rerank-probe", str(probe_ok)]
+    expect_pass("require-rerank-search-and-probe", extra=with_probe)
+    if "rerank probe reranked" not in summary_path.read_text(encoding="utf-8"):
+        raise AssertionError("proof summary omitted the rerank probe")
     no_search = report(1)
     no_search["stats"]["tools"] = no_search["stats"]["tools"][:1]
     expect_fail(
         "require-rerank-no-search-tool",
-        "run 1 stats.tools has no vera_search entry",
+        "run 1 made no vera_search call and no --rerank-probe was given",
         first=no_search,
         extra=rerank,
+    )
+    # the probe stands in for a search the investigator chose not to make
+    expect_pass("require-rerank-probe-only", first=no_search, extra=with_probe)
+    expect_fail(
+        "require-rerank-probe-fell-back",
+        "rerank probe did not return reranked results",
+        first=no_search,
+        extra=rerank + ["--rerank-probe", str(probe_fell_back)],
+    )
+    expect_fail(
+        "require-rerank-probe-missing",
+        "rerank probe could not be read as JSON",
+        first=no_search,
+        extra=rerank + ["--rerank-probe", str(tmp / "absent.json")],
     )
     no_tools = report(1)
     del no_tools["stats"]["tools"]
     expect_fail(
         "require-rerank-no-tools",
-        "run 1 stats.tools has no vera_search entry",
+        "run 1 made no vera_search call and no --rerank-probe was given",
         first=no_tools,
         extra=rerank,
     )
@@ -492,7 +529,7 @@ try:
     zero_calls["stats"]["tools"][1]["calls"] = 0
     expect_fail(
         "require-rerank-zero-calls",
-        "run 1 vera_search was not called",
+        "run 1 made no vera_search call and no --rerank-probe was given",
         first=zero_calls,
         extra=rerank,
     )

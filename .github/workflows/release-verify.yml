@@ -192,6 +192,36 @@ jobs:
             fi
           done
 
+      # Whether the investigator calls vera_search is its own choice, so
+      # reranking is also probed directly: one search through the Vera home
+      # and index run 1 left behind, with the fixture config's endpoints.
+      - name: Probe reranked search
+        if: env.REQUIRE_RERANK == 'true'
+        working-directory: fixture
+        run: |
+          set -uo pipefail
+          cfg=.github/revera-self-review.yaml
+          value() {
+            local v
+            v=$(yq -r "$1 // \"\"" "$cfg")
+            if [[ "$v" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then v=${!BASH_REMATCH[1]:-}; fi
+            printf '%s' "$v"
+          }
+          embedding_key=$(value .vera.embedding.api_key_env)
+          reranker_key=$(value .vera.reranker.api_key_env)
+          VERA_HOME="${REVERA_VERA_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/revera/vera-home}" \
+          VERA_NO_UPDATE_CHECK=1 VERA_BACKEND=api \
+          EMBEDDING_MODEL_BASE_URL=$(value .vera.embedding.base_url) \
+          EMBEDDING_MODEL_ID=$(value .vera.embedding.model) \
+          EMBEDDING_MODEL_API_KEY=${!embedding_key:-} \
+          RERANKER_MODEL_BASE_URL=$(value .vera.reranker.base_url) \
+          RERANKER_MODEL_ID=$(value .vera.reranker.model) \
+          RERANKER_MODEL_API_KEY=${!reranker_key:-} \
+            vera search "${EXPECT_TERMS//[,|]/ }" --json --rerank-status --limit 3 \
+            > "$RUNNER_TEMP/rerank-probe.json" \
+            || echo "::warning::rerank probe failed; the proof needs a vera_search call in run 1"
+          jq -c '{reranked, reranker, rerank_fallback_reason}' "$RUNNER_TEMP/rerank-probe.json" || true
+
       - name: Verify release proof
         run: |
           set -euo pipefail
@@ -203,6 +233,9 @@ jobs:
           rerank_args=()
           if [ "$REQUIRE_RERANK" = true ]; then
             rerank_args+=(--require-rerank)
+            if [ -s "$RUNNER_TEMP/rerank-probe.json" ]; then
+              rerank_args+=(--rerank-probe "$RUNNER_TEMP/rerank-probe.json")
+            fi
           fi
           python3 "$GITHUB_WORKSPACE/verifier/scripts/verify-release-report.py" \
             --report1 "$RUNNER_TEMP/report-1.json" \
