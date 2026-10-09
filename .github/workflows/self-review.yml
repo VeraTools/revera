@@ -59,7 +59,7 @@ jobs:
       - name: Install vera
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          scripts/install-vera.sh 1.4.1 "$RUNNER_TEMP/bin"
+          scripts/install-vera.sh 2.0.1 "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build and review with the PR's own revera
         run: |

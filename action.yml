@@ -25,7 +25,7 @@ inputs:
     default: "0.4.3"
   vera-version:
     description: Vera release version to install
-    default: "1.4.1"
+    default: "2.0.1"
   github-token:
     description: Token used to read PR data and post comments
     default: ${{ github.token }}

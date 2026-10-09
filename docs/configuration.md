@@ -269,7 +269,7 @@ and effective configuration was `complete`.
 | `publish` | `comment` | `dry-run` to only print the plan |
 | `fail-on` | `failed` | `failed` · `partial` · `never` |
 | `revera-version` | pinned to the Action release | Revera binary to install |
-| `vera-version` | `1.4.1` | Vera binary to install (skipped when Vera is disabled) |
+| `vera-version` | `2.0.1` | Vera binary to install (skipped when Vera is disabled) |
 | `github-token` | `${{ github.token }}` | |
 | `cache` | `true` | cache the `.vera` index between runs |
 
