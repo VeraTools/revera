@@ -69,10 +69,16 @@ otherwise).
    dispatch `release-verify.yml` with the exact tag, the PR number,
    `expect_file` and `expect_terms`. The fixture head must not have been
    reviewed before: the first run has to be a fresh review, and the
-   second run proves identical-head reuse. `require_rerank` (default on)
-   also requires the first run to report `retrieval: vera+rerank` with an
-   error-free `vera_search` call; turn it off only for fixtures without a
-   reranker.
+   second run proves identical-head reuse. Put `[skip ci]` in the fixture
+   commit message so `self-review.yml` and `dogfood-released.yml` do not
+   review the head first. `require_rerank` (default on) also requires the
+   first run to report `retrieval: vera+rerank` with an error-free
+   `vera_search` call. Whether that call happens is the investigator's
+   choice: on a defect that lexical search finds, the self-review models
+   often skip it. In that case prove reranking locally: review a second
+   fixture twice with the same release and run
+   `scripts/verify-release-report.py` on both reports with the arguments
+   the workflow's verify step passes, plus `--require-rerank`.
 5. Dispatch `release-promote.yml` with the tag. It moves `vX`, marks the
    release Latest and reads both back.
 6. Open a small follow-up PR so `dogfood-released.yml` exercises the
