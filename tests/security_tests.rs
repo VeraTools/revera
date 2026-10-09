@@ -157,8 +157,8 @@ fn embedding_throughput_settings_parse_and_default() {
     assert_eq!(
         e.embedding_config_pairs(),
         vec![
-            ("embedding.max_concurrent_requests", "2".to_string()),
-            ("embedding.max_in_flight_inputs", "128".to_string()),
+            ("embedding.max_concurrent_requests", "8".to_string()),
+            ("embedding.max_in_flight_inputs", "256".to_string()),
             ("embedding.timeout_secs", "120".to_string()),
         ]
     );
@@ -246,8 +246,8 @@ fn embedding_throughput_pairs_apply_to_api_backend_only() {
     assert_eq!(
         client.embedding_pairs,
         vec![
-            ("embedding.max_concurrent_requests", "2".to_string()),
-            ("embedding.max_in_flight_inputs", "128".to_string()),
+            ("embedding.max_concurrent_requests", "8".to_string()),
+            ("embedding.max_in_flight_inputs", "256".to_string()),
             ("embedding.timeout_secs", "90".to_string()),
         ]
     );

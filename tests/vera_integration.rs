@@ -446,8 +446,8 @@ async fn configure_applies_embedding_throughput_for_api_backend_only() {
     assert_eq!(api.configure().await.unwrap(), RerankState::Off);
     let calls = std::fs::read_to_string(&log).unwrap();
     for want in [
-        "config set embedding.max_concurrent_requests 2",
-        "config set embedding.max_in_flight_inputs 128",
+        "config set embedding.max_concurrent_requests 8",
+        "config set embedding.max_in_flight_inputs 256",
         "config set embedding.timeout_secs 120",
         "config set retrieval.reranking_enabled false",
     ] {
@@ -501,13 +501,22 @@ async fn embedding_throughput_reaches_the_vera_home() {
     let home = tempfile::tempdir().unwrap();
     let cfg = config(&server.uri(), home.path(), &exe, false);
     let vera = VeraClient::from_config(&cfg.vera, repo.path()).unwrap();
+    // a value stored by an earlier run (or an older Revera default) must be
+    // replaced, since `vera config set` cannot clear numeric keys
+    let seeded = std::process::Command::new(&exe)
+        .args(["config", "set", "embedding.max_in_flight_inputs", "16"])
+        .env("VERA_HOME", home.path())
+        .env("VERA_NO_UPDATE_CHECK", "1")
+        .status()
+        .unwrap();
+    assert!(seeded.success());
     vera.configure().await.unwrap();
     let stored: Value =
         serde_json::from_str(&std::fs::read_to_string(home.path().join("config.json")).unwrap())
             .unwrap();
     let emb = &stored["core_config"]["embedding"];
-    assert_eq!(emb["max_concurrent_requests"], 2, "{stored}");
-    assert_eq!(emb["max_in_flight_inputs"], 128, "{stored}");
+    assert_eq!(emb["max_concurrent_requests"], 8, "{stored}");
+    assert_eq!(emb["max_in_flight_inputs"], 256, "{stored}");
     assert_eq!(emb["timeout_secs"], 120, "{stored}");
 }
 

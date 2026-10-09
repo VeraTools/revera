@@ -54,7 +54,7 @@ the reasoning:
      review:
        runs-on: ubuntu-latest
        steps:
-         - uses: actions/checkout@v4
+         - uses: actions/checkout@v7
            with:
              fetch-depth: 0
              ref: ${{ github.event.pull_request.head.sha }}
@@ -178,6 +178,10 @@ revera review --event "$GITHUB_EVENT_PATH" --publish comment        # inside Act
 revera doctor [--config revera.yaml] [--profile deep] [--strategy panel]
 revera cache-key [--config revera.yaml]                              # Vera index identity, or "disabled"
 ```
+
+Local runs keep their state in `.revera/` and, with Vera enabled, the index
+in `.vera/` (plus `.vera.resume/` after an interrupted API index); add them
+to `.gitignore`. Use Vera 2.0 or later.
 
 Prebuilt binaries are attached to
 [releases](https://github.com/VeraTools/revera/releases); or

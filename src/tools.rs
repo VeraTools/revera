@@ -394,7 +394,7 @@ impl ToolBox {
         }
         for comp in canon.strip_prefix(&self.repo_root).unwrap().components() {
             let s = comp.as_os_str().to_string_lossy();
-            if s == ".git" || s == ".vera" || s == ".revera" {
+            if Self::is_internal_dir(&s) {
                 return Err(format!("path under {s} is not readable"));
             }
         }
@@ -457,9 +457,17 @@ impl ToolBox {
         Ok(out)
     }
 
+    /// Git, Revera and Vera working directories (Vera 2 builds into
+    /// `.vera.build` and keeps failed-index checkpoints in `.vera.resume`).
+    fn is_internal_dir(c: &str) -> bool {
+        matches!(
+            c,
+            ".git" | ".vera" | ".vera.build" | ".vera.resume" | ".revera"
+        )
+    }
+
     fn is_internal_path(p: &str) -> bool {
-        p.split('/')
-            .any(|c| c == ".git" || c == ".vera" || c == ".revera")
+        p.split('/').any(Self::is_internal_dir)
     }
 
     async fn grep_repo(&self, args: &Value) -> Result<String, String> {
@@ -912,6 +920,22 @@ JSON
         );
         assert!(!output.contains(".env"), "{output}");
         assert!(!output.contains("excluded result"), "{output}");
+    }
+
+    #[test]
+    fn vera_working_directories_are_internal() {
+        for p in [
+            ".vera/index.db",
+            ".vera.build/x",
+            ".vera.resume/embeddings.db",
+            "sub/.revera/state.json",
+            ".git/config",
+        ] {
+            assert!(ToolBox::is_internal_path(p), "{p}");
+        }
+        for p in ["src/vera.rs", ".veral/x", "docs/.vera.md"] {
+            assert!(!ToolBox::is_internal_path(p), "{p}");
+        }
     }
 
     #[test]
