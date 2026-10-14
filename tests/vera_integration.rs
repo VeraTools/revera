@@ -134,6 +134,68 @@ async fn requests_to(server: &MockServer, p: &str) -> Vec<Request> {
 }
 
 #[tokio::test]
+async fn cli_index_builds_then_incrementally_updates() {
+    let Some((server, exe)) = setup().await else {
+        return;
+    };
+    let repo = fixture_repo();
+    git(repo.path(), &["add", "src/lib.rs"]);
+    commit_all(repo.path(), "base");
+    let home = tempfile::tempdir().unwrap();
+    // Keep the config outside the indexed tree, like the isolated Vera home.
+    let cfg = home.path().join("revera.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "models:\n  investigator: {{protocol: scripted, script: /dev/null, model: m}}\nvera:\n  executable: \"{}\"\n  backend: api\n  home: \"{}\"\n  embedding: {{base_url: \"{}/v1\", model: emb, api_key_env: REVERA_IT_EMBED_KEY}}\n",
+            exe.display(),
+            home.path().display(),
+            server.uri()
+        ),
+    )
+    .unwrap();
+    let run = || async {
+        let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_revera"))
+            // Canonicalize an explicit repository path, as review does.
+            .current_dir(repo.path().join("src"))
+            .args(["index", "--repo", "..", "--config"])
+            .arg(&cfg)
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let first = run().await;
+    assert!(repo.path().join(".vera").is_dir(), "{first}");
+    let info: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.path().join(".revera/vera-cache.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        info["index_key"],
+        Config::load(&cfg).unwrap().vera.index_key()
+    );
+    assert!(first.starts_with("index ready: "), "{first}");
+    let before = requests_to(&server, "/v1/embeddings").await.len();
+    assert!(before > 0, "first index must embed the fixture");
+
+    let second = run().await;
+    assert!(second.starts_with("index ready: "), "{second}");
+    assert_eq!(
+        before,
+        requests_to(&server, "/v1/embeddings").await.len(),
+        "an incremental update of an unchanged tree must not re-embed it"
+    );
+}
+
+#[tokio::test]
 async fn reranker_is_activated_in_isolated_home_and_invoked() {
     let Some((server, exe)) = setup().await else {
         return;

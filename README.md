@@ -176,8 +176,11 @@ Method, tables and caveats: [docs/evaluation.md](docs/evaluation.md).
   reported as `partial`, not clean.
 - Inline comments require the finding to sit on a diff line; other accepted
   findings appear in the summary under "Findings outside the diff".
-- Vera indexing of a large repository is slow on first run; the Action caches
-  the index and updates it incrementally.
+- With Vera enabled, a PR's first review builds the index from scratch
+  unless `main` has a cached one; later pushes to the PR reuse it. Add
+  `push: branches: [main]` to the workflow's `on:` and the Action refreshes
+  `main`'s index after each merge instead of reviewing, so new PRs start from
+  it. Details: [docs/configuration.md](docs/configuration.md#warm-index-for-new-pull-requests).
 
 ### Action outputs and exit codes
 
@@ -188,7 +191,8 @@ Method, tables and caveats: [docs/evaluation.md](docs/evaluation.md).
 | other | `failed` | config/setup error or crash; no trustworthy report |
 
 `fail-on: failed | partial | never` (default `failed`) decides which of
-these fail the step.
+these fail the step. Index runs (push, schedule, manual) report `complete`
+or `failed` with no report.
 
 ## CLI
 
@@ -196,6 +200,7 @@ these fail the step.
 revera review --repo . --base origin/main --config revera.yaml      # local dry-run
 revera review --event "$GITHUB_EVENT_PATH" --publish comment        # inside Actions
 revera doctor [--config revera.yaml] [--profile deep] [--strategy panel]
+revera index [--config revera.yaml]                                 # build or refresh the Vera index only
 revera cache-key [--config revera.yaml]                              # Vera index identity, or "disabled"
 ```
 

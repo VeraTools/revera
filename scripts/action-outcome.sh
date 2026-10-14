@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Classifies a `revera review` process exit into the Action's outcome and
+# Classifies a `revera review` or `revera index` exit into the Action's outcome and
 # applies the fail-on policy. Used by action.yml; testable offline.
 #
 #   action-outcome.sh CODE REPORT_PATH FAIL_ON
@@ -12,6 +12,8 @@
 # never gets findings counted from whatever file happens to be on disk.
 # A complete/partial exit whose report is missing or unreadable is
 # classified failed: the outcome cannot be verified, so it is not reported.
+# REPORT_PATH '-' is an index run without a report: 0 -> complete, all other
+# codes -> failed; findings stay 0 and report-path stays empty.
 set -euo pipefail
 
 code=${1:?usage: action-outcome.sh CODE REPORT_PATH FAIL_ON}
@@ -26,7 +28,9 @@ esac
 
 report_out=""
 findings=0
-if [ "$status" != failed ] && [ -f "$report" ]; then
+if [ "$report" = - ]; then
+  if [ "$code" != 0 ]; then status=failed; fi
+elif [ "$status" != failed ] && [ -f "$report" ]; then
   if findings=$(python3 - "$report" <<'PY'
 import json, sys
 try:
@@ -58,7 +62,9 @@ out=${GITHUB_OUTPUT:-/dev/null}
 } >> "$out"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  if [ -n "$report_out" ]; then
+  if [ "$report" = - ]; then
+    printf '## Revera index\n\n**Status: %s** — revera exited %s; see the step log.\n' "$status" "$code" >> "$GITHUB_STEP_SUMMARY"
+  elif [ -n "$report_out" ]; then
     python3 - "$report_out" <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
 import json, sys
 print(json.load(open(sys.argv[1]))["plan"]["summary_markdown"])
@@ -71,7 +77,7 @@ fi
 case "$status" in
   complete) echo "revera: complete, $findings finding(s)" ;;
   partial)  echo "revera: partial review (exit 2), $findings finding(s) so far" ;;
-  failed)   echo "revera: review FAILED (exit $code)" >&2 ;;
+  failed)   echo "revera: run FAILED (exit $code)" >&2 ;;
 esac
 
 case "$fail_on" in

@@ -208,6 +208,32 @@ prompts, budgets and credential variable names are deliberately absent, so
 changing them reuses the warm index; they are part of the review
 fingerprint instead.
 
+### Warm index for new pull requests
+
+GitHub lets a pull request restore caches saved by its own earlier runs or
+by its base branch, never by other pull requests. With only a
+`pull_request` trigger, every new PR therefore builds its index from
+scratch, which on a large repository means minutes and a full round of
+embedding requests. Add a push trigger for the base branch:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+```
+
+On a push the Action does not review. It restores `main`'s previous index,
+runs `revera index` on the pushed commit (only changed files are
+re-embedded) and saves the result under `main`, where every new PR into
+`main` finds it. The checkout step from the quickstart needs no change: on
+a push, `github.event.pull_request.head.sha` is empty and it checks out the
+pushed commit. Index runs need the embedding credentials and any variable
+the config references; a failed index fails the step under the default
+`fail-on: failed` and saves nothing. Busy repositories can use a
+`schedule:` trigger instead of `push`; PRs then re-embed only what changed
+since the last refresh. With Vera disabled an index run does nothing.
+
 ## Event mode trust
 
 With `--event` (the Action), a `--config` path inside the checkout is read
@@ -217,6 +243,14 @@ A path outside the checkout is read as-is (operator-provided). Before any
 credential is resolved, event mode requires `https` endpoints (loopback
 excepted), valid credential variable names that are not GitHub token
 variables, and `review.validate: true` for `publish: comment`.
+
+Index runs (`revera index`, and the Action on push, schedule or manual
+events) read the config from the checked-out commit: they have no pull
+request, so the code being indexed is already on a branch the repository's
+writers control. They apply the same credential-name and endpoint checks
+before resolving any key, and never review or publish. `pull_request_target`
+runs restore the base branch's index but never save one, because their
+cache scope is the base branch's and their tree is the PR head.
 
 ## `github`
 
@@ -258,6 +292,7 @@ profiles:
 revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
 revera review --event "$GITHUB_EVENT_PATH" [--config <file>] --publish comment
 revera doctor [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment]
+revera index [--repo <path>] [--config <file>] [--profile <name>]
 revera cache-key [--config <file>] [--profile <name>]
 revera cache-info [--repo <path>]
 ```
@@ -281,3 +316,10 @@ and effective configuration was `complete`.
 
 Outputs: `status` (`complete` / `partial` / `failed`), `findings` (accepted
 count), `report-path`.
+
+The event decides what the Action does: `pull_request` and
+`pull_request_target` run a review; `push`, `schedule` and
+`workflow_dispatch` only build or refresh the Vera index and cache it (see
+[Warm index for new pull requests](#warm-index-for-new-pull-requests));
+other events fail. Index runs report `complete` or `failed`, with no
+findings and no report.

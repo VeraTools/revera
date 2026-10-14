@@ -28,6 +28,9 @@ jobs:
 - On `pull_request` events Revera reads `revera.yaml` from the **base**
   commit, so config changes take effect after they merge. Event-mode
   endpoints must be `https://`.
+- With Vera enabled, add `push: branches: [main]` under `on:` so the Action
+  refreshes `main`'s cached index after each merge (it does not review on
+  push); new PRs then start from a warm index instead of building one.
 - Fork PRs get no secrets; with `publish: comment` Revera skips them
   (status `partial`, reason in the report) unless `github.allow_forks: true`.
 - Inputs: `config`, `profile`, `strategy`, `publish`, `fail-on`

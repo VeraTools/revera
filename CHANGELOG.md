@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- New PRs can start from a warm Vera index. On `push`, `schedule` and
+  `workflow_dispatch` events the Action no longer fails with "unsupported
+  event": it runs the new `revera index` command, which builds or refreshes
+  the index without reviewing, and caches it under the branch. Add
+  `push: branches: [main]` to the workflow and each new PR into `main`
+  restores that index instead of building one from scratch. Pull request
+  events review as before; other events fail with a clear message.
+- `revera index [--config] [--profile]` builds or refreshes the Vera index
+  for local use too.
+- `pull_request_target` reviews no longer save the index cache. They run in
+  the base branch's cache scope, so a PR-head index would have seeded the
+  base branch and every other PR; they still restore the base branch's.
+
 ## v0.4.5
 
 - The Action installs Vera 2.1.3 by default (was 2.0.1). Its `vera update`

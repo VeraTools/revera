@@ -1,7 +1,7 @@
 name: action-smoke
 
 # Exercises the composite Action itself (`uses: ./`) end to end without any
-# provider credentials: the PR's own revera build is served to the Action's
+# provider credentials: the checkout's own revera build is served to the Action's
 # installer over file://, Vera is a stub (the configs disable it), and the
 # models are scripted. Every outcome the Action can report is asserted:
 # complete / partial / failed, `fail-on` policy, and the report-path contract.
@@ -44,6 +44,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build revera and stage fake releases for the Action's installers
         shell: bash
@@ -194,7 +195,32 @@ jobs:
           [ -z "${{ steps.failed.outputs.report-path }}" ]
           [ "${{ steps.failed.outputs.findings }}" = 0 ]
 
-      # push events have no PR to diff; still prove the installers + cache-key
+      # Push events route through index mode without reviewing or installing Vera.
+      - name: Action — index (Vera disabled)
+        id: index
+        if: github.event_name == 'push'
+        uses: ./
+        env:
+          VERA_DOWNLOAD_BASE: file://${{ github.workspace }}/.smoke/does-not-exist
+        with:
+          config: fixtures/action/scripted-clean.yaml
+          cache: "false"
+          revera-version: ${{ env.version }}
+      - name: Assert index outcome
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          STATUS: ${{ steps.index.outputs.status }}
+          FINDINGS: ${{ steps.index.outputs.findings }}
+          REPORT_PATH: ${{ steps.index.outputs.report-path }}
+        run: |
+          set -euo pipefail
+          [ "$STATUS" = complete ]
+          [ "$FINDINGS" = 0 ]
+          [ -z "$REPORT_PATH" ]
+          [ ! -e "$RUNNER_TEMP/bin/vera" ]
+
+      # Still prove the standalone installers + cache-key on push.
       - name: Installer and cache-key smoke (push)
         if: github.event_name != 'pull_request'
         shell: bash
