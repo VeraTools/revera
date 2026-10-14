@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.7
+
+- The Action's display name is now "Revera PR Review", so it can be listed
+  on the GitHub Marketplace ("Revera" is taken by a GitHub account). Usage is
+  unchanged: `uses: VeraTools/revera@v0`.
+
 ## v0.4.6
 
 - New PRs can start from a warm Vera index. On `push`, `schedule` and
