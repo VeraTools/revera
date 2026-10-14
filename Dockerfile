@@ -1,7 +1,7 @@
 FROM debian:trixie-slim AS binaries
 
 ARG TARGETARCH
-ARG VERA_VERSION=2.1.3
+ARG VERA_VERSION=2.1.4
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl python3 \

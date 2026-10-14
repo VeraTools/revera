@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.5.0
+
+- New `revera serve` runs Revera as a self-hosted GitHub App. Install it
+  once on an account or organization and it reviews pull requests in every
+  selected repository, including repositories created later, with no
+  workflow files or repository secrets. Each review runs the same `revera
+  review` code path as the Action and shows up on the PR as a "Revera"
+  check plus the usual summary and inline comments. Pushes to the default
+  branch refresh the Vera index, so new PRs start from a warm index.
+- The server includes a dashboard: a guided setup (create the app, sign in
+  with GitHub, install, connect models), review history with findings and
+  logs, per-repository on/off switches, and settings for models, keys,
+  budgets and retrieval. Settings and the raw YAML edit the same file.
+- A container image is published as `ghcr.io/veratools/revera` for
+  `linux/amd64` and `linux/arm64`. Release binaries now include
+  `aarch64-unknown-linux-musl`, and `install-revera.sh` picks the right
+  one for the machine.
+- `revera review --bot-login <login>` names the account that owns Revera's
+  comments when the token cannot look itself up (GitHub App installation
+  tokens).
+- The Action installs Vera 2.1.4 by default (was 2.1.3). The first run
+  after upgrading builds a fresh index.
+- The Action is unchanged otherwise; see [docs/server.md](docs/server.md)
+  for choosing between the two.
+
 ## v0.4.7
 
 - The Action's display name is now "Revera PR Review", so it can be listed

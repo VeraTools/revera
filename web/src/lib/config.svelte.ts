@@ -39,13 +39,25 @@ export class ConfigDocument {
   has(path: string[]) { this.revision; return this.document.hasIn(path); }
   set(path: string[], value: unknown) {
     if (this.errors.length) return;
+    if (path[0] === 'models' && ['investigator', 'validator'].includes(path[1]) && !this.document.hasIn(['models', 'investigator'])) {
+      this.document.setIn(['models', 'investigator'], this.document.createNode({
+        protocol: 'openai-chat', base_url: '', api_key_env: 'REVERA_MODEL_API_KEY', model: ''
+      }));
+    }
     if (path[0] === 'models' && path[1] === 'validator' && !this.document.hasIn(['models', 'validator'])) {
       const investigator = this.document.getIn(['models', 'investigator']);
-      this.document.setIn(['models', 'validator'], isMap(investigator) ? investigator.clone() : {});
+      this.document.setIn(['models', 'validator'], isMap(investigator) ? investigator.clone() : this.document.createNode({}));
     }
     // New collections must be YAML nodes so subsequent nested form edits work.
     // Leave scalar updates as values to preserve their existing comments.
     this.document.setIn(path, value !== null && typeof value === 'object' ? this.document.createNode(value) : value);
+    if (path[0] === 'models' && ['investigator', 'validator'].includes(path[1])) {
+      const investigator = this.document.getIn(['models', 'investigator']);
+      const validator = this.document.getIn(['models', 'validator']);
+      if (isMap(investigator) && isMap(validator) && JSON.stringify(investigator.toJSON()) === JSON.stringify(validator.toJSON())) {
+        this.document.deleteIn(['models', 'validator']);
+      }
+    }
     this.yaml = this.document.toString();
     this.revision++;
   }

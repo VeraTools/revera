@@ -607,7 +607,7 @@ async fn review(
 }
 
 async fn settings(State(server): State<Arc<Server>>) -> ApiResult {
-    let yaml = std::fs::read_to_string(&server.config)?;
+    let yaml = server.config_yaml()?.unwrap_or_default();
     let dashboard = server.dashboard.lock().await;
     let mut preferences = dashboard.preferences.clone();
     for owner in &server.allowed {
@@ -630,12 +630,24 @@ struct Yaml {
 async fn config(State(server): State<Arc<Server>>, Json(input): Json<Yaml>) -> ApiResult {
     let mut dashboard = server.dashboard.lock().await;
     dashboard.validate(&input.yaml).map_err(invalid)?;
+    let first = server.config_yaml()?.is_none();
     crate::fsutil::write_output(
         &server.settings.data_dir,
         &server.config,
         input.yaml.as_bytes(),
     )?;
     dashboard.invalidate_health();
+    drop(dashboard);
+    if first {
+        tokio::spawn(async move {
+            if let Err(error) = super::reconcile::once(&server).await {
+                tracing::warn!(
+                    "reconcile after configuration: {}",
+                    crate::redact::diagnostic(&format!("{error:#}"))
+                );
+            }
+        });
+    }
     Ok(output(json!({"ok": true})))
 }
 async fn server_settings(
@@ -663,7 +675,7 @@ struct Secret {
     value: String,
 }
 async fn change_secret(server: &Server, name: String, value: Option<String>) -> ApiResult {
-    let yaml = std::fs::read_to_string(&server.config)?;
+    let yaml = server.config_yaml()?.unwrap_or_default();
     let mut dashboard = server.dashboard.lock().await;
     let token_env = dashboard
         .parse(&yaml)

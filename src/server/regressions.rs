@@ -2,6 +2,302 @@ use super::*;
 use std::time::Duration;
 use wiremock::matchers::body_partial_json;
 
+async fn without_models(mock: &MockServer) -> (tempfile::TempDir, Arc<Server>) {
+    let data = tempfile::tempdir().unwrap();
+    let server = initialize(
+        settings(data.path()),
+        runner::Runner::current().unwrap(),
+        app::Api::new(mock.uri()).unwrap(),
+    )
+    .await
+    .unwrap();
+    (data, server)
+}
+
+#[tokio::test]
+async fn missing_default_config_starts_and_exposes_empty_settings_and_configure_stage() {
+    let mock = MockServer::start().await;
+    let (data, server) = without_models(&mock).await;
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::new();
+    let session: Value = client
+        .get(format!("{url}/api/session"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(session["setup"]["stage"], "create_app");
+    server.setup.lock().await.app = Some(test_app());
+    let (cookie, csrf) = administrator(&server).await;
+    {
+        let mut dashboard = server.dashboard.lock().await;
+        dashboard.installations = 1;
+        dashboard
+            .health
+            .insert("investigator".into(), json!({"ok": true}));
+        dashboard
+            .health
+            .insert("validator".into(), json!({"ok": true}));
+    }
+    let session: Value = client
+        .get(format!("{url}/api/session"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(session["authenticated"], true);
+    assert_eq!(session["setup"]["stage"], "configure");
+    let response = client
+        .get(format!("{url}/api/settings"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let settings: Value = response.json().await.unwrap();
+    assert_eq!(settings["yaml"], "");
+    assert_eq!(settings["referenced_env"], json!([]));
+    assert_eq!(settings["secrets"], json!([]));
+    // The wizard sets its first key before it can save a credential-checked config.
+    let response = client
+        .put(format!("{url}/api/secrets/REVIEW_API_KEY"))
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .json(&json!({"value": "onboarding-private-key"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        !std::fs::read_to_string(data.path().join("secrets.json"))
+            .unwrap()
+            .is_empty()
+    );
+    let response = client
+        .get(format!("{url}/api/settings"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!response.contains("onboarding-private-key"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(data.path().join("secrets.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    assert!(!server.config.exists());
+    task.abort();
+}
+
+#[tokio::test]
+async fn invalid_present_and_missing_explicit_server_configs_still_fail_startup() {
+    let mock = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let mut options = settings(data.path());
+    options.config = Some(data.path().join("explicit.yaml"));
+    let error = initialize(
+        options,
+        runner::Runner::current().unwrap(),
+        app::Api::new(mock.uri()).unwrap(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("must exist and be valid"));
+    for invalid in ["", "models: [", "models: {}\n"] {
+        crate::fsutil::write_atomic_in(data.path(), "revera.yaml", invalid.as_bytes()).unwrap();
+        let error = initialize(
+            settings(data.path()),
+            runner::Runner::current().unwrap(),
+            app::Api::new(mock.uri()).unwrap(),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            error.to_string().contains("invalid config server config"),
+            "{error:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unconfigured_review_and_index_jobs_skip_without_checks_or_seen_changes() {
+    let mock = MockServer::start().await;
+    let (data, server) = without_models(&mock).await;
+    server.setup.lock().await.app = Some(test_app());
+    for current in [
+        job("head"),
+        events::Job::new(job("head").repo, events::Kind::Index, "webhook"),
+    ] {
+        server.enqueue(current.clone()).await;
+        assert!(server.queue.lock().await.pending.is_empty());
+        let meta = job_metadata(data.path(), &current);
+        assert_eq!(meta["status"], "skipped");
+        assert_eq!(meta["reason"], "models are not configured yet");
+        assert!(meta["finished_at"].is_string());
+        assert!(meta.get("check").is_none());
+        assert!(meta.get("check_run_url").is_none());
+        assert!(server.seen.lock().await.0.is_empty());
+    }
+    // A config removed after enqueue is also caught before any credentials or git work.
+    crate::fsutil::write_atomic_in(data.path(), "revera.yaml", CONFIG.as_bytes()).unwrap();
+    let current = job("queued-before-removal");
+    server.enqueue(current.clone()).await;
+    let (running, cancel) = server.queue.lock().await.take().unwrap();
+    std::fs::remove_file(&server.config).unwrap();
+    runner::run(server.clone(), &running, cancel).await;
+    assert_eq!(job_metadata(data.path(), &current)["status"], "skipped");
+    assert!(server.seen.lock().await.0.is_empty());
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    assert!(!data.path().join("seen.json").exists());
+    assert!(!data.path().join("repos/owner/repo").exists());
+}
+
+#[tokio::test]
+async fn first_config_save_reconciles_setup_skips_without_backfilling_other_prs() {
+    for initial_inventory in [false, true] {
+        let mock = MockServer::start().await;
+        let (data, server) = without_models(&mock).await;
+        server.setup.lock().await.app = Some(test_app());
+        let (cookie, csrf) = administrator(&server).await;
+        let current = job("new-head");
+        let mut existing = pr("existing");
+        existing["number"] = json!(8);
+        if initial_inventory {
+            server
+                .seen
+                .lock()
+                .await
+                .observe(&current.repo, &[pr("old-head"), existing.clone()]);
+        }
+        server.enqueue(current.clone()).await;
+        assert!(server.queue.lock().await.pending.is_empty());
+        assert_eq!(job_metadata(data.path(), &current)["status"], "skipped");
+        Mock::given(method("GET"))
+            .and(path("/app/installations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": 9, "account": {"login": "owner"}}
+            ])))
+            .expect(2)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/app/installations/9/access_tokens"))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({"token": "inventory-key"})),
+            )
+            .expect(2)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/installation/repositories"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"repositories": [repository()]})),
+            )
+            .expect(2)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([pr("new-head"), existing])),
+            )
+            .expect(2)
+            .mount(&mock)
+            .await;
+        reconcile::once(&server).await.unwrap();
+        let previous = initial_inventory.then_some("old-head".to_owned());
+        assert_eq!(
+            server.seen.lock().await.0[&1].heads.get(&7).cloned(),
+            previous
+        );
+        assert!(server.queue.lock().await.pending.is_empty());
+        let (url, task) = http(server.clone()).await;
+        let client = reqwest::Client::new();
+        let invalid = client
+            .put(format!("{url}/api/settings/config"))
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"yaml": ""}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), 422);
+        assert!(!server.config.exists());
+        server
+            .dashboard
+            .lock()
+            .await
+            .secrets
+            .insert("REVIEW_API_KEY".into(), "first-config-key".into());
+        let response = client
+            .put(format!("{url}/api/settings/config"))
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"yaml": CONFIG}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(std::fs::read_to_string(&server.config).unwrap(), CONFIG);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !server
+                .queue
+                .lock()
+                .await
+                .pending
+                .contains_key(&current.key())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            server.queue.lock().await.pending[&current.key()].head(),
+            "new-head"
+        );
+        assert_eq!(server.queue.lock().await.pending.len(), 1);
+        assert_eq!(
+            server.seen.lock().await.0[&1].heads.get(&7).cloned(),
+            previous
+        );
+        assert_eq!(server.seen.lock().await.0[&1].heads[&8], "existing");
+        assert!(
+            server
+                .dashboard
+                .lock()
+                .await
+                .unconfigured_reviews("owner/repo")
+                .is_empty()
+        );
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| !request.url.path().contains("check-runs"))
+        );
+        task.abort();
+    }
+}
+
 async fn deliver(server: &Arc<Server>, event: &str, payload: Value) -> StatusCode {
     let body = serde_json::to_vec(&payload).unwrap();
     let mut headers = HeaderMap::new();

@@ -25,9 +25,9 @@ let repos: Repository[] = [
 ];
 const initialYaml = `# Default review configuration\n# Repositories can supply their own revera.yaml on the base branch.\nmodels:\n  # Reads the diff and proposes findings.\n  investigator:\n    protocol: openai-chat\n    base_url: https://api.example.com/v1\n    api_key_env: REVERA_MODEL_API_KEY\n    model: model-name\n    max_output_tokens: 4000\n    temperature: 0.2\n    reasoning: medium\n  # Re-checks each finding in a fresh context.\n  validator:\n    protocol: openai-chat\n    base_url: https://api.example.com/v1\n    api_key_env: REVERA_MODEL_API_KEY\n    model: model-name\n    max_output_tokens: 4000\n    temperature: 0.2\n    reasoning: medium\n\nreview:\n  strategy: baseline\n  min_severity: low\n  max_findings: 10\n  publish: comment\n\nbudget:\n  agent_max_tool_calls: 25\n  agent_max_seconds: 300\n  run_max_requests: 120\n  run_max_seconds: 900\n  retries: 3\n\nvera:\n  enabled: true\n  backend: local\n`;
 let settings: Settings = {
-  yaml: initialYaml,
+  yaml: import.meta.env.VITE_MOCK_EMPTY_YAML === '1' ? '' : initialYaml,
   server: { admins: ['alex'], allowed_owners: ['northstar'], default_enabled: true, repos: {}, review_drafts: false, skip_authors: ['dependabot[bot]', 'renovate[bot]'] },
-  secrets: [{ name: 'REVERA_MODEL_API_KEY', source: 'environment' }], referenced_env: ['REVERA_MODEL_API_KEY']
+  secrets: import.meta.env.VITE_MOCK_EMPTY_YAML === '1' ? [] : [{ name: 'REVERA_MODEL_API_KEY', source: 'environment' }], referenced_env: []
 };
 let stage: SetupStage = 'done';
 let signedIn = true;

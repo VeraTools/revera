@@ -22,7 +22,12 @@ use axum::{
 };
 use clap::Args;
 use serde::Deserialize;
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::{Mutex, Notify, Semaphore, broadcast, watch};
 
 #[derive(Args, Clone, Debug)]
@@ -66,6 +71,10 @@ pub(super) struct Server {
 }
 
 impl Server {
+    fn config_yaml(&self) -> Result<Option<String>> {
+        read_config(&self.settings, &self.config)
+    }
+
     fn allowed(&self, app: &app::App, owner: &str) -> bool {
         app.owner.eq_ignore_ascii_case(owner) || self.allowed.contains(&owner.to_ascii_lowercase())
     }
@@ -89,6 +98,7 @@ impl Server {
             .pending
             .get(&job.key())
             .is_some_and(|j| j.id == job.id);
+        let mut skipped = false;
         if accepted && !matches!(job.kind, events::Kind::Remove) {
             if let Some(previous) = previous
                 && let Err(e) = self
@@ -100,7 +110,13 @@ impl Server {
                     crate::redact::diagnostic(&e.to_string())
                 );
             }
-            if let Err(e) = self.update_job(dashboard::JobSummary::queued(&job)).await {
+            let mut summary = dashboard::JobSummary::queued(&job);
+            if self.config_yaml().is_ok_and(|yaml| yaml.is_none()) {
+                summary.set_state("skipped", Some(runner::UNCONFIGURED.into()));
+                skipped = true;
+                queue.pending.remove(&job.key());
+            }
+            if let Err(e) = self.update_job(summary).await {
                 queue.pending.remove(&job.key());
                 tracing::warn!(
                     "job metadata: {}",
@@ -109,6 +125,12 @@ impl Server {
             }
         }
         drop(queue);
+        if skipped && let Err(error) = self.prune_jobs().await {
+            tracing::warn!(
+                "job pruning: {}",
+                crate::redact::diagnostic(&error.to_string())
+            );
+        }
         self.notify.notify_one();
     }
 
@@ -240,6 +262,16 @@ impl Server {
     }
 }
 
+fn read_config(settings: &Settings, path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(yaml) => Ok(Some(yaml)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings.config.is_none() => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn initialize(
     mut settings: Settings,
     runner: runner::Runner,
@@ -288,14 +320,18 @@ async fn initialize(
         .unwrap_or_else(|| settings.data_dir.join("revera.yaml"));
     let dashboard = dashboard::Dashboard::load(&settings.data_dir)?;
     let session_key = auth::key(&settings.data_dir)?;
-    let yaml = std::fs::read_to_string(&config).with_context(|| {
+    let yaml = read_config(&settings, &config).with_context(|| {
         format!(
             "server default config {} must exist and be valid",
             config.display()
         )
     })?;
-    dashboard.parse(&yaml)?.check_trust(true)?;
-    let config = config.canonicalize()?;
+    let config = if let Some(yaml) = yaml {
+        dashboard.parse(&yaml)?.check_trust(true)?;
+        config.canonicalize()?
+    } else {
+        config
+    };
     if config.starts_with(settings.data_dir.join("repos")) {
         bail!("server default config must be outside the repository workspaces");
     }

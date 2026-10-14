@@ -17,33 +17,23 @@ available on `PATH`. The container includes these tools.
 
 ## Run it
 
-Create a data directory owned by container user 10001 and save this minimal
-configuration as `data/revera.yaml`:
-
-```yaml
-models:
-  investigator:
-    protocol: openai-chat
-    base_url: https://api.example.com/v1
-    api_key_env: REVIEW_API_KEY
-    model: your-model-id
-```
-
-Validation is on by default. Vera retrieval is off unless you configure an
-embedding endpoint; see [configuration.md](configuration.md).
-You can supply the key through the environment below or enter it in the setup
-wizard. For dashboard-managed keys, omit `-e REVIEW_API_KEY` and the matching
-Compose environment entry.
+Create a data directory owned by container user 10001, then start the server.
+You do not need a YAML file: the dashboard writes it when you configure models.
 
 ```sh
 mkdir -p data
 sudo chown -R 10001:10001 data
-export REVIEW_API_KEY='your-key'
-podman run --name revera --restart unless-stopped \
+podman run -d --name revera --restart unless-stopped \
   -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
-  -e REVERA_PUBLIC_URL=https://review.example.com \
-  -e REVIEW_API_KEY ghcr.io/veratools/revera:0
+  -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
+podman logs revera
 ```
+
+Put it behind HTTPS as described below, then open the setup link from the logs.
+The wizard creates the app and lets you configure models and keys. Until a
+configuration is saved, jobs are skipped with “models are not configured yet”
+and no PR check is created. Saving the first configuration triggers reconciliation
+so skipped PRs can be picked up.
 
 For Docker, use `docker` instead of `podman`; omit `:Z` on hosts without SELinux.
 A Compose example:
@@ -59,13 +49,33 @@ services:
       - ./data:/data
     environment:
       REVERA_PUBLIC_URL: https://review.example.com
-      REVIEW_API_KEY: ${REVIEW_API_KEY}
       REVERA_CONCURRENCY: "2"
       REVERA_RECONCILE_MINUTES: "10"
 ```
 
-Run `docker compose up -d` after exporting the key. Keep keys out of the Compose
-file and repository. Other settings, each also available as a flag:
+Run `docker compose up -d`, then read `docker compose logs revera` for the setup
+link. Keep keys out of the Compose file and repository.
+
+As a file-based alternative, save this minimal configuration as
+`data/revera.yaml` before starting:
+
+```yaml
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://api.example.com/v1
+    api_key_env: REVIEW_API_KEY
+    model: your-model-id
+```
+
+Enter the key in the dashboard, or export `REVIEW_API_KEY` and add
+`-e REVIEW_API_KEY` to the container command (for Compose, add
+`REVIEW_API_KEY: ${REVIEW_API_KEY}` under `environment`). A present but invalid
+configuration is still a startup error; an explicit `--config` file must exist.
+Validation is on by default. Vera retrieval is off unless configured;
+see [configuration.md](configuration.md).
+
+Other settings, each also available as a flag:
 
 | Environment variable | Default | Flag |
 | --- | --- | --- |

@@ -96,6 +96,8 @@ fn isolated(command: &mut Command) {
 
 type Log = Arc<Mutex<std::fs::File>>;
 
+pub const UNCONFIGURED: &str = "models are not configured yet";
+
 async fn pump(input: impl AsyncRead + Unpin, log: Log) -> Result<()> {
     use std::io::Write;
     let mut reader = BufReader::new(input);
@@ -585,6 +587,12 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
             .remove(&job.repo.full_name);
         let _ = server.events.send(("repos", json!({})));
         return record_finish(server, job, false).await;
+    }
+    if server.config_yaml()?.is_none() {
+        server
+            .transition(job, "skipped", Some(UNCONFIGURED.into()))
+            .await?;
+        return server.prune_jobs().await;
     }
     let app = server
         .setup

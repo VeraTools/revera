@@ -270,6 +270,25 @@ impl Dashboard {
         self.health.clear();
         self.health_generation = self.health_generation.wrapping_add(1);
     }
+    pub fn unconfigured_reviews(&self, repo: &str) -> BTreeSet<u64> {
+        let mut latest = BTreeMap::<u64, &JobSummary>::new();
+        for job in self.jobs.values().filter(|job| job.repo == repo) {
+            if let Some(number) = job.pr {
+                let previous = latest.entry(number).or_insert(job);
+                if (&job.queued_at, &job.id) > (&previous.queued_at, &previous.id) {
+                    *previous = job;
+                }
+            }
+        }
+        latest
+            .into_iter()
+            .filter_map(|(number, job)| {
+                (job.status == "skipped"
+                    && job.reason.as_deref() == Some(super::runner::UNCONFIGURED))
+                .then_some(number)
+            })
+            .collect()
+    }
     pub fn referenced(yaml: &str) -> Vec<String> {
         let regex = regex::Regex::new(
             r#"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|api_key_env\s*:\s*["']?([A-Za-z_][A-Za-z0-9_]*)"#,

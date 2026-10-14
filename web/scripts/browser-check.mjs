@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
+const emptyYaml = process.argv.includes('--empty-yaml');
 const output = join(homedir(), '.local/tmp/revera-server/shots');
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
@@ -29,8 +30,33 @@ async function shot(path, filename, scheme, ready, action) {
   await context.close();
 }
 
+const investigator = {
+  protocol: 'openai-chat', base_url: 'https://api.example.com/v1',
+  api_key_env: 'REVERA_MODEL_API_KEY', model: 'first-model'
+};
+function checkMinimal(yaml, differentValidator = false) {
+  const doc = parseDocument(yaml);
+  assert.deepEqual(doc.errors, [], 'Saved YAML parses');
+  assert.deepEqual(doc.toJS(), { models: {
+    investigator,
+    ...(differentValidator ? { validator: { ...investigator, model: 'different-model' } } : {})
+  } }, 'Only the configured model routes and required fields are saved');
+}
+async function edit(page, id, value) {
+  const input = page.locator(`#${id}`);
+  await input.fill(value); await input.press('Tab');
+}
+async function firstKey(page) {
+  await page.getByRole('button', { name: 'Set key', exact: true }).first().click();
+  await page.getByLabel('API key', { exact: true }).fill('fixture-onboarding-key');
+  await page.getByRole('dialog').getByRole('button', { name: 'Set key', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  try { await page.getByText('Set in dashboard', { exact: true }).first().waitFor(); }
+  catch (error) { console.error('First-key status:', await page.locator('body').innerText()); throw error; }
+}
+
 try {
-  if (!process.argv.includes('--checks-only')) {
+  if (!emptyYaml && !process.argv.includes('--checks-only')) {
     for (const scheme of ['light', 'dark']) {
       await shot('/setup?stage=create_app&token=demo', `setup-create-${scheme}.png`, scheme, 'Create your GitHub App');
       await shot('/setup?stage=configure', `setup-models-${scheme}.png`, scheme, 'Connect your review models');
@@ -53,7 +79,57 @@ try {
   }
   }
 
-  if (!process.argv.includes('--screenshots-only')) {
+   if (emptyYaml) {
+     // Run against VITE_MOCK=1 VITE_MOCK_EMPTY_YAML=1: no prefilled YAML or keys.
+     for (const differentValidator of [false, true]) {
+       const { context, page } = await open('/setup?stage=create_app&token=demo');
+       await page.getByRole('button', { name: 'Create GitHub App' }).click();
+       await page.getByRole('button', { name: 'Sign in with GitHub' }).click();
+       await page.getByRole('button', { name: 'Install on repositories' }).click();
+       assert.equal(await page.locator('#model-investigator-endpoint').inputValue(), '');
+       assert.equal(await page.locator('#model-investigator-name').inputValue(), '');
+       await edit(page, 'model-investigator-endpoint', investigator.base_url);
+       await edit(page, 'model-investigator-name', investigator.model);
+       await firstKey(page);
+       await page.getByLabel('Use a different validator model', { exact: true }).click();
+       await page.getByText('Validator connection', { exact: true }).click();
+       await edit(page, 'model-validator-name', 'different-model');
+       if (!differentValidator) await edit(page, 'model-validator-name', investigator.model);
+       await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+       await page.getByRole('button', { name: 'Finish setup' }).click();
+       await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+       await page.getByRole('link', { name: 'Settings', exact: true }).click();
+       await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+       checkMinimal(await page.getByLabel('Review configuration YAML').inputValue(), differentValidator);
+       assert.equal((await page.locator('body').innerText()).includes('fixture-onboarding-key'), false);
+       await context.close();
+     }
+     {
+       const { context, page } = await open('/settings');
+       await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+       assert.equal(await page.getByLabel('Review configuration YAML').inputValue(), '');
+       await page.getByRole('tab', { name: 'Models', exact: true }).click();
+       await edit(page, 'model-investigator-endpoint', investigator.base_url);
+       await edit(page, 'model-investigator-name', investigator.model);
+       await firstKey(page);
+       await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+       await page.getByText('Settings saved.', { exact: true }).waitFor();
+       await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+       checkMinimal(await page.getByLabel('Review configuration YAML').inputValue());
+       // Optional nested maps can also be created after starting from nothing.
+       await page.getByRole('tab', { name: 'Budgets', exact: true }).click();
+       await edit(page, 'budget-run_max_seconds', '600');
+       await page.getByRole('tab', { name: 'Retrieval', exact: true }).click();
+       await page.getByLabel('Enable Vera retrieval', { exact: true }).click();
+       await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+       const doc = parseDocument(await page.getByLabel('Review configuration YAML').inputValue());
+       assert.equal(doc.getIn(['budget', 'run_max_seconds']), 600);
+       assert.equal(doc.getIn(['vera', 'enabled']), true);
+       await context.close();
+     }
+   }
+
+   if (!emptyYaml && !process.argv.includes('--screenshots-only')) {
 
   // Selects retain labels, keyboard navigation, and empty filter values.
   for (const [scheme, viewport] of [
@@ -175,7 +251,7 @@ try {
   }
   }
   assert.deepEqual(errors, [], 'No browser runtime errors');
-  console.log(process.argv.includes('--screenshots-only')
+   console.log(emptyYaml ? 'PASS: empty-YAML wizard and Settings, first key, minimal saved routes, validator inheritance, new maps, no browser runtime errors.' : process.argv.includes('--screenshots-only')
     ? 'PASS: desktop screenshots in both themes, mobile overflow, no browser runtime errors.'
     : 'PASS: labelled keyboard selects in both themes/mobile, empty filters, wizard, YAML/comments/reasoning, secret dialog, server settings, repository toggle, manual review, live updates, no browser runtime errors.');
 } finally { await browser.close(); }

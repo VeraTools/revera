@@ -5,7 +5,11 @@ use super::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Seen(pub BTreeMap<u64, SeenRepo>);
@@ -23,7 +27,12 @@ pub struct SeenRepo {
 impl Seen {
     #[cfg(test)]
     pub fn observe(&mut self, repo: &Repo, prs: &[Value]) -> Vec<Job> {
-        self.observe_with_preferences(repo, prs, &super::dashboard::Preferences::default())
+        self.observe_with_preferences(
+            repo,
+            prs,
+            &super::dashboard::Preferences::default(),
+            &BTreeSet::new(),
+        )
     }
 
     pub fn observe_with_preferences(
@@ -31,10 +40,16 @@ impl Seen {
         repo: &Repo,
         prs: &[Value],
         preferences: &super::dashboard::Preferences,
+        retry: &BTreeSet<u64>,
     ) -> Vec<Job> {
         if !self.0.get(&repo.id).is_some_and(|known| known.initialized) {
             let heads = prs
                 .iter()
+                .filter(|pr| {
+                    !pr["number"]
+                        .as_u64()
+                        .is_some_and(|number| retry.contains(&number))
+                })
                 .filter_map(|pr| Some((pr["number"].as_u64()?, pr["head"]["sha"].as_str()?.into())))
                 .collect();
             self.0.insert(
@@ -46,7 +61,7 @@ impl Seen {
                     initialized: true,
                 },
             );
-            return vec![];
+            // Setup-skipped PRs are not part of the initial no-backfill baseline.
         }
         let known = self.0.get_mut(&repo.id).expect("initialized repository");
         known.repo = repo.clone();
@@ -61,7 +76,8 @@ impl Seen {
         }
         for pr in prs.iter().filter(|pr| preferences.reviewable(pr)) {
             if let (Some(number), Some(head)) = (pr["number"].as_u64(), pr["head"]["sha"].as_str())
-                && known.heads.get(&number).map(String::as_str) != Some(head)
+                && (known.heads.get(&number).map(String::as_str) != Some(head)
+                    || retry.contains(&number))
             {
                 jobs.push(Job {
                     id: uuid::Uuid::new_v4().simple().to_string(),
@@ -164,8 +180,14 @@ pub(super) async fn once(server: &Server) -> Result<()> {
                 )
                 .await?;
             let mut seen = server.seen.lock().await;
-            let preferences = server.dashboard.lock().await.preferences.clone();
-            let jobs = seen.observe_with_preferences(&repo, &prs, &preferences);
+            let (preferences, retry) = {
+                let dashboard = server.dashboard.lock().await;
+                (
+                    dashboard.preferences.clone(),
+                    dashboard.unconfigured_reviews(&repo.full_name),
+                )
+            };
+            let jobs = seen.observe_with_preferences(&repo, &prs, &preferences, &retry);
             save(server, &seen).await?;
             drop(seen);
             let workspace = server.settings.data_dir.join("repos").join(&repo.full_name);
