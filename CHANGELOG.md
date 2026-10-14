@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.5
 
 - The Action installs Vera 2.1.3 by default (was 2.0.1). Its `vera update`
   re-embeds files whose vectors are missing, so a restored index that lost
@@ -20,6 +20,7 @@
   Configs that set it now fail with an unknown-key error.
 - The skill's Action example checks out the PR head, matching the README
   quickstart.
+- Dependencies updated, including serde-saphyr 2 for config parsing.
 
 ## v0.4.4
 
