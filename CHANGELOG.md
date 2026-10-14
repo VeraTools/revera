@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The Action installs Vera 2.1.3 by default (was 2.0.1). Its `vera update`
+  re-embeds files whose vectors are missing, so a restored index that lost
+  its vectors recovers instead of searching by keyword only. The Action's
+  index cache key includes the Vera version, so the first run after
+  upgrading builds a fresh index.
+- `stats.retrieval` counts searches where Vera fell back to keyword-only
+  results (for example after an embedding key expired), as
+  `vera+rerank (keyword-only on 2 searches)`. These used to be reported as
+  plain `vera+rerank`. Vera 2.1.2 and later warn on every such fallback;
+  older versions miss the case of a missing vector store.
 - Release verification probes reranking with one direct
   `vera search --rerank-status` after the review, so the check no longer
   depends on the investigator choosing to call `vera_search`.

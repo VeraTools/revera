@@ -475,6 +475,24 @@ try:
     probe_ok = tmp / "probe-ok.json"
     probe_ok.write_text(
         json.dumps(
+            {
+                "results": [],
+                "reranked": True,
+                "reranker": "api",
+                "rerank_fallback_reason": None,
+                "keyword_only": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    probe_keyword_only = tmp / "probe-keyword-only.json"
+    probe_keyword_only.write_text(
+        json.dumps({**json.loads(probe_ok.read_text(encoding="utf-8")), "keyword_only": True}),
+        encoding="utf-8",
+    )
+    probe_unrecorded = tmp / "probe-unrecorded.json"
+    probe_unrecorded.write_text(
+        json.dumps(
             {"results": [], "reranked": True, "reranker": "api", "rerank_fallback_reason": None}
         ),
         encoding="utf-8",
@@ -515,6 +533,16 @@ try:
         first=no_search,
         extra=rerank + ["--rerank-probe", str(probe_fell_back)],
     )
+    for name, probe in [
+        ("require-rerank-probe-keyword-only", probe_keyword_only),
+        ("require-rerank-probe-unrecorded", probe_unrecorded),
+    ]:
+        expect_fail(
+            name,
+            "rerank probe fell back to keyword-only search",
+            first=no_search,
+            extra=rerank + ["--rerank-probe", str(probe)],
+        )
     expect_fail(
         "require-rerank-probe-missing",
         "rerank probe could not be read as JSON",

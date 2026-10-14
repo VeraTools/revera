@@ -179,9 +179,10 @@ Revera runs Vera with its own `VERA_HOME` (`vera.home`, else
 `VERA_*`/`EMBEDDING_MODEL_*`/`RERANKER_MODEL_*` variables from the child,
 and applies the reranker with `vera config set retrieval.*`; with no
 reranker configured, reranking is explicitly disabled. The report's
-`retrieval` field distinguishes `vera`, `vera+rerank`,
-`vera (rerank degraded)` and searches where Vera fell back to unreranked
-results.
+`retrieval` field distinguishes `vera`, `vera+rerank` and
+`vera (rerank degraded)`, and counts searches where Vera fell back to
+keyword-only or unreranked results, for example
+`vera+rerank (keyword-only on 2 searches)`.
 
 Credential-bearing paths (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, …)
 are always excluded from indexing, lexical tools, `read_file` and the diff
@@ -274,7 +275,7 @@ and effective configuration was `complete`.
 | `publish` | `comment` | `dry-run` to only print the plan |
 | `fail-on` | `failed` | `failed` · `partial` · `never` |
 | `revera-version` | pinned to the Action release | Revera binary to install |
-| `vera-version` | `2.0.1` | Vera binary to install (skipped when Vera is disabled) |
+| `vera-version` | `2.1.3` | Vera binary to install (skipped when Vera is disabled) |
 | `github-token` | `${{ github.token }}` | |
 | `cache` | `true` | cache the `.vera` index between runs |
 
