@@ -20,17 +20,22 @@ impl GeminiAdapter {
         let env_name = route.api_key_env.clone().unwrap_or_default();
         let api_key = crate::redact::secret_env(&env_name)
             .ok_or_else(|| ProviderError::Other(format!("api_key_env {env_name} is not set")))?;
+        Ok(Self::with_api_key(route, api_key))
+    }
+
+    pub fn with_api_key(route: ModelRoute, api_key: String) -> Self {
+        crate::redact::register(&api_key);
         let base = route
             .base_url
             .as_deref()
             .unwrap_or("https://generativelanguage.googleapis.com")
             .trim_end_matches('/')
             .to_string();
-        Ok(Self {
+        Self {
             route,
             api_key,
             base,
-        })
+        }
     }
 }
 

@@ -1,0 +1,7 @@
+# Only release artifacts and the license are needed in the runtime build.
+**
+!Dockerfile
+!.dockerignore
+!LICENSE
+!revera-*-unknown-linux-musl.tar.gz
+!revera-*-unknown-linux-musl.tar.gz.sha256
