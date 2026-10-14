@@ -11,6 +11,8 @@ diff, review identity, state and publication. Keep that split.
   is rejected together with `publish: comment`.
 - In event mode, configuration inside the checkout is read from the base
   commit, never the PR head; trust checks run before any credential is read.
+  Non-PR events only run `revera index` on the checked-out commit and never
+  review or publish.
 - Secrets never reach models, logs, reports, comments or state: resolve keys
   through `redact::secret_env`, send text through `redact::text`/`redact::json`,
   write files through `fsutil` (symlink-safe, atomic). `config::SENSITIVE_GLOBS`

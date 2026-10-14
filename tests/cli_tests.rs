@@ -8,6 +8,55 @@ fn write_tmp(yaml: &str) -> tempfile::NamedTempFile {
 }
 
 #[test]
+fn index_with_vera_disabled_is_a_noop() {
+    // Indexing does not require valid review routes or their credentials.
+    let cfg = write_tmp(
+        "review: {strategy: delegated}\nmodels:\n  investigator: {protocol: openai-chat, base_url: http://x, model: m, api_key_env: REVERA_T_UNSET_INDEX_INV}\nvera: {enabled: false}\n",
+    );
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    let res = Command::new(env!("CARGO_BIN_EXE_revera"))
+        .current_dir(repo.path())
+        .args(["index", "--config"])
+        .arg(cfg.path())
+        .env_remove("REVERA_T_UNSET_INDEX_INV")
+        .output()
+        .unwrap();
+    assert_eq!(
+        res.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&res.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(res.stdout).unwrap().trim(),
+        "vera is disabled by config; nothing to index"
+    );
+    assert!(!repo.path().join(".vera").exists());
+    assert!(!repo.path().join(".revera/vera-cache.json").exists());
+}
+
+#[test]
+fn index_rejects_a_reserved_credential_name_before_reading_it() {
+    let cfg = write_tmp(
+        "models:\n  investigator: {protocol: openai-chat, base_url: https://x, model: m, api_key_env: REVERA_T_UNSET_INDEX_INV}\nvera:\n  backend: api\n  embedding: {base_url: https://e.example/v1, model: emb, api_key_env: GITHUB_TOKEN}\n",
+    );
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    let res = Command::new(env!("CARGO_BIN_EXE_revera"))
+        .current_dir(repo.path())
+        .args(["index", "--config"])
+        .arg(cfg.path())
+        .env("GITHUB_TOKEN", "ghs_should_never_leave")
+        .output()
+        .unwrap();
+    assert_eq!(res.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&res.stderr);
+    assert!(err.contains("reserved for GitHub"), "{err}");
+    assert!(!repo.path().join(".vera").exists());
+}
+
+#[test]
 fn fork_guard_fires_before_credential_check() {
     // investigator key unset: a fork event must still get the partial
     // "review skipped" report (exit 2), not a credential failure (exit 1)

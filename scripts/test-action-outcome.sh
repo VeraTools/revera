@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Offline tests for action-outcome.sh: exit-code classification, fail-on
-# policy, stale/corrupt report handling.
+# Offline tests for action-outcome.sh and action-mode.sh: event routing,
+# exit-code classification, fail-on policy, stale/corrupt report handling.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -75,8 +75,45 @@ shapeless="$tmp/shapeless.json"
 echo '{"findings": "nope"}' > "$shapeless"
 run 0 "$shapeless" failed; expect "0/shapeless" 1 failed 0 ""
 
+# Index runs have no report, never findings, and only exit 0 is complete.
+run 0 - failed;  expect "index/0/failed" 0 complete 0 ""
+run 0 - partial; expect "index/0/partial" 0 complete 0 ""
+run 1 - failed;  expect "index/1/failed" 1 failed 0 ""
+run 1 - never;   expect "index/1/never" 0 failed 0 ""
+run 2 - partial; expect "index/2/partial" 1 failed 0 ""
+run 137 - never; expect "index/137/never" 0 failed 0 ""
+
+# The step summary must not describe a successful index as a failed review.
+GITHUB_STEP_SUMMARY="$tmp/summary" GITHUB_OUTPUT="$tmp/out.txt" \
+    "$HERE/action-outcome.sh" 0 - failed >/dev/null
+if ! grep -q 'Status: complete' "$tmp/summary" || grep -q 'Status: failed' "$tmp/summary"; then
+    echo "FAIL: successful index summary" >&2
+    fails=$((fails + 1))
+fi
+
+for event in pull_request pull_request_target push schedule workflow_dispatch; do
+    case "$event" in pull_request*) want=review ;; *) want=index ;; esac
+    if ! mode=$("$HERE/action-mode.sh" "$event") || [ "$mode" != "$want" ]; then
+        echo "FAIL: event $event should route to $want" >&2
+        fails=$((fails + 1))
+    fi
+done
+if "$HERE/action-mode.sh" merge_group >"$tmp/mode" 2>"$tmp/error"; then
+    echo "FAIL: unsupported event accepted" >&2
+    fails=$((fails + 1))
+elif [ -s "$tmp/mode" ] || ! grep -q merge_group "$tmp/error"; then
+    echo "FAIL: unsupported event diagnostic" >&2
+    fails=$((fails + 1))
+fi
+for event in pull_request pull_request_target push schedule workflow_dispatch; do
+    if ! grep -q "$event" "$tmp/error"; then
+        echo "FAIL: diagnostic omits supported event $event" >&2
+        fails=$((fails + 1))
+    fi
+done
+
 if [ "$fails" -ne 0 ]; then
     echo "action-outcome.sh: $fails failure(s)" >&2
     exit 1
 fi
-echo "action-outcome.sh OK"
+echo "action-outcome.sh and action-mode.sh OK"

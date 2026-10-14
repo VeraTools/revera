@@ -46,6 +46,15 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Build or refresh the Vera index without reviewing.
+    Index {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        profile: Option<String>,
+    },
     Doctor {
         #[arg(long)]
         config: Option<PathBuf>,
@@ -93,6 +102,11 @@ enum PublishArg {
 pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Index {
+            repo,
+            config,
+            profile,
+        } => index(repo, config, profile).await,
         Cmd::Doctor {
             config,
             profile,
@@ -164,6 +178,39 @@ fn load_cfg_unvalidated(
         c.apply_profile(pr).map_err(|e| e.to_string())?;
     }
     Ok((p, c))
+}
+
+async fn index(repo: PathBuf, config: Option<PathBuf>, profile: Option<String>) -> i32 {
+    let result: anyhow::Result<()> = async {
+        let (_, cfg) = load_cfg_unvalidated(config.as_deref(), profile.as_deref())
+            .map_err(anyhow::Error::msg)?;
+        if !cfg.vera.enabled {
+            println!("vera is disabled by config; nothing to index");
+            return Ok(());
+        }
+        // trust before credentials, as in review: no key is resolved for a
+        // reserved variable name or a malformed endpoint
+        cfg.check_trust(false)?;
+        let repo = crate::git::repo_root(&repo);
+        let vera = crate::vera::VeraClient::from_config(&cfg.vera, &repo)?;
+        vera.configure().await?;
+        // ensure_index logs the vera summary; stdout says where the result is
+        vera.ensure_index().await?;
+        println!(
+            "index ready: {} (identity {})",
+            repo.join(".vera").display(),
+            vera.index_key
+        );
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("error: {}", crate::redact::diagnostic(&format!("{e:#}")));
+            1
+        }
+    }
 }
 
 /// Lexically normalize `p` against `cwd` (no symlink resolution: a

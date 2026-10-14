@@ -1,5 +1,6 @@
 name: Revera
-# Consumers must check out pull_request.head.sha so reviewer tools read the PR head tree.
+# PR consumers must check out pull_request.head.sha so tools read the PR head tree.
+# Push, schedule and workflow_dispatch runs build or refresh the checkout's index.
 description: Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval.
 branding:
   icon: search
@@ -34,10 +35,10 @@ inputs:
     default: "true"
 outputs:
   status:
-    description: Review status (complete | partial | failed)
+    description: Run status (complete | partial | failed)
     value: ${{ steps.outcome.outputs.status }}
   report-path:
-    description: Path to the JSON run report (empty when the run failed before writing one)
+    description: Path to the JSON review report (empty for index runs or failures before writing one)
     value: ${{ steps.outcome.outputs.report-path }}
   findings:
     description: Number of accepted findings (0 when no trustworthy report exists)
@@ -53,6 +54,16 @@ runs:
           echo "revera action supports Linux x86_64 runners only" >&2
           exit 1
         fi
+
+    - name: Mode
+      id: mode
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        mode=$("$ACTION_PATH/scripts/action-mode.sh" "$GITHUB_EVENT_NAME")
+        echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
     - name: Install revera
       shell: bash
@@ -75,16 +86,19 @@ runs:
       env:
         CONFIG: ${{ inputs.config }}
         PROFILE: ${{ inputs.profile }}
+        MODE: ${{ steps.mode.outputs.mode }}
+        FALLBACK_KEY: cfg-${{ hashFiles(inputs.config) }}
       run: |
         set -euo pipefail
-        # same trusted base-revision config the review step loads
-        args=(cache-key --event "$GITHUB_EVENT_PATH" --config "$CONFIG")
+        args=(cache-key --config "$CONFIG")
+        # Review uses the trusted base config; index uses the checkout config.
+        if [ "$MODE" = review ]; then args+=(--event "$GITHUB_EVENT_PATH"); fi
         if [ -n "$PROFILE" ]; then args+=(--profile "$PROFILE"); fi
         if key=$(revera "${args[@]}" 2>/dev/null); then
           echo "value=$key" >> "$GITHUB_OUTPUT"
         else
           # older revera without `cache-key`: fall back to hashing the config
-          echo "value=cfg-${{ hashFiles(inputs.config) }}" >> "$GITHUB_OUTPUT"
+          echo "value=$FALLBACK_KEY" >> "$GITHUB_OUTPUT"
         fi
 
     # `vera.enabled: false` (key = disabled) runs lexical-only and must not
@@ -107,9 +121,9 @@ runs:
         path: |
           .vera
           .revera/vera-cache.json
-        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref || github.ref_name }}-${{ github.event.pull_request.head.sha || github.sha }}
         restore-keys: |
-          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref }}-
+          revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref || github.ref_name }}-
           revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-
 
     - name: Run revera
@@ -121,12 +135,17 @@ runs:
         PROFILE: ${{ inputs.profile }}
         STRATEGY: ${{ inputs.strategy }}
         PUBLISH: ${{ inputs.publish }}
+        MODE: ${{ steps.mode.outputs.mode }}
       run: |
         rm -f .revera/report.json
         before=$(cat .revera/vera-cache.json 2>/dev/null || true)
-        args=(review --event "$GITHUB_EVENT_PATH" --config "$CONFIG" --publish "$PUBLISH" --out .revera/report.json)
+        if [ "$MODE" = index ]; then
+          args=(index --config "$CONFIG")
+        else
+          args=(review --event "$GITHUB_EVENT_PATH" --config "$CONFIG" --publish "$PUBLISH" --out .revera/report.json)
+          if [ -n "$STRATEGY" ]; then args+=(--strategy "$STRATEGY"); fi
+        fi
         if [ -n "$PROFILE" ]; then args+=(--profile "$PROFILE"); fi
-        if [ -n "$STRATEGY" ]; then args+=(--strategy "$STRATEGY"); fi
         set +e
         revera "${args[@]}"
         code=$?
@@ -140,23 +159,28 @@ runs:
           echo "index-ok=false" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Review outcome
+    - name: Run outcome
       id: outcome
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
         CODE: ${{ steps.revera.outputs.code }}
         FAIL_ON: ${{ inputs.fail-on }}
+        MODE: ${{ steps.mode.outputs.mode }}
       run: |
-        "$ACTION_PATH/scripts/action-outcome.sh" "$CODE" .revera/report.json "$FAIL_ON"
+        report=.revera/report.json
+        if [ "$MODE" = index ]; then report=-; fi
+        "$ACTION_PATH/scripts/action-outcome.sh" "$CODE" "$report" "$FAIL_ON"
 
     # Save only when this run produced a healthy index; a failed index or a
     # run that never reached Vera must not overwrite/poison the cache.
+    # pull_request_target runs in the base branch's cache scope, where a
+    # PR-head index would seed the base branch and every other PR.
     - name: Save .vera index cache
-      if: always() && inputs.cache == 'true' && steps.revera.outputs.index-ok == 'true'
+      if: always() && inputs.cache == 'true' && steps.revera.outputs.index-ok == 'true' && github.event_name != 'pull_request_target'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           .vera
           .revera/vera-cache.json
-        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
+        key: revera-vera-${{ runner.os }}-${{ inputs.vera-version }}-${{ steps.key.outputs.value }}-${{ github.event.pull_request.base.ref || github.ref_name }}-${{ github.event.pull_request.head.sha || github.sha }}

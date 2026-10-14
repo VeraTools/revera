@@ -22,6 +22,10 @@ vera:
 - The index cache key (`revera cache-key`) covers only the embedding and
   indexing settings. Changing models, prompts, budgets, guidance or the
   reranker reuses the warm index.
+- New PRs can only restore an index cached on their base branch. A
+  `push: branches: [main]` trigger makes the Action run `revera index` after
+  each merge, so they start warm; without it each new PR indexes from
+  scratch once.
 - The run report's `stats.retrieval` says what happened: `lexical-only`,
   `vera`, `vera+rerank`, `vera (rerank degraded)` or `unavailable: <reason>`.
   A suffix such as `(keyword-only on 2 searches)` or `(rerank fell back on
