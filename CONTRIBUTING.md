@@ -75,6 +75,8 @@ otherwise).
    first run to report `retrieval: vera+rerank`, and reranked results from
    either an error-free `vera_search` call or a direct
    `vera search --rerank-status` probe the workflow runs after the review.
+   The proof's "Binary SHA-256" is the extracted `revera` binary; the
+   release's `.sha256` file is the tarball's checksum.
 5. Dispatch `release-promote.yml` with the tag. It moves `vX`, marks the
    release Latest and reads both back.
 6. Open a small follow-up PR so `dogfood-released.yml` exercises the
