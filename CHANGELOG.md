@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.6
 
 - New PRs can start from a warm Vera index. On `push`, `schedule` and
   `workflow_dispatch` events the Action no longer fails with "unsupported
