@@ -687,15 +687,18 @@ pub async fn finish(
     };
     stats.files_read = prep.toolbox.files_read();
     stats.tools = prep.toolbox.tool_stats();
-    let fallbacks = prep
-        .vera
-        .rerank_fallbacks
-        .load(std::sync::atomic::Ordering::Relaxed);
-    if fallbacks > 0 {
-        stats.retrieval = format!(
-            "{} (rerank fell back on {fallbacks} searches)",
-            stats.retrieval
-        );
+    let load = |n: &std::sync::atomic::AtomicUsize| n.load(std::sync::atomic::Ordering::Relaxed);
+    let mut fallbacks = vec![];
+    match load(&prep.vera.semantic_fallbacks) {
+        0 => {}
+        n => fallbacks.push(format!("keyword-only on {n} searches")),
+    }
+    match load(&prep.vera.rerank_fallbacks) {
+        0 => {}
+        n => fallbacks.push(format!("rerank fell back on {n} searches")),
+    }
+    if !fallbacks.is_empty() {
+        stats.retrieval = format!("{} ({})", stats.retrieval, fallbacks.join("; "));
     }
     let routes: Vec<String> = prep
         .ledger

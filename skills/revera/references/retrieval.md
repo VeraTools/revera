@@ -23,5 +23,7 @@ vera:
   indexing settings. Changing models, prompts, budgets, guidance or the
   reranker reuses the warm index.
 - The run report's `stats.retrieval` says what happened: `lexical-only`,
-  `vera`, `vera+rerank`, `vera (rerank degraded)` (reranker failures fall
-  back to unreranked results) or `unavailable: <reason>`.
+  `vera`, `vera+rerank`, `vera (rerank degraded)` or `unavailable: <reason>`.
+  A suffix such as `(keyword-only on 2 searches)` or `(rerank fell back on
+  1 searches)` counts searches where the embedding or reranker endpoint
+  failed and Vera returned weaker results.

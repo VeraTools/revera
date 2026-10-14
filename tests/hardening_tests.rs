@@ -381,6 +381,7 @@ fn tb() -> ToolBox {
             embedding_pairs: vec![],
             index_key: String::new(),
             rerank_fallbacks: Default::default(),
+            semantic_fallbacks: Default::default(),
             deadline: None,
         }),
         12000,

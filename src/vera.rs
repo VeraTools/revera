@@ -87,6 +87,8 @@ pub struct VeraClient {
     pub index_key: String,
     /// Searches where Vera fell back to unreranked results.
     pub rerank_fallbacks: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Searches where Vera fell back to keyword-only (BM25) results.
+    pub semantic_fallbacks: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every subprocess is bounded by the remaining time to this deadline;
     /// a timed-out child is killed and reaped.
     pub deadline: Option<Instant>,
@@ -120,6 +122,7 @@ impl VeraClient {
             embedding_pairs: vec![],
             index_key: String::new(),
             rerank_fallbacks: Default::default(),
+            semantic_fallbacks: Default::default(),
             deadline: None,
         }
     }
@@ -199,6 +202,7 @@ impl VeraClient {
             embedding_pairs,
             index_key: cfg.index_key(),
             rerank_fallbacks: Default::default(),
+            semantic_fallbacks: Default::default(),
             deadline: None,
         })
     }
@@ -315,8 +319,13 @@ impl VeraClient {
                 .collect();
             bail!("vera {} failed: {}", args.join(" "), tail.trim());
         }
-        if String::from_utf8_lossy(&out.stderr).contains("reranker unavailable") {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("reranker unavailable") {
             self.rerank_fallbacks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if stderr.contains("BM25-only") {
+            self.semantic_fallbacks
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if out.stdout.len() > MAX_OUTPUT {

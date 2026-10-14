@@ -140,6 +140,10 @@ def require_reranked_search(stats1: dict[str, Any], probe_path: str | None) -> N
         probe.get("reranked") is True and probe.get("rerank_fallback_reason") is None,
         "rerank probe did not return reranked results",
     )
+    require(
+        probe.get("keyword_only") is False,
+        "rerank probe fell back to keyword-only search (or did not record whether it did)",
+    )
 
 
 def validate_report_pair(

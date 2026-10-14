@@ -361,6 +361,44 @@ async fn reranker_outage_degrades_to_unreranked_results() {
 }
 
 #[tokio::test]
+async fn keyword_only_fallback_is_counted() {
+    let Some((server, exe)) = setup().await else {
+        return;
+    };
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    let vera = VeraClient::from_config(
+        &config_with(&server.uri(), home.path(), &exe, None).vera,
+        repo.path(),
+    )
+    .unwrap();
+    vera.configure().await.unwrap();
+    vera.ensure_index().await.unwrap();
+    vera.search("discount price", None, None, None, 1)
+        .await
+        .unwrap();
+    let fallbacks = || {
+        vera.semantic_fallbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    assert_eq!(fallbacks(), 0, "a semantic search is not a fallback");
+    // the embedding endpoint breaks after indexing, so query embedding fails
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(401))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // a different query, so no cached query embedding is reused
+    let hits = vera
+        .search("price discount", None, None, None, 1)
+        .await
+        .unwrap();
+    assert!(hits.to_string().contains("src/lib.rs"), "{hits}");
+    assert_eq!(fallbacks(), 1, "a keyword-only fallback must be observable");
+}
+
+#[tokio::test]
 async fn legacy_cache_without_identity_is_rebuilt() {
     let Some((server, exe)) = setup().await else {
         return;
