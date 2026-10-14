@@ -20,6 +20,11 @@ impl AnthropicAdapter {
         let env_name = route.api_key_env.clone().unwrap_or_default();
         let api_key = crate::redact::secret_env(&env_name)
             .ok_or_else(|| ProviderError::Other(format!("api_key_env {env_name} is not set")))?;
+        Ok(Self::with_api_key(route, api_key))
+    }
+
+    pub fn with_api_key(route: ModelRoute, api_key: String) -> Self {
+        crate::redact::register(&api_key);
         // default base; strip a trailing /v1 if the user already supplied it
         let base = route
             .base_url
@@ -28,11 +33,11 @@ impl AnthropicAdapter {
             .trim_end_matches('/')
             .trim_end_matches("/v1")
             .to_string();
-        Ok(Self {
+        Self {
             route,
             api_key,
             base,
-        })
+        }
     }
 }
 

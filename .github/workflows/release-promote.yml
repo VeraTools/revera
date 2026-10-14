@@ -10,7 +10,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-promote
@@ -20,6 +20,9 @@ jobs:
   promote:
     environment: release-verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     env:
       TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -55,6 +58,30 @@ jobs:
             <<< "$release_json" >/dev/null \
             || { echo "::error::no published non-prerelease GitHub release exists for $TAG"; exit 1; }
 
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify versioned multi-arch image before promotion
+        run: |
+          set -euo pipefail
+          image="ghcr.io/veratools/revera:${TAG#v}"
+          if ! docker buildx imagetools inspect "$image" --raw > "$RUNNER_TEMP/revera-image.json"; then
+            echo "::error::versioned image $image does not exist or cannot be inspected"
+            exit 1
+          fi
+          jq -e '
+            any(.manifests[]?; .platform.os == "linux" and .platform.architecture == "amd64")
+            and any(.manifests[]?; .platform.os == "linux" and .platform.architecture == "arm64")
+          ' "$RUNNER_TEMP/revera-image.json" >/dev/null \
+            || { echo "::error::$image must contain both linux/amd64 and linux/arm64"; exit 1; }
+
       - name: Move major tag and mark release latest
         run: |
           set -euo pipefail
@@ -82,3 +109,10 @@ jobs:
           [ "$latest" = "$TAG" ] \
             || { echo "::error::latest release is ${latest:-missing}, expected $TAG"; exit 1; }
           echo "$TAG promoted as $major and latest."
+
+      - name: Promote verified image
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/veratools/revera:0 \
+            --tag ghcr.io/veratools/revera:latest \
+            "ghcr.io/veratools/revera:${TAG#v}"

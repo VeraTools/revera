@@ -9,15 +9,49 @@ on:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  web:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build dashboard
+        working-directory: web
+        run: npm ci && npm run build
+      - name: Upload dashboard
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-build
+          path: web/build/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  build:
+    needs: web
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    outputs:
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,16 +83,27 @@ jobs:
       - name: Install musl toolchain
         run: |
           sudo apt-get update && sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
+          rustup target add "$TARGET"
+
+      - name: Download dashboard
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-build
+          path: web/build/
+
+      - name: Require dashboard before embedding
+        run: |
+          test -f web/build/index.html \
+            || { echo "::error::dashboard build is missing web/build/index.html"; exit 1; }
 
       # static musl binary runs on older glibc hosts (e.g. Ubuntu 22.04)
       - name: Build release binary
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+        run: cargo build --release --locked --target "$TARGET"
 
       - name: Package
         run: |
-          pkg=revera-x86_64-unknown-linux-musl.tar.gz
-          tar -czf "$pkg" -C target/x86_64-unknown-linux-musl/release revera
+          pkg="revera-$TARGET.tar.gz"
+          tar -czf "$pkg" -C "target/$TARGET/release" revera
           sha256sum "$pkg" > "$pkg.sha256"
 
       - name: Verify packaged artifact
@@ -69,16 +114,84 @@ jobs:
           mkdir -p "$RUNNER_TEMP/revera-bin"
           ./scripts/install-revera.sh "$version" "$RUNNER_TEMP/revera-bin"
 
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: revera-${{ matrix.target }}
+          path: |
+            revera-${{ matrix.target }}.tar.gz
+            revera-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: revera-*
+          merge-multiple: true
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
           make_latest: false
           generate_release_notes: true
           body: |
-            Static `x86_64-unknown-linux-musl` binary. Verify with
+            Static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` binaries. Verify with
             `sha256sum -c revera-x86_64-unknown-linux-musl.tar.gz.sha256`
+            or `sha256sum -c revera-aarch64-unknown-linux-musl.tar.gz.sha256`,
             or install through `scripts/install-revera.sh <X.Y.Z> <dir>`.
           files: |
             revera-x86_64-unknown-linux-musl.tar.gz
             revera-x86_64-unknown-linux-musl.tar.gz.sha256
+            revera-aarch64-unknown-linux-musl.tar.gz
+            revera-aarch64-unknown-linux-musl.tar.gz.sha256
+
+  image:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: revera-*
+          merge-multiple: true
+
+      - name: Image version
+        id: image
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish versioned image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/veratools/revera:${{ steps.image.outputs.version }}

@@ -51,14 +51,43 @@ pub fn check_regular_target(p: &Path) -> Result<()> {
 /// Atomically replace `dir/name` with `bytes`. `dir` must already be a
 /// checked real directory (see [`ensure_dir`]).
 pub fn write_atomic_in(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    write_atomic_mode(dir, name, bytes, false)
+}
+
+/// Atomic secret storage, private from the instant the file is created.
+pub fn write_secret_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    write_atomic_mode(dir, name, bytes, true)
+}
+
+/// Create a new private log without following or replacing an existing file.
+pub fn create_private(dir: &Path, name: &str) -> Result<std::fs::File> {
+    check_dir(dir)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    Ok(options.open(dir.join(name))?)
+}
+
+fn write_atomic_mode(dir: &Path, name: &str, bytes: &[u8], private: bool) -> Result<()> {
     check_dir(dir)?;
     let target = dir.join(name);
     check_regular_target(&target)?;
     let tmp = dir.join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4().simple()));
     let res = (|| -> Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let mut f = options
             .open(&tmp)
             .with_context(|| format!("create {}", tmp.display()))?;
         f.write_all(bytes)?;

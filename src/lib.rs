@@ -12,6 +12,7 @@ pub mod prompts;
 pub mod provider;
 pub mod redact;
 pub mod report;
+pub mod server;
 pub mod state;
 pub mod text;
 pub mod timing;
