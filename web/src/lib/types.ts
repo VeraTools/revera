@@ -1,11 +1,12 @@
 export type Role = 'investigator' | 'validator' | 'embedding';
-export type JobStatus = 'queued' | 'running' | 'complete' | 'partial' | 'failed' | 'cancelled' | 'skipped';
+export type JobStatus =
+  'queued' | 'running' | 'complete' | 'partial' | 'failed' | 'cancelled' | 'skipped';
 export type SetupStage = 'create_app' | 'sign_in' | 'install' | 'configure' | 'done';
 export interface Session {
   authenticated: boolean;
   user?: { login: string; avatar_url: string };
   csrf?: string;
-  setup: { stage: SetupStage; public_url: string };
+  setup: { stage: SetupStage; public_url: string; authorized: boolean };
 }
 export interface JobSummary {
   id: string;
@@ -80,12 +81,22 @@ export interface ServerSettings {
   review_drafts: boolean;
   skip_authors: string[];
 }
-export interface Secret { name: string; source: 'dashboard' | 'environment' | 'missing' }
+export interface Secret {
+  name: string;
+  source: 'dashboard' | 'environment' | 'missing';
+}
 export interface Settings {
   yaml: string;
   server: ServerSettings;
   secrets: Secret[];
   referenced_env: string[];
 }
-export interface TestResult { ok: boolean; latency_ms: number; error?: string }
-export interface JobsPage { jobs: JobSummary[]; next?: string }
+export interface TestResult {
+  ok: boolean;
+  latency_ms: number;
+  error?: string;
+}
+export interface JobsPage {
+  jobs: JobSummary[];
+  next?: string;
+}

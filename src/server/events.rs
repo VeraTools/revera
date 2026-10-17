@@ -34,8 +34,20 @@ impl Repo {
             installation,
             full_name: full_name.into(),
             default_branch: v["default_branch"].as_str().unwrap_or("main").into(),
-            pushed_at: v["pushed_at"].to_string(),
+            pushed_at: pushed_at(&v["pushed_at"]),
         })
+    }
+}
+
+/// REST responses give `pushed_at` as an RFC 3339 string, push webhooks as
+/// Unix seconds; normalize so the two compare equal.
+fn pushed_at(value: &Value) -> String {
+    match value {
+        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s)
+            .map(|t| t.timestamp().to_string())
+            .unwrap_or_else(|_| s.clone()),
+        Value::Number(n) => n.as_i64().map_or_else(|| n.to_string(), |t| t.to_string()),
+        _ => String::new(),
     }
 }
 

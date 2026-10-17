@@ -141,7 +141,10 @@ pub async fn setup(
         .as_ref()
         .is_some_and(|t| super::app::token_matches(t, &query.token))
     {
-        return StatusCode::UNAUTHORIZED.into_response();
+        // The SPA explains where the setup link comes from.
+        let mut response = assets::page("/setup");
+        *response.status_mut() = StatusCode::UNAUTHORIZED;
+        return response;
     }
     let value = sign(
         &server.session_key,

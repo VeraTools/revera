@@ -143,7 +143,8 @@ async fn stage(server: &Server) -> &'static str {
 async fn session(State(server): State<Arc<Server>>, headers: HeaderMap) -> Json<Value> {
     let session = auth::session(&server, &headers).await;
     let mut value = json!({"authenticated": session.is_some(), "setup": {
-        "stage": stage(&server).await, "public_url": server.settings.public_url
+        "stage": stage(&server).await, "public_url": server.settings.public_url,
+        "authorized": auth::bootstrap(&server, &headers)
     }});
     if let Some(session) = session {
         value["user"] = json!(session.user);

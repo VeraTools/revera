@@ -27,10 +27,17 @@ wizard. These stage controls only exist in mock mode. Mock changes last until
 the page is refreshed; mutations emit the same job/repository events used by
 the live dashboard. Mock requests never contact a model endpoint or GitHub.
 
+Visit `/setup?stage=create_app&authorized=0` to preview the missing-setup-link
+panel. `authorized=1` simulates a browser that already holds the setup cookie.
+These authorization controls also only exist in mock mode.
+
 ```sh
 npm run check
 npm run build
 ```
+
+`npm run format` formats the dashboard with Prettier. `npm run lint` checks
+formatting, and `npm run check` runs that check before Svelte diagnostics.
 
 The static SPA is written to `build/` with `index.html` as its fallback.
 Build without `VITE_MOCK` for release. `build/.gitkeep` is kept so Rust can

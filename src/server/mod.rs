@@ -631,6 +631,9 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
         .get("X-GitHub-Event")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
+    if event == "ping" {
+        return StatusCode::OK;
+    }
     let owner = if matches!(event, "installation" | "installation_repositories") {
         &payload["installation"]["account"]["login"]
     } else {

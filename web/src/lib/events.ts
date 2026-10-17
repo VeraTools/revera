@@ -2,7 +2,10 @@ import { writable } from 'svelte/store';
 import { mockMode } from './api';
 import type { JobSummary } from './types';
 
-export const live = writable<{ job?: JobSummary; repos: number; connected: boolean }>({ repos: 0, connected: false });
+export const live = writable<{ job?: JobSummary; repos: number; connected: boolean }>({
+  repos: 0,
+  connected: false,
+});
 
 export function connectEvents() {
   if (mockMode) {
@@ -11,16 +14,33 @@ export function connectEvents() {
     void import('./mock').then(({ subscribeMock }) => {
       if (closed) return;
       live.update((state) => ({ ...state, connected: true }));
-      clean = subscribeMock((event, job) => live.update((state) => ({ ...state, job: event === 'job' ? job : state.job, repos: state.repos + (event === 'repos' ? 1 : 0) })));
+      clean = subscribeMock((event, job) =>
+        live.update((state) => ({
+          ...state,
+          job: event === 'job' ? job : state.job,
+          repos: state.repos + (event === 'repos' ? 1 : 0),
+        })),
+      );
     });
-    return () => { closed = true; clean?.(); live.update((state) => ({ ...state, connected: false })); };
+    return () => {
+      closed = true;
+      clean?.();
+      live.update((state) => ({ ...state, connected: false }));
+    };
   }
   const source = new EventSource('/api/events');
   source.onopen = () => live.update((state) => ({ ...state, connected: true }));
   source.onerror = () => live.update((state) => ({ ...state, connected: false }));
   source.addEventListener('job', (event) => {
-    try { const job = JSON.parse((event as MessageEvent).data) as JobSummary; live.update((state) => ({ ...state, job })); } catch { /* Ignore malformed events; the next fetch remains authoritative. */ }
+    try {
+      const job = JSON.parse((event as MessageEvent).data) as JobSummary;
+      live.update((state) => ({ ...state, job }));
+    } catch {
+      /* Ignore malformed events; the next fetch remains authoritative. */
+    }
   });
-  source.addEventListener('repos', () => live.update((state) => ({ ...state, repos: state.repos + 1 })));
+  source.addEventListener('repos', () =>
+    live.update((state) => ({ ...state, repos: state.repos + 1 })),
+  );
   return () => source.close();
 }

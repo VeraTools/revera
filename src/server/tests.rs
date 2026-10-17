@@ -153,6 +153,20 @@ fn event_mapping() {
 }
 
 #[test]
+fn webhook_and_rest_pushed_at_compare_equal() {
+    let mut rest = repository();
+    rest["pushed_at"] = json!("2025-06-22T01:38:37Z");
+    let mut webhook = repository();
+    webhook["pushed_at"] = json!(1750556317);
+    let rest = events::Repo::parse(&rest, 9).unwrap();
+    assert_eq!(rest.pushed_at, "1750556317");
+    assert_eq!(
+        rest.pushed_at,
+        events::Repo::parse(&webhook, 9).unwrap().pushed_at
+    );
+}
+
+#[test]
 fn queue_coalesces_cancels_and_serializes() {
     let mut queue = queue::Queue::default();
     queue.enqueue(job("one"));
@@ -395,15 +409,13 @@ async fn setup_gating_state_and_signature_before_json() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    assert_eq!(
-        client
-            .get(format!("{url}/setup?token=bad"))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
+    let denied = client
+        .get(format!("{url}/setup?token=bad"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+    assert!(denied.headers().get("set-cookie").is_none());
     assert_eq!(
         client
             .get(format!("{url}/setup/callback?code=abc&state=bad"))
@@ -425,6 +437,16 @@ async fn setup_gating_state_and_signature_before_json() {
             .unwrap()
             .starts_with("revera_setup=")
     );
+    let cookie = form.headers()["set-cookie"].to_str().unwrap();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+    for (header, authorized) in [(None, false), (Some(cookie), true)] {
+        let mut request = client.get(format!("{url}/api/session"));
+        if let Some(header) = header {
+            request = request.header("cookie", header);
+        }
+        let session: Value = request.send().await.unwrap().json().await.unwrap();
+        assert_eq!(session["setup"]["authorized"], authorized);
+    }
     let manifest: Value = client
         .get(format!("{url}/api/setup/manifest?token={token}"))
         .send()

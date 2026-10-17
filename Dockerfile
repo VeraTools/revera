@@ -1,6 +1,7 @@
 FROM debian:trixie-slim AS binaries
 
 ARG TARGETARCH
+ARG DEBIAN_FRONTEND=noninteractive
 ARG VERA_VERSION=2.1.4
 
 RUN apt-get update \
@@ -40,6 +41,8 @@ FROM debian:trixie-slim
 LABEL org.opencontainers.image.source="https://github.com/VeraTools/revera" \
       org.opencontainers.image.description="Self-hosted Revera pull request reviewer" \
       org.opencontainers.image.licenses="MIT"
+
+ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
