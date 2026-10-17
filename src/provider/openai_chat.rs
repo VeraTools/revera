@@ -22,11 +22,16 @@ impl OpenAiChatAdapter {
         let env_name = route.api_key_env.clone().unwrap_or_default();
         let api_key = crate::redact::secret_env(&env_name)
             .ok_or_else(|| ProviderError::Other(format!("api_key_env {env_name} is not set")))?;
-        Ok(Self {
+        Ok(Self::with_api_key(route, api_key))
+    }
+
+    pub fn with_api_key(route: ModelRoute, api_key: String) -> Self {
+        crate::redact::register(&api_key);
+        Self {
             route,
             api_key,
             cache_key: None,
-        })
+        }
     }
 
     pub fn with_cache_key(mut self, cache_key: Option<String>) -> Self {

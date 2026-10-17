@@ -4,6 +4,7 @@
 
 use regex::Regex;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
 pub const REDACTED: &str = "[REDACTED]";
@@ -14,6 +15,35 @@ const MIN_SECRET_LEN: usize = 8;
 fn registry() -> &'static RwLock<Vec<String>> {
     static R: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
     R.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+fn scoped_registry() -> &'static RwLock<HashMap<String, usize>> {
+    static R: OnceLock<RwLock<HashMap<String, usize>>> = OnceLock::new();
+    R.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Keep a short-lived credential redacted without retaining it after its use.
+pub struct ScopedSecret(String);
+impl ScopedSecret {
+    pub fn new(value: &str) -> Self {
+        *scoped_registry()
+            .write()
+            .unwrap()
+            .entry(value.into())
+            .or_default() += 1;
+        Self(value.into())
+    }
+}
+impl Drop for ScopedSecret {
+    fn drop(&mut self) {
+        let mut registry = scoped_registry().write().unwrap();
+        if let Some(count) = registry.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                registry.remove(&self.0);
+            }
+        }
+    }
 }
 
 fn patterns() -> &'static [Regex] {
@@ -66,8 +96,10 @@ pub fn secret_env(name: &str) -> Option<String> {
 pub fn text(s: &str) -> Cow<'_, str> {
     let mut out: Cow<'_, str> = Cow::Borrowed(s);
     {
-        let r = registry().read().unwrap();
-        for secret in r.iter() {
+        let mut secrets = registry().read().unwrap().clone();
+        secrets.extend(scoped_registry().read().unwrap().keys().cloned());
+        secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        for secret in &secrets {
             if out.contains(secret.as_str()) {
                 out = Cow::Owned(out.replace(secret.as_str(), REDACTED));
             }

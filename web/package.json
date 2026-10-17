@@ -1,0 +1,45 @@
+{
+  "name": "revera-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "imports": {
+    "#lib/api": "./src/lib/api.ts",
+    "#lib/config.svelte": "./src/lib/config.svelte.ts",
+    "#lib/events": "./src/lib/events.ts",
+    "#lib/mock": "./src/lib/mock.ts",
+    "#lib/time": "./src/lib/time.ts",
+    "#lib/types": "./src/lib/types.ts",
+    "#lib/components/*": "./src/lib/components/*"
+  },
+  "scripts": {
+    "prepare": "svelte-kit sync",
+    "predev": "svelte-kit sync",
+    "dev": "vite dev --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "format": "prettier --write .",
+    "lint": "prettier --check .",
+    "check": "npm run lint && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:browser": "node scripts/browser-check.mjs"
+  },
+  "dependencies": {
+    "@lucide/svelte": "1.57.0",
+    "bits-ui": "2.19.5",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "4.0.0",
+    "@sveltejs/kit": "3.0.1",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tailwindcss/vite": "4.3.3",
+    "playwright": "1.64.1",
+    "prettier": "3.9.10",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte": "5.57.2",
+    "svelte-check": "4.7.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.3.4"
+  }
+}

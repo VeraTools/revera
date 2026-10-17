@@ -18,6 +18,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run a self-hosted GitHub App backend.
+    Serve(crate::server::Settings),
     Review {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -45,6 +47,9 @@ enum Cmd {
         /// Re-review even when the patch is identical to stored state.
         #[arg(long)]
         force: bool,
+        /// Override the GitHub bot identity (for installation tokens).
+        #[arg(long)]
+        bot_login: Option<String>,
     },
     /// Build or refresh the Vera index without reviewing.
     Index {
@@ -102,6 +107,13 @@ enum PublishArg {
 pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Serve(settings) => match crate::server::serve(settings).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: {}", crate::redact::diagnostic(&format!("{e:#}")));
+                1
+            }
+        },
         Cmd::Index {
             repo,
             config,
@@ -133,6 +145,7 @@ pub async fn run() -> i32 {
             title,
             body_file,
             force,
+            bot_login,
         } => {
             review(ReviewArgs {
                 repo,
@@ -147,6 +160,7 @@ pub async fn run() -> i32 {
                 title,
                 body_file,
                 force,
+                bot_login,
             })
             .await
         }
@@ -166,6 +180,7 @@ struct ReviewArgs {
     title: Option<String>,
     body_file: Option<PathBuf>,
     force: bool,
+    bot_login: Option<String>,
 }
 
 fn load_cfg_unvalidated(
@@ -426,7 +441,7 @@ async fn review(a: ReviewArgs) -> i32 {
         None => load_cfg_unvalidated(a.config.as_deref(), a.profile.as_deref())
             .map(|(p, c)| (ConfigOrigin::WorkingTree(p), c)),
     };
-    let (origin, cfg) = match loaded {
+    let (origin, mut cfg) = match loaded {
         Ok(c) => c,
         Err(err) => {
             // no trusted base config: a fork cannot be reviewed with
@@ -446,6 +461,9 @@ async fn review(a: ReviewArgs) -> i32 {
             return 1;
         }
     };
+    if let Some(login) = &a.bot_login {
+        cfg.github.bot_login.clone_from(login);
+    }
     eprintln!("config: {origin}");
     let effective_strategy = strategy.unwrap_or(cfg.review.strategy);
     let publish = a.publish.map(publish_arg).unwrap_or(cfg.review.publish);

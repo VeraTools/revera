@@ -89,8 +89,12 @@ async fn run_bounded(mut cmd: Command, what: &str) -> Result<(Option<i32>, Vec<u
 }
 
 async fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    git_with_env(repo, args, &[]).await
+}
+
+async fn git_with_env(repo: &Path, args: &[&str], env: &[(String, String)]) -> Result<String> {
     let mut cmd = git_cmd(repo);
-    cmd.args(args);
+    cmd.args(args).envs(env.iter().cloned());
     let what = format!("git {}", args.first().copied().unwrap_or(""));
     let (code, out, err) = run_bounded(cmd, &what).await?;
     if code != Some(0) {
@@ -105,10 +109,22 @@ pub fn is_oid(s: &str) -> bool {
 }
 
 pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
-    let out = git(repo, &["rev-parse", "--verify", "--end-of-options", rev])
-        .await?
-        .trim()
-        .to_string();
+    rev_parse_with_env(repo, rev, &[]).await
+}
+
+pub async fn rev_parse_with_env(
+    repo: &Path,
+    rev: &str,
+    env: &[(String, String)],
+) -> Result<String> {
+    let out = git_with_env(
+        repo,
+        &["rev-parse", "--verify", "--end-of-options", rev],
+        env,
+    )
+    .await?
+    .trim()
+    .to_string();
     if !is_oid(&out) {
         bail!("git rev-parse {rev}: unexpected output {out:?}");
     }
@@ -137,10 +153,25 @@ pub async fn read_blob(
     path: &str,
     max_bytes: usize,
 ) -> Result<Option<Vec<u8>>> {
+    read_blob_with_env(repo, rev, path, max_bytes, &[]).await
+}
+
+pub async fn read_blob_with_env(
+    repo: &Path,
+    rev: &str,
+    path: &str,
+    max_bytes: usize,
+    env: &[(String, String)],
+) -> Result<Option<Vec<u8>>> {
     if !is_oid(rev) {
         bail!("read_blob: {rev:?} is not a resolved object id");
     }
-    let listing = git(repo, &["ls-tree", "-z", "--full-tree", rev, "--", path]).await?;
+    let listing = git_with_env(
+        repo,
+        &["ls-tree", "-z", "--full-tree", rev, "--", path],
+        env,
+    )
+    .await?;
     let entry = listing.split('\0').find(|e| !e.is_empty());
     let Some(entry) = entry else {
         return Ok(None);
@@ -155,12 +186,16 @@ pub async fn read_blob(
         return Ok(None);
     }
     let oid = oid.context("malformed ls-tree output")?;
-    let size: usize = git(repo, &["cat-file", "-s", oid]).await?.trim().parse()?;
+    let size: usize = git_with_env(repo, &["cat-file", "-s", oid], env)
+        .await?
+        .trim()
+        .parse()?;
     if size > max_bytes {
         bail!("{path} at {rev} is {size} bytes (limit {max_bytes})");
     }
     let mut cmd = git_cmd(repo);
-    cmd.args(["cat-file", "blob", oid]);
+    cmd.args(["cat-file", "blob", oid])
+        .envs(env.iter().cloned());
     let (code, out, err) = run_bounded(cmd, "git cat-file").await?;
     if code != Some(0) {
         bail!("git cat-file {oid} failed: {err}");

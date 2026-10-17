@@ -57,6 +57,11 @@ if ! grep -qF "| \`vera-version\` | \`$vera_version\` |" docs/configuration.md; 
   echo "Vera version mismatch: docs/configuration.md does not list vera-version $vera_version" >&2
   mismatch=1
 fi
+docker_vera_version=$(sed -n 's/^ARG VERA_VERSION=\([^[:space:]]*\)$/\1/p' Dockerfile)
+if [[ "$docker_vera_version" != "$vera_version" ]]; then
+  echo "Vera version mismatch: Dockerfile=${docker_vera_version:-missing} action.yml=$vera_version" >&2
+  mismatch=1
+fi
 if [[ "$mismatch" != 0 ]]; then
   exit 1
 fi

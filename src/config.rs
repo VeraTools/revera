@@ -777,14 +777,18 @@ pub fn env_is_set(name: &str) -> bool {
 
 /// Expand `${VAR}` occurrences; error names the unset var.
 pub fn expand_env(s: &str) -> Result<String> {
+    expand_env_with(s, &|name| std::env::var(name).ok())
+}
+
+pub fn expand_env_with(s: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String> {
     let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
     let mut missing: Option<String> = None;
     let out = re
         .replace_all(s, |c: &regex::Captures| {
             let name = c[1].to_string();
-            match std::env::var(&name) {
-                Ok(v) => v,
-                Err(_) => {
+            match env(&name) {
+                Some(v) => v,
+                None => {
                     missing = Some(name.clone());
                     String::new()
                 }
@@ -800,16 +804,16 @@ pub fn expand_env(s: &str) -> Result<String> {
     Ok(out)
 }
 
-fn expand_route(r: &mut ModelRoute) -> Result<()> {
+fn expand_route(r: &mut ModelRoute, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
     if let Some(b) = &mut r.base_url {
-        *b = expand_env(b)?;
+        *b = expand_env_with(b, env)?;
     }
     if let Some(s) = &mut r.script {
-        let e = expand_env(&s.to_string_lossy())?;
+        let e = expand_env_with(&s.to_string_lossy(), env)?;
         *s = PathBuf::from(e);
     }
     for v in r.extra_headers.values_mut() {
-        *v = expand_env(v)?;
+        *v = expand_env_with(v, env)?;
     }
     if r.session_header.is_none() && r.base_url.as_deref().is_some_and(is_opencode_host) {
         r.session_header = Some("x-opencode-session".into());
@@ -822,6 +826,17 @@ pub fn is_env_name(s: &str) -> bool {
     let mut c = s.chars();
     matches!(c.next(), Some(ch) if ch == '_' || ch.is_ascii_alphabetic())
         && c.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Shared policy for model credentials and dashboard-managed environment names.
+pub fn check_credential_env(what: &str, name: &str, github_env: &str) -> Result<()> {
+    if !is_env_name(name) {
+        bail!("{what}: {name:?} is not a valid environment variable name");
+    }
+    if name == github_env || matches!(name, "GITHUB_TOKEN" | "ACTIONS_RUNTIME_TOKEN") {
+        bail!("{what}: {name} is reserved for GitHub and cannot be sent to a model provider");
+    }
+    Ok(())
 }
 
 /// Credential-bearing endpoints must be absolute https URLs without
@@ -903,10 +918,14 @@ pub(crate) fn check_lane_cardinality(focuses: usize, scouts: usize) -> Result<()
 }
 
 /// Credential check: HTTP routes need their api_key_env populated.
-fn check_route_credentials(name: &str, r: &ModelRoute) -> Result<()> {
+fn check_route_credentials(
+    name: &str,
+    r: &ModelRoute,
+    is_set: &dyn Fn(&str) -> bool,
+) -> Result<()> {
     if r.protocol.is_http() {
         let env = r.api_key_env.as_deref().unwrap_or_default();
-        if !env.is_empty() && !env_is_set(env) {
+        if !env.is_empty() && !is_set(env) {
             bail!("models.{name}: api_key_env {env} is not set (or empty) in the environment");
         }
     }
@@ -922,10 +941,19 @@ impl Config {
 
     /// Parse config text (`label` names its origin in errors).
     pub fn parse(text: &str, label: &str) -> Result<Self> {
-        let text = expand_env(text)?;
+        Self::parse_with_env(text, label, &|name| std::env::var(name).ok())
+    }
+
+    /// Explicit environment avoids mutating process-global credentials in a server.
+    pub fn parse_with_env(
+        text: &str,
+        label: &str,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Self> {
+        let text = expand_env_with(text, env)?;
         let mut cfg: Config =
             serde_saphyr::from_str(&text).with_context(|| format!("invalid config {label}"))?;
-        cfg.expand_and_validate()?;
+        cfg.expand_and_validate(env)?;
         Ok(cfg)
     }
 
@@ -940,7 +968,7 @@ impl Config {
         bail!("no config: pass --config <path> or create ./revera.yaml");
     }
 
-    fn expand_and_validate(&mut self) -> Result<()> {
+    fn expand_and_validate(&mut self, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
         let m = &self.github.summary_marker;
         if !(m.starts_with("<!-- revera") && m.trim_end().ends_with("-->")) {
             bail!(
@@ -953,21 +981,21 @@ impl Config {
         if self.models.scouts.as_ref().is_some_and(|ss| ss.is_empty()) {
             self.models.scouts = None;
         }
-        expand_route(&mut self.models.investigator)?;
+        expand_route(&mut self.models.investigator, env)?;
         if let Some(v) = &mut self.models.validator {
-            expand_route(v)?;
+            expand_route(v, env)?;
         }
         if let Some(l) = &mut self.models.lead {
-            expand_route(l)?;
+            expand_route(l, env)?;
         }
         if let Some(ws) = &mut self.models.workers {
             for w in ws.iter_mut() {
-                expand_route(w)?;
+                expand_route(w, env)?;
             }
         }
         if let Some(ss) = &mut self.models.scouts {
             for s in ss.iter_mut() {
-                expand_route(&mut s.route)?;
+                expand_route(&mut s.route, env)?;
             }
         }
         check_route_shape("investigator", &self.models.investigator)?;
@@ -1014,26 +1042,34 @@ impl Config {
     /// always the investigator, plus the effective validator when
     /// `review.validate`, plus the strategy's extra routes.
     pub fn validate_for(&self, strategy: Strategy) -> Result<()> {
-        check_route_credentials("investigator", &self.models.investigator)?;
+        self.validate_for_with_env(strategy, &env_is_set)
+    }
+
+    pub fn validate_for_with_env(
+        &self,
+        strategy: Strategy,
+        is_set: &dyn Fn(&str) -> bool,
+    ) -> Result<()> {
+        check_route_credentials("investigator", &self.models.investigator, is_set)?;
         if self.review.validate {
-            check_route_credentials("validator", self.effective_validator())?;
+            check_route_credentials("validator", self.effective_validator(), is_set)?;
         }
         match strategy {
             Strategy::Baseline => {}
             Strategy::Delegated => {
                 if let Some(l) = &self.models.lead {
-                    check_route_credentials("lead", l)?;
+                    check_route_credentials("lead", l, is_set)?;
                 }
                 if let Some(ws) = &self.models.workers {
                     for (i, w) in ws.iter().enumerate() {
-                        check_route_credentials(&format!("workers[{i}]"), w)?;
+                        check_route_credentials(&format!("workers[{i}]"), w, is_set)?;
                     }
                 }
             }
             Strategy::Panel => {
                 if let Some(ss) = &self.models.scouts {
                     for s in ss.iter() {
-                        check_route_credentials(&format!("scouts.{}", s.name), &s.route)?;
+                        check_route_credentials(&format!("scouts.{}", s.name), &s.route, is_set)?;
                     }
                 }
             }
@@ -1059,17 +1095,8 @@ impl Config {
     /// repository-relative path (PR content must never be executed).
     pub fn check_trust(&self, event_mode: bool) -> Result<()> {
         let gh = self.github.token_env.as_str();
-        let check_env = |what: &str, env: &str| -> Result<()> {
-            if !is_env_name(env) {
-                bail!("{what}: {env:?} is not a valid environment variable name");
-            }
-            if env == gh || env == "GITHUB_TOKEN" || env == "ACTIONS_RUNTIME_TOKEN" {
-                bail!(
-                    "{what}: {env} is reserved for GitHub and cannot be sent to a model provider"
-                );
-            }
-            Ok(())
-        };
+        let check_env =
+            |what: &str, env: &str| -> Result<()> { check_credential_env(what, env, gh) };
         if !is_env_name(gh) {
             bail!("github.token_env: {gh:?} is not a valid environment variable name");
         }

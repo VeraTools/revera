@@ -6,9 +6,9 @@ only the findings that survive an independent second check.
 [![ci](https://github.com/VeraTools/revera/actions/workflows/ci.yml/badge.svg)](https://github.com/VeraTools/revera/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-It runs as a GitHub Action or a local CLI. The models do the reasoning;
-plain Rust code computes the diff, tracks findings across pushes and talks
-to GitHub.
+It runs as a GitHub Action, as a self-hosted GitHub App with a dashboard, or
+as a local CLI. The models do the reasoning; plain Rust code computes the
+diff, tracks findings across pushes and talks to GitHub.
 
 - **Bring your own model.** Any OpenAI-compatible chat endpoint, plus native
   Anthropic, Google Gemini and OpenAI Responses protocols. One route is
@@ -92,6 +92,22 @@ Check a configuration before the first run with
 `revera doctor --config revera.yaml`; it validates only what the effective
 configuration uses and prints a `next:` hint for every failure.
 
+## Self-hosted GitHub App
+
+To review every repository on an account, including new ones, without adding
+a workflow or secrets to each, run Revera on your own server:
+
+```sh
+podman run -d --name revera -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
+  -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
+```
+
+Put it behind HTTPS, open the setup link it prints, and the dashboard walks
+you through creating the GitHub App, installing it on your repositories and
+connecting your models. Reviews run on your server and appear on pull
+requests as a check plus the same comments the Action posts. Setup, reverse
+proxy examples and the security model: [docs/server.md](docs/server.md).
+
 ## How it works
 
 ```text
@@ -172,6 +188,8 @@ Method, tables and caveats: [docs/evaluation.md](docs/evaluation.md).
 
 - Action: Linux x86_64 runners (`ubuntu-22.04`, `ubuntu-24.04`/`latest`).
   The binary is a static `x86_64-unknown-linux-musl` build.
+- Server: the container image is published for `linux/amd64` and
+  `linux/arm64`; release binaries cover x86_64 and aarch64 Linux.
 - Fork PRs are skipped by default (secrets are unavailable to them) and
   reported as `partial`, not clean.
 - Inline comments require the finding to sit on a diff line; other accepted
@@ -202,6 +220,7 @@ revera review --event "$GITHUB_EVENT_PATH" --publish comment        # inside Act
 revera doctor [--config revera.yaml] [--profile deep] [--strategy panel]
 revera index [--config revera.yaml]                                 # build or refresh the Vera index only
 revera cache-key [--config revera.yaml]                              # Vera index identity, or "disabled"
+revera serve --public-url https://review.example.com                # self-hosted GitHub App and dashboard
 ```
 
 Local runs keep their state in `.revera/` and, with Vera enabled, the index
@@ -217,6 +236,7 @@ Prebuilt binaries are attached to
 
 - [How it works](docs/how-it-works.md): architecture, boundaries, state and re-review
 - [Configuration](docs/configuration.md): every key with defaults
+- [Self-hosted GitHub App](docs/server.md): server, dashboard and setup
 - [Strategies](docs/strategies.md): baseline, delegated, panel
 - [Evaluation](docs/evaluation.md): what was measured and how to reproduce it
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)

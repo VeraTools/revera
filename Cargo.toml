@@ -1,6 +1,6 @@
 [package]
 name = "revera"
-version = "0.4.7"
+version = "0.5.0"
 edition = "2024"
 description = "Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval."
 license = "MIT"
@@ -11,11 +11,11 @@ categories = ["development-tools"]
 rust-version = "1.89"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-saphyr = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "fs", "net", "io-util", "signal"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 anyhow = "1"
 thiserror = "2"
@@ -32,10 +32,18 @@ uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 futures = "0.3"
 url = "2"
+axum = "0.8.9"
+hmac = "0.13.0"
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+nix = { version = "0.31", features = ["signal", "process"] }
+rust-embed = { version = "8.13.0", features = ["debug-embed"] }
+mime_guess = "2.0.5"
+getrandom = "0.4.3"
 
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+aws-lc-rs = "1.18.2"
 
 [lints.rust]
 unsafe_code = "forbid"
