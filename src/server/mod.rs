@@ -428,6 +428,8 @@ async fn serve_until(
 ) -> Result<()> {
     let scheduler = tokio::spawn(dispatch(server.clone()));
     let reconcile = tokio::spawn(reconcile::loop_forever(server.clone()));
+    let probes = server.clone();
+    tokio::spawn(async move { api::test_untested(&probes).await });
     let (drain, mut draining) = watch::channel(false);
     let http = axum::serve(listener, router(server.clone())).with_graceful_shutdown(async move {
         let _ = draining.wait_for(|draining| *draining).await;

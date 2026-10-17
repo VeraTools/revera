@@ -121,6 +121,29 @@ async fn completed_setup_is_done_on_restart_before_any_reconcile() {
 }
 
 #[tokio::test]
+async fn startup_tests_untested_models_so_a_configured_server_is_done() {
+    let mock = MockServer::start().await;
+    let (data, original) = complete_setup(&mock).await;
+    drop(original);
+    std::fs::remove_file(data.path().join("health.json")).unwrap();
+    mock.reset().await;
+    let restarted = restart(data.path(), &mock).await;
+    assert_eq!(session_stage(restarted.clone()).await, "configure");
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("Authorization", "Bearer restart-model-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    api::test_untested(&restarted).await;
+    assert_eq!(session_stage(restarted.clone()).await, "done");
+    api::test_untested(&restarted).await;
+}
+
+#[tokio::test]
 async fn probe_health_survives_noop_and_unrelated_saves_but_not_referenced_changes() {
     let mock = MockServer::start().await;
     let (data, server) = complete_setup(&mock).await;

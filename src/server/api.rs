@@ -112,13 +112,7 @@ async fn stage(server: &Server) -> &'static str {
     let Ok(config) = dashboard.validate(&yaml) else {
         return "configure";
     };
-    let mut roles = vec!["investigator"];
-    if config.review.validate {
-        roles.push("validator");
-    }
-    if config.vera.enabled && config.vera.backend == crate::config::VeraBackend::Api {
-        roles.push("embedding");
-    }
+    let roles = required_roles(&config);
     if config.vera.enabled {
         let embedding = (config.vera.backend == crate::config::VeraBackend::Api)
             .then_some(config.vera.embedding.as_ref())
@@ -813,6 +807,55 @@ impl Probe {
     }
 }
 async fn test(State(server): State<Arc<Server>>, Json(input): Json<Role>) -> ApiResult {
+    Ok(output(run_test(&server, input).await?))
+}
+
+/// Tests each role the saved config needs that has no current result, so a
+/// configured server reports its health without anyone opening Settings.
+pub(super) async fn test_untested(server: &Server) {
+    let roles = {
+        let mut dashboard = server.dashboard.lock().await;
+        let Ok(Some(yaml)) = server.config_yaml() else {
+            return;
+        };
+        if dashboard
+            .sync_health(&server.settings.data_dir, Some(&yaml), &server.session_key)
+            .is_err()
+        {
+            return;
+        }
+        let Ok(config) = dashboard.validate(&yaml) else {
+            return;
+        };
+        required_roles(&config)
+            .into_iter()
+            .filter(|role| !dashboard.health.contains_key(*role))
+            .collect::<Vec<_>>()
+    };
+    for role in roles {
+        // An investigator test also covers a validator that inherits its route.
+        if server.dashboard.lock().await.health.contains_key(role) {
+            continue;
+        }
+        let role = Role { role: role.into() };
+        if let Err(Error(_, error)) = run_test(server, role).await {
+            tracing::warn!("startup model test: {error}");
+        }
+    }
+}
+
+fn required_roles(config: &crate::config::Config) -> Vec<&'static str> {
+    let mut roles = vec!["investigator"];
+    if config.review.validate {
+        roles.push("validator");
+    }
+    if config.vera.enabled && config.vera.backend == crate::config::VeraBackend::Api {
+        roles.push("embedding");
+    }
+    roles
+}
+
+async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
     if !matches!(
         input.role.as_str(),
         "investigator" | "validator" | "embedding"
@@ -891,7 +934,7 @@ async fn test(State(server): State<Arc<Server>>, Json(input): Json<Role>) -> Api
         dashboard.health.insert(input.role, health);
         dashboard.persist_health(&server.settings.data_dir)?;
     }
-    Ok(output(value))
+    Ok(value)
 }
 async fn models(State(server): State<Arc<Server>>, Json(input): Json<Role>) -> ApiResult {
     let prepared = {
