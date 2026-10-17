@@ -866,7 +866,7 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         ));
     }
     let start = Instant::now();
-    let (generation, model, inherited, prepared) = {
+    let (generation, model, started, prepared) = {
         let mut dashboard = server.dashboard.lock().await;
         let yaml = server.config_yaml()?;
         dashboard.sync_health(
@@ -893,7 +893,19 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
             .as_ref()
             .is_ok_and(|config| config.validator_inherited());
         let prepared = config.and_then(|config| probe(&config, &dashboard, &input.role));
-        (dashboard.health_generation, model, inherited, prepared)
+        let mut roles = vec![input.role.clone()];
+        if input.role == "investigator" && inherited {
+            roles.push("validator".into());
+        }
+        let started: Vec<(String, u64)> = roles
+            .into_iter()
+            .map(|role| {
+                let seq = dashboard.probe_seq.entry(role.clone()).or_default();
+                *seq += 1;
+                (role, *seq)
+            })
+            .collect();
+        (dashboard.health_generation, model, started, prepared)
     };
     let result = match prepared {
         Ok(probe) => tokio::time::timeout(Duration::from_secs(60), probe.test()).await,
@@ -926,13 +938,19 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         &server.session_key,
     )?;
     if generation == dashboard.health_generation {
-        if input.role == "investigator" && inherited {
-            let mut inherited = health.clone();
-            inherited["role"] = json!("validator");
-            dashboard.health.insert("validator".into(), inherited);
+        let mut changed = false;
+        for (role, seq) in started {
+            if dashboard.probe_seq.get(&role) != Some(&seq) {
+                continue;
+            }
+            let mut result = health.clone();
+            result["role"] = json!(role);
+            dashboard.health.insert(role, result);
+            changed = true;
         }
-        dashboard.health.insert(input.role, health);
-        dashboard.persist_health(&server.settings.data_dir)?;
+        if changed {
+            dashboard.persist_health(&server.settings.data_dir)?;
+        }
     }
     Ok(value)
 }

@@ -144,6 +144,51 @@ async fn startup_tests_untested_models_so_a_configured_server_is_done() {
 }
 
 #[tokio::test]
+async fn an_older_slow_probe_cannot_overwrite_a_newer_result() {
+    let mock = MockServer::start().await;
+    let (data, original) = complete_setup(&mock).await;
+    drop(original);
+    std::fs::remove_file(data.path().join("health.json")).unwrap();
+    mock.reset().await;
+    let restarted = restart(data.path(), &mock).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_delay(Duration::from_millis(800)))
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+        })))
+        .mount(&mock)
+        .await;
+    let slow = restarted.clone();
+    let slow = tokio::spawn(async move { api::test_untested(&slow).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (cookie, csrf) = administrator(&restarted).await;
+    let (url, task) = http(restarted.clone()).await;
+    let result: Value = reqwest::Client::new()
+        .post(format!("{url}/api/settings/test"))
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .json(&json!({"role": "investigator"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["ok"], true);
+    slow.await.unwrap();
+    task.abort();
+    let dashboard = restarted.dashboard.lock().await;
+    assert_eq!(dashboard.health["investigator"]["ok"], true);
+    assert_eq!(dashboard.health["validator"]["ok"], true);
+}
+
+#[tokio::test]
 async fn probe_health_survives_noop_and_unrelated_saves_but_not_referenced_changes() {
     let mock = MockServer::start().await;
     let (data, server) = complete_setup(&mock).await;

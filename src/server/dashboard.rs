@@ -205,6 +205,8 @@ pub struct Dashboard {
     pub health: BTreeMap<String, Value>,
     health_key: String,
     pub health_generation: u64,
+    /// Latest probe started per role; only that probe may record a result.
+    pub probe_seq: BTreeMap<String, u64>,
     pub github: Value,
     pub installations: usize,
 }
@@ -266,6 +268,7 @@ impl Dashboard {
             health: health.models,
             health_key: health.key,
             health_generation: 0,
+            probe_seq: BTreeMap::new(),
             github: json!({"ok": false}),
             installations: inventory.installations,
         })
