@@ -318,7 +318,8 @@ async fn initialize(
         .as_ref()
         .map(|p| cwd.join(p))
         .unwrap_or_else(|| settings.data_dir.join("revera.yaml"));
-    let dashboard = dashboard::Dashboard::load(&settings.data_dir)?;
+    let seen = dashboard::read_json::<reconcile::Seen>(&settings.data_dir, "seen.json")?;
+    let mut dashboard = dashboard::Dashboard::load(&settings.data_dir, &seen)?;
     let session_key = auth::key(&settings.data_dir)?;
     let yaml = read_config(&settings, &config).with_context(|| {
         format!(
@@ -326,8 +327,8 @@ async fn initialize(
             config.display()
         )
     })?;
-    let config = if let Some(yaml) = yaml {
-        dashboard.parse(&yaml)?.check_trust(true)?;
+    let config = if let Some(yaml) = yaml.as_deref() {
+        dashboard.parse(yaml)?.check_trust(true)?;
         config.canonicalize()?
     } else {
         config
@@ -335,6 +336,7 @@ async fn initialize(
     if config.starts_with(settings.data_dir.join("repos")) {
         bail!("server default config must be outside the repository workspaces");
     }
+    dashboard.sync_health(&settings.data_dir, yaml.as_deref(), &session_key)?;
     let app_path = settings.data_dir.join("app.json");
     crate::fsutil::check_regular_target(&app_path)?;
     let app = if app_path.exists() {
@@ -371,13 +373,6 @@ async fn initialize(
         Some(token)
     } else {
         None
-    };
-    let seen_path = settings.data_dir.join("seen.json");
-    crate::fsutil::check_regular_target(&seen_path)?;
-    let seen = if seen_path.exists() {
-        serde_json::from_slice(&std::fs::read(seen_path)?)?
-    } else {
-        reconcile::Seen::default()
     };
     let allowed = std::env::var("REVERA_ALLOWED_OWNERS")
         .unwrap_or_default()

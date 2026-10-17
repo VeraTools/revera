@@ -93,7 +93,7 @@ async fn stage(server: &Server) -> &'static str {
     if server.setup.lock().await.app.is_none() {
         return "create_app";
     }
-    let dashboard = server.dashboard.lock().await;
+    let mut dashboard = server.dashboard.lock().await;
     if dashboard.preferences.admins.is_empty() {
         return "sign_in";
     }
@@ -103,6 +103,12 @@ async fn stage(server: &Server) -> &'static str {
     let Ok(yaml) = std::fs::read_to_string(&server.config) else {
         return "configure";
     };
+    if dashboard
+        .sync_health(&server.settings.data_dir, Some(&yaml), &server.session_key)
+        .is_err()
+    {
+        return "configure";
+    }
     let Ok(config) = dashboard.validate(&yaml) else {
         return "configure";
     };
@@ -220,11 +226,15 @@ fn ordered(dashboard: &Dashboard) -> Vec<JobSummary> {
 
 async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
     let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
-    let dashboard = server.dashboard.lock().await;
+    let mut dashboard = server.dashboard.lock().await;
     let jobs = ordered(&dashboard);
-    let config = std::fs::read_to_string(&server.config)
-        .ok()
-        .and_then(|yaml| dashboard.parse(&yaml).ok());
+    let yaml = server.config_yaml()?;
+    dashboard.sync_health(
+        &server.settings.data_dir,
+        yaml.as_deref(),
+        &server.session_key,
+    )?;
+    let config = yaml.and_then(|yaml| dashboard.parse(&yaml).ok());
     let models: Vec<_> = config
         .as_ref()
         .into_iter()
@@ -637,7 +647,11 @@ async fn config(State(server): State<Arc<Server>>, Json(input): Json<Yaml>) -> A
         &server.config,
         input.yaml.as_bytes(),
     )?;
-    dashboard.invalidate_health();
+    dashboard.sync_health(
+        &server.settings.data_dir,
+        Some(&input.yaml),
+        &server.session_key,
+    )?;
     drop(dashboard);
     if first {
         tokio::spawn(async move {
@@ -676,12 +690,13 @@ struct Secret {
     value: String,
 }
 async fn change_secret(server: &Server, name: String, value: Option<String>) -> ApiResult {
-    let yaml = server.config_yaml()?.unwrap_or_default();
     let mut dashboard = server.dashboard.lock().await;
+    let yaml = server.config_yaml()?;
+    let text = yaml.as_deref().unwrap_or_default();
     let token_env = dashboard
-        .parse(&yaml)
+        .parse(text)
         .or_else(|_| {
-            crate::config::Config::parse_with_env(&yaml, "server config", &|name| {
+            crate::config::Config::parse_with_env(text, "server config", &|name| {
                 dashboard.env(name).or_else(|| Some("UNSET".into()))
             })
         })
@@ -707,7 +722,11 @@ async fn change_secret(server: &Server, name: String, value: Option<String>) -> 
         &serde_json::to_vec_pretty(&secrets)?,
     )?;
     dashboard.secrets = secrets;
-    dashboard.invalidate_health();
+    dashboard.sync_health(
+        &server.settings.data_dir,
+        yaml.as_deref(),
+        &server.session_key,
+    )?;
     let source = if dashboard.secrets.contains_key(&name) {
         "dashboard"
     } else if crate::config::env_is_set(&name) {
@@ -805,9 +824,15 @@ async fn test(State(server): State<Arc<Server>>, Json(input): Json<Role>) -> Api
     }
     let start = Instant::now();
     let (generation, model, inherited, prepared) = {
-        let dashboard = server.dashboard.lock().await;
-        let config = std::fs::read_to_string(&server.config)
-            .map_err(anyhow::Error::from)
+        let mut dashboard = server.dashboard.lock().await;
+        let yaml = server.config_yaml()?;
+        dashboard.sync_health(
+            &server.settings.data_dir,
+            yaml.as_deref(),
+            &server.session_key,
+        )?;
+        let config = yaml
+            .context("models are not configured yet")
             .and_then(|yaml| dashboard.parse(&yaml));
         let model = config
             .as_ref()
@@ -851,6 +876,12 @@ async fn test(State(server): State<Arc<Server>>, Json(input): Json<Role>) -> Api
     health["model"] = json!(model.unwrap_or_default());
     health["checked_at"] = json!(chrono::Utc::now().to_rfc3339());
     let mut dashboard = server.dashboard.lock().await;
+    let yaml = server.config_yaml()?;
+    dashboard.sync_health(
+        &server.settings.data_dir,
+        yaml.as_deref(),
+        &server.session_key,
+    )?;
     if generation == dashboard.health_generation {
         if input.role == "investigator" && inherited {
             let mut inherited = health.clone();
@@ -858,6 +889,7 @@ async fn test(State(server): State<Arc<Server>>, Json(input): Json<Role>) -> Api
             dashboard.health.insert("validator".into(), inherited);
         }
         dashboard.health.insert(input.role, health);
+        dashboard.persist_health(&server.settings.data_dir)?;
     }
     Ok(output(value))
 }

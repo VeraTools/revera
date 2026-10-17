@@ -3,8 +3,10 @@ use super::{
     events::{Job, Kind, Repo},
 };
 use anyhow::{Context, Result, bail};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -174,12 +176,24 @@ fn string(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub repo: Repo,
     pub private: bool,
     pub html_url: String,
     pub has_override: bool,
+}
+
+#[derive(Default, Deserialize)]
+struct Inventory {
+    installations: usize,
+    repos: BTreeMap<String, RepoInfo>,
+}
+
+#[derive(Default, Deserialize)]
+struct ProbeHealth {
+    key: String,
+    models: BTreeMap<String, Value>,
 }
 
 pub struct Dashboard {
@@ -189,6 +203,7 @@ pub struct Dashboard {
     pub jobs: BTreeMap<String, JobSummary>,
     pub repos: BTreeMap<String, RepoInfo>,
     pub health: BTreeMap<String, Value>,
+    health_key: String,
     pub health_generation: u64,
     pub github: Value,
     pub installations: usize,
@@ -205,7 +220,7 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(data: &Path, name: &s
 }
 
 impl Dashboard {
-    pub fn load(data: &Path) -> Result<Self> {
+    pub fn load(data: &Path, seen: &super::reconcile::Seen) -> Result<Self> {
         let preferences: Preferences = read_json(data, "settings.json")?;
         crate::fsutil::check_regular_target(&data.join("bootstrap-admin"))?;
         let bootstrap_used =
@@ -214,6 +229,17 @@ impl Dashboard {
         for value in secrets.values() {
             crate::redact::register(value);
         }
+        let inventory: Option<Inventory> = read_json(data, "inventory.json")?;
+        let inventory = inventory.unwrap_or_else(|| Inventory {
+            installations: seen
+                .0
+                .values()
+                .map(|known| known.repo.installation)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            repos: BTreeMap::new(),
+        });
+        let health: ProbeHealth = read_json(data, "health.json")?;
         let mut jobs = BTreeMap::new();
         for entry in std::fs::read_dir(data.join("jobs"))? {
             let entry = entry?;
@@ -236,11 +262,12 @@ impl Dashboard {
             preferences,
             secrets,
             jobs,
-            repos: BTreeMap::new(),
-            health: BTreeMap::new(),
+            repos: inventory.repos,
+            health: health.models,
+            health_key: health.key,
             health_generation: 0,
             github: json!({"ok": false}),
-            installations: 0,
+            installations: inventory.installations,
         })
     }
     pub fn env(&self, name: &str) -> Option<String> {
@@ -266,9 +293,48 @@ impl Dashboard {
         })?;
         Ok(config)
     }
-    pub fn invalidate_health(&mut self) {
-        self.health.clear();
-        self.health_generation = self.health_generation.wrapping_add(1);
+    pub fn sync_health(&mut self, data: &Path, yaml: Option<&str>, key: &[u8]) -> Result<()> {
+        let text = yaml.unwrap_or_default();
+        let mut names: BTreeSet<_> = Self::referenced(text).into_iter().collect();
+        if let Ok(expanded) = crate::config::expand_env_with(text, &|name| self.env(name))
+            && let Ok(value) = serde_saphyr::from_str::<Value>(&expanded)
+        {
+            // YAML aliases, quoted keys and interpolated key names must cover the
+            // same credentials as ordinary `api_key_env: NAME` fields.
+            credential_references(&value, &mut names);
+        }
+        let referenced: BTreeMap<_, _> = names
+            .into_iter()
+            .map(|name| {
+                let value = self.env(&name);
+                (name, value)
+            })
+            .collect();
+        // Keyed hashing lets us detect credential changes without storing credentials
+        // or a reusable unkeyed digest of them. The cookie key never leaves this host.
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key");
+        mac.update(b"revera-probe-health-v1\0");
+        mac.update(&serde_json::to_vec(&(yaml, referenced))?);
+        let fingerprint = hex::encode(mac.finalize().into_bytes());
+        if self.health_key != fingerprint {
+            self.health.clear();
+            self.health_generation = self.health_generation.wrapping_add(1);
+            self.health_key = fingerprint;
+            self.persist_health(data)?;
+        }
+        Ok(())
+    }
+    pub fn persist_health(&self, data: &Path) -> Result<()> {
+        let mut value = json!({"key": self.health_key, "models": self.health});
+        crate::redact::json(&mut value);
+        crate::fsutil::write_atomic_in(data, "health.json", &serde_json::to_vec_pretty(&value)?)
+    }
+    pub fn retry_index(&self, repo: &str) -> bool {
+        self.jobs
+            .values()
+            .filter(|job| job.repo == repo && job.kind == "index")
+            .max_by(|a, b| a.queued_at.cmp(&b.queued_at).then(a.id.cmp(&b.id)))
+            .is_some_and(|job| matches!(job.status.as_str(), "failed" | "partial"))
     }
     pub fn unconfigured_reviews(&self, repo: &str) -> BTreeSet<u64> {
         let mut latest = BTreeMap::<u64, &JobSummary>::new();
@@ -336,6 +402,37 @@ impl Dashboard {
         self.preferences = preferences;
         Ok(())
     }
+}
+
+fn credential_references(value: &Value, names: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "api_key_env"
+                    && let Some(name) = value.as_str()
+                {
+                    names.insert(name.into());
+                }
+                credential_references(value, names);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                credential_references(value, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn write_inventory(
+    data: &Path,
+    installations: usize,
+    repos: &BTreeMap<String, RepoInfo>,
+) -> Result<()> {
+    let mut value = json!({"installations": installations, "repos": repos});
+    crate::redact::json(&mut value);
+    crate::fsutil::write_atomic_in(data, "inventory.json", &serde_json::to_vec_pretty(&value)?)
 }
 
 pub fn write_preferences(data: &Path, preferences: &Preferences) -> Result<()> {

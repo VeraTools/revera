@@ -167,9 +167,12 @@ environment for probes, `${VAR}` expansion and child jobs. Deleting that value
 falls back to the environment, or reports the key as missing. GitHub token names
 are reserved and cannot be used for model keys.
 
-Config or key changes clear cached probe results: run **Test** again. Setup
+Config or referenced-key changes clear cached probe results: run **Test** again. Setup
 stays at configuration until the required model checks pass and active retrieval
-keys are present. Probe health is not retained across server restarts.
+keys are present. Probe results and installation presence survive restarts, so
+completed setup stays complete without waiting for the first inventory. Health is
+keyed to the saved YAML and its referenced environment values; secret values are
+never stored in the health file. Unrelated keys and unchanged saves do not clear it.
 
 ## What happens on PRs, pushes and re-runs
 
@@ -190,6 +193,9 @@ Only validator-accepted findings count toward the check and dashboard totals;
 rejected or unconfirmed candidates do not.
 Cancelled work gets a cancelled check. Re-running the app's check forces a fresh
 review, even if the patch is unchanged.
+Failed jobs show the final error line from the redacted log, or their exit status
+when no error line is available. A failed index keeps its previous push checkpoint
+so reconciliation can retry it.
 
 Reconciliation runs at startup and every ten minutes by default to recover
 missed events. The first sighting records existing PR heads without reviewing
@@ -211,6 +217,8 @@ the dashboard or server environment, not in configuration files.
 /data/app.json                app credentials, including OAuth client secret (0600)
 /data/settings.json           administrators, allowed owners and repo preferences
 /data/secrets.json            dashboard-managed environment values (0600)
+/data/health.json             keyed, redacted model probe results
+/data/inventory.json          last successful installation/repository inventory
 /data/session-key             32-byte cookie signing key (0600)
 /data/bootstrap-admin         first-admin bootstrap marker (0600)
 /data/setup-token             bootstrap token (0600; deleted after setup)

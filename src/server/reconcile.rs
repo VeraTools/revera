@@ -32,6 +32,7 @@ impl Seen {
             prs,
             &super::dashboard::Preferences::default(),
             &BTreeSet::new(),
+            false,
         )
     }
 
@@ -41,6 +42,7 @@ impl Seen {
         prs: &[Value],
         preferences: &super::dashboard::Preferences,
         retry: &BTreeSet<u64>,
+        retry_index: bool,
     ) -> Vec<Job> {
         if !self.0.get(&repo.id).is_some_and(|known| known.initialized) {
             let heads = prs
@@ -56,7 +58,11 @@ impl Seen {
                 repo.id,
                 SeenRepo {
                     repo: repo.clone(),
-                    pushed_at: repo.pushed_at.clone(),
+                    pushed_at: if retry_index {
+                        String::new()
+                    } else {
+                        repo.pushed_at.clone()
+                    },
                     heads,
                     initialized: true,
                 },
@@ -66,7 +72,7 @@ impl Seen {
         let known = self.0.get_mut(&repo.id).expect("initialized repository");
         known.repo = repo.clone();
         let mut jobs = Vec::new();
-        if known.pushed_at != repo.pushed_at {
+        if known.pushed_at != repo.pushed_at || retry_index {
             jobs.push(Job {
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 trigger: "reconcile".into(),
@@ -180,14 +186,16 @@ pub(super) async fn once(server: &Server) -> Result<()> {
                 )
                 .await?;
             let mut seen = server.seen.lock().await;
-            let (preferences, retry) = {
+            let (preferences, retry, retry_index) = {
                 let dashboard = server.dashboard.lock().await;
                 (
                     dashboard.preferences.clone(),
                     dashboard.unconfigured_reviews(&repo.full_name),
+                    dashboard.retry_index(&repo.full_name),
                 )
             };
-            let jobs = seen.observe_with_preferences(&repo, &prs, &preferences, &retry);
+            let jobs =
+                seen.observe_with_preferences(&repo, &prs, &preferences, &retry, retry_index);
             save(server, &seen).await?;
             drop(seen);
             let workspace = server.settings.data_dir.join("repos").join(&repo.full_name);
@@ -241,6 +249,7 @@ pub(super) async fn once(server: &Server) -> Result<()> {
         server.remove_repo(repo).await?;
     }
     let mut dashboard = server.dashboard.lock().await;
+    super::dashboard::write_inventory(&server.settings.data_dir, installed, &inventory)?;
     dashboard.installations = installed;
     dashboard.repos = inventory;
     dashboard.github = serde_json::json!({"ok": true});

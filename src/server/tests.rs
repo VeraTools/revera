@@ -1371,9 +1371,6 @@ async fn setup_stage_requires_active_retrieval_keys() {
         dashboard
             .secrets
             .insert("REVIEW_API_KEY".into(), "stage-model-key".into());
-        for role in ["investigator", "validator", "embedding"] {
-            dashboard.health.insert(role.into(), json!({"ok": true}));
-        }
     }
     let (url, task) = http(server.clone()).await;
     let client = reqwest::Client::new();
@@ -1419,6 +1416,12 @@ async fn setup_stage_requires_active_retrieval_keys() {
             if let Some(value) = value {
                 dashboard.secrets.insert(name.into(), value.into());
             }
+        }
+        dashboard
+            .sync_health(&server.settings.data_dir, Some(&yaml), &server.session_key)
+            .unwrap();
+        for role in ["investigator", "validator", "embedding"] {
+            dashboard.health.insert(role.into(), json!({"ok": true}));
         }
         drop(dashboard);
         let session: Value = client
@@ -1521,9 +1524,12 @@ async fn provider_probe_labels_inheritance_and_cache_invalidation() {
         false
     );
     mock.reset().await;
-    // Both kinds of save must invalidate a probe that is already on the wire.
+    // Both kinds of change must invalidate a probe that is already on the wire.
     for (route_path, body) in [
-        ("/api/settings/config", json!({"yaml": yaml})),
+        (
+            "/api/settings/config",
+            json!({"yaml": format!("{yaml}# changed during the probe\n")}),
+        ),
         (
             "/api/secrets/REVIEW_API_KEY",
             json!({"value": "replacement-probe-key"}),
@@ -1566,6 +1572,9 @@ async fn provider_probe_labels_inheritance_and_cache_invalidation() {
         let response: Value = probe.await.unwrap().json().await.unwrap();
         assert_eq!(response["ok"], true);
         assert!(server.dashboard.lock().await.health.is_empty());
+        let persisted: Value =
+            dashboard::read_json(&server.settings.data_dir, "health.json").unwrap();
+        assert_eq!(persisted["models"], json!({}));
         mock.reset().await;
     }
     assert_eq!(
@@ -1660,3 +1669,6 @@ async fn job_api_omits_absent_optional_fields_and_state_blob() {
 
 #[path = "regressions.rs"]
 mod regressions;
+
+#[path = "live_regressions.rs"]
+mod live_regressions;

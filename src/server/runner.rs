@@ -624,7 +624,9 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
             drop(queue);
             continue;
         }
-        record_finish(server, job, cancelled).await?;
+        if exit == 0 || !matches!(job.kind, Kind::Index) {
+            record_finish(server, job, cancelled).await?;
+        }
         finish_summary(server, job, &execution, exit, cancelled).await?;
         if queue
             .running
@@ -668,6 +670,14 @@ async fn finish_summary(
         .as_ref()
         .and_then(|r| r["reason"].as_str())
         .map(str::to_owned);
+    let reason = if status == "failed" {
+        Some(failure_reason(
+            &execution.report.with_file_name("log.txt"),
+            exit,
+        ))
+    } else {
+        reason
+    };
     let skipped = !cancelled && reason.as_ref().is_some_and(|s| s.starts_with("fork PR:"));
     let mut summary = server
         .dashboard
@@ -698,4 +708,21 @@ async fn finish_summary(
         }
     }
     server.update_job(summary).await
+}
+
+fn failure_reason(path: &Path, exit: i32) -> String {
+    use std::io::BufRead;
+    let mut last = None;
+    if let Ok(file) = std::fs::File::open(path) {
+        for line in std::io::BufReader::new(file).lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let line = line.trim();
+            if line.starts_with("Error:") || line.starts_with("error:") {
+                last = Some(crate::redact::diagnostic(line).chars().take(300).collect());
+            }
+        }
+    }
+    last.unwrap_or_else(|| format!("process exited with status {exit}"))
 }
