@@ -481,6 +481,11 @@ async fn failed_index_preserves_pushed_at_and_next_reconcile_retries() {
                 .clone_from(&current.repo.pushed_at);
             reconcile::save(&server, &seen).await.unwrap();
         }
+        // A retry is due only once the first ten-minute delay has elapsed.
+        let mut failed = server.dashboard.lock().await.jobs[&current.id].clone();
+        failed.finished_at =
+            Some((chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
+        server.update_job(failed).await.unwrap();
         mock.reset().await;
         Mock::given(method("GET"))
             .and(path("/app/installations"))

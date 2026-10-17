@@ -498,6 +498,26 @@ async fn shutdown_cancels_before_bounded_http_and_sse_drain() {
         .await
         .secrets
         .insert("REVIEW_API_KEY".into(), "drain-probe-key".into());
+    // Start with real cached health so the startup tick does not race the manual
+    // probe whose HTTP drain this test exercises.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    api::test_untested(&server).await;
+    assert_eq!(
+        server.dashboard.lock().await.health["investigator"]["ok"],
+        true
+    );
+    assert_eq!(
+        server.dashboard.lock().await.health["validator"]["ok"],
+        true
+    );
+    mock.reset().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(

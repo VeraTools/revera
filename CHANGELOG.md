@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.1
+
+- Failed or partial server indexes now wait before automatic retries: 10 minutes,
+  doubling after each failure up to 24 hours. A completed index resets the wait;
+  push webhooks and manual indexing still run immediately. The repository API
+  reports the next retry time as `index.retry_at` while waiting.
+- Server model health checks now also run on each reconciliation tick, so editing
+  the configuration file by hand re-tests the changed models without a restart.
+
 ## v0.5.0
 
 - New `revera serve` runs Revera as a self-hosted GitHub App. Install it

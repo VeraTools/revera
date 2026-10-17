@@ -332,12 +332,31 @@ impl Dashboard {
         crate::redact::json(&mut value);
         crate::fsutil::write_atomic_in(data, "health.json", &serde_json::to_vec_pretty(&value)?)
     }
-    pub fn retry_index(&self, repo: &str) -> bool {
-        self.jobs
+    pub fn index_retry_at(&self, repo: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        let mut history: Vec<_> = self
+            .jobs
             .values()
             .filter(|job| job.repo == repo && job.kind == "index")
-            .max_by(|a, b| a.queued_at.cmp(&b.queued_at).then(a.id.cmp(&b.id)))
-            .is_some_and(|job| matches!(job.status.as_str(), "failed" | "partial"))
+            .collect();
+        history.sort_by(|a, b| b.queued_at.cmp(&a.queued_at).then(b.id.cmp(&a.id)));
+        let mut failures = 0;
+        let mut latest = None;
+        for job in history {
+            match job.status.as_str() {
+                "complete" => break,
+                "failed" | "partial" => {
+                    failures += 1;
+                    latest.get_or_insert(job);
+                }
+                _ => {}
+            }
+        }
+        let latest = latest?;
+        let finished = chrono::DateTime::parse_from_rfc3339(latest.finished_at.as_deref()?)
+            .ok()?
+            .with_timezone(&chrono::Utc);
+        let minutes = (1..failures).fold(10, |delay, _| (delay * 2).min(24 * 60));
+        Some(finished + chrono::Duration::minutes(minutes))
     }
     pub fn unconfigured_reviews(&self, repo: &str) -> BTreeSet<u64> {
         let mut latest = BTreeMap::<u64, &JobSummary>::new();
