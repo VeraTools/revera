@@ -17,10 +17,11 @@ it can post. In our evaluation, the default setup posted no false positives
 across 13 small test repositories, using the same model for both roles. That
 is a small sample, not a guarantee. [Results and caveats](docs/evaluation.md).
 
-Use your own models and keys. Revera supports OpenAI-compatible endpoints,
+Hosted AI reviewers usually pick the model for you and charge per seat. With
+Revera you use your own models and keys. It supports OpenAI-compatible endpoints,
 OpenAI Responses, Anthropic and Google Gemini. You choose the provider and
 model for each role, control the review budget and pay the provider directly.
-There is no per-seat fee. Code goes only to the providers you configure;
+Code goes only to the providers you configure;
 external web search is a separate opt-in.
 
 Ordered fallback models can keep a review running when a provider is
@@ -149,7 +150,8 @@ With the GitHub App, mention it by its slug (the app name GitHub shows, such as
 
 Commands are available to repository owners, members and collaborators.
 Both quick and deep keep validation on. The Action uses workflow triggers,
-not mentions. [Trigger and mode details](docs/server.md#triggers-review-modes-and-mentions).
+not mentions; set the Action's `profile` input to `quick` or `deep` for the
+same modes. [Trigger and mode details](docs/server.md#triggers-review-modes-and-mentions).
 
 A posted finding names the defect, how to trigger it, its impact and the
 evidence. This shortened example came from a release test that flipped an
