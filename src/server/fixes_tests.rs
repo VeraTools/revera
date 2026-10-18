@@ -897,13 +897,7 @@ fn git(path: &FsPath, args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
-#[tokio::test]
-async fn sandbox_full_worker_generate_tests_verify_approve_deliver_followup() {
-    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
-        return;
-    }
-    assert!(fix::sandbox::probe().await.available);
-    let (_data, s, mock, job_id) = fixture().await;
+async fn worker_checkout(s: &Server, job_id: &str) -> (PathBuf, String) {
     let checkout =
         crate::fsutil::ensure_dir(&s.settings.data_dir, FsPath::new("repos/owner/repo")).unwrap();
     git(&checkout, &["init", "-q"]);
@@ -920,6 +914,301 @@ async fn sandbox_full_worker_generate_tests_verify_approve_deliver_followup() {
     git(&checkout, &["add", "."]);
     git(&checkout, &["commit", "-qm", "fixture"]);
     let head = git(&checkout, &["rev-parse", "HEAD"]);
+    s.dashboard
+        .lock()
+        .await
+        .jobs
+        .get_mut(job_id)
+        .unwrap()
+        .head_sha = Some(head.clone());
+    write_report(s, job_id, &head, "complete", json!([finding()]), json!([]));
+    (checkout, head)
+}
+
+#[tokio::test]
+async fn sandbox_empty_patch_retries_exhaust_attempts_and_preserve_honest_report() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    assert!(fix::sandbox::probe().await.available);
+    let (_data, s, mock, job) = fixture().await;
+    let (checkout, head) = worker_checkout(&s, &job).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"fixture","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"no-fix","type":"function","function":{"name":"submit_fix","arguments":json!({"summary":"No safe fix","per_finding":[{"id":finding().id(),"disposition":"not_fixed","note":"No patch"}]}).to_string()}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":10}})))
+        .expect(2).mount(&mock).await;
+    let r = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let failed = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(failed.state, "validation_failed", "{}", json!(failed));
+    assert_eq!(failed.attempt, 2);
+    assert_eq!(failed.usage.as_ref().unwrap()["requests"], 2);
+    assert_eq!(failed.reason.as_deref(), Some("no changes"));
+    assert_eq!(
+        failed.generation.as_ref().unwrap()["per_finding"][0]["disposition"],
+        "not_fixed"
+    );
+    assert!(failed.verification.is_none() && failed.tests.is_none() && failed.delivery.is_none());
+    assert!(!regenerable(&failed));
+    let root = dir(&s.settings.data_dir, &r.id).unwrap();
+    assert!(!root.join("workspace").exists() && !root.join("patch.diff").exists());
+    assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
+    let (status, _) = call(
+        s.clone(),
+        reqwest::Method::POST,
+        &format!("/api/fixes/{}/regenerate", r.id),
+        Some(json!({"note":"try again"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !r.url.path().contains("/git/"))
+    );
+}
+
+#[tokio::test]
+async fn after_review_requires_persistent_execution_and_never_loops_from_followups() {
+    let (_data, s, _mock, id) = fixture().await;
+    let repo = s.dashboard.lock().await.repos["owner/repo"].repo.clone();
+    let mut job = Job::new(
+        repo,
+        Kind::Review {
+            number: 7,
+            pr: pull(HEAD),
+            force: false,
+        },
+        "manual",
+    );
+    job.id = id;
+    s.dashboard.lock().await.preferences.fixes.trigger = Trigger::AfterReview;
+    review_finished(&s, &job).await.unwrap();
+    assert!(s.fixes.lock().await.entries.is_empty());
+    {
+        let mut d = s.dashboard.lock().await;
+        d.preferences.fixes.execution = true;
+        d.preferences.fixes.trigger = Trigger::Manual;
+    }
+    review_finished(&s, &job).await.unwrap();
+    assert!(s.fixes.lock().await.entries.is_empty());
+    s.dashboard.lock().await.preferences.fixes.trigger = Trigger::AfterReview;
+    job.trigger = "fix".into();
+    review_finished(&s, &job).await.unwrap();
+    assert!(s.fixes.lock().await.entries.is_empty());
+    job.trigger = "manual".into();
+    s.dashboard
+        .lock()
+        .await
+        .jobs
+        .get_mut(&job.id)
+        .unwrap()
+        .status = "partial".into();
+    review_finished(&s, &job).await.unwrap();
+    assert!(s.fixes.lock().await.entries.is_empty());
+    s.dashboard
+        .lock()
+        .await
+        .jobs
+        .get_mut(&job.id)
+        .unwrap()
+        .status = "complete".into();
+    review_finished(&s, &job).await.unwrap();
+    review_finished(&s, &job).await.unwrap();
+    let store = s.fixes.lock().await;
+    assert_eq!(store.entries.len(), 1);
+    let r = &store.entries.values().next().unwrap().record;
+    assert_eq!(r.source, "auto");
+    assert_eq!(r.consent.as_deref(), Some("persistent"));
+    assert_eq!(r.state, "queued");
+    assert!(r.delivery.is_none() && r.generation.is_none());
+}
+
+#[tokio::test]
+async fn retention_keeps_latest_200_and_durable_rate_limits_survive_eviction() {
+    let (_data, s, _mock, job) = fixture().await;
+    let id = ready(&s, &job).await;
+    let mut store = s.fixes.lock().await;
+    let mut template = store.entries[&id].clone();
+    template.record.state = "discarded".into();
+    let now = chrono::Utc::now();
+    template.record.created_at = (now - chrono::Duration::seconds(2000)).to_rfc3339();
+    save(&s, &mut store, template.clone()).await.unwrap();
+    for i in 1..=201 {
+        let mut e = template.clone();
+        e.record.id = format!("{i:032x}");
+        e.record.created_at = (now - chrono::Duration::seconds(1000 - i)).to_rfc3339();
+        save(&s, &mut store, e).await.unwrap();
+    }
+    store.prune(&s.settings.data_dir).unwrap();
+    assert_eq!(store.entries.len(), 200);
+    assert!(!store.entries.contains_key(&id));
+    assert!(!s.settings.data_dir.join("fixes").join(&id).exists());
+    assert!(
+        !s.settings
+            .data_dir
+            .join("fixes")
+            .join(format!("{:032x}", 1))
+            .exists()
+    );
+    assert!(store.entries.contains_key(&format!("{:032x}", 201)));
+    *store = Store::load(&s.settings.data_dir).unwrap();
+    assert_eq!(store.entries.len(), 200);
+    assert_eq!(store.admissions.len(), 1);
+    drop(store);
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_user_hour = 1;
+    assert!(
+        request(&s, "dashboard", "admin", &job, None, true)
+            .await
+            .unwrap_err()
+            .1
+            .contains("rate limit")
+    );
+}
+
+async fn linked_followup(s: &Server, job: &str, mode: Delivery) -> (String, Job) {
+    let id = ready(s, job).await;
+    let repo = s.dashboard.lock().await.repos["owner/repo"].repo.clone();
+    let follow = Job::new(
+        repo,
+        Kind::Review {
+            number: 7,
+            pr: pull(COMMIT),
+            force: true,
+        },
+        "fix",
+    );
+    let mut summary = dashboard::JobSummary::queued(&follow);
+    summary.status = "complete".into();
+    s.update_job(summary).await.unwrap();
+    change(s, &id, |e| {
+        e.record.state = "verifying".into();
+        e.record.delivery = Some(json!({"mode":mode,"commit":COMMIT,"pr":7}));
+        e.record.verify_review = Some(json!({"job":follow.id,"state":"queued","resolved":[],"still_open":[],"new_findings":0,"note":""}));
+    }).await.unwrap();
+    (id, follow)
+}
+
+#[tokio::test]
+async fn incomplete_followups_never_claim_verified_or_resolved() {
+    for case in [
+        "partial",
+        "failed",
+        "partial_report",
+        "wrong_head",
+        "missing_report",
+        "malformed_report",
+        "restart",
+    ] {
+        let (_data, s, _mock, job) = fixture().await;
+        let (id, follow) = linked_followup(&s, &job, Delivery::SameBranch).await;
+        match case {
+            "partial" | "failed" => {
+                s.dashboard
+                    .lock()
+                    .await
+                    .jobs
+                    .get_mut(&follow.id)
+                    .unwrap()
+                    .status = case.into()
+            }
+            "partial_report" => {
+                write_report(&s, &follow.id, COMMIT, "partial", json!([]), json!([]))
+            }
+            "wrong_head" => write_report(&s, &follow.id, HEAD, "complete", json!([]), json!([])),
+            "malformed_report" => {
+                let root = dashboard::job_dir(&s.settings.data_dir, &follow.id).unwrap();
+                crate::fsutil::write_atomic_in(&root, "report.json", b"{").unwrap();
+            }
+            "restart" => *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap(),
+            _ => {}
+        }
+        if case != "restart" {
+            review_finished(&s, &follow).await.unwrap();
+        }
+        let r = entry(&s, &id).await.unwrap().record;
+        assert_eq!(r.state, "published", "{case}");
+        assert_eq!(
+            r.reason.as_deref(),
+            Some("follow-up review incomplete"),
+            "{case}"
+        );
+        let v = r.verify_review.unwrap();
+        assert_eq!(v["note"], "follow-up review incomplete", "{case}");
+        assert_eq!(v["resolved"], json!([]), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
+    for case in [
+        "open",
+        "uncertain",
+        "missing_state",
+        "draft_unresolved",
+        "draft_resolved",
+    ] {
+        let (_data, s, _mock, job) = fixture().await;
+        let mode = if case.starts_with("draft") {
+            Delivery::DraftPr
+        } else {
+            Delivery::SameBranch
+        };
+        let (id, follow) = linked_followup(&s, &job, mode).await;
+        let tracked = if matches!(case, "open" | "uncertain") {
+            json!([{"id":finding().id(),"status":case}])
+        } else {
+            Value::Null
+        };
+        if case == "draft_unresolved" {
+            change(&s,&id,|e| e.record.verification = Some(json!({"per_finding":[{"id":finding().id(),"verdict":"unresolved"}],"new_problems":[]}))).await.unwrap();
+        }
+        write_report(&s, &follow.id, COMMIT, "complete", json!([]), tracked);
+        review_finished(&s, &follow).await.unwrap();
+        let r = entry(&s, &id).await.unwrap().record;
+        assert_eq!(r.state, "verified");
+        let v = r.verify_review.unwrap();
+        if case == "draft_resolved" {
+            assert_eq!(v["resolved"], json!([finding().id()]));
+        } else {
+            assert_eq!(v["resolved"], json!([]), "{case}");
+            assert_eq!(v["still_open"], json!([finding().id()]));
+        }
+        if case == "missing_state" {
+            assert!(
+                v["note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no resolution inferred")
+            );
+        }
+    }
+}
+#[tokio::test]
+async fn sandbox_full_worker_generate_tests_verify_approve_deliver_followup() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    assert!(fix::sandbox::probe().await.available);
+    let (_data, s, mock, job_id) = fixture().await;
+    let (checkout, head) = worker_checkout(&s, &job_id).await;
     {
         let mut d = s.dashboard.lock().await;
         d.jobs.get_mut(&job_id).unwrap().head_sha = Some(head.clone());

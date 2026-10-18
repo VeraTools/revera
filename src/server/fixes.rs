@@ -1812,8 +1812,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         let mut errors = messages(&policy_report.errors);
         if patch.files.is_empty() {
             errors.push("no changes".into());
-        }
-        if let Err(e) = ws.apply_check(&patch).await {
+        } else if let Err(e) = ws.apply_check(&patch).await {
             errors.push(e.to_string());
         }
         let safe = !policy_report
@@ -2268,7 +2267,24 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
         .cloned()
         .collect();
     for e in linked {
-        let record = if summary.status != "complete" {
+        let report = (|| -> Result<Value> {
+            let root = dashboard::job_dir(&s.settings.data_dir, &job.id)?;
+            let path = root.join("report.json");
+            crate::fsutil::check_regular_target(&path)?;
+            Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        })()
+        .ok()
+        .filter(|report| {
+            summary.status == "complete"
+                && report["status"] == "complete"
+                && e.record
+                    .delivery
+                    .as_ref()
+                    .is_some_and(|d| report["head"] == d["commit"])
+        });
+        let record = if let Some(report) = report {
+            completed_followup(s, &e, job, &report).await?
+        } else {
             change(s, &e.record.id, |e| {
                 e.record.transition(
                     "published",
@@ -2282,87 +2298,6 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
                 }
             })
             .await?
-        } else {
-            let root = dashboard::job_dir(&s.settings.data_dir, &job.id)?;
-            let path = root.join("report.json");
-            crate::fsutil::check_regular_target(&path)?;
-            let report: Value = serde_json::from_slice(&std::fs::read(path)?)?;
-            if report["status"] != "complete"
-                || e.record
-                    .delivery
-                    .as_ref()
-                    .is_none_or(|d| report["head"] != d["commit"])
-            {
-                change(s, &e.record.id, |e| {
-                    e.record.transition(
-                        "published",
-                        Some("follow-up review incomplete"),
-                        "revera",
-                        "failed",
-                    )
-                })
-                .await?;
-                continue;
-            }
-            let accepted: BTreeSet<_> = super::api::report_findings(&report)
-                .iter()
-                .map(Finding::id)
-                .collect();
-            let selected: BTreeSet<_> = e.context.findings.iter().map(Finding::id).collect();
-            let same = e
-                .record
-                .delivery
-                .as_ref()
-                .is_some_and(|d| d["mode"] == "same_branch");
-            // Same-branch absence alone is not evidence: use review state, which
-            // retains open findings not covered by the follow-up diff.
-            let open: BTreeSet<String> = if same {
-                report["plan"]["state"]["findings"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|f| matches!(f["status"].as_str(), Some("open" | "uncertain")))
-                    .filter_map(|f| f["id"].as_str().map(str::to_owned))
-                    .collect()
-            } else {
-                accepted.clone()
-            };
-            let pre: BTreeSet<String> = e
-                .record
-                .verification
-                .as_ref()
-                .and_then(|v| v["per_finding"].as_array())
-                .into_iter()
-                .flatten()
-                .filter(|f| f["verdict"] == "resolved")
-                .filter_map(|f| f["id"].as_str().map(str::to_owned))
-                .collect();
-            let state_present = report["plan"]["state"]["findings"].is_array();
-            let resolved: Vec<_> = selected
-                .iter()
-                .filter(|id| {
-                    !open.contains(*id)
-                        && if same {
-                            state_present
-                        } else {
-                            pre.contains(*id)
-                        }
-                })
-                .cloned()
-                .collect();
-            let still_open: Vec<_> = selected
-                .iter()
-                .filter(|id| !resolved.contains(id))
-                .cloned()
-                .collect();
-            let note = if same && !state_present {
-                "Follow-up state unavailable; no resolution inferred"
-            } else if same {
-                "Compared original finding IDs with follow-up review state"
-            } else {
-                "Draft PR resolution uses the pre-publish independent verifier when the finding is absent from the follow-up review"
-            };
-            change(s,&e.record.id,|e|{e.record.verify_review=Some(json!({"job":job.id,"state":"complete","resolved":resolved,"still_open":still_open,"new_findings":accepted.difference(&selected).count(),"note":note}));e.record.transition("verified",None,"revera","verified");}).await?
         };
         status(s, &record).await;
     }
@@ -2374,6 +2309,67 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
         }
     }
     Ok(())
+}
+async fn completed_followup(s: &Server, e: &Entry, job: &Job, report: &Value) -> Result<Record> {
+    let accepted: BTreeSet<_> = super::api::report_findings(report)
+        .iter()
+        .map(Finding::id)
+        .collect();
+    let selected: BTreeSet<_> = e.context.findings.iter().map(Finding::id).collect();
+    let same = e
+        .record
+        .delivery
+        .as_ref()
+        .is_some_and(|d| d["mode"] == "same_branch");
+    // Same-branch absence alone is not evidence: use review state, which
+    // retains open findings not covered by the follow-up diff.
+    let open: BTreeSet<String> = if same {
+        report["plan"]["state"]["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| matches!(f["status"].as_str(), Some("open" | "uncertain")))
+            .filter_map(|f| f["id"].as_str().map(str::to_owned))
+            .collect()
+    } else {
+        accepted.clone()
+    };
+    let pre: BTreeSet<String> = e
+        .record
+        .verification
+        .as_ref()
+        .and_then(|v| v["per_finding"].as_array())
+        .into_iter()
+        .flatten()
+        .filter(|f| f["verdict"] == "resolved")
+        .filter_map(|f| f["id"].as_str().map(str::to_owned))
+        .collect();
+    let state_present = report["plan"]["state"]["findings"].is_array();
+    let resolved: Vec<_> = selected
+        .iter()
+        .filter(|id| {
+            !open.contains(*id)
+                && if same {
+                    state_present
+                } else {
+                    pre.contains(*id)
+                }
+        })
+        .cloned()
+        .collect();
+    let still_open: Vec<_> = selected
+        .iter()
+        .filter(|id| !resolved.contains(id))
+        .cloned()
+        .collect();
+    let note = if same && !state_present {
+        "Follow-up state unavailable; no resolution inferred"
+    } else if same {
+        "Compared original finding IDs with follow-up review state"
+    } else {
+        "Draft PR resolution uses the pre-publish independent verifier when the finding is absent from the follow-up review"
+    };
+    change(s,&e.record.id,|e|{e.record.verify_review=Some(json!({"job":job.id,"state":"complete","resolved":resolved,"still_open":still_open,"new_findings":accepted.difference(&selected).count(),"note":note}));e.record.transition("verified",None,"revera","verified");}).await
 }
 async fn status(s: &Server, r: &Record) {
     if r.repo_source != Source::Installed
