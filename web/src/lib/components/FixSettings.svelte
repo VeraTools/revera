@@ -174,7 +174,9 @@
         ' ',
       )}. {fixes.require_approval || fixes.delivery === 'same_branch'
         ? 'GitHub writes require approval.'
-        : 'Automatic write approval is not required by this policy.'} Server caps still apply.</span
+        : fixes.delivery === 'draft_pr'
+          ? 'Ready previews publish as draft PRs without approval when that destination is available.'
+          : 'Patch previews never write to GitHub.'} Server caps still apply.</span
     >
   </div>
   <div class="toggle-row">
@@ -250,7 +252,7 @@
         <p>
           {fixes.delivery === 'same_branch'
             ? 'Always required for same-branch commits.'
-            : 'Previews remain private until an authorized delivery is approved.'}
+            : 'When off, a ready preview is published as a draft PR without approval if that destination is available. Commits to the PR branch always need approval.'}
         </p>
       </div>
       <Toggle

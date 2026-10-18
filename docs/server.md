@@ -327,11 +327,13 @@ Fixes are separate from reviews and coding-agent instructions:
 - **One-time consent** lets an administrator generate one request while
   execution stays off. It does not enable future requests or approve publication.
 
-No fix commits, branches or draft PRs are written to GitHub until an
-administrator clicks **Approve & publish** in the dashboard. Confirmation
-only starts generation; disabling the advanced approval preference does not
-bypass publication approval. GitHub replies, reactions and the fix-status
-line can update before approval; they are not code writes.
+By default, no fix commits, branches or draft PRs are written to GitHub until
+an administrator clicks **Approve & publish** in the dashboard. Confirmation
+only starts generation. If you turn off **Require approval before GitHub
+writes** and choose **Draft pull request** as the preferred delivery, a ready
+preview is published as a draft PR without that click, after the same checks.
+Commits to the PR branch always need approval. GitHub replies, reactions and
+the fix-status line can update before approval; they are not code writes.
 
 ### Request a fix
 
