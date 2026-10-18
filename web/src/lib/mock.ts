@@ -125,26 +125,24 @@ const initialYaml = `# Default review configuration
 models:
   # Reads the diff and proposes findings.
   investigator:
-    protocol: openai-chat
-    base_url: https://api.example.com/v1
-    api_key_env: REVERA_MODEL_API_KEY
-    model: model-name
-    max_output_tokens: 4000
-    temperature: 0.2
+    protocol: openai-responses
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-5.2
+    max_output_tokens: 16000
     reasoning: medium
     fallback:
-      - protocol: openai-chat
-        base_url: https://backup.example.com/v1
-        api_key_env: REVERA_BACKUP_API_KEY
-        model: backup-model
+      - protocol: anthropic
+        base_url: https://api.anthropic.com
+        api_key_env: ANTHROPIC_API_KEY
+        model: claude-sonnet-4-5
   # Re-checks each finding in a fresh context.
   validator:
-    protocol: openai-chat
-    base_url: https://api.example.com/v1
-    api_key_env: REVERA_MODEL_API_KEY
-    model: model-name
-    max_output_tokens: 4000
-    temperature: 0.2
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    model: claude-sonnet-4-5
+    max_output_tokens: 8000
     reasoning: medium
 
 review:
@@ -192,8 +190,8 @@ let settings: Settings = {
     import.meta.env.VITE_MOCK_EMPTY_YAML === '1'
       ? []
       : [
-          { name: 'REVERA_MODEL_API_KEY', source: 'environment' },
-          { name: 'REVERA_BACKUP_API_KEY', source: 'environment' },
+          { name: 'OPENAI_API_KEY', source: 'environment' },
+          { name: 'ANTHROPIC_API_KEY', source: 'environment' },
         ],
   referenced_env: [],
 };
@@ -295,11 +293,11 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         github: { ok: true },
         models: ['investigator', 'validator'].map((role) => ({
           role,
-          model: 'model-name',
+          model: role === 'investigator' ? 'gpt-5.2' : 'claude-sonnet-4-5',
           ok: true,
           checked_at: ago(12),
         })),
-        vera: { enabled: true, version: '2.1.3' },
+        vera: { enabled: true, version: '2.1.4' },
       },
       queue: {
         running: jobs.filter((job) => job.status === 'running'),
@@ -390,13 +388,13 @@ export async function mockRequest(path: string, method: string, body?: unknown):
               fallback_events: [
                 {
                   role: 'investigator',
-                  from_model: 'model-name',
-                  to_model: 'backup-model',
+                  from_model: 'gpt-5.2',
+                  to_model: 'claude-sonnet-4-5',
                   reason: 'rate_limit_or_server',
                 },
               ],
               unavailable_routes: [
-                { role: 'validator', model: 'retired-model', reason: 'missing_key' },
+                { role: 'validator', model: 'gemini-3-pro', reason: 'missing_key' },
               ],
             }
           : {}),
@@ -486,7 +484,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     return { ok: true, latency_ms: 342 };
   }
   if (url.pathname === '/api/settings/models')
-    return { models: ['model-name', 'model-name-large', 'model-name-small'] };
+    return { models: ['gpt-5.2', 'gpt-5.2-mini', 'gpt-5.1'] };
   throw new Error(`Mock endpoint not found: ${method} ${path}`);
 }
 

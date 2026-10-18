@@ -484,11 +484,11 @@ async function checkMentionsAndReviewDetail() {
     .click();
   await page
     .getByText(
-      'Investigator switched from model-name to backup-model: rate limit or server error.',
+      'Investigator switched from gpt-5.2 to claude-sonnet-4-5: rate limit or server error.',
       { exact: true },
     )
     .waitFor();
-  await page.getByText('Validator skipped retired-model: key not set.', { exact: true }).waitFor();
+  await page.getByText('Validator skipped gemini-3-pro: key not set.', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('Review mode', { exact: true }).innerText(), 'Default (Deep)');
   await choose(page, 'Review mode', 'Quick');
   await page.getByRole('button', { name: 'Re-run review', exact: true }).click();
