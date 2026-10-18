@@ -79,6 +79,39 @@ impl Prepared {
                 .unwrap_or(self.deadline),
         )
     }
+
+    /// Findings still open after this run's rechecks. Forced re-reviews of
+    /// the same head (mentions) otherwise rediscover them under a new
+    /// defect_key, which is a new id and a second comment for one defect.
+    pub fn tracked_block(&self, validate: bool) -> String {
+        tracked_block(&self.state, validate)
+    }
+}
+
+const MAX_TRACKED_LISTED: usize = 30;
+
+fn tracked_block(state: &ReviewState, validate: bool) -> String {
+    let open = state.open_findings();
+    if !validate || open.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "\n\nAlready reported on this pull request and rechecked separately; do not submit these again, even reworded:\n",
+    );
+    for f in open.iter().take(MAX_TRACKED_LISTED) {
+        let lines = match f.end_line {
+            Some(end) if end > f.start_line => format!("{}-{end}", f.start_line),
+            _ => f.start_line.to_string(),
+        };
+        let title: String = f.title.chars().take(160).collect();
+        block.push_str(&format!(
+            "- {}:{lines} `{}` {}\n",
+            f.file,
+            f.defect_key,
+            crate::redact::text(&title)
+        ));
+    }
+    block
 }
 
 pub fn clamp_budget(
@@ -781,6 +814,44 @@ pub fn investigator_user(req: &ReviewRequest, diff: &DiffSet, max_diff_bytes: us
 mod tests {
     use super::clamp_budget;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn tracked_block_lists_only_open_findings_when_validating() {
+        use crate::state::{FindingState, ReviewState, StateFinding};
+        let finding = |id: &str, status, end_line| StateFinding {
+            id: id.into(),
+            status,
+            file: "src/a.rs".into(),
+            start_line: 10,
+            end_line,
+            title: format!("title {id}"),
+            posted: true,
+            defect_key: format!("key_{id}"),
+            severity: Default::default(),
+            claim: String::new(),
+            trigger: String::new(),
+            impact: String::new(),
+            evidence: vec![],
+        };
+        let mut state = ReviewState::default();
+        assert_eq!(super::tracked_block(&state, true), "");
+        state.findings = vec![
+            finding("open", FindingState::Open, Some(12)),
+            finding("unsure", FindingState::Uncertain, None),
+            finding("fixed", FindingState::Resolved, None),
+        ];
+        let block = super::tracked_block(&state, true);
+        assert!(
+            block.contains("- src/a.rs:10-12 `key_open` title open\n"),
+            "{block}"
+        );
+        assert!(
+            block.contains("- src/a.rs:10 `key_unsure` title unsure\n"),
+            "{block}"
+        );
+        assert!(!block.contains("key_fixed"), "{block}");
+        assert_eq!(super::tracked_block(&state, false), "");
+    }
 
     #[test]
     fn clamp_budget_uses_remaining_deadline() {

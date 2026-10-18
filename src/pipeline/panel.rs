@@ -81,7 +81,8 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
 
     let terminal = terminal_submit_findings_spec();
     let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes)
-        + &prep.guidance.prompt_block();
+        + &prep.guidance.prompt_block()
+        + &prep.tracked_block(cfg.review.validate);
     let max_req = cfg.budget.run_max_requests;
     let ledger0 = prep.ledger.clone();
     let tb0 = prep.toolbox.clone();

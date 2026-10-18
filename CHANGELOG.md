@@ -11,7 +11,9 @@
   PR reviews. Legacy disabled repositories stay off; enabled ones inherit the
   default. Built-in quick and deep profiles also work in the CLI and Action,
   keep validation on and leave the configured strategy unchanged.
-- Existing GitHub Apps need Issues read/write, the Issue comment event and
+- The investigator now sees findings that are still open on the pull request,
+  so a repeat review of the same head no longer posts a reworded duplicate.
+- Existing GitHub Apps need Issues read-only access, the Issue comment event and
   installation-owner approval before mentions work. New apps request them
   during setup. See the [upgrade steps](docs/server.md#enable-mentions-on-an-existing-github-app).
 - Model routes support ordered fallback models across providers and protocols.

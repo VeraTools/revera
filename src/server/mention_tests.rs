@@ -145,7 +145,7 @@ async fn mention_token(mock: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/app/installations/9/access_tokens"))
         .and(body_json(json!({"repository_ids": [1], "permissions": {
-            "issues": "write", "pull_requests": "read", "metadata": "read"
+            "pull_requests": "write", "metadata": "read"
         }})))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({"token": "mention-token"})))
         .expect(1)
