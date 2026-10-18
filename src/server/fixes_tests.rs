@@ -1357,6 +1357,10 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
         "open",
         "uncertain",
         "missing_state",
+        "empty_state",
+        "omitted_id",
+        "resolved",
+        "rejected",
         "draft_unresolved",
         "draft_resolved",
     ] {
@@ -1367,8 +1371,12 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
             Delivery::SameBranch
         };
         let (id, follow) = linked_followup(&s, &job, mode).await;
-        let tracked = if matches!(case, "open" | "uncertain") {
+        let tracked = if matches!(case, "open" | "uncertain" | "resolved" | "rejected") {
             json!([{"id":finding().id(),"status":case}])
+        } else if case == "empty_state" {
+            json!([])
+        } else if case == "omitted_id" {
+            json!([{"id":"other-finding","status":"resolved"}])
         } else {
             Value::Null
         };
@@ -1380,7 +1388,7 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
         let r = entry(&s, &id).await.unwrap().record;
         assert_eq!(r.state, "verified");
         let v = r.verify_review.unwrap();
-        if case == "draft_resolved" {
+        if matches!(case, "draft_resolved" | "resolved") {
             assert_eq!(v["resolved"], json!([finding().id()]));
         } else {
             assert_eq!(v["resolved"], json!([]), "{case}");
@@ -1392,6 +1400,14 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
                     .as_str()
                     .unwrap()
                     .contains("no resolution inferred")
+            );
+        }
+        if case.starts_with("draft") {
+            assert!(
+                v["note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("pre-publish independent verifier")
             );
         }
     }

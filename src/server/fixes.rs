@@ -2395,13 +2395,19 @@ async fn completed_followup(s: &Server, e: &Entry, job: &Job, report: &Value) ->
         .filter(|f| f["verdict"] == "resolved")
         .filter_map(|f| f["id"].as_str().map(str::to_owned))
         .collect();
-    let state_present = report["plan"]["state"]["findings"].is_array();
+    let state_resolved: BTreeSet<_> = report["plan"]["state"]["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["status"] == "resolved")
+        .filter_map(|f| f["id"].as_str())
+        .collect();
     let resolved: Vec<_> = selected
         .iter()
         .filter(|id| {
             !open.contains(*id)
                 && if same {
-                    state_present
+                    state_resolved.contains(id.as_str())
                 } else {
                     pre.contains(*id)
                 }
@@ -2413,10 +2419,8 @@ async fn completed_followup(s: &Server, e: &Entry, job: &Job, report: &Value) ->
         .filter(|id| !resolved.contains(id))
         .cloned()
         .collect();
-    let note = if same && !state_present {
-        "Follow-up state unavailable; no resolution inferred"
-    } else if same {
-        "Compared original finding IDs with follow-up review state"
+    let note = if same {
+        "Only explicit resolved follow-up state is resolution evidence; absent IDs remain still_open/uncertain, with no resolution inferred"
     } else {
         "Draft PR resolution uses the pre-publish independent verifier when the finding is absent from the follow-up review"
     };
