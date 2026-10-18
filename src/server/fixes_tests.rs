@@ -1231,6 +1231,70 @@ async fn after_review_requires_persistent_execution_and_never_loops_from_followu
 }
 
 #[tokio::test]
+async fn recovered_queued_fixes_wait_for_successful_installation_discovery() {
+    let (_data, s, mock, job) = fixture().await;
+    let r = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    *s.installations.lock().await = reconcile::Installations::default();
+    let scheduler = tokio::spawn(dispatch(s.clone()));
+    let mut events = s.events.subscribe();
+    s.fix_notify.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.state, "queued");
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+    assert!(
+        reconcile::discover(&s, &super::super::tests::test_app())
+            .await
+            .is_err()
+    );
+    s.fix_notify.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.state, "queued");
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"permissions":{"contents":"read"},"owner":{"type":"User"}})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET")).and(path("/app/installations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id":9,"account":{"login":"owner","id":1,"type":"User"},"permissions":{"contents":"write"},"suspended_at":null}]))).mount(&mock).await;
+    reconcile::discover(&s, &super::super::tests::test_app())
+        .await
+        .unwrap();
+    let failed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let r = entry(&s, &r.id).await.unwrap().record;
+            if r.state == "failed" {
+                break r;
+            }
+            events.recv().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(failed.reason.unwrap().contains("checkout is unavailable"));
+    scheduler.abort();
+    let _ = scheduler.await;
+}
+
+#[tokio::test]
 async fn retention_keeps_latest_200_and_durable_rate_limits_survive_eviction() {
     let (_data, s, _mock, job) = fixture().await;
     let id = ready(&s, &job).await;

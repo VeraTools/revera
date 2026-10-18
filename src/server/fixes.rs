@@ -1386,6 +1386,7 @@ pub async fn dispatch(server: Arc<Server>) {
                 .fixes
                 .limits
                 .concurrent;
+            let inventory_ready = !server.installations.lock().await.install_url.is_empty();
             let mut store = server.fixes.lock().await;
             if store.running.len() >= max {
                 break;
@@ -1393,7 +1394,11 @@ pub async fn dispatch(server: Arc<Server>) {
             let Some(id) = store
                 .entries
                 .values()
-                .filter(|e| e.record.state == "queued" && !store.running.contains_key(&e.record.id))
+                .filter(|e| {
+                    e.record.state == "queued"
+                        && !store.running.contains_key(&e.record.id)
+                        && (e.record.repo_source == Source::External || inventory_ready)
+                })
                 .min_by_key(|e| &e.record.created_at)
                 .map(|e| e.record.id.clone())
             else {
