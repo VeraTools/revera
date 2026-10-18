@@ -47,6 +47,7 @@ fn route(url: &str) -> ModelRoute {
         session_header: None,
         script: None,
         reasoning: Default::default(),
+        fallback: vec![],
     }
 }
 
@@ -321,7 +322,711 @@ fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
         session_header: None,
         script: None,
         reasoning: Default::default(),
+        fallback: vec![],
     }
+}
+
+fn fallback_route(primary: &MockServer, backup: &MockServer) -> ModelRoute {
+    let mut route = route_for(&primary.uri(), Protocol::OpenaiChat, "primary");
+    route
+        .fallback
+        .push(route_for(&backup.uri(), Protocol::OpenaiChat, "backup"));
+    route
+}
+
+fn routed_client(
+    route: &ModelRoute,
+    ledger: &LedgerHandle,
+    role: &str,
+    budget: u32,
+    retries: u32,
+) -> std::sync::Arc<dyn ModelClient> {
+    revera::pipeline::make_client(
+        route,
+        role,
+        None,
+        ledger.clone(),
+        budget,
+        retries,
+        "submit_findings",
+    )
+    .unwrap()
+}
+
+#[test]
+fn fallback_doctor_reports_each_key_without_requiring_every_route() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let config = r#"
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://primary.example/v1
+    model: primary
+    api_key_env: REVERA_TEST_UNSET_FALLBACK_DOCTOR
+    fallback:
+      - protocol: anthropic
+        model: backup
+        api_key_env: REVERA_TEST_KEY
+      - protocol: gemini
+        model: unavailable
+        api_key_env: REVERA_TEST_UNSET_FALLBACK_DOCTOR
+vera: {enabled: false}
+"#;
+    revera::fsutil::write_atomic_in(dir.path(), "revera.yaml", config.as_bytes()).unwrap();
+    for available in [true, false] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_revera"));
+        command
+            .arg("doctor")
+            .current_dir(dir.path())
+            .env_remove("REVERA_TEST_UNSET_FALLBACK_DOCTOR");
+        if !available {
+            command.env_remove("REVERA_TEST_KEY");
+        }
+        let output = command.output().unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(output.status.success(), available, "{text}");
+        assert!(
+            text.contains("validator: inherited from investigator"),
+            "{text}"
+        );
+        assert!(text.contains("investigator.fallback[0]"), "{text}");
+        assert!(text.contains("investigator.fallback[1]"), "{text}");
+        if available {
+            assert!(
+                text.contains("UNAVAILABLE (skipped; another route has a key)"),
+                "{text}"
+            );
+            assert!(text.contains("key env REVERA_TEST_KEY set"), "{text}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn fallback_tries_alternatives_in_order_and_sticks_only_after_success() {
+    let primary = MockServer::start().await;
+    let middle = MockServer::start().await;
+    let last = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&middle)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(2)
+        .mount(&last)
+        .await;
+    let mut route = fallback_route(&primary, &middle);
+    route
+        .fallback
+        .push(route_for(&last.uri(), Protocol::OpenaiChat, "last"));
+    let ledger = LedgerHandle::new();
+    let c = routed_client(&route, &ledger, "investigator", 10, 0);
+    for _ in 0..2 {
+        assert_eq!(
+            c.complete(&[ChatMessage::user("hi")], &[])
+                .await
+                .unwrap()
+                .model,
+            "last"
+        );
+    }
+    primary.verify().await;
+    middle.verify().await;
+    last.verify().await;
+    let run = ledger.0.lock().unwrap();
+    assert_eq!(run.fallback_events.len(), 2);
+    assert_eq!(run.fallback_events[0].from_model, "primary");
+    assert_eq!(run.fallback_events[0].to_model, "backup");
+    assert_eq!(run.fallback_events[1].from_model, "backup");
+    assert_eq!(run.fallback_events[1].to_model, "last");
+    assert_eq!(
+        revera::report::footer_routes(&run),
+        ["investigator=primary→last@medium"]
+    );
+}
+
+#[tokio::test]
+async fn fallback_waits_for_same_route_request_reshaping() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"max_tokens":100})))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string("unsupported max_tokens: use max_completion_tokens"),
+        )
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"max_completion_tokens":100})))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&backup)
+        .await;
+    let ledger = LedgerHandle::new();
+    routed_client(
+        &fallback_route(&primary, &backup),
+        &ledger,
+        "investigator",
+        10,
+        0,
+    )
+    .complete(&[ChatMessage::user("hi")], &[])
+    .await
+    .unwrap();
+    primary.verify().await;
+    backup.verify().await;
+    assert_eq!(ledger.request_count(), 3);
+    assert_eq!(ledger.0.lock().unwrap().fallback_events.len(), 1);
+}
+
+#[tokio::test]
+async fn fallback_waits_for_retries_then_is_sticky_across_recreated_role_clients() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+        .expect(3)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(3)
+        .mount(&backup)
+        .await;
+    let route = fallback_route(&primary, &backup);
+    let ledger = LedgerHandle::new();
+    let c = routed_client(&route, &ledger, "validator", 20, 2);
+    assert_eq!(
+        c.complete(&[ChatMessage::user("first")], &[])
+            .await
+            .unwrap()
+            .model,
+        "backup"
+    );
+    c.complete(&[ChatMessage::user("next turn")], &[])
+        .await
+        .unwrap();
+    let recreated = routed_client(&route, &ledger, "validator", 20, 2);
+    recreated
+        .complete(&[ChatMessage::user("fresh candidate")], &[])
+        .await
+        .unwrap();
+    primary.verify().await;
+    backup.verify().await;
+    let run = ledger.0.lock().unwrap();
+    assert_eq!(run.entries.len(), 6);
+    assert_eq!(run.fallback_events.len(), 1);
+    assert_eq!(
+        run.fallback_events[0].reason,
+        revera::provider::FallbackReason::RateLimitOrServer
+    );
+    assert_eq!(
+        revera::report::footer_routes(&run),
+        ["validator=primary→backup@medium"]
+    );
+}
+
+#[tokio::test]
+async fn fallback_provider_failure_classes_and_nonretryable_http_errors() {
+    for (status, body, reason) in [
+        (401, "bad key", Some("authentication")),
+        (403, "denied", Some("authentication")),
+        (404, "unknown model", Some("not_found")),
+        (429, "rate limit", Some("rate_limit_or_server")),
+        (200, "not JSON", Some("malformed_response")),
+        (200, "{}", Some("malformed_response")),
+        (
+            200,
+            r#"{"choices":[{"message":{"content":"   "}}]}"#,
+            Some("malformed_response"),
+        ),
+        (400, "invalid request", None),
+        (422, "invalid parameters", None),
+    ] {
+        let primary = MockServer::start().await;
+        let backup = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&primary)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+            .expect(u64::from(reason.is_some()))
+            .mount(&backup)
+            .await;
+        let route = fallback_route(&primary, &backup);
+        let ledger = LedgerHandle::new();
+        let result = routed_client(&route, &ledger, "investigator", 10, 0)
+            .complete(&[ChatMessage::user("hi")], &[])
+            .await;
+        assert_eq!(
+            result.is_ok(),
+            reason.is_some(),
+            "status {status}: {result:?}"
+        );
+        primary.verify().await;
+        backup.verify().await;
+        let run = ledger.0.lock().unwrap();
+        if let Some(reason) = reason {
+            assert_eq!(run.fallback_events.len(), 1);
+            assert_eq!(
+                serde_json::to_value(&run.fallback_events[0]).unwrap()["reason"],
+                reason
+            );
+        } else {
+            assert!(run.fallback_events.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn fallback_does_not_bypass_shared_request_budget() {
+    for (budget, retries, requests) in [(0, 0, 0), (1, 0, 1), (1, 1, 1)] {
+        let primary = MockServer::start().await;
+        let backup = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+            .expect(requests)
+            .mount(&primary)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+            .expect(0)
+            .mount(&backup)
+            .await;
+        let route = fallback_route(&primary, &backup);
+        let ledger = LedgerHandle::new();
+        let result = routed_client(&route, &ledger, "investigator", budget, retries)
+            .complete(&[ChatMessage::user("hi")], &[])
+            .await;
+        assert!(
+            matches!(result, Err(ProviderError::BudgetExhausted)),
+            "{result:?}"
+        );
+        assert!(ledger.0.lock().unwrap().fallback_events.is_empty());
+        assert_eq!(ledger.request_count(), requests as u32);
+        primary.verify().await;
+        backup.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn fallback_timeout_and_connection_errors_use_the_same_ledger() {
+    use revera::provider::FallbackReason;
+    use revera::provider::fallback::FallbackClient;
+    use std::{sync::Arc, time::Duration};
+    for timeout in [true, false] {
+        let primary = MockServer::start().await;
+        let backup = MockServer::start().await;
+        if timeout {
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(ok_body())
+                        .set_delay(Duration::from_millis(250)),
+                )
+                .expect(1)
+                .mount(&primary)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+            .expect(1)
+            .mount(&backup)
+            .await;
+        let ledger = LedgerHandle::new();
+        let primary_url = if timeout {
+            primary.uri()
+        } else {
+            "http://127.0.0.1:1".into()
+        };
+        let mut first = OpenAiChatClient::new(
+            route_for(&primary_url, Protocol::OpenaiChat, "primary"),
+            ledger.clone(),
+            5,
+            0,
+            "investigator",
+        )
+        .unwrap();
+        // Exercise the real transport timeout without waiting its production 120 s.
+        first.transport.http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let second = OpenAiChatClient::new(
+            route_for(&backup.uri(), Protocol::OpenaiChat, "backup"),
+            ledger.clone(),
+            5,
+            0,
+            "investigator",
+        )
+        .unwrap();
+        let c = FallbackClient::new(
+            vec![
+                ("primary".into(), Some(Arc::new(first))),
+                ("backup".into(), Some(Arc::new(second))),
+            ],
+            "investigator",
+            ledger.clone(),
+            5,
+        );
+        assert_eq!(
+            c.complete(&[ChatMessage::user("hi")], &[])
+                .await
+                .unwrap()
+                .model,
+            "backup"
+        );
+        backup.verify().await;
+        let run = ledger.0.lock().unwrap();
+        assert_eq!(run.entries.len(), 2);
+        assert_eq!(
+            run.fallback_events[0].reason,
+            if timeout {
+                FallbackReason::Timeout
+            } else {
+                FallbackReason::Transport
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn fallback_stays_within_outer_deadline_and_cancellation() {
+    use std::time::Duration;
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(ok_body())
+                .set_delay(Duration::from_millis(250)),
+        )
+        .expect(2)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(0)
+        .mount(&backup)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = routed_client(
+        &fallback_route(&primary, &backup),
+        &ledger,
+        "investigator",
+        10,
+        0,
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            c.complete(&[ChatMessage::user("deadline")], &[])
+        )
+        .await
+        .is_err()
+    );
+    let task = tokio::spawn(async move { c.complete(&[ChatMessage::user("cancel")], &[]).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(ledger.0.lock().unwrap().fallback_events.is_empty());
+    primary.verify().await;
+    backup.verify().await;
+}
+
+#[tokio::test]
+async fn fallback_skips_missing_keys_including_primary_and_isolates_roles() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(2)
+        .mount(&backup)
+        .await;
+    let mut route = fallback_route(&primary, &backup);
+    let mut missing = route_for(&primary.uri(), Protocol::OpenaiChat, "missing-backup");
+    missing.api_key_env = Some("REVERA_TEST_UNSET_FALLBACK_KEY_2F4D7".into());
+    assert!(!revera::config::env_is_set(
+        missing.api_key_env.as_deref().unwrap()
+    ));
+    route.fallback.insert(0, missing);
+    let ledger = LedgerHandle::new();
+    routed_client(&route, &ledger, "investigator", 10, 0)
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap();
+    route.api_key_env = Some("REVERA_TEST_UNSET_FALLBACK_KEY_2F4D7".into());
+    routed_client(&route, &ledger, "validator", 10, 0)
+        .complete(&[ChatMessage::user("fresh")], &[])
+        .await
+        .unwrap();
+    primary.verify().await;
+    backup.verify().await;
+    let run = ledger.0.lock().unwrap();
+    assert_eq!(run.fallback_events.len(), 2);
+    assert_eq!(
+        run.fallback_events[1].reason,
+        revera::provider::FallbackReason::MissingKey
+    );
+    assert_eq!(run.unavailable_routes.len(), 3);
+}
+
+#[tokio::test]
+async fn fallback_cross_protocol_mid_conversation_replays_full_transcript_and_scopes_state() {
+    for primary_protocol in [Protocol::OpenaiChat, Protocol::OpenaiResponses] {
+        let primary = MockServer::start().await;
+        let backup = MockServer::start().await;
+        let first_reply = if primary_protocol == Protocol::OpenaiChat {
+            json!({"choices":[{"message":{"content":"Looking up callers", "tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"src/lib.rs\"}"}}]}}]})
+        } else {
+            json!({"output":[{"type":"reasoning","encrypted_content":"PRIMARY-OPAQUE"},{"type":"message","content":[{"type":"output_text","text":"Looking up callers"}]},{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"src/lib.rs\"}"}]})
+        };
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(first_reply))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&primary)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401))
+            .with_priority(2)
+            .expect(1)
+            .mount(&primary)
+            .await;
+        Mock::given(method("POST")).and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content":[{"type":"thinking","thinking":"backup thought","signature":"BACKUP-OPAQUE"},{"type":"text","text":"Continue"}]})))
+            .expect(2).mount(&backup).await;
+        let mut route = fallback_route(&primary, &backup);
+        route.protocol = primary_protocol;
+        route.fallback[0].protocol = Protocol::Anthropic;
+        let ledger = LedgerHandle::new();
+        let c = routed_client(&route, &ledger, "investigator", 10, 0);
+        let mut transcript = vec![
+            ChatMessage::system("Review system"),
+            ChatMessage::user("Review user"),
+        ];
+        transcript.push(c.complete(&transcript, &[]).await.unwrap().message);
+        transcript.push(ChatMessage::tool("call-1", "read_file", "FILE CONTENT"));
+        transcript.push(c.complete(&transcript, &[]).await.unwrap().message);
+        transcript.push(ChatMessage::user("Continue the review"));
+        c.complete(&transcript, &[]).await.unwrap();
+        primary.verify().await;
+        backup.verify().await;
+        let requests = backup.received_requests().await.unwrap();
+        for request in &requests {
+            let body: serde_json::Value = request.body_json().unwrap();
+            let text = body.to_string();
+            assert!(
+                text.contains("Review system") && text.contains("Review user"),
+                "{text}"
+            );
+            assert!(
+                text.contains("Looking up callers") && text.contains("FILE CONTENT"),
+                "{text}"
+            );
+            assert!(
+                text.contains("read_file") && text.contains("src/lib.rs"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("PRIMARY-OPAQUE") && !text.contains("revera_route"),
+                "{text}"
+            );
+            assert_eq!(
+                body["messages"][1]["content"][1],
+                json!({"type":"tool_use","id":"call-1","name":"read_file","input":{"path":"src/lib.rs"}})
+            );
+            assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call-1");
+        }
+        let next = requests[1]
+            .body_json::<serde_json::Value>()
+            .unwrap()
+            .to_string();
+        assert!(next.contains("BACKUP-OPAQUE"));
+    }
+}
+
+#[tokio::test]
+async fn fallback_to_responses_sends_full_input_not_previous_response_id() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"output":[{"type":"message","content":[{"type":"output_text","text":"Done"}]}]}),
+        ))
+        .expect(1)
+        .mount(&backup)
+        .await;
+    let mut route = fallback_route(&primary, &backup);
+    route.fallback[0].protocol = Protocol::OpenaiResponses;
+    let mut assistant = ChatMessage::user("assistant history");
+    assistant.role = Role::Assistant;
+    assistant.provider_state = Some(json!([{"type":"thinking","signature":"FOREIGN-STATE"}]));
+    let ledger = LedgerHandle::new();
+    routed_client(&route, &ledger, "investigator", 10, 0)
+        .complete(
+            &[
+                ChatMessage::system("system history"),
+                ChatMessage::user("user history"),
+                assistant,
+                ChatMessage::user("continue"),
+            ],
+            &[],
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value = backup.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert_eq!(body["instructions"], "system history");
+    assert_eq!(body["input"].as_array().unwrap().len(), 3);
+    assert_eq!(body["input"][1]["content"][0]["text"], "assistant history");
+    assert_eq!(body["store"], false);
+    assert!(body.get("previous_response_id").is_none());
+    assert!(!body.to_string().contains("FOREIGN-STATE"));
+}
+
+#[tokio::test]
+async fn fallback_reports_switches_and_summary_without_secrets() {
+    use revera::report::{Summary, footer_routes, ledger_report, summary_markdown};
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    let key = std::env::var("REVERA_TEST_SECRET_REDACT").unwrap();
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_string(format!(
+            "bad key {key}; https://provider.example/v1?token=private-query"
+        )))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&backup)
+        .await;
+    let mut route = fallback_route(&primary, &backup);
+    route.api_key_env = Some("REVERA_TEST_SECRET_REDACT".into());
+    route.extra_headers.insert("x-secret".into(), key.clone());
+    let ledger = LedgerHandle::new();
+    routed_client(&route, &ledger, "investigator", 10, 0)
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap();
+    let run = ledger.0.lock().unwrap();
+    let value = serde_json::to_value(ledger_report(&run, 1)).unwrap();
+    assert_eq!(
+        value["fallback_events"],
+        json!([{"role":"investigator","from_model":"primary","to_model":"backup","reason":"authentication"}])
+    );
+    assert_eq!(value["unavailable_routes"], json!([]));
+    assert_eq!(value["by_route"].as_array().unwrap().len(), 2);
+    let routes = footer_routes(&run);
+    let summary = summary_markdown(&Summary {
+        strategy: "baseline",
+        routes: &routes,
+        ..Default::default()
+    });
+    assert!(summary.contains("investigator=primary→backup@medium"));
+    assert!(!summary.contains("http"));
+    for output in [value.to_string(), summary, format!("{:?}", run.entries)] {
+        assert!(
+            !output.contains(&key) && !output.contains("private-query"),
+            "{output}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn fallback_does_not_handle_agent_terminal_protocol_failures() {
+    use revera::agent::{AgentBudget, StopReason, run_agent};
+    use std::sync::Arc;
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"choices":[{"message":{"content":"I will not submit a terminal call"}}]}),
+        ))
+        .expect(2)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(0)
+        .mount(&backup)
+        .await;
+    let root = std::env::current_dir().unwrap();
+    let toolbox = revera::tools::ToolBox::new(
+        root.clone(),
+        Arc::new(revera::diff::DiffSet::default()),
+        Arc::new(revera::vera::VeraClient::disabled(&root)),
+        12000,
+    );
+    let ledger = LedgerHandle::new();
+    let c = routed_client(
+        &fallback_route(&primary, &backup),
+        &ledger,
+        "investigator",
+        10,
+        0,
+    );
+    let terminal = revera::provider::ToolSpec {
+        name: "submit_findings".into(),
+        description: "done".into(),
+        parameters: json!({"type":"object"}),
+    };
+    let result = run_agent(
+        c.as_ref(),
+        "system",
+        "review",
+        &toolbox,
+        &terminal,
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 10,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.stopped, StopReason::NoTerminalCall);
+    assert!(ledger.0.lock().unwrap().fallback_events.is_empty());
+    primary.verify().await;
+    backup.verify().await;
 }
 
 #[test]

@@ -1,4 +1,7 @@
-use super::{ChatMessage, Completion, LedgerEntry, LedgerHandle, ProviderError, ToolSpec, Usage};
+use super::{
+    ChatMessage, Completion, FallbackReason, LedgerEntry, LedgerHandle, ProviderError, ToolSpec,
+    Usage,
+};
 use crate::config::{ModelRoute, ReasoningEffort};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -303,7 +306,19 @@ impl HttpTransport {
                         );
                         return Err(err);
                     }
-                    match adapter.parse(status, &text, &mut attempt) {
+                    let parsed = match adapter.parse(status, &text, &mut attempt) {
+                        Parse::Ok(message, _)
+                            if message.tool_calls.is_empty()
+                                && message
+                                    .content
+                                    .as_deref()
+                                    .is_none_or(|s| s.trim().is_empty()) =>
+                        {
+                            Parse::Err(ProviderError::Other("empty provider response".into()))
+                        }
+                        parsed => parsed,
+                    };
+                    match parsed {
                         Parse::Ok(message, usage) => {
                             let latency = start.elapsed().as_millis() as u64;
                             self.record(
@@ -348,6 +363,20 @@ impl HttpTransport {
                             continue;
                         }
                         Parse::Err(e) => {
+                            let reason = match status {
+                                401 | 403 => Some(FallbackReason::Authentication),
+                                404 => Some(FallbackReason::NotFound),
+                                200..=299 => Some(FallbackReason::MalformedResponse),
+                                _ => None,
+                            };
+                            let e = if let Some(reason) = reason {
+                                ProviderError::Failure {
+                                    reason,
+                                    message: e.to_string(),
+                                }
+                            } else {
+                                e
+                            };
                             let e = diagnostic_error(e);
                             self.record(
                                 &tel,
@@ -364,6 +393,11 @@ impl HttpTransport {
                     }
                 }
                 Err(e) => {
+                    let reason = if e.is_timeout() {
+                        FallbackReason::Timeout
+                    } else {
+                        FallbackReason::Transport
+                    };
                     let transient = e.is_timeout() || e.is_connect();
                     let message = crate::redact::diagnostic(&e.without_url().to_string());
                     if transient && attempts <= self.retries {
@@ -380,7 +414,7 @@ impl HttpTransport {
                         tokio::time::sleep(Self::retry_delay(None, retries_used, Utc::now())).await;
                         continue;
                     }
-                    let err = diagnostic_error(ProviderError::Http(message));
+                    let err = diagnostic_error(ProviderError::Failure { reason, message });
                     self.record(
                         &tel,
                         &effective,
@@ -410,6 +444,11 @@ fn diagnostic_error(e: ProviderError) -> ProviderError {
             ProviderError::ScriptExpectationFailed(diagnostic(&s))
         }
         ProviderError::Other(s) => ProviderError::Other(diagnostic(&s)),
+        ProviderError::MissingKey(s) => ProviderError::MissingKey(diagnostic(&s)),
+        ProviderError::Failure { reason, message } => ProviderError::Failure {
+            reason,
+            message: diagnostic(&message),
+        },
     }
 }
 

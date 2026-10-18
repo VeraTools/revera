@@ -700,15 +700,7 @@ pub async fn finish(
     if !fallbacks.is_empty() {
         stats.retrieval = format!("{} ({})", stats.retrieval, fallbacks.join("; "));
     }
-    let routes: Vec<String> = prep
-        .ledger
-        .0
-        .lock()
-        .unwrap()
-        .entries
-        .iter()
-        .map(crate::report::footer_route_label)
-        .collect();
+    let routes = crate::report::footer_routes(&prep.ledger.0.lock().unwrap());
     let coverage = if prep.coverage.is_empty() {
         "(none reported)".to_string()
     } else {

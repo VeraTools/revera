@@ -35,6 +35,8 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
             cache_write_tokens: 0,
             reasoning_tokens: 0,
             by_route: vec![],
+            fallback_events: vec![],
+            unavailable_routes: vec![],
             wall_ms: 1,
         },
         publication: Default::default(),
