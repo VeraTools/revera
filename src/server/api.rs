@@ -66,7 +66,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/jobs/{id}/log", get(log))
         .route("/api/jobs/{id}/rerun", post(rerun))
         .route("/api/jobs/{id}/cancel", post(cancel))
-        .route("/api/repos", get(repos))
+        .route("/api/repos", get(repos).patch(bulk_repo_settings))
         .route(
             "/api/repos/{owner}/{repo}",
             axum::routing::patch(repo_settings),
@@ -221,6 +221,55 @@ fn ordered(dashboard: &Dashboard) -> Vec<JobSummary> {
     jobs
 }
 
+fn history_window(jobs: &[JobSummary], cutoff: chrono::DateTime<chrono::Utc>) -> Value {
+    let window: Vec<_> = jobs
+        .iter()
+        .filter(|job| {
+            chrono::DateTime::parse_from_rfc3339(&job.queued_at)
+                .is_ok_and(|queued| queued >= cutoff)
+        })
+        .collect();
+    let reviews: Vec<_> = window.iter().filter(|job| job.kind == "review").collect();
+    let mut durations: Vec<_> = reviews
+        .iter()
+        .filter(|job| matches!(job.status.as_str(), "complete" | "partial" | "failed"))
+        .filter_map(|job| job.duration_ms)
+        .collect();
+    durations.sort_unstable();
+    let median = if durations.is_empty() {
+        None
+    } else {
+        let middle = durations.len() / 2;
+        Some(if durations.len() % 2 == 0 {
+            (durations[middle - 1] as f64 + durations[middle] as f64) / 2.0
+        } else {
+            durations[middle] as f64
+        })
+    };
+    let tokens = |key: &str| {
+        window
+            .iter()
+            .filter_map(|job| job.tokens.as_ref())
+            .map(|tokens| tokens[key].as_u64().unwrap_or(0))
+            .sum::<u64>()
+    };
+    let prompt = tokens("prompt");
+    json!({
+        "reviews": reviews.len(),
+        "failed": reviews.iter().filter(|job| job.status == "failed").count(),
+        "findings": reviews.iter().map(|job| job.findings.total).sum::<u64>(),
+        "severity": {
+            "high": reviews.iter().map(|job| job.findings.high).sum::<u64>(),
+            "medium": reviews.iter().map(|job| job.findings.medium).sum::<u64>(),
+            "low": reviews.iter().map(|job| job.findings.low).sum::<u64>()
+        },
+        "tokens": prompt + tokens("completion"),
+        "prompt_tokens": prompt,
+        "cached_tokens": tokens("cached"),
+        "median_duration_ms": median
+    })
+}
+
 async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
     let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
     let registration = server
@@ -270,17 +319,11 @@ async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
         })
         .collect();
     let github = dashboard.github.clone();
-    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+    let now = chrono::Utc::now();
     let recent: Vec<_> = jobs.iter().take(10).cloned().collect();
-    let today: Vec<_> = jobs.iter().filter(|job| job.queued_at >= cutoff).collect();
-    let last = json!({
-        "reviews": today.iter().filter(|j| j.kind == "review").count(),
-        "findings": today.iter().map(|j| j.findings.total).sum::<u64>(),
-        "failed": today.iter().filter(|j| j.status == "failed").count(),
-        "tokens": today.iter().filter_map(|j| j.tokens.as_ref()).map(|t|
-            t["prompt"].as_u64().unwrap_or(0) + t["completion"].as_u64().unwrap_or(0)
-        ).sum::<u64>()
-    });
+    let last_24h = history_window(&jobs, now - chrono::Duration::hours(24));
+    let last_7d = history_window(&jobs, now - chrono::Duration::days(7));
+    let history_since = jobs.last().map(|job| &job.queued_at);
     let running: Vec<_> = jobs
         .iter()
         .filter(|j| j.status == "running")
@@ -311,7 +354,8 @@ async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
             "issue_comment_subscribed": issue_comment, "settings_url": settings_url},
         "health": {"github": github, "models": models,
             "vera": {"enabled": enabled, "version": version}},
-        "queue": {"running": running, "queued": queued}, "last_24h": last, "recent": recent
+        "queue": {"running": running, "queued": queued}, "last_24h": last_24h,
+        "last_7d": last_7d, "history_since": history_since, "recent": recent
     })))
 }
 
@@ -322,19 +366,40 @@ struct JobsQuery {
     kind: Option<String>,
     limit: Option<usize>,
     before: Option<String>,
+    q: Option<String>,
 }
 async fn jobs(State(server): State<Arc<Server>>, Query(query): Query<JobsQuery>) -> Json<Value> {
     let dashboard = server.dashboard.lock().await;
     let all = ordered(&dashboard);
+    let search = query.q.as_deref().unwrap_or("").to_lowercase();
+    let number = search.strip_prefix('#').unwrap_or(&search);
+    let pr = (!number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| number.parse::<u64>().ok())
+        .flatten();
     let offset = query
         .before
         .as_ref()
         .and_then(|id| all.iter().position(|j| &j.id == id))
         .map_or(0, |n| n + 1);
+    // Browsers send unset filters as empty values; they mean "any".
+    let exact = |filter: &Option<String>, value: &str| {
+        filter.as_deref().is_none_or(|v| v.is_empty() || v == value)
+    };
     let mut filtered = all.into_iter().skip(offset).filter(|job| {
-        query.repo.as_ref().is_none_or(|v| &job.repo == v)
-            && query.status.as_ref().is_none_or(|v| &job.status == v)
-            && query.kind.as_ref().is_none_or(|v| &job.kind == v)
+        exact(&query.repo, &job.repo)
+            && exact(&query.status, &job.status)
+            && exact(&query.kind, &job.kind)
+            && (search.is_empty()
+                || job.repo.to_lowercase().contains(&search)
+                || job
+                    .title
+                    .as_ref()
+                    .is_some_and(|v| v.to_lowercase().contains(&search))
+                || job
+                    .author
+                    .as_ref()
+                    .is_some_and(|v| v.to_lowercase().contains(&search))
+                || pr.is_some_and(|number| job.pr == Some(number)))
     });
     let result: Vec<_> = filtered
         .by_ref()
@@ -391,7 +456,7 @@ async fn job(State(server): State<Arc<Server>>, Path(id): Path<String>) -> ApiRe
                 })
                 .collect::<Vec<_>>()
         );
-        for field in ["timing", "ledger"] {
+        for field in ["timing", "ledger", "stats", "strategy"] {
             if !report[field].is_null() {
                 value[field] = report[field].clone();
             }
@@ -563,6 +628,10 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                     .join(".vera/vectors.manifest")
                     .exists();
                 let last = jobs.iter().find(|j| j.repo == info.repo.full_name);
+                let reviews: Vec<_> = jobs
+                    .iter()
+                    .filter(|job| job.repo == info.repo.full_name && job.kind == "review")
+                    .collect();
                 let updated = jobs
                     .iter()
                     .find(|j| {
@@ -594,9 +663,27 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 .and_then(|r| r.trigger),
             "mode_override": dashboard.preferences.repos.get(&info.repo.full_name)
                 .and_then(|r| r.mode),
-            "has_override": info.has_override, "index": index, "html_url": info.html_url});
+            "has_override": info.has_override, "index": index, "html_url": info.html_url,
+            "review_count": reviews.len(),
+            "finding_count": reviews.iter().map(|job| job.findings.total).sum::<u64>()});
+                if let Some(pushed_at) = info
+                    .repo
+                    .pushed_at
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                {
+                    value["pushed_at"] =
+                        json!(pushed_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+                }
+                if let Some(open_prs) = info.open_prs {
+                    value["open_prs"] = json!(open_prs);
+                }
                 if let Some(last) = last {
                     value["last_job"] = json!(last);
+                }
+                if let Some(review) = reviews.first() {
+                    value["last_review"] = json!(review);
                 }
                 value
             })
@@ -619,6 +706,52 @@ where
 {
     Option::<T>::deserialize(deserializer).map(Some)
 }
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BulkRepoSettings {
+    repos: Vec<String>,
+    #[serde(deserialize_with = "nullable")]
+    trigger: Option<Option<Trigger>>,
+    #[serde(deserialize_with = "nullable")]
+    mode: Option<Option<Mode>>,
+}
+
+async fn bulk_repo_settings(
+    State(server): State<Arc<Server>>,
+    Json(input): Json<BulkRepoSettings>,
+) -> ApiResult {
+    if input.repos.is_empty() || input.repos.len() > 1000 {
+        return Err(invalid(anyhow::anyhow!("repos must contain 1–1000 names")));
+    }
+    if input.trigger.is_none() && input.mode.is_none() {
+        return Err(invalid(anyhow::anyhow!("trigger or mode is required")));
+    }
+    let mut dashboard = server.dashboard.lock().await;
+    if input
+        .repos
+        .iter()
+        .any(|name| !dashboard.repos.contains_key(name))
+    {
+        return Err(missing());
+    }
+    let names: std::collections::BTreeSet<_> = input.repos.into_iter().collect();
+    let mut preferences = dashboard.preferences.clone();
+    for name in &names {
+        let settings = preferences.repos.entry(name.clone()).or_default();
+        if let Some(trigger) = input.trigger {
+            settings.trigger = trigger;
+        }
+        if let Some(mode) = input.mode {
+            settings.mode = mode;
+        }
+    }
+    dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
+    dashboard.preferences = preferences;
+    let _ = server.events.send(("repos", json!({})));
+    Ok(output(json!({"ok": true, "updated": names.len()})))
+}
+
 async fn repo_settings(
     State(server): State<Arc<Server>>,
     Path((owner, name)): Path<(String, String)>,

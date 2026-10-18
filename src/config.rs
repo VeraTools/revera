@@ -1361,7 +1361,7 @@ impl Config {
             .profiles
             .get(name)
             .cloned()
-            .or_else(|| ProfileOverride::builtin(name))
+            .or_else(|| ProfileOverride::builtin(name, &self.budget, &self.review))
             .with_context(|| format!("unknown profile {name:?}"))?;
         if let Some(r) = &p.review {
             if let Some(v) = r.strategy {
@@ -1413,23 +1413,46 @@ impl Config {
     }
 }
 
+// Leave headroom below the server's 55-minute hard limit for jobs.
+const DEEP_MAX_SECONDS: u64 = 3000;
+
 impl ProfileOverride {
-    fn builtin(name: &str) -> Option<Self> {
+    fn builtin(name: &str, budget: &BudgetConfig, review: &ReviewConfig) -> Option<Self> {
         let (calls, agent_seconds, run_seconds) = match name {
-            "quick" => (12, 150, 420),
-            "deep" => (50, 600, 1800),
+            "quick" => (
+                (budget.agent_max_tool_calls / 2).max(1),
+                (budget.agent_max_seconds / 2).max(30),
+                (budget.run_max_seconds / 2).max(60),
+            ),
+            "deep" => (
+                budget.agent_max_tool_calls.saturating_mul(2),
+                budget.agent_max_seconds.max(
+                    budget
+                        .agent_max_seconds
+                        .saturating_mul(2)
+                        .min(DEEP_MAX_SECONDS),
+                ),
+                budget.run_max_seconds.max(
+                    budget
+                        .run_max_seconds
+                        .saturating_mul(2)
+                        .min(DEEP_MAX_SECONDS),
+                ),
+            ),
             _ => return None,
         };
         Some(Self {
             review: (name == "deep").then_some(ReviewOverride {
-                max_diff_bytes: Some(2 * default_diff_bytes()),
-                max_findings: Some(20),
+                max_diff_bytes: Some(review.max_diff_bytes.max(400000)),
+                max_findings: Some(review.max_findings.max(20)),
                 ..Default::default()
             }),
             budget: Some(BudgetOverride {
                 agent_max_tool_calls: Some(calls),
                 agent_max_seconds: Some(agent_seconds),
                 run_max_seconds: Some(run_seconds),
+                run_max_requests: (name == "deep")
+                    .then_some(budget.run_max_requests.saturating_mul(2)),
                 ..Default::default()
             }),
         })

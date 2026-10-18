@@ -754,6 +754,10 @@ async fn reconcile_api_first_sighting_and_stale_head_are_not_backfilled() {
         .await;
     reconcile::once(&server).await.unwrap();
     assert!(server.queue.lock().await.pending.is_empty());
+    assert_eq!(
+        server.dashboard.lock().await.repos["owner/repo"].open_prs,
+        Some(1)
+    );
     drop(first);
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
@@ -1967,3 +1971,6 @@ mod backoff_tests;
 
 #[path = "mention_tests.rs"]
 mod mention_tests;
+
+#[path = "dashboard_qol_tests.rs"]
+mod dashboard_qol_tests;

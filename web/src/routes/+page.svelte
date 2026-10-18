@@ -3,23 +3,48 @@
   import { CheckCircle2, CircleAlert, GitPullRequest, ArrowRight } from '@lucide/svelte';
   import { api, errorMessage } from '#lib/api';
   import { live } from '#lib/events';
-  import { number } from '#lib/time';
+  import { duration, number, relative, severitySplit } from '#lib/time';
   import type { Overview } from '#lib/types';
   import JobsTable from '#lib/components/JobsTable.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
 
   let overview = $state<Overview>();
+  let period = $state('24h');
+  let ready = $state(false);
   let error = $state('');
   let mounted = false;
   let lastEvent: unknown;
+  const windowStats = $derived(period === '7d' ? overview?.last_7d : overview?.last_24h);
+  const partialHistory = $derived(
+    !!overview?.history_since &&
+      Date.parse(overview.history_since) > Date.now() - (period === '7d' ? 7 : 1) * 86400000,
+  );
   const stats = $derived(
-    overview
+    windowStats
       ? [
-          { label: 'Reviews', value: overview.last_24h.reviews },
-          { label: 'Validated findings', value: overview.last_24h.findings },
-          { label: 'Failed reviews', value: overview.last_24h.failed },
-          { label: 'Tokens used', value: overview.last_24h.tokens },
+          {
+            label: 'Reviews',
+            value: number(windowStats.reviews),
+            caption: windowStats.failed ? `${windowStats.failed} failed` : 'none failed',
+          },
+          {
+            label: 'Validated findings',
+            value: number(windowStats.findings),
+            caption: severitySplit(windowStats.severity) || 'none',
+          },
+          {
+            label: 'Median review time',
+            value: duration(windowStats.median_duration_ms ?? undefined),
+            caption: 'per review',
+          },
+          {
+            label: 'Tokens used',
+            value: number(windowStats.tokens),
+            caption: windowStats.prompt_tokens
+              ? `${Math.round((100 * windowStats.cached_tokens) / windowStats.prompt_tokens)}% cached`
+              : '',
+          },
         ]
       : [],
   );
@@ -44,11 +69,25 @@
     }
   }
   onMount(() => {
+    try {
+      period = localStorage.getItem('revera-overview-period') === '7d' ? '7d' : '24h';
+    } catch {
+      /* Storage may be disabled. */
+    }
+    ready = true;
     mounted = true;
     void load();
     return () => {
       mounted = false;
     };
+  });
+  $effect(() => {
+    if (ready)
+      try {
+        localStorage.setItem('revera-overview-period', period);
+      } catch {
+        /* Storage may be disabled. */
+      }
   });
   $effect(() => {
     const event = $live.job;
@@ -70,10 +109,24 @@
         <p class="helper"><a class="text-link" href="/settings">Check your settings</a></p>
       </div>{:else}<CheckCircle2 size={18} /><strong>Everything is connected</strong>{/if}
     <div class="health-details">
-      <Status status={overview.health.github.ok ? 'complete' : 'failed'} label="GitHub" /><Status
-        status={overview.health.models.every((model) => model.ok) ? 'complete' : 'partial'}
-        label="Models"
-      />{#if overview.health.vera.enabled}<Status status="complete" label="Vera" />{/if}
+      <Status status={overview.health.github.ok ? 'complete' : 'failed'} label="GitHub" />
+      {#each overview.health.models as model}<span
+          title={model.error ||
+            (model.checked_at ? `Checked ${relative(model.checked_at)}` : 'Not tested yet')}
+        >
+          <Status
+            status={model.ok === true
+              ? 'complete'
+              : model.ok === false || model.error
+                ? 'failed'
+                : 'partial'}
+            label={`${model.role[0].toUpperCase() + model.role.slice(1)} · ${model.model}`}
+          />
+        </span>{/each}
+      {#if overview.health.vera.enabled}<Status
+          status="complete"
+          label={`Vera${overview.health.vera.version ? ` ${overview.health.vera.version}` : ''}`}
+        />{/if}
     </div>
   </div>
   {#if overview.app.issue_comment_subscribed === false}
@@ -90,11 +143,22 @@
     </section>
   {/if}
   <section class="metrics" aria-labelledby="metrics-title">
-    <h2 id="metrics-title" class="metrics-title">Last 24 hours</h2>
+    <div class="section-heading metrics-heading">
+      <h2 id="metrics-title" class="metrics-title">Activity</h2>
+      <div class="segmented" role="group" aria-label="Overview period">
+        <button aria-pressed={period === '24h'} onclick={() => (period = '24h')}>24 hours</button>
+        <button aria-pressed={period === '7d'} onclick={() => (period = '7d')}>7 days</button>
+      </div>
+    </div>
+    {#if partialHistory}<p class="helper history-note">
+        Showing jobs since {new Date(overview.history_since!).toLocaleDateString()}. History keeps
+        the last 500 jobs.
+      </p>{/if}
     <div class="stats">
       {#each stats as stat}<div class="stat">
           <div class="stat-label">{stat.label}</div>
-          <div class="stat-value tabular">{number(stat.value)}</div>
+          <div class="stat-value tabular">{stat.value}</div>
+          {#if stat.caption}<div class="stat-caption">{stat.caption}</div>{/if}
         </div>{/each}
     </div>
   </section>
@@ -115,7 +179,15 @@
             <GitPullRequest size={18} />
             <div class="queue-description">
               <a class="row-title" href={`/reviews/${job.id}`}>{job.title || 'Repository index'}</a>
-              <div class="row-meta">{job.repo}<span>·</span>{job.pr ? `#${job.pr}` : 'Index'}</div>
+              <div class="row-meta">
+                {job.repo}<span>·</span>{job.pr ? `#${job.pr}` : 'Index'}
+                {#if job.kind === 'review'}<span>·</span><span class="capitalize"
+                    >{job.mode} · {job.trigger}</span
+                  >{/if}
+                <span>·</span>{job.status === 'running' && job.started_at
+                  ? `started ${relative(job.started_at).toLowerCase()}`
+                  : `queued ${relative(job.queued_at).toLowerCase()}`}
+              </div>
             </div>
             <Status status={job.status} /><a
               href={`/reviews/${job.id}`}

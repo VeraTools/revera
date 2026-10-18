@@ -294,6 +294,8 @@ pub struct RepoInfo {
     pub private: bool,
     pub html_url: String,
     pub has_override: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_prs: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]

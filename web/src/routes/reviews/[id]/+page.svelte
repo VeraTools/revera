@@ -3,20 +3,69 @@
   import { live } from '#lib/events';
   import { ArrowLeft, ArrowUpRight, RotateCcw, Square, ChevronDown, Copy } from '@lucide/svelte';
   import { api, errorMessage } from '#lib/api';
-  import { duration, number } from '#lib/time';
+  import { duration, number, severitySplit } from '#lib/time';
+  import { renderSummary } from '#lib/markdown';
+  import { createNotices } from '#lib/notices.svelte';
   import type { JobDetail, ReviewMode, Repository } from '#lib/types';
   import ReviewModeField from '#lib/components/ReviewModeField.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
   let detail = $state<JobDetail>();
   let log = $state('');
-  let error = $state('');
-  let message = $state('');
+  const notice = createNotices();
   let busy = $state(false);
   let showLog = $state(false);
   let generation = 0;
   let repository = $state<Repository>();
   let reviewMode = $state<ReviewMode | ''>('');
+  let now = $state(Date.now());
+  const elapsed = $derived(
+    detail?.job.status === 'running' && detail.job.started_at
+      ? Math.max(0, now - Date.parse(detail.job.started_at))
+      : detail?.job.duration_ms,
+  );
+  const split = $derived(
+    severitySplit({
+      high: detail?.findings.filter((finding) => finding.severity === 'high').length ?? 0,
+      medium: detail?.findings.filter((finding) => finding.severity === 'medium').length ?? 0,
+      low: detail?.findings.filter((finding) => finding.severity === 'low').length ?? 0,
+    }),
+  );
+  const timingRows = $derived(
+    [
+      { label: 'Total', value: detail?.timing?.total_ms },
+      { label: 'Index', value: detail?.timing?.vera_index_ms },
+      { label: 'Investigation', value: detail?.timing?.lanes_ms },
+      { label: 'Validation', value: detail?.timing?.validate_ms },
+    ].filter((row) => row.value !== undefined && row.value !== null),
+  );
+  const reviewRows = $derived(
+    [
+      { label: 'Candidates', value: detail?.stats?.candidates },
+      { label: 'Validated', value: detail?.stats?.accepted },
+      { label: 'Rejected', value: detail?.stats?.rejected },
+      { label: 'Files read', value: detail?.stats?.files_read },
+      { label: 'Retrieval', value: detail?.stats?.retrieval },
+    ].filter((row) => row.value !== undefined && row.value !== null),
+  );
+  const integer = (value?: number) => (value ?? 0).toLocaleString('en');
+  function fileLink(file: string, line?: number) {
+    if (!detail?.job.pr_url || !detail.job.head_sha) return undefined;
+    try {
+      const url = new URL(detail.job.pr_url);
+      if (!['https:', 'http:'].includes(url.protocol)) return undefined;
+      const path = (value: string) => value.split('/').map(encodeURIComponent).join('/');
+      return `${url.origin}/${path(detail.job.repo)}/blob/${encodeURIComponent(detail.job.head_sha)}/${path(file)}${line ? `#L${line}` : ''}`;
+    } catch {
+      return undefined;
+    }
+  }
+  $effect(() => {
+    if (detail?.job.status !== 'running') return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
   const reasons: Record<string, string> = {
     rate_limit_or_server: 'rate limit or server error',
     authentication: 'key rejected',
@@ -32,7 +81,7 @@
       const match = (await api.repos()).find((item) => item.full_name === repo);
       if (detail?.job.repo === repo) repository = match;
     } catch (cause) {
-      if (detail?.job.repo === repo) error = errorMessage(cause);
+      if (detail?.job.repo === repo) notice.failure(errorMessage(cause));
     }
   }
   async function load(id: string) {
@@ -46,10 +95,10 @@
           void loadRepository(result.job.repo);
         }
         detail = result;
-        error = '';
+        notice.state.error = '';
       }
     } catch (cause) {
-      if (current === generation) error = errorMessage(cause);
+      if (current === generation) notice.failure(errorMessage(cause));
     }
   }
   $effect(() => {
@@ -69,10 +118,12 @@
     try {
       if (which === 'rerun') await api.rerun(detail.job.id, reviewMode || null);
       else await api.cancel(detail.job.id);
-      message = which === 'rerun' ? 'A new review has been queued.' : 'The job has been cancelled.';
+      notice.success(
+        which === 'rerun' ? 'A new review has been queued.' : 'The job has been cancelled.',
+      );
       await load(detail.job.id);
     } catch (cause) {
-      error = errorMessage(cause);
+      notice.failure(errorMessage(cause));
     } finally {
       busy = false;
     }
@@ -83,23 +134,26 @@
       log = await api.log(detail.job.id);
       showLog = true;
     } catch (cause) {
-      error = errorMessage(cause);
+      notice.failure(errorMessage(cause));
     }
   }
   async function copyLog() {
     try {
       await navigator.clipboard.writeText(log);
-      message = 'Log copied.';
+      notice.success('Log copied.');
     } catch {
-      error = 'Could not copy the log. Select the text and copy it manually.';
+      notice.failure('Could not copy the log. Select the text and copy it manually.');
     }
   }
 </script>
 
 <svelte:head><title>Review details · Revera</title></svelte:head>
 <a class="back-link" href="/reviews"><ArrowLeft size={14} />All reviews</a>
-{#if error}<Notice message={error} retry={() => void load(page.params.id!)} />{/if}
-{#if message}<Notice {message} kind="success" />{/if}
+{#if notice.state.error}<Notice
+    message={notice.state.error}
+    retry={() => void load(page.params.id!)}
+  />{/if}
+{#if notice.state.message}<Notice message={notice.state.message} kind="success" />{/if}
 {#if detail}
   <div class="detail-header">
     <Status status={detail.job.status} />
@@ -112,9 +166,12 @@
   <div class="detail-layout">
     <div>
       <h2>Summary</h2>
-      <p class="detail-summary">
-        {detail.summary_markdown || detail.job.reason || 'No summary is available yet.'}
-      </p>
+      {#if detail.summary_markdown}<div class="summary">
+          {@html renderSummary(detail.summary_markdown)}
+        </div>
+      {:else}<p class="detail-summary">
+          {detail.job.reason || 'No summary is available yet.'}
+        </p>{/if}
       {#if detail.ledger?.fallback_events?.length || detail.ledger?.unavailable_routes?.length}
         <section class="route-notes" aria-label="Model changes">
           <h2>Model changes</h2>
@@ -136,7 +193,7 @@
       <div class="section-heading">
         <h2>
           Findings <span class="muted" style="font-weight: 400; margin-left: 8px; font-size: 12px"
-            >{detail.findings.length}</span
+            >{detail.findings.length}{#if split}{' · '}{split}{/if}</span
           >
         </h2>
         <span class="helper">Checked independently</span>
@@ -144,9 +201,15 @@
       {#each detail.findings as finding, index}<details class="finding" open={index === 0}>
           <summary
             ><div class="finding-top">
-              <Status status={finding.severity} /><span class="mono"
-                >{finding.file}{finding.line ? `:${finding.line}` : ''}</span
-              >
+              <Status status={finding.severity} />
+              {#if fileLink(finding.file, finding.line)}<a
+                  class="mono text-link"
+                  href={fileLink(finding.file, finding.line)}
+                  target="_blank"
+                  rel="noreferrer">{finding.file}{finding.line ? `:${finding.line}` : ''}</a
+                >
+              {:else}<span class="mono">{finding.file}{finding.line ? `:${finding.line}` : ''}</span
+                >{/if}
             </div>
             <div class="finding-title">{finding.title}<ChevronDown size={15} /></div></summary
           >
@@ -156,6 +219,36 @@
             ? 'Findings will appear after validation.'
             : 'No findings were reported.'}
         </p>{/each}
+      {#if detail.ledger?.by_route?.length}<section class="section" aria-labelledby="usage-title">
+          <div class="section-heading"><h2 id="usage-title">Model usage</h2></div>
+          <div class="table-scroll">
+            <table class="model-usage">
+              <thead
+                ><tr
+                  ><th>Role</th><th>Model</th><th>Requests</th><th>Prompt</th><th>Completion</th><th
+                    >Cached</th
+                  ></tr
+                ></thead
+              >
+              <tbody
+                >{#each detail.ledger.by_route as route}<tr
+                    ><td style="text-transform: capitalize">{route.role}</td>
+                    <td
+                      >{route.model}{#if route.effective_reasoning}<span class="muted"
+                          >@{route.effective_reasoning}</span
+                        >{/if}</td
+                    >
+                    <td class="tabular">{integer(route.requests)}</td><td class="tabular"
+                      >{integer(route.prompt_tokens)}</td
+                    >
+                    <td class="tabular">{integer(route.completion_tokens)}</td><td class="tabular"
+                      >{integer(route.cached_prompt_tokens)}</td
+                    >
+                  </tr>{/each}</tbody
+              >
+            </table>
+          </div>
+        </section>{/if}
       <section class="section">
         <div class="section-heading">
           <h2>Run log</h2>
@@ -177,9 +270,13 @@
             Process output, with secrets removed.
           </p>{/if}
       </section>
-      {#if detail.ledger}<details class="data-disclosure">
-          <summary>Request ledger</summary>
-          <pre>{JSON.stringify(detail.ledger, null, 2)}</pre>
+      {#if detail.ledger || detail.timing || detail.stats}<details class="data-disclosure">
+          <summary>Raw report data</summary>
+          <pre>{JSON.stringify(
+              { ledger: detail.ledger, timing: detail.timing, stats: detail.stats },
+              null,
+              2,
+            )}</pre>
         </details>{/if}
     </div>
     <aside class="detail-meta" aria-label="Run details">
@@ -189,9 +286,16 @@
             <dt>Mode</dt>
             <dd style="text-transform: capitalize">{detail.job.mode}</dd>
           </div>{/if}
+        {#if detail.strategy}<div>
+            <dt>Strategy</dt>
+            <dd>{detail.strategy}</dd>
+          </div>{/if}
         <div>
           <dt>Duration</dt>
-          <dd class="tabular">{duration(detail.job.duration_ms)}</dd>
+          <dd class="tabular">
+            {duration(elapsed)}{#if detail.job.status === 'running'}
+              <span class="muted">elapsed</span>{/if}
+          </dd>
         </div>
         <div>
           <dt>Triggered by</dt>
@@ -224,13 +328,33 @@
           </div>
           <div>
             <dt>Cached</dt>
-            <dd class="tabular">{number(detail.job.tokens.cached)}</dd>
+            <dd class="tabular">
+              {number(detail.job.tokens.cached)}{#if detail.job.tokens.prompt}{' '}
+                ({Math.round((100 * detail.job.tokens.cached) / detail.job.tokens.prompt)}%){/if}
+            </dd>
           </div>
         </dl>{/if}
-      {#if detail.timing}<details class="data-disclosure" style="margin-bottom: 24px">
-          <summary>Stage timing</summary>
-          <pre>{JSON.stringify(detail.timing, null, 2)}</pre>
-        </details>{/if}
+      {#if timingRows.length}<h3>Timing</h3>
+        <dl class="compact-details">
+          {#each timingRows as row}<div>
+              <dt>{row.label}</dt>
+              <dd class="tabular">
+                {duration(row.value)}
+                {#if row.label === 'Validation' && detail.timing?.validate_p95_ms !== undefined}<span
+                    class="muted"
+                  >
+                    · p95 {duration(detail.timing.validate_p95_ms)}</span
+                  >{/if}
+              </dd>
+            </div>{/each}
+        </dl>{/if}
+      {#if reviewRows.length}<h3>Review</h3>
+        <dl class="compact-details">
+          {#each reviewRows as row}<div>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>{/each}
+        </dl>{/if}
       {#if detail.job.kind === 'review' && !['queued', 'running'].includes(detail.job.status)}
         <div style="margin-bottom: 16px">
           <ReviewModeField
@@ -266,9 +390,64 @@
       </div>
     </aside>
   </div>
-{:else if !error}<div class="loading" role="status">Loading review…</div>{/if}
+{:else if !notice.state.error}<div class="loading" role="status">Loading review…</div>{/if}
 
 <style>
+  .summary {
+    margin: 16px 0 28px;
+    font-size: 13px;
+    line-height: 1.8;
+    overflow-wrap: anywhere;
+  }
+  .summary :global(p),
+  .summary :global(ul),
+  .summary :global(blockquote) {
+    margin: 12px 0;
+  }
+  .summary :global(h3) {
+    font-size: 14px;
+    margin: 20px 0 8px;
+  }
+  .summary :global(h4) {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 20px 0 8px;
+  }
+  .summary :global(ul) {
+    list-style: disc;
+    padding-left: 20px;
+  }
+  .summary :global(li) {
+    margin: 5px 0;
+  }
+  .summary :global(code) {
+    font-size: 11px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  .summary :global(blockquote) {
+    border-left: 2px solid var(--strong-border);
+    padding-left: 14px;
+    color: var(--muted);
+  }
+  .summary :global(a) {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .summary :global(.summary-footer) {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .model-usage {
+    min-width: 560px;
+  }
+  .model-usage :global(th),
+  .model-usage td {
+    padding: 10px 12px;
+    font-size: 11px;
+  }
   .route-notes {
     margin: 0 0 28px;
     padding: 16px 20px;

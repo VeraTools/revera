@@ -664,6 +664,7 @@ fn add_repo(dashboard: &mut dashboard::Dashboard) {
             private: false,
             html_url: String::new(),
             has_override: false,
+            open_prs: None,
         },
     );
 }
@@ -932,7 +933,7 @@ fn builtin_profiles_apply_without_changing_strategy_validation_or_index_identity
             quick.budget.agent_max_seconds,
             quick.budget.run_max_seconds
         ),
-        (12, 150, 420)
+        (12, 150, 450)
     );
     assert_eq!(
         (
@@ -947,6 +948,8 @@ fn builtin_profiles_apply_without_changing_strategy_validation_or_index_identity
         2 * standard.review.max_diff_bytes
     );
     assert_eq!(deep.review.max_findings, 20);
+    assert_eq!(quick.budget.run_max_requests, 120);
+    assert_eq!(deep.budget.run_max_requests, 240);
     for config in [&quick, &deep] {
         assert_eq!(config.review.strategy, standard.review.strategy);
         assert!(config.review.validate);
@@ -991,7 +994,7 @@ fn builtin_profiles_apply_without_changing_strategy_validation_or_index_identity
     let mut user_quick = crate::config::Config::parse(
         &format!(
             "{CONFIG}profiles:\n  quick:\n    budget: \
-        {{agent_max_tool_calls: 12, agent_max_seconds: 150, run_max_seconds: 420}}\n"
+        {{agent_max_tool_calls: 12, agent_max_seconds: 150, run_max_seconds: 450}}\n"
         ),
         "test",
     )

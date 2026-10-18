@@ -16,3 +16,9 @@ export function number(value: number) {
     maximumFractionDigits: 1,
   }).format(value);
 }
+export function severitySplit(counts: { high: number; medium: number; low: number }) {
+  return (['high', 'medium', 'low'] as const)
+    .filter((severity) => counts[severity] > 0)
+    .map((severity) => `${counts[severity]} ${severity}`)
+    .join(' · ');
+}

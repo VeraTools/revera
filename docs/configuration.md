@@ -354,16 +354,24 @@ Profiles override selected `review` and `budget` keys. Select one with
 deep modes select the matching profile; standard mode applies no profile.
 Profiles are applied before strategy resolution and credential checks.
 
-`quick` and `deep` work without a `profiles` block. They change only these
-settings, keeping the configured strategy and validation:
+`quick` and `deep` work without a `profiles` block. Their budgets scale from
+your configured `budget` at the time the profile is applied, keeping the
+configured strategy and validation:
 
-| Setting | `quick` | `deep` |
+| Setting | Built-in `quick` | Built-in `deep` |
 |---|---|---|
-| `budget.agent_max_tool_calls` | `12` | `50` |
-| `budget.agent_max_seconds` | `150` | `600` |
-| `budget.run_max_seconds` | `420` | `1800` |
-| `review.max_diff_bytes` | unchanged | `400000` |
-| `review.max_findings` | unchanged | `20` |
+| `budget.agent_max_tool_calls` | Half, rounded down; at least 1 | Double |
+| `budget.agent_max_seconds` | Half, rounded down; at least 30 | Double, up to 3000 seconds; never below your configured value |
+| `budget.run_max_seconds` | Half, rounded down; at least 60 | Double, up to 3000 seconds; never below your configured value |
+| `budget.run_max_requests` | Unchanged | Double |
+| `review.max_diff_bytes` | Unchanged | At least `400000`, keeping a higher configured value |
+| `review.max_findings` | Unchanged | At least `20`, keeping a higher configured value |
+
+With the default budget, quick allows 12 tool calls, 150 seconds per agent
+and 450 seconds per run, with the request limit unchanged at 120. Deep allows
+50 tool calls, 600 seconds per agent, 1800 seconds per run and 240 requests.
+The 3000-second deep limit leaves room before server jobs stop at 55 minutes.
+Retries and other review settings are unchanged.
 
 A user profile named `quick` or `deep` replaces the built-in override, rather
 than extending it. Keys it does not set keep the underlying configuration.

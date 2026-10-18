@@ -65,7 +65,8 @@ and cancellation still work when a repository is off.
 | `quick` | Apply the `quick` profile for a smaller budget |
 | `deep` | Apply the `deep` profile for a larger budget |
 
-Built-in quick and deep modes keep the configured strategy and validation.
+Built-in quick and deep modes scale from your configured budget, keeping
+the configured strategy and validation.
 Custom profiles with those names replace the built-ins. See
 [profile defaults](configuration.md#profiles).
 
@@ -433,10 +434,22 @@ Dashboard API writes require an administrator session and CSRF token.
   `repos` maps full repository names to `{trigger: value|null, mode: value|null}`.
 - `GET /api/repos` includes effective `trigger` and `mode`, nullable
   `trigger_override` and `mode_override`, and index/job metadata. A waiting
-  index retry has `index.retry_at`.
+  index retry has `index.retry_at`. `pushed_at` is the last push as an RFC 3339
+  UTC timestamp, omitted when unknown or invalid. `open_prs` is the open PR count
+  from the last reconciliation (normally every 10 minutes), omitted for older
+  inventories that have no count. `review_count` counts review jobs in retained
+  history; `finding_count` sums their findings, excluding index jobs.
+  `last_job` is the newest job of any kind; `last_review` is the newest review job.
 - `PATCH /api/repos/:owner/:repo` accepts `{trigger?: value|null, mode?: value|null}`.
   Omitted fields are unchanged; null inherits. Legacy `{enabled: false}` maps
   to off and `{enabled: true}` clears the trigger override for one release.
+- `PATCH /api/repos` applies the same trigger/mode changes to a batch:
+  `{"repos": ["owner/a", "owner/b"], "mode": "deep"}`. Include 1–1000 known
+  repository names and at least one of `trigger` or `mode`. Omitted fields stay
+  unchanged; null clears the override. An unknown repository returns HTTP 404;
+  an empty/oversized batch or missing settings returns HTTP 422. Invalid batches
+  change nothing. Success saves preferences once, sends one `repos` live event
+  and returns `{"ok": true, "updated": 2}` for this example.
 - `POST /api/repos/:owner/:repo/pulls/:number/review` and
   `POST /api/jobs/:id/rerun` accept optional `{mode?: value}`. Absent or null
   mode uses the repository mode. Success returns `{id}`. Off repositories
@@ -444,6 +457,24 @@ Dashboard API writes require an administrator session and CSRF token.
 - `GET /api/overview` includes `app.issue_comment_subscribed` (boolean, or
   null when registration metadata is unavailable) and `app.settings_url`.
   Review summaries include `mode` and trigger `mention|auto|manual|rerun`.
+  `last_24h` and `last_7d` group jobs by their queue time. Each has `reviews`,
+  `failed` (failed reviews only), `findings`, `severity: {high, medium, low}`,
+  `tokens` (prompt + completion), `prompt_tokens`, `cached_tokens` and
+  `median_duration_ms`. Findings and severity count review jobs only; tokens
+  count all jobs. The duration median uses complete, partial and failed reviews
+  with recorded durations, averaging the two middle values when needed; it is
+  null when none exist. `history_since` is the oldest retained job's queue time,
+  or null for no jobs. History keeps the last 500 jobs, so a window may be only
+  partly covered.
+- `GET /api/jobs` accepts `q` for a case-insensitive substring search of title,
+  author or repository. Digits, optionally prefixed with `#`, also match the PR
+  number. Empty `q` does not filter. Search combines with `repo`, `status` and
+  `kind`; `limit`, `before` and response cursor `next` paginate matching jobs.
+- `GET /api/jobs/:id` includes the report's `stats` object and `strategy` string
+  when present, alongside the existing `timing` and `ledger` objects. Older or
+  missing reports omit these fields. `stats` includes candidate/validation
+  counts, retrieval and tool use; `timing` contains phase durations; `ledger`
+  contains requests, token use and per-route totals. All API output is redacted.
 
 ## Troubleshooting
 
