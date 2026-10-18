@@ -193,6 +193,11 @@ with findings also include a **Fix with your coding agent** section on GitHub.
 Small, exact replacements can appear as suggested changes, not tested patches.
 [Finding details and handoff](docs/how-it-works.md#findings).
 
+The GitHub App can also generate [fix previews](docs/server.md#fixes-opt-in)
+in a sandbox. Execution is off by default; an administrator can consent to
+one request or enable it persistently. Publishing code to GitHub always needs
+an administrator's approval in the dashboard.
+
 ## How it works
 
 1. Rust computes the base-to-head diff over the exact committed head.
