@@ -208,6 +208,10 @@ pub fn terminal_submit_verdict_spec() -> ToolSpec {
 }
 
 impl ToolBox {
+    pub fn reviewed_head(&self) -> Option<&str> {
+        self.head.as_deref()
+    }
+
     pub fn new(
         repo_root: PathBuf,
         diff: Arc<DiffSet>,

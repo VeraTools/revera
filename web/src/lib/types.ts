@@ -32,17 +32,50 @@ export interface JobSummary {
   pr_url?: string;
 }
 export interface Finding {
+  id: string;
+  defect_key: string;
   severity: 'high' | 'medium' | 'low';
   file: string;
-  line?: number;
+  start_line: number;
+  end_line: number;
   title: string;
-  body?: string;
-  status: string;
+  claim: string;
+  trigger: string;
+  impact: string;
+  supporting_evidence: { path: string; start_line: number; end_line: number; note: string }[];
+  validation_status: 'accepted';
+  validated_fix?: string | null;
+  validated_fix_label: string;
+  suggestion?: {
+    start_line: number;
+    end_line: number;
+    original: string;
+    replacement: string;
+  } | null;
+  reviewed_head_sha: string;
+  reviewed_base_sha: string;
+  html_url?: string | null;
+  prompt: string;
+}
+export interface Diagnostic {
+  id: string;
+  status: 'rejected' | 'uncertain' | 'unvalidated';
+  severity: string;
+  title: string;
+  file: string;
+  start_line?: number;
+  rationale: string;
 }
 export interface JobDetail {
   job: JobSummary;
   summary_markdown?: string;
   findings: Finding[];
+  counts: JobSummary['findings'];
+  instructions: string;
+  reviewed_head_sha?: string;
+  reviewed_base_sha?: string;
+  stale: boolean | null;
+  diagnostics?: Diagnostic[];
   strategy?: string;
   stats?: {
     candidates?: number;

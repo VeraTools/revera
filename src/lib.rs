@@ -7,6 +7,7 @@ pub mod fsutil;
 pub mod git;
 pub mod github;
 pub mod guidance;
+pub mod handoff;
 pub mod pipeline;
 pub mod prompts;
 pub mod provider;

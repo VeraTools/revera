@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
-const output = join(homedir(), '.local/tmp/revera-server/shots');
+const output = process.env.REVERA_WEB_OUTPUT || join(homedir(), '.local/tmp/revera-server/shots');
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   executablePath:
@@ -526,6 +526,100 @@ async function checkMentionsAndReviewDetail() {
   await context.close();
 }
 
+// Lane C: actionable accepted findings and explicit, opt-in diagnostics.
+async function checkAgentHandoff() {
+  const { context, page } = await open('/reviews/review-105');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('heading', { name: /^Accepted findings/ }).waitFor();
+  assert.equal(await page.locator('details.finding').count(), 2);
+  assert.equal(await page.getByText('Rejected candidate fixture', { exact: true }).count(), 0);
+  const expected = await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return api.job('review-105');
+  });
+  assert.equal('diagnostics' in expected, false);
+  assert.equal(expected.counts.total, expected.findings.length);
+  await page
+    .getByText("Validator's suggested remedy — not a tested patch", { exact: true })
+    .first()
+    .waitFor();
+  await page.getByRole('button', { name: 'Copy prompt', exact: true }).first().click();
+  assert.equal(
+    await page.evaluate(() => navigator.clipboard.readText()),
+    expected.findings[0].prompt,
+  );
+  assert.equal(
+    (await page.evaluate(() => navigator.clipboard.readText())).includes(expected.findings[1].id),
+    false,
+  );
+  await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected.instructions);
+  assert.equal(expected.instructions.includes('Rejected candidate fixture'), false);
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download .md', exact: true }).click();
+  const download = await downloadPromise;
+  assert.equal(download.suggestedFilename(), 'revera-instructions.md');
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  assert.equal(Buffer.concat(chunks).toString(), expected.instructions);
+  await page.getByRole('button', { name: 'Show diagnostics', exact: true }).click();
+  await page
+    .getByRole('heading', { name: 'Not validated — not reported as defects', exact: true })
+    .waitFor();
+  await page.getByText('Rejected candidate fixture', { exact: false }).waitFor();
+  await page.getByText('Uncertain candidate fixture', { exact: false }).waitFor();
+  assert.equal(await page.locator('details.finding').count(), 2);
+  await page.locator('details.finding').nth(1).locator('summary').click();
+  assert.equal(await page.getByRole('button', { name: 'Copy prompt', exact: true }).count(), 2);
+  await page.getByRole('button', { name: 'Hide diagnostics', exact: true }).click();
+  await page.getByRole('button', { name: 'Show diagnostics', exact: true }).waitFor();
+  assert.equal(await page.locator('.diagnostic').count(), 0);
+  await page.evaluate(async () => {
+    const { setMockReviewStale } = await window.importDashboard('/src/lib/mock.ts');
+    setMockReviewStale('review-105', true);
+  });
+  await page.getByText('Potentially stale', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).click();
+  assert.ok(
+    (await page.evaluate(() => navigator.clipboard.readText())).includes('Potentially stale'),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await context.close();
+
+  for (const [id, status] of [
+    ['review-103', 'partial'],
+    ['review-102', 'failed'],
+    ['review-101', 'skipped'],
+  ]) {
+    const { context, page } = await open(`/reviews/${id}`);
+    if (status === 'skipped') {
+      await page.evaluate(async () => {
+        const { setMockReviewStatus } = await window.importDashboard('/src/lib/mock.ts');
+        setMockReviewStatus('review-101', 'skipped');
+      });
+    }
+    await page
+      .getByRole('note')
+      .filter({ hasText: `Review ${status}. This is not a clean result.` })
+      .waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).count(),
+      0,
+    );
+    await context.close();
+  }
+  const clean = await open('/reviews/review-101');
+  await clean.page.getByText('No accepted findings in this review.', { exact: true }).waitFor();
+  assert.equal(await clean.page.getByRole('note').count(), 0);
+  assert.equal(
+    await clean.page.getByRole('button', { name: 'Copy fix instructions', exact: true }).count(),
+    0,
+  );
+  await clean.context.close();
+}
+
 async function checkThemeAndRetrievalLink() {
   const { context, page } = await open('/', 'light');
   await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
@@ -986,6 +1080,7 @@ try {
     await checkConnectedAccounts();
     await checkManifestChoices();
   }
+  if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAgentHandoff();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkDashboardQol();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAuditSettings();
   if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();

@@ -71,7 +71,8 @@ export const api = {
         ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
       })}`,
     ),
-  job: (id: string) => request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}`),
+  job: (id: string, diagnostics = false) =>
+    request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}${diagnostics ? '?diagnostics=1' : ''}`),
   log: (id: string) => request<string>(`/api/jobs/${encodeURIComponent(id)}/log`),
   rerun: (id: string, mode: ReviewMode | null = null) =>
     request<{ id: string }>(`/api/jobs/${encodeURIComponent(id)}/rerun`, 'POST', { mode }),

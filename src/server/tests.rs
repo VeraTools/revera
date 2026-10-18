@@ -1988,3 +1988,5 @@ mod dashboard_qol_tests;
 
 #[path = "installation_tests.rs"]
 mod installation_tests;
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
