@@ -51,6 +51,7 @@ fn job(head: &str) -> events::Job {
     events::Job {
         id: uuid::Uuid::new_v4().simple().to_string(),
         trigger: "webhook".into(),
+        mode: dashboard::Mode::Standard,
         repo: events::Repo::parse(&repository(), 9).unwrap(),
         kind: events::Kind::Review {
             number: 7,
@@ -290,11 +291,12 @@ fn manifest_fields() {
     assert_eq!(v["setup_url"], "https://review.example.com/");
     assert_eq!(
         v["default_permissions"],
-        json!({"contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read"})
+        json!({"contents": "read", "pull_requests": "write", "checks": "write",
+            "metadata": "read", "issues": "write"})
     );
     assert_eq!(
         v["default_events"],
-        json!(["pull_request", "push", "check_run"])
+        json!(["pull_request", "push", "check_run", "issue_comment"])
     );
 }
 
@@ -343,6 +345,15 @@ async fn server(
     configured: bool,
 ) -> (tempfile::TempDir, Arc<Server>) {
     let data = tempfile::tempdir().unwrap();
+    // These pre-mention fixtures exercise automatic-review behavior explicitly.
+    dashboard::write_preferences(
+        data.path(),
+        &dashboard::Preferences {
+            default_trigger: dashboard::Trigger::Auto,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     crate::fsutil::write_atomic_in(data.path(), "revera.yaml", CONFIG.as_bytes()).unwrap();
     if configured {
         crate::fsutil::write_secret_atomic(
@@ -587,105 +598,122 @@ fn git(directory: &Path, args: &[&str]) {
 
 #[tokio::test]
 async fn injectable_child_runs_with_base_config_and_completes_check() {
-    let mock = MockServer::start().await;
-    let script_dir = tempfile::tempdir().unwrap();
-    let script = script_dir.path().join("child.sh");
-    std::fs::write(
-        &script,
-        r#"#!/bin/sh
+    for mode in [
+        dashboard::Mode::Quick,
+        dashboard::Mode::Standard,
+        dashboard::Mode::Deep,
+    ] {
+        let mock = MockServer::start().await;
+        let script_dir = tempfile::tempdir().unwrap();
+        let script = script_dir.path().join("child.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
 [ "$CUSTOM_TOKEN" = 'installation-token' ] || exit 1
 [ "$GIT_CONFIG_COUNT" = 1 ] || exit 1
+profile=standard
 while [ $# -gt 0 ]; do
   case $1 in
     --out) out=$2; shift;;
     --bot-login) [ "$2" = 'revera-test[bot]' ] || exit 1; shift;;
     --config) [ "$2" = revera.yaml ] || exit 1; shift;;
+    --profile) profile=$2; shift;;
   esac
   shift
 done
+[ "$profile" = "$EXPECTED_PROFILE" ] || exit 1
 echo installation-token
 cat > "$out" <<'JSON'
 {"status":"complete","findings":[],
  "plan":{"summary_markdown":"clean<!-- revera-state:hidden -->"}}
 JSON
 "#,
-    )
-    .unwrap();
-    let runner = runner::Runner {
-        executable: "/bin/sh".into(),
-        prefix: vec![script.display().to_string()],
-    };
-    let (data, server) = server(&mock, runner, true).await;
-    let source = script_dir.path().join("source");
-    std::fs::create_dir(&source).unwrap();
-    git(&source, &["init", "-q"]);
-    git(&source, &["config", "user.email", "test@example.com"]);
-    git(&source, &["config", "user.name", "test"]);
-    std::fs::write(
-        source.join("revera.yaml"),
-        format!("{CONFIG}github:\n  token_env: CUSTOM_TOKEN\n"),
-    )
-    .unwrap();
-    git(&source, &["add", "."]);
-    git(&source, &["commit", "-qm", "base"]);
-    let head = crate::git::current_head(&source).await.unwrap();
-    git(&source, &["update-ref", "refs/pull/7/head", &head]);
-    let ws = crate::fsutil::ensure_dir(data.path(), Path::new("repos/owner/repo")).unwrap();
-    git(
-        &ws,
-        &["clone", "--no-checkout", source.to_str().unwrap(), "."],
-    );
-    let mut current = job(&head);
-    if let events::Kind::Review { pr, .. } = &mut current.kind {
-        pr["base"]["sha"] = json!(head);
-    }
-    Mock::given(method("POST"))
-        .and(path("/app/installations/9/access_tokens"))
-        .and(body_json(json!({"repository_ids": [1], "permissions": {
-            "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read"
-        }})))
-        .respond_with(
-            ResponseTemplate::new(201).set_body_json(json!({"token": "installation-token"})),
         )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/repos/owner/repo/check-runs"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 100})))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("PATCH"))
-        .and(path("/repos/owner/repo/check-runs/100"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 100})))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let (_tx, rx) = tokio::sync::watch::channel(false);
-    runner::run(server.clone(), &current, rx).await;
-    assert_eq!(server.seen.lock().await.0[&1].heads[&7], current.head());
-    let requests = mock.received_requests().await.unwrap();
-    let check: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
-    assert_eq!(check["conclusion"], "success");
-    assert_eq!(check["output"]["summary"], "clean");
-    let logs: Vec<_> = std::fs::read_dir(data.path().join("jobs"))
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path().join("log.txt"))
-        .filter(|p| p.is_file())
-        .collect();
-    assert_eq!(logs.len(), 1);
-    let log = std::fs::read_to_string(&logs[0]).unwrap();
-    assert!(!log.contains("installation-token"));
-    assert!(log.contains("[REDACTED]"));
-    let meta: Value = serde_json::from_slice(
-        &std::fs::read(data.path().join("jobs").join(&current.id).join("meta.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(meta["status"], "complete");
-    assert!(meta["started_at"].is_string());
-    assert!(meta["finished_at"].is_string());
+        .unwrap();
+        let runner = runner::Runner {
+            executable: "/bin/sh".into(),
+            prefix: vec![script.display().to_string()],
+        };
+        let (data, server) = server(&mock, runner, true).await;
+        server.dashboard.lock().await.secrets.insert(
+            "EXPECTED_PROFILE".into(),
+            mode.profile().unwrap_or("standard").into(),
+        );
+        let source = script_dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        git(&source, &["init", "-q"]);
+        git(&source, &["config", "user.email", "test@example.com"]);
+        git(&source, &["config", "user.name", "test"]);
+        std::fs::write(
+            source.join("revera.yaml"),
+            format!("{CONFIG}github:\n  token_env: CUSTOM_TOKEN\n"),
+        )
+        .unwrap();
+        git(&source, &["add", "."]);
+        git(&source, &["commit", "-qm", "base"]);
+        let head = crate::git::current_head(&source).await.unwrap();
+        git(&source, &["update-ref", "refs/pull/7/head", &head]);
+        let ws = crate::fsutil::ensure_dir(data.path(), Path::new("repos/owner/repo")).unwrap();
+        git(
+            &ws,
+            &["clone", "--no-checkout", source.to_str().unwrap(), "."],
+        );
+        let mut current = job(&head);
+        current.trigger = "mention".into();
+        current.mode = mode;
+        if let events::Kind::Review { pr, .. } = &mut current.kind {
+            pr["base"]["sha"] = json!(head);
+        }
+        Mock::given(method("POST"))
+            .and(path("/app/installations/9/access_tokens"))
+            .and(body_json(json!({"repository_ids": [1], "permissions": {
+                "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read"
+            }})))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({"token": "installation-token"})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/check-runs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 100})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/check-runs/100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 100})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        runner::run(server.clone(), &current, rx).await;
+        assert_eq!(server.seen.lock().await.0[&1].heads[&7], current.head());
+        let requests = mock.received_requests().await.unwrap();
+        let check: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(check["conclusion"], "success");
+        assert_eq!(check["output"]["summary"], "clean");
+        let logs: Vec<_> = std::fs::read_dir(data.path().join("jobs"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().join("log.txt"))
+            .filter(|p| p.is_file())
+            .collect();
+        assert_eq!(logs.len(), 1);
+        let log = std::fs::read_to_string(&logs[0]).unwrap();
+        assert!(!log.contains("installation-token"));
+        assert!(log.contains("[REDACTED]"));
+        let meta: Value = serde_json::from_slice(
+            &std::fs::read(data.path().join("jobs").join(&current.id).join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["status"], "complete");
+        assert!(meta["started_at"].is_string());
+        assert!(meta["finished_at"].is_string());
+        assert_eq!(meta["mode"], json!(mode));
+        assert_eq!(meta["trigger"], "mention");
+    }
 }
 
 #[tokio::test]
@@ -1168,7 +1196,10 @@ async fn disabled_repository_suppresses_webhook_and_reconcile_jobs() {
     let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
     server.dashboard.lock().await.preferences.repos.insert(
         "owner/repo".into(),
-        dashboard::RepoPreference { enabled: false },
+        dashboard::RepoPreference {
+            trigger: Some(dashboard::Trigger::Off),
+            mode: None,
+        },
     );
     let (url, task) = http(server.clone()).await;
     let payload = json!({"installation": {"id": 9, "node_id": "installation-node"},
@@ -1675,3 +1706,6 @@ mod live_regressions;
 
 #[path = "backoff_tests.rs"]
 mod backoff_tests;
+
+#[path = "mention_tests.rs"]
+mod mention_tests;

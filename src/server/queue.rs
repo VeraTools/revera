@@ -63,6 +63,7 @@ impl Queue {
         self.enqueue(Job {
             id: uuid::Uuid::new_v4().simple().to_string(),
             trigger: "webhook".into(),
+            mode: super::dashboard::Mode::Standard,
             repo,
             kind: Kind::Remove,
         });
