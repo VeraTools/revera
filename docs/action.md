@@ -131,8 +131,9 @@ invalidate it. See [cache identity](configuration.md#vera).
 
 ## Fork pull requests
 
-Fork PRs are skipped by default and reported as `partial`, not clean.
-Their workflows normally have no provider secrets, and their GitHub tokens
+When publishing comments (the Action default), fork PRs are skipped by default
+and reported as `partial`, not clean. Dry-run reviews do not apply this guard.
+Fork workflows normally have no provider secrets, and their GitHub tokens
 cannot post review comments.
 
 `github.allow_forks: true` removes Revera's fork guard; it does not supply

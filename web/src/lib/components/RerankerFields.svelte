@@ -10,11 +10,13 @@
     config,
     secrets,
     setKey,
+    removeKey,
     compact = false,
   }: {
     config: ConfigDocument;
     secrets: Secret[];
     setKey: (name: string) => void;
+    removeKey: (name: string) => void;
     compact?: boolean;
   } = $props();
 
@@ -78,6 +80,7 @@
       role="reranker"
       {secrets}
       {setKey}
+      {removeKey}
       retrieval
       {compact}
       showConnection={!compact}

@@ -503,21 +503,35 @@ impl Dashboard {
             .collect()
     }
     pub fn secret_status(&self, yaml: &str) -> Vec<Value> {
-        let names = Self::referenced(yaml)
+        let mut names = Self::referenced(yaml)
             .into_iter()
             .chain(self.secrets.keys().cloned())
             .collect::<BTreeSet<_>>();
+        // The web-search key has a default name, so it may not appear in the YAML.
+        let expanded = crate::config::expand_env_with(yaml, &|name| self.env(name))
+            .unwrap_or_else(|_| yaml.to_owned());
+        if let Ok(value) = serde_saphyr::from_str::<Value>(&expanded)
+            && value["web_search"]["enabled"] == true
+        {
+            names.insert(
+                value["web_search"]["api_key_env"]
+                    .as_str()
+                    .unwrap_or("EXA_API_KEY")
+                    .to_owned(),
+            );
+        }
         names
             .into_iter()
             .map(|name| {
+                let environment = crate::config::env_is_set(&name);
                 let source = if self.secrets.contains_key(&name) {
                     "dashboard"
-                } else if crate::config::env_is_set(&name) {
+                } else if environment {
                     "environment"
                 } else {
                     "missing"
                 };
-                json!({"name": name, "source": source})
+                json!({"name": name, "source": source, "environment": environment})
             })
             .collect()
     }

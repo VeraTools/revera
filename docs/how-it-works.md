@@ -8,7 +8,7 @@ describes the pipeline, its boundaries and the state it keeps.
 ## Pipeline
 
 ```text
-1. diff       base…head (merge-base; two-dot fallback on shallow clones)
+1. diff       base…head (merge-base; fetch more history if needed)
 2. retrieve   optional `vera update` on the exact head; lexical tools always
 3. investigate  agent loop with read-only tools → candidate findings
 4. validate   one fresh-context agent per candidate → accepted | rejected | uncertain
@@ -18,7 +18,9 @@ describes the pipeline, its boundaries and the state it keeps.
 
 **Diff.** The checked-out tree must be exactly `head`; dirty or mismatched
 trees are refused rather than reviewed approximately. In GitHub Actions this
-means checking out `pull_request.head.sha`, not the merge ref.
+means checking out `pull_request.head.sha`, not the merge ref. If no merge base
+is found, Revera fetches more history (`--deepen=200`, then `--unshallow`).
+It fails if there is still no merge base; it never falls back to a two-dot diff.
 
 **Retrieval.** Every run has lexical tools over the tracked files of the
 head tree (`grep_repo`, `find_files`, `read_file`, `diff_context`,
@@ -160,7 +162,8 @@ Baseline is the recommended starting point. The validator can use the same
 model in a new conversation or a separate `models.validator` route.
 
 Delegated review uses `models.lead` and `models.workers`, both inheriting the
-investigator when omitted. Planning has no tools; synthesis has `read_file`.
+investigator when omitted. Planning has read-only repository tools, no web
+access and a six-call tool budget; synthesis has `read_file`.
 A failed worker creates a coverage gap and makes the run partial. Panel uses
 named `models.scouts` with labels from `panel.focuses`, in order; a single
 scout runs once per label. There is no voting: a claim from one scout still

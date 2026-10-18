@@ -11,14 +11,16 @@ or repository secrets. For reviews hosted by GitHub instead, use the [Action](ac
 
    ```sh
    mkdir -p data
-   sudo chown -R 10001:10001 data
+   podman unshare chown -R 10001:10001 data
    podman run -d --name revera --restart unless-stopped \
      -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
      -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
    ```
 
-   Replace the example URL with yours. For Docker, use `docker` in place of
-   `podman`; omit `:Z` on hosts without SELinux. No YAML file is needed yet.
+   This uses rootless Podman (without `sudo`). For Docker or rootful Podman,
+   use `sudo chown -R 10001:10001 data` instead. Replace the example URL with
+   yours. For Docker, use `docker` in place of `podman`; omit `:Z` on hosts
+   without SELinux. No YAML file is needed yet.
 2. Put an HTTPS reverse proxy in front of `127.0.0.1:8080`. Keep that port
    private. [Caddy and nginx examples](#https-reverse-proxy) are below. GitHub
    must be able to reach `/webhook` without an interactive login.
@@ -171,13 +173,20 @@ A complete index resets the wait. Push webhooks and **Index now** bypass it.
 ## Deployment reference
 
 The container includes `revera`, `git` and `vera`. For a native installation,
-put those binaries on `PATH` and run `revera serve --public-url <https-url>`.
+put those binaries on `PATH` and use a writable data directory and a private
+listener behind your HTTPS proxy:
+
+```sh
+revera serve --public-url https://review.example.com \
+  --data-dir "$HOME/.local/share/revera" --listen 127.0.0.1:8080
+```
+
 Release images include the dashboard. A native build needs `npm ci && npm run
 build` in `web/` before building Rust to include it.
 
 ### Docker Compose
 
-Create `data` with the ownership used in the quickstart, then save:
+Run `mkdir -p data && sudo chown -R 10001:10001 data`, then save:
 
 ```yaml
 services:
@@ -194,6 +203,65 @@ services:
 
 Run `docker compose up -d`, then read `docker compose logs revera` for the
 setup link. Keep keys out of the Compose file and repository.
+
+### Podman Quadlet
+
+Quadlet lets systemd start Revera at boot and restart it if it stops. For a
+rootful setup, prepare the data directory:
+
+```sh
+sudo mkdir -p /srv/revera/data /etc/containers/systemd
+sudo chown -R 10001:10001 /srv/revera/data
+```
+
+Create the env file with private permissions, then add
+`REVERA_PUBLIC_URL=https://review.example.com` and any model key variables:
+
+```sh
+sudo install -m 600 /dev/null /srv/revera/revera.env
+```
+
+Use this file for keys when managing the server through configuration files.
+[Dashboard-saved keys](#dashboard) override environment values of the same name.
+
+Save this as `/etc/containers/systemd/revera.container`:
+
+```ini
+[Unit]
+Description=Revera PR review server
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/veratools/revera:0
+ContainerName=revera
+PublishPort=127.0.0.1:8080:8080
+Volume=/srv/revera/data:/data:Z
+EnvironmentFile=/srv/revera/revera.env
+NoNewPrivileges=true
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Run `sudo systemctl daemon-reload && sudo systemctl start revera`.
+
+For rootless Podman, put the unit in `~/.config/containers/systemd/`, use
+absolute paths under your home directory for the data and env files, and
+prepare the data directory with `podman unshare chown` as in the quickstart.
+Change `WantedBy` to `default.target`, then run
+`systemctl --user daemon-reload && systemctl --user start revera`.
+Run `loginctl enable-linger "$USER"` so it starts at boot without a login.
+
+`AutoUpdate=registry` lets `sudo podman auto-update` pull new `:0` images and
+restart the service. For scheduled updates, run
+`sudo systemctl enable --now podman-auto-update.timer`. For rootless Podman,
+omit `sudo` and use `systemctl --user` for the timer.
 
 ### Server options
 
@@ -273,6 +341,7 @@ selects keyed REST. Store keys in the dashboard or server environment, never YAM
 /data/bootstrap-admin         first-admin bootstrap marker (0600)
 /data/setup-token             setup token (0600; deleted after setup)
 /data/seen.json               reconciliation checkpoints
+/data/mentions.json           recent @mention dedupe records (up to 4096)
 /data/repos/<owner>/<repo>/   reusable checkouts and warm Vera index
 /data/cache/<owner>/<repo>/   repository-isolated Vera home and cache
 /data/jobs/<id>/meta.json     status, timestamps, findings and token counts
@@ -285,15 +354,26 @@ active jobs. Shutdown and restart mark unfinished jobs cancelled. Stored
 check identity lets startup cancel abandoned checks with fresh scoped tokens.
 The newest 500 jobs are retained; active work is not pruned.
 
-Event payloads last only while a review runs. Review state is seeded from
-the managed PR summary, not a previous checkout. Back up credentials,
-settings, keys and default config. Treat the entire data directory as private.
+Event payloads (`jobs/<id>/event.json`) are removed when a run ends; a crash
+can leave one behind. Review state is seeded from the managed PR summary,
+not a previous checkout. Back up the whole data directory and treat it as private.
+To restore, put back the whole directory, including `bootstrap-admin` and
+`mentions.json`, preserving ownership (container UID 10001), before starting
+the server.
 
 ## Upgrading
 
-Back up the data directory, pull the image and restart with the same volume.
-For Compose: `docker compose pull && docker compose up -d`. Check the
-[trigger migration](#triggers-review-modes-and-mentions) and
+Back up the data directory, then update with the same volume:
+
+- Compose: `docker compose pull && docker compose up -d`.
+- Quadlet: `sudo podman auto-update`, or `sudo podman pull ghcr.io/veratools/revera:0`
+  followed by `sudo systemctl restart revera`. For rootless Podman, omit `sudo`
+  and use `systemctl --user`.
+- Plain `podman run`: pull with `podman pull ghcr.io/veratools/revera:0`, run
+  `podman rm -f revera`, then repeat the original run command with the same volume.
+  Restarting the old container alone does not use the new image.
+
+Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
 Configuration can name an expected Vera version, but the CLI does not enforce
@@ -328,6 +408,19 @@ configuration trust checks.
 Base-branch configuration is trusted administrative input. Review changes
 to it carefully. Jobs have process isolation, not a sandbox for arbitrary
 untrusted executables. Use the same precautions as in Actions.
+
+### If a secret leaks
+
+- **GitHub App credentials:** replace the affected credential in the App's
+  GitHub settings and revoke the leaked private key or client secret. Stop
+  Revera and update the matching field in the data directory's `app.json`:
+  `pem` (private key), `webhook_secret` or `client_secret`. Keep valid JSON
+  and mode `600`, then restart.
+- **Session signing key:** stop Revera, delete `session-key` from the data
+  directory and restart. A new key is generated, signing everyone out.
+- **Model API keys:** rotate them at the provider, then update the env file
+  and restart, or update the dashboard key. Remember that
+  [dashboard-saved keys](#dashboard) override matching environment values.
 
 ## Server API
 

@@ -62,11 +62,14 @@ but it can still miss bugs or accept a wrong finding; keep human review.
 
    ```sh
    mkdir -p data
-   sudo chown -R 10001:10001 data
+   podman unshare chown -R 10001:10001 data
    podman run -d --name revera --restart unless-stopped \
      -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
      -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
    ```
+
+   This uses rootless Podman (without `sudo`). For Docker or rootful Podman,
+   use `sudo chown -R 10001:10001 data` instead.
 
 2. Put it behind HTTPS. Open the setup link from `podman logs revera`, create
    and install your GitHub App, then connect your models in the dashboard.
