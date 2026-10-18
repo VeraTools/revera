@@ -315,6 +315,7 @@ pub struct Store {
     entries: BTreeMap<String, Entry>,
     running: BTreeMap<String, watch::Sender<bool>>,
     admissions: Vec<Admission>,
+    denials: Vec<Admission>,
 }
 fn dir(data: &FsPath, id: &str) -> Result<PathBuf> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -347,6 +348,7 @@ impl Store {
         let root = crate::fsutil::ensure_dir(data, FsPath::new("fixes"))?;
         let mut store = Self {
             admissions: dashboard::read_json(data, "fix-admissions.json")?,
+            denials: dashboard::read_json(data, "fix-denials.json")?,
             ..Default::default()
         };
         store
@@ -739,6 +741,28 @@ pub async fn request(
     let preview_only = permission.unwrap_or(false);
     let key = key(&job, &selected);
     let mut store = server.fixes.lock().await;
+    if denied.is_some() {
+        let now = chrono::Utc::now().timestamp();
+        let mut denials = store.denials.clone();
+        denials.retain(|a| a.at > now - 3600);
+        if denials.iter().any(|a| a.actor.eq_ignore_ascii_case(actor)) {
+            return Err(Failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "denied command reply limit reached".into(),
+            ));
+        }
+        denials.push(Admission {
+            at: now,
+            actor: actor.into(),
+            repo: job.repo.clone(),
+        });
+        crate::fsutil::write_atomic_in(
+            &server.settings.data_dir,
+            "fix-denials.json",
+            &serde_json::to_vec(&denials)?,
+        )?;
+        store.denials = denials;
+    }
     if let Some(mut e) = store
         .entries
         .values()
@@ -779,7 +803,10 @@ pub async fn request(
             })
             .count()
     };
-    if count(3600, true) >= p.limits.per_user_hour || count(86400, false) >= p.limits.per_repo_day {
+    if denied.is_none()
+        && (count(3600, true) >= p.limits.per_user_hour
+            || count(86400, false) >= p.limits.per_repo_day)
+    {
         return Err(conflict("fix request rate limit reached; try later"));
     }
     let consent = if denied.is_some() {
@@ -804,19 +831,21 @@ pub async fn request(
     if once && denied.is_none() {
         record.audit(actor, "consent_once", "this request only");
     }
-    let mut admissions = store.admissions.clone();
-    admissions.retain(|a| a.at > now.timestamp() - 86400);
-    admissions.push(Admission {
-        at: now.timestamp(),
-        actor: actor.into(),
-        repo: record.repo.clone(),
-    });
-    crate::fsutil::write_atomic_in(
-        &server.settings.data_dir,
-        "fix-admissions.json",
-        &serde_json::to_vec(&admissions)?,
-    )?;
-    store.admissions = admissions;
+    if denied.is_none() {
+        let mut admissions = store.admissions.clone();
+        admissions.retain(|a| a.at > now.timestamp() - 86400);
+        admissions.push(Admission {
+            at: now.timestamp(),
+            actor: actor.into(),
+            repo: record.repo.clone(),
+        });
+        crate::fsutil::write_atomic_in(
+            &server.settings.data_dir,
+            "fix-admissions.json",
+            &serde_json::to_vec(&admissions)?,
+        )?;
+        store.admissions = admissions;
+    }
     let record = save(
         server,
         &mut store,
@@ -2668,6 +2697,7 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
                 .await?;
             Ok(())
         }
+        Err(e) if e.0 == StatusCode::TOO_MANY_REQUESTS => Ok(()),
         Err(e) => {
             // Only controller-generated explanations are public; never echo PR,
             // model, or arbitrary error text as active Markdown.

@@ -912,6 +912,54 @@ async fn fix_mentions_explain_missing_reviews_and_denials_without_trusting_assoc
 }
 
 #[tokio::test]
+async fn denied_commands_do_not_charge_repo_quota_and_reply_only_once_per_user_hour() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_repo_day = 1;
+    for actor in ["outsider", "another"] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/repos/owner/repo/collaborators/{actor}/permission"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"permission":"read","role_name":"read"})),
+            )
+            .mount(&mock)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    invoke_fix(&s, &fix_comment("@revera-test fix", 50, "outsider")).await;
+    invoke_fix(&s, &fix_comment("@revera-test fix", 51, "outsider")).await;
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    invoke_fix(&s, &fix_comment("@revera-test fix", 52, "outsider")).await;
+    assert_eq!(
+        request(&s, "mention", "another", &job, None, false)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert!(s.fixes.lock().await.admissions.is_empty());
+    let r = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    assert_eq!(r.state, "queued");
+    assert_eq!(s.fixes.lock().await.admissions.len(), 1);
+    assert_eq!(s.fixes.lock().await.denials.len(), 2);
+}
+
+#[tokio::test]
 async fn external_preview_requires_opt_in_uses_public_reads_and_rejects_publish() {
     let (_data, s, mock, job) = fixture().await;
     s.dashboard.lock().await.jobs.get_mut(&job).unwrap().source = Source::External;
