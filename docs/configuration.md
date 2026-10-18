@@ -170,7 +170,7 @@ Hard limits. Breaching one ends the affected stage and marks the run
 |---|---|---|
 | `agent_max_tool_calls` | `25` | per agent (investigator, validator, scout, worker) |
 | `agent_max_seconds` | `300` | per agent wall clock |
-| `run_max_requests` | `120` | HTTP attempts across the whole run, retries included |
+| `run_max_requests` | `120` | model-provider HTTP attempts across the whole run, retries included; web evidence has separate shared limits |
 | `run_max_seconds` | `900` | run deadline; provider calls, tools and Vera subprocesses are bounded by the remaining time, with a reserve for validation and the report |
 | `retries` | `3` | per request, honouring `Retry-After` |
 
@@ -270,6 +270,53 @@ the config references; a failed index fails the step under the default
 `fail-on: failed` and saves nothing. Busy repositories can use a
 `schedule:` trigger instead of `push`; PRs then re-embed only what changed
 since the last refresh. With Vera disabled an index run does nothing.
+
+## `web_search`
+
+Optional external technical evidence, **off by default**, independent of Vera.
+It helps check version-specific API contracts, release notes and advisories;
+local repository tools remain primary. No import-by-import browsing is required.
+
+```yaml
+web_search:
+  enabled: false
+  api_key_env: EXA_API_KEY       # optional; unset uses free hosted Exa
+  free_first: false             # with a key, try free first then fail over to REST
+  allow_private: false          # explicit trusted consent for private/unknown repos
+  max_searches_per_review: 4
+  max_reads_per_review: 4
+```
+
+`web_search(query)` returns up to five untrusted excerpts with review-local IDs;
+`web_read(result_id)` reads one selected result (up to 6000 characters). No
+arbitrary URL tool is available. Official sources and exact dependency versions
+must be verified; snippets alone cannot establish a finding. Fresh validators
+independently establish load-bearing external facts, or abstain.
+
+Queries and selected URLs go to **Exa, a third party**. Public visibility must
+come from event repository metadata; private or unknown repositories (including
+local CLI reviews) expose no web tools unless trusted `allow_private: true` is
+set. Query screening rejects recognizable secrets, source, URLs and encoded
+blobs, but **cannot guarantee confidentiality**. Enable only when that outbound
+data channel is acceptable. PR titles, bodies and pages cannot enable it.
+
+With no key, HTTPS requests use Exa's free hosted endpoint. When the optional
+key environment variable is set, requests use `api.exa.ai` with `x-api-key`.
+`free_first: true` tries hosted Exa first and switches to REST for the rest of
+the review on 429, 5xx, timeout or malformed responses; the free endpoint never
+receives the key. Requests are capped at nine seconds and the remaining agent/
+review deadline. Limits are 1–32 each; every outbound attempt, including failed
+attempts and failover, consumes the shared search/read budget. With validation
+enabled, investigators can consume at most half of each limit (rounded down).
+Planning and synthesis cannot use web tools. Provider errors are explicit tool
+errors, not empty success, and alone do not make an otherwise checked PR partial.
+
+`revera doctor` reports the selected backend, optional-key readiness and privacy
+boundary without making a network call. `stats.tools[].backends` records request
+counts, errors and latency by `exa_free`/`exa_keyed`; reports store neither raw
+queries nor retrieved pages. Nonsecret settings affect the review fingerprint,
+never the Vera index. In the Action, merge the opt-in into the base config first;
+an optional key can be passed as `EXA_API_KEY: ${{ secrets.EXA_API_KEY }}`.
 
 ## Event mode trust
 

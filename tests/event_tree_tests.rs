@@ -72,6 +72,7 @@ fn make_repo() -> (tempfile::TempDir, String, String, String) {
 
 fn request(repo: &Path, base: &str, head: &str) -> ReviewRequest {
     ReviewRequest {
+        repository_public: false,
         repo: repo.to_path_buf(),
         base: base.into(),
         head: Some(head.into()),

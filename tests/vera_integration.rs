@@ -668,6 +668,7 @@ async fn prepared_run_reports_active_reranker() {
     let home = tempfile::tempdir().unwrap();
     let cfg = config(&server.uri(), home.path(), &exe, true);
     let req = ReviewRequest {
+        repository_public: false,
         repo: repo.path().to_path_buf(),
         base,
         head: None,

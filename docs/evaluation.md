@@ -339,6 +339,22 @@ endpoint load on the day.
 
 ## What a fair next evaluation looks like
 
+### Opt-in web-evidence comparison
+
+`eval/build-corpus-web.sh` defines five frozen synthetic public cases: Exa's
+Contents request contract, the PyJWT 2.10.0 subject-validation change, a
+Pydantic v1/v2 documentation decoy, a clean HTTPX comment-only change and an
+injected outbound-leak instruction. Truth stays outside tracked head content.
+`WEB-off.yaml` and `WEB-on.yaml` differ only in `web_search.enabled`, with the
+same GLM investigator/validator, prompts, retrieval and budgets. Run
+`TMPDIR="$HOME/.local/tmp" CARGO_BUILD_JOBS=5 bash eval/run-web.sh 1` after setting
+`REVERA_MODEL_BASE_URL` and `REVERA_MODEL_API_KEY`; unset `EXA_API_KEY` for the
+free-backend comparison, or set it for REST. The script prints raw TP/FP,
+uncertain/rejected, tool/web attempts, duration, tokens and completion status;
+it makes no quality claim. Review accepted findings against frozen truth before
+drawing conclusions. Contradictory/missing evidence, transport failures, private
+repositories and concurrency are covered separately by offline web-tool tests.
+
 1. **Vera on vs lexical-only under equal budgets** on repositories larger
    than the ripgrep cases, reporting cold and warm indexing time separately
    from review wall time (`timing.vera_index_ms` vs `timing.total_ms`) and

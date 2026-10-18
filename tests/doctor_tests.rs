@@ -100,3 +100,58 @@ fn doctor_panel_cardinality_fails() {
     assert_eq!(out.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("panel: FAIL"), "{stdout}");
 }
+
+#[test]
+fn doctor_web_disabled_free_keyed_and_trust_hints_without_network() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/scripts/clean.json");
+    let repo = git_dir();
+    for (web, key, expected, code) in [
+        (
+            "{enabled: false, api_key_env: GITHUB_TOKEN}",
+            false,
+            "web_search: disabled",
+            0,
+        ),
+        (
+            "{enabled: true, api_key_env: REVERA_WEB_DOCTOR_KEY}",
+            false,
+            "free hosted Exa",
+            0,
+        ),
+        (
+            "{enabled: true, api_key_env: REVERA_WEB_DOCTOR_KEY}",
+            true,
+            "keyed Exa REST",
+            0,
+        ),
+        (
+            "{enabled: true, api_key_env: REVERA_WEB_DOCTOR_KEY, free_first: true}",
+            true,
+            "free Exa first",
+            0,
+        ),
+        (
+            "{enabled: true, api_key_env: GITHUB_TOKEN}",
+            false,
+            "web_search: FAIL",
+            1,
+        ),
+    ] {
+        let f = write_tmp(&format!(
+            "models:\n  investigator: {{protocol: scripted, script: {script}, model: m}}\nweb_search: {web}\n"
+        ));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_revera"));
+        command
+            .args(["doctor", "--config", f.path().to_str().unwrap()])
+            .current_dir(repo.path())
+            .env_remove("REVERA_WEB_DOCTOR_KEY");
+        if key {
+            command.env("REVERA_WEB_DOCTOR_KEY", "doctor-exa-secret-never-printed");
+        }
+        let out = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(code), "{stdout}");
+        assert!(stdout.contains(expected), "{stdout}");
+        assert!(!stdout.contains("doctor-exa-secret-never-printed"));
+    }
+}

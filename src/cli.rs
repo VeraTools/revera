@@ -583,6 +583,7 @@ async fn review(a: ReviewArgs) -> i32 {
         body: pr_body,
         strategy_override: strategy,
         force: a.force,
+        repository_public: ev.as_ref().is_some_and(|e| e.repository_public),
     };
     match pipeline_run(&cfg, &req).await {
         Ok((mut report, mut state)) => {
@@ -841,6 +842,35 @@ async fn doctor(
                 }
             }
         }
+    }
+
+    if !cfg.web_search.enabled {
+        println!("web_search: disabled (no external queries)");
+    } else if let Err(e) = cfg.check_trust(false) {
+        println!("web_search: FAIL — {e}");
+        println!("  next: use a dedicated optional Exa api_key_env, not a GitHub credential");
+        ok = false;
+    } else {
+        let key_set = !cfg.web_search.api_key_env.is_empty()
+            && crate::config::env_is_set(&cfg.web_search.api_key_env);
+        println!(
+            "web_search: {} (queries go to Exa; private/unknown repos {})",
+            if key_set && cfg.web_search.free_first {
+                "free Exa first, keyed REST on transient/format failure"
+            } else if key_set {
+                "keyed Exa REST (key env set)"
+            } else {
+                "free hosted Exa (no key needed)"
+            },
+            if cfg.web_search.allow_private {
+                "explicitly opted in"
+            } else {
+                "disabled"
+            }
+        );
+        println!(
+            "  next: optional EXA_API_KEY enables keyed REST; local CLI needs trusted web_search.allow_private=true because visibility is unknown"
+        );
     }
 
     if !cfg.vera.enabled {

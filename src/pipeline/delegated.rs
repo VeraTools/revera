@@ -29,6 +29,8 @@ pub const WORKER_TOOLS: &[&str] = &[
     "vera_references",
     "vera_grep",
     "vera_overview",
+    "web_search",
+    "web_read",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,11 +112,12 @@ async fn delegated_candidates(
     let system =
         prompts::LEAD_PLAN.replace("{max_questions}", &cfg.delegated.max_questions.to_string());
     let plan_start = std::time::Instant::now();
+    let plan_tools = prep.toolbox.without_web();
     let run = run_agent(
         lead.as_ref(),
         &system,
         &user,
-        &prep.toolbox,
+        &plan_tools,
         &plan_terminal,
         &prep.budget(6, cfg.budget.agent_max_seconds),
     )
