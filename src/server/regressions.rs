@@ -11,6 +11,8 @@ async fn without_models(mock: &MockServer) -> (tempfile::TempDir, Arc<Server>) {
     )
     .await
     .unwrap();
+    // Preserve this fixture's automatic-review scenarios under mention-only defaults.
+    server.dashboard.lock().await.preferences.default_trigger = dashboard::Trigger::Auto;
     (data, server)
 }
 

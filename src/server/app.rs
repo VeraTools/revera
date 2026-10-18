@@ -98,9 +98,10 @@ pub fn manifest(public_url: &str, name: &str) -> Value {
         "setup_url": format!("{public_url}/"),
         "callback_urls": [format!("{public_url}/auth/callback")],
         "default_permissions": {
-            "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read"
+            "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read",
+            "issues": "write"
         },
-        "default_events": ["pull_request", "push", "check_run"]
+        "default_events": ["pull_request", "push", "check_run", "issue_comment"]
     })
 }
 
@@ -116,6 +117,7 @@ pub enum Permissions {
     Review,
     Index,
     ReadPulls,
+    Comments,
 }
 
 impl Api {
@@ -216,6 +218,9 @@ impl Api {
         permissions: Permissions,
     ) -> Result<String> {
         let permissions = match permissions {
+            Permissions::Comments => {
+                json!({"issues": "write", "pull_requests": "read", "metadata": "read"})
+            }
             Permissions::Review => {
                 json!({
                     "contents": "read", "pull_requests": "write",

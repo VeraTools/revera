@@ -314,9 +314,18 @@ Named overrides of `review` and `budget` keys, applied with `--profile <name>`
 (CLI) or the `profile` input (Action) before the strategy is resolved and
 credentials are checked:
 
+`quick` and `deep` are built in: `revera review --profile quick` and the Action's
+`profile: quick` work without a `profiles` block. Both keep the configured
+strategy and validation. Quick uses 12 tool calls per agent, 150 seconds per
+agent and 420 seconds per run. Deep uses 50 calls, 600 seconds per agent and
+1800 seconds per run, with a 400,000-byte diff budget and up to 20 findings.
+Standard mode applies no profile. These effective settings enter review identity
+just like user profiles. A user profile named `quick` or `deep` replaces that
+built-in entirely, not just the listed keys. For example:
+
 ```yaml
 profiles:
-  deep:
+  custom-panel:
     review: { strategy: panel, max_findings: 20 }
     budget: { agent_max_tool_calls: 40, agent_max_seconds: 600, run_max_seconds: 1500 }
 ```

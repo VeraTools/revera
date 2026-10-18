@@ -1,5 +1,6 @@
 use super::{
     Server,
+    dashboard::{Mode, Trigger},
     events::{Job, Kind, Repo},
 };
 use anyhow::Result;
@@ -30,7 +31,10 @@ impl Seen {
         self.observe_with_preferences(
             repo,
             prs,
-            &super::dashboard::Preferences::default(),
+            &super::dashboard::Preferences {
+                default_trigger: Trigger::Auto,
+                ..Default::default()
+            },
             &BTreeSet::new(),
             false,
         )
@@ -72,22 +76,28 @@ impl Seen {
         let known = self.0.get_mut(&repo.id).expect("initialized repository");
         known.repo = repo.clone();
         let mut jobs = Vec::new();
-        if known.pushed_at != repo.pushed_at || retry_index {
+        if preferences.trigger(&repo.full_name) != Trigger::Off
+            && (known.pushed_at != repo.pushed_at || retry_index)
+        {
             jobs.push(Job {
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 trigger: "reconcile".into(),
+                mode: Mode::Standard,
                 repo: repo.clone(),
                 kind: Kind::Index,
             });
         }
-        for pr in prs.iter().filter(|pr| preferences.reviewable(pr)) {
+        for pr in prs.iter().filter(|pr| {
+            preferences.trigger(&repo.full_name) == Trigger::Auto && preferences.reviewable(pr)
+        }) {
             if let (Some(number), Some(head)) = (pr["number"].as_u64(), pr["head"]["sha"].as_str())
                 && (known.heads.get(&number).map(String::as_str) != Some(head)
                     || retry.contains(&number))
             {
                 jobs.push(Job {
                     id: uuid::Uuid::new_v4().simple().to_string(),
-                    trigger: "reconcile".into(),
+                    trigger: "auto".into(),
+                    mode: preferences.mode(&repo.full_name),
                     repo: repo.clone(),
                     kind: Kind::Review {
                         number,
