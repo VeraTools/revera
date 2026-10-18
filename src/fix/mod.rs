@@ -1,5 +1,8 @@
 //! Isolated repair engine. Authorization, consent, scheduling and publication
 //! approval belong to the server controller, not to this agent process.
+pub mod deliver;
+#[cfg(test)]
+mod delivery_tests;
 pub mod policy;
 pub mod sandbox;
 pub mod tests;
