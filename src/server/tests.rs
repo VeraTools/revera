@@ -1974,3 +1974,6 @@ mod mention_tests;
 
 #[path = "dashboard_qol_tests.rs"]
 mod dashboard_qol_tests;
+
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
