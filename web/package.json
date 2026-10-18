@@ -8,6 +8,7 @@
     "#lib/config.svelte": "./src/lib/config.svelte.ts",
     "#lib/events": "./src/lib/events.ts",
     "#lib/mock": "./src/lib/mock.ts",
+    "#lib/theme.svelte": "./src/lib/theme.svelte.ts",
     "#lib/time": "./src/lib/time.ts",
     "#lib/types": "./src/lib/types.ts",
     "#lib/components/*": "./src/lib/components/*"

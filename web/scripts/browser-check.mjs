@@ -502,7 +502,50 @@ async function checkMentionsAndReviewDetail() {
   await context.close();
 }
 
+async function checkThemeAndRetrievalLink() {
+  const { context, page } = await open('/', 'light');
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Theme', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Dark', exact: true }).click();
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'dark');
+  assert.equal(
+    await page.evaluate(() => {
+      // Resolve --bg in a color property: custom properties retain light-dark() as text.
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = 'var(--bg)';
+      document.body.append(probe);
+      const background = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return background;
+    }),
+    'rgb(24, 24, 27)',
+    'Dark choice overrides the light system scheme',
+  );
+  await page.reload();
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'dark');
+  await page.getByRole('button', { name: 'Theme', exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole('menuitemradio', { name: 'Dark', exact: true })
+      .getAttribute('aria-checked'),
+    'true',
+    'Theme menu reflects the persisted choice',
+  );
+  await page.getByRole('menuitemradio', { name: 'System', exact: true }).click();
+  assert.equal(
+    await page.evaluate(() => document.documentElement.hasAttribute('data-theme')),
+    false,
+  );
+  assert.equal(await page.evaluate(() => localStorage.getItem('revera-theme')), null);
+  await page.goto(`${base}/settings`);
+  await page.getByRole('button', { name: 'Retrieval tab', exact: true }).click();
+  await page.getByRole('heading', { name: 'Repository retrieval', exact: true }).waitFor();
+  await context.close();
+}
+
 try {
+  if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();
   if (!process.argv.includes('--screenshots-only')) await checkWizardReranker();
   if (!process.argv.includes('--screenshots-only')) await checkFallbacksAndWebSearch();
   if (!emptyYaml && !process.argv.includes('--checks-only')) {

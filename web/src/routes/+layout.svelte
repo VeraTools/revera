@@ -13,9 +13,14 @@
     ArrowUpRight,
     PanelLeftClose,
     PanelLeftOpen,
+    Monitor,
+    Sun,
+    Moon,
+    Check,
   } from '@lucide/svelte';
   import { api, errorMessage } from '#lib/api';
   import { connectEvents } from '#lib/events';
+  import { theme, setTheme, type ThemeChoice } from '#lib/theme.svelte';
   import type { Session } from '#lib/types';
   import Notice from '#lib/components/Notice.svelte';
 
@@ -24,6 +29,12 @@
   let error = $state('');
   let appName = $state('Revera');
   let collapsed = $state(false);
+  const themes = [
+    { value: 'system', label: 'System', icon: Monitor },
+    { value: 'light', label: 'Light', icon: Sun },
+    { value: 'dark', label: 'Dark', icon: Moon },
+  ] as const;
+  const currentTheme = $derived(themes.find((item) => item.value === theme.choice)!);
   const nav = [
     { href: '/', name: 'Overview', icon: LayoutDashboard },
     { href: '/reviews', name: 'Reviews', icon: GitPullRequest },
@@ -130,11 +141,35 @@
     </aside>
     <div class="workspace">
       <header class="workspace-bar">
-        <span>{appName}<span class="breadcrumb-slash">/</span>{currentPage}</span><a
-          href="https://github.com/VeraTools/revera"
-          target="_blank"
-          rel="noreferrer">Revera on GitHub <ArrowUpRight size={13} /></a
-        >
+        <span>{appName}<span class="breadcrumb-slash">/</span>{currentPage}</span>
+        <div class="actions">
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger class="button ghost icon" aria-label="Theme" title="Theme">
+              <currentTheme.icon size={17} />
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content class="menu" align="end" sideOffset={4}>
+                <DropdownMenu.RadioGroup
+                  value={theme.choice}
+                  onValueChange={(value) => setTheme(value as ThemeChoice)}
+                  aria-label="Theme"
+                >
+                  {#each themes as item}
+                    <DropdownMenu.RadioItem class="menu-item" value={item.value}>
+                      {#snippet children({ checked })}
+                        <item.icon size={15} />{item.label}
+                        {#if checked}<Check size={15} style="margin-left: auto" />{/if}
+                      {/snippet}
+                    </DropdownMenu.RadioItem>
+                  {/each}
+                </DropdownMenu.RadioGroup>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+          <a href="https://github.com/VeraTools/revera" target="_blank" rel="noreferrer"
+            >Revera on GitHub <ArrowUpRight size={13} /></a
+          >
+        </div>
       </header>
       <main class="main-content">
         {#if error}<Notice message={error} />{/if}{@render children()}

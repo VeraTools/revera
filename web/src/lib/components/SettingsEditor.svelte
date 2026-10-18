@@ -260,6 +260,13 @@
         <div>
           <h2>Review models</h2>
           <p>One model investigates. A fresh context validates every finding.</p>
+          <p>
+            Embedding and reranker models are on the <button
+              type="button"
+              class="text-link"
+              onclick={() => (tab = 'retrieval')}>Retrieval tab</button
+            >.
+          </p>
         </div>
       </div>
       <div class="model-grid">
