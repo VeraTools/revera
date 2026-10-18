@@ -141,11 +141,11 @@ both per route and in the totals.
 | `publish` | `dry-run` | `dry-run` prints the plan; `comment` posts to the PR (the Action passes `comment`) |
 | `validate` | `true` | evaluation-only switch; `false` reports candidates as unvalidated, never publishes or stores them, and is rejected with `publish: comment` |
 | `min_severity` | `low` | `low` · `medium` · `high`; findings below are dropped |
-| `max_findings` | `10` | accepted findings kept per run |
+| `max_findings` | `10` | maximum inline comments per run; remaining accepted findings go in the summary |
 | `publish_uncertain` | `false` | list `uncertain` verdicts in the summary as unconfirmed |
 | `concurrency` | `4` | concurrent lanes / validations |
 | `max_tool_output_bytes` | `12000` | truncation cap on each tool result |
-| `max_diff_bytes` | `200000` | diffs larger than this are truncated per file with a note |
+| `max_diff_bytes` | `200000` | cumulative diff budget; files that do not fit are omitted with a note and mark the review `partial` |
 | `guidance` | `off` | `off` · `review` · `agents`; see below |
 | `guidance_max_bytes` | `16384` | cap on guidance text given to the investigator |
 

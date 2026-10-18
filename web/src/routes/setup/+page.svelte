@@ -9,6 +9,7 @@
     GitPullRequest,
     FolderGit2,
     ShieldCheck,
+    MessageCircle,
   } from '@lucide/svelte';
   import { api, errorMessage, mockMode } from '#lib/api';
   import { ConfigDocument, backends } from '#lib/config.svelte';
@@ -175,6 +176,24 @@
     secrets = (await api.settings()).secrets;
     testedYaml = '';
   }
+  async function removeSecret(name: string) {
+    if (
+      !window.confirm(
+        `Remove the dashboard key for ${name}? The server environment will be used if available.`,
+      )
+    )
+      return;
+    busy = name;
+    try {
+      await api.deleteSecret(name);
+      await refreshSecrets();
+      message = 'Dashboard key removed.';
+    } catch (cause) {
+      error = errorMessage(cause);
+    } finally {
+      busy = '';
+    }
+  }
   async function discover() {
     if (!config) return;
     busy = 'models';
@@ -303,6 +322,7 @@
         <div class="setup-permissions">
           <div><FolderGit2 size={15} />Read repository contents</div>
           <div><GitPullRequest size={15} />Post pull request reviews and checks</div>
+          <div><MessageCircle size={15} />Reply to @mentions in pull request comments</div>
           <div><ShieldCheck size={15} />Only repositories you choose during installation</div>
         </div>
       </section>
@@ -359,6 +379,7 @@
           role="investigator"
           {secrets}
           {setKey}
+          removeKey={removeSecret}
           {models}
           {discover}
           listDisabled={!!busy}
@@ -379,7 +400,14 @@
           <details>
             <summary>Validator connection</summary>
             <div class="setup-model-section">
-              <ModelFields {config} role="validator" {secrets} {setKey} compact />
+              <ModelFields
+                {config}
+                role="validator"
+                {secrets}
+                {setKey}
+                removeKey={removeSecret}
+                compact
+              />
             </div>
           </details>
         {/if}
@@ -408,8 +436,15 @@
             </div>
             {#if config.get(['vera', 'backend'], 'local') === 'api'}
               <div style="margin-top: 20px">
-                <ModelFields {config} role="embedding" {secrets} {setKey} retrieval />
-                <RerankerFields {config} {secrets} {setKey} compact />
+                <ModelFields
+                  {config}
+                  role="embedding"
+                  {secrets}
+                  {setKey}
+                  removeKey={removeSecret}
+                  retrieval
+                />
+                <RerankerFields {config} {secrets} {setKey} removeKey={removeSecret} compact />
               </div>
             {/if}
           {/if}

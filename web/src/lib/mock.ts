@@ -190,8 +190,8 @@ let settings: Settings = {
     import.meta.env.VITE_MOCK_EMPTY_YAML === '1'
       ? []
       : [
-          { name: 'OPENAI_API_KEY', source: 'environment' },
-          { name: 'ANTHROPIC_API_KEY', source: 'environment' },
+          { name: 'OPENAI_API_KEY', source: 'dashboard', environment: true },
+          { name: 'ANTHROPIC_API_KEY', source: 'environment', environment: true },
         ],
   referenced_env: [],
 };
@@ -223,11 +223,13 @@ function references() {
     else if (value && typeof value === 'object')
       Object.entries(value).forEach(([name, item]) => walk(item, name));
   };
-  walk(parseDocument(settings.yaml).toJS());
+  const config = parseDocument(settings.yaml).toJS();
+  walk(config);
+  if (config?.web_search?.enabled) found.add(config.web_search.api_key_env ?? 'EXA_API_KEY');
   settings.referenced_env = [...found];
   for (const name of found)
     if (!settings.secrets.some((secret) => secret.name === name))
-      settings.secrets.push({ name, source: 'missing' });
+      settings.secrets.push({ name, source: 'missing', environment: false });
 }
 function enqueue(
   repo: string,
@@ -467,9 +469,16 @@ export async function mockRequest(path: string, method: string, body?: unknown):
   }
   if (url.pathname.startsWith('/api/secrets/')) {
     const name = decodeURIComponent(url.pathname.split('/').at(-1)!);
+    const environment =
+      settings.secrets.find((secret) => secret.name === name)?.environment || false;
     settings.secrets = settings.secrets.filter((secret) => secret.name !== name);
-    settings.secrets.push({ name, source: method === 'DELETE' ? 'missing' : 'dashboard' });
-    return;
+    const status = {
+      name,
+      source: method === 'DELETE' ? (environment ? 'environment' : 'missing') : 'dashboard',
+      environment,
+    } as const;
+    settings.secrets.push(status);
+    return status;
   }
   if (url.pathname === '/api/settings/test') {
     if (data?.fallback !== undefined) {

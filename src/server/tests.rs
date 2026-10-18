@@ -906,7 +906,8 @@ fn session_sign_verify_and_tamper() {
 async fn csrf_secrets_and_config_validation() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
-    let yaml = format!("{CONFIG}github:\n  token_env: CUSTOM_TOKEN\n");
+    let yaml =
+        format!("{CONFIG}github:\n  token_env: CUSTOM_TOKEN\nweb_search:\n  enabled: true\n");
     crate::fsutil::write_atomic_in(data.path(), "revera.yaml", yaml.as_bytes()).unwrap();
     let (cookie, csrf) = administrator(&server).await;
     let (url, task) = http(server.clone()).await;
@@ -969,7 +970,8 @@ async fn csrf_secrets_and_config_validation() {
     let status: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
         status,
-        json!({"name": "REVIEW_API_KEY", "source": "dashboard"})
+        json!({"name": "REVIEW_API_KEY", "source": "dashboard",
+            "environment": crate::config::env_is_set("REVIEW_API_KEY")})
     );
     let settings = client
         .get(format!("{url}/api/settings"))
@@ -982,6 +984,84 @@ async fn csrf_secrets_and_config_validation() {
         .unwrap();
     assert!(!settings.contains(value));
     assert!(settings.contains("referenced_env"));
+    let settings: Value = serde_json::from_str(&settings).unwrap();
+    let secrets = settings["secrets"].as_array().unwrap();
+    assert!(secrets.contains(&status));
+    let search_environment = crate::config::env_is_set("EXA_API_KEY");
+    assert!(secrets.contains(&json!({
+        "name": "EXA_API_KEY",
+        "source": if search_environment { "environment" } else { "missing" },
+        "environment": search_environment
+    })));
+    {
+        let dashboard = server.dashboard.lock().await;
+        for yaml in [
+            "web_search:\n  enabled: false\n",
+            "web_search:\n  enabled: true\n  api_key_env: CUSTOM_SEARCH_API_KEY\n",
+        ] {
+            assert!(
+                dashboard
+                    .secret_status(yaml)
+                    .iter()
+                    .all(|secret| secret["name"] != "EXA_API_KEY")
+            );
+        }
+    }
+    {
+        // An interpolated `enabled` still lists the default web-search key.
+        let mut dashboard = server.dashboard.lock().await;
+        dashboard
+            .secrets
+            .insert("REVERA_TEST_SEARCH_ON".into(), "true".into());
+        let status = dashboard.secret_status("web_search:\n  enabled: ${REVERA_TEST_SEARCH_ON}\n");
+        dashboard.secrets.remove("REVERA_TEST_SEARCH_ON");
+        assert!(status.iter().any(|secret| secret["name"] == "EXA_API_KEY"));
+    }
+    // Use an existing non-blank variable to cover both sources without mutating
+    // the process environment while other tests are running.
+    assert!(crate::config::env_is_set("PATH"));
+    let override_endpoint = format!("{url}/api/secrets/PATH");
+    let override_status: Value = client
+        .put(&override_endpoint)
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .json(&json!({"value": "dashboard-override-test-credential"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        override_status,
+        json!({"name": "PATH", "source": "dashboard", "environment": true})
+    );
+    assert!(
+        server
+            .dashboard
+            .lock()
+            .await
+            .secret_status(&yaml)
+            .contains(&override_status)
+    );
+    let removed: Value = client
+        .delete(&override_endpoint)
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        removed,
+        json!({"name": "PATH", "source": "environment", "environment": true})
+    );
     for name in [
         "BAD-NAME",
         "1BAD",

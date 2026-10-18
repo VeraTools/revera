@@ -824,14 +824,17 @@ async fn change_secret(server: &Server, name: String, value: Option<String>) -> 
         yaml.as_deref(),
         &server.session_key,
     )?;
+    let environment = crate::config::env_is_set(&name);
     let source = if dashboard.secrets.contains_key(&name) {
         "dashboard"
-    } else if crate::config::env_is_set(&name) {
+    } else if environment {
         "environment"
     } else {
         "missing"
     };
-    Ok(output(json!({"name": name, "source": source})))
+    Ok(output(
+        json!({"name": name, "source": source, "environment": environment}),
+    ))
 }
 async fn secret(
     State(server): State<Arc<Server>>,

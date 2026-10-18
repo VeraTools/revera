@@ -54,6 +54,7 @@
   let modelLists = $state<Partial<Record<Role, string[]>>>({});
   let tests = $state<Partial<Record<Role, TestResult>>>({});
   let appSlug = $state('');
+  let separateValidator = $state(false);
   const yamlDirty = $derived(config?.yaml !== savedYaml);
   const serverDirty = $derived(JSON.stringify(server) !== savedServer);
   const dirty = $derived(!!config && (yamlDirty || serverDirty));
@@ -64,6 +65,7 @@
   );
   function hydrate(data: Settings) {
     config = new ConfigDocument(data.yaml);
+    separateValidator = config.has(['models', 'validator']);
     server = data.server;
     secrets = data.secrets;
     savedYaml = data.yaml;
@@ -128,6 +130,7 @@
   }
   function discard() {
     config?.replace(savedYaml);
+    separateValidator = config?.has(['models', 'validator']) || false;
     server = JSON.parse(savedServer) as ServerSettings;
     error = '';
     message = '';
@@ -197,6 +200,10 @@
   function keySource(name: string) {
     return secrets.find((secret) => secret.name === name)?.source || 'missing';
   }
+  function setSeparateValidator(enabled: boolean) {
+    separateValidator = enabled;
+    if (!enabled) config!.remove(['models', 'validator']);
+  }
   function connectionLabel(role: Role) {
     const result = tests[role];
     if (!result) return '';
@@ -247,7 +254,11 @@
     kind="success"
   />{/if}
 {#if config && server}
-  <Tabs.Root bind:value={tab}
+  <Tabs.Root
+    bind:value={tab}
+    onValueChange={(value) => {
+      if (value === 'models') separateValidator = !validatorInherits;
+    }}
     ><Tabs.List class="tabs-list" aria-label="Settings sections"
       >{#each tabs as item}<Tabs.Trigger
           class="tab-trigger"
@@ -284,28 +295,51 @@
               <p>
                 {model.description}
               </p>
+              {#if role === 'validator'}
+                <div class="toggle-row">
+                  <div>
+                    <h3>Use a different validator</h3>
+                    <p>Otherwise, the same model is called in a fresh context.</p>
+                  </div>
+                  <Toggle
+                    checked={separateValidator}
+                    label="Use a different validator model"
+                    onchange={setSeparateValidator}
+                  />
+                </div>
+              {/if}
             </div>
-            <ModelFields
-              {config}
-              {role}
-              {secrets}
-              {setKey}
-              models={modelLists[role] || []}
-              discover={() => void discover(role)}
-              listDisabled={dirty || !!busy}
-            />
-            <div class="model-footer">
-              <button
-                class="button small"
+            {#if role !== 'validator' || separateValidator}
+              <ModelFields
+                {config}
+                {role}
+                {secrets}
+                {setKey}
+                removeKey={removeSecret}
+                models={modelLists[role] || []}
+                discover={() => void discover(role)}
+                listDisabled={dirty || !!busy}
+              />
+              <div class="model-footer">
+                <button
+                  class="button small"
+                  disabled={dirty || !!busy}
+                  onclick={() => void test(role)}
+                  >{busy === role ? 'Testing…' : 'Test connection'}</button
+                >{#if tests[role]}<Status
+                    status={tests[role]!.ok ? 'complete' : 'failed'}
+                    label={connectionLabel(role)}
+                  />{/if}
+              </div>
+              <FallbackModels
+                {config}
+                {role}
+                {secrets}
+                {setKey}
+                removeKey={removeSecret}
                 disabled={dirty || !!busy}
-                onclick={() => void test(role)}
-                >{busy === role ? 'Testing…' : 'Test connection'}</button
-              >{#if tests[role]}<Status
-                  status={tests[role]!.ok ? 'complete' : 'failed'}
-                  label={connectionLabel(role)}
-                />{/if}
-            </div>
-            <FallbackModels {config} {role} {secrets} {setKey} disabled={dirty || !!busy} />
+              />
+            {/if}
           </section>{/each}
       </div>
       <p class="helper" style="margin-top: 16px">
@@ -323,7 +357,9 @@
           <div class="secret-row">
             <code>{name}</code><Status
               status={source === 'missing' ? 'partial' : 'complete'}
-              label={source}
+              label={source === 'missing'
+                ? 'Key not set'
+                : `Set in ${source}${source === 'dashboard' && secrets.find((secret) => secret.name === name)?.environment ? ' (overrides environment)' : ''}`}
             /><button class="button small" onclick={() => setKey(name)}>Set key</button
             >{#if source === 'dashboard'}<button
                 class="button ghost small"
@@ -338,7 +374,10 @@
         <div class="section-heading">
           <div>
             <h2>Review behavior</h2>
-            <p>Defaults for repositories without their own configuration.</p>
+            <p>
+              Defaults for repositories without their own configuration. Validated findings are
+              always posted as comments.
+            </p>
           </div>
         </div>
         <div class="field-grid">
@@ -401,17 +440,6 @@
                 config!.set(['review', 'max_findings'], event.currentTarget.valueAsNumber)}
             />
           </div>
-          <div class="field">
-            <label for="review-publish">Publish mode</label><SelectField
-              id="review-publish"
-              value={config.get(['review', 'publish'], 'dry-run')}
-              options={[
-                { value: 'dry-run', label: 'Dry run' },
-                { value: 'comment', label: 'Comment' },
-              ]}
-              onchange={(value) => config!.set(['review', 'publish'], value)}
-            /><small>Server reviews always publish validated findings as comments.</small>
-          </div>
         </div>
         <div class="toggle-row" style="margin-top: 24px">
           <div>
@@ -422,6 +450,20 @@
             checked={server.review_drafts}
             label="Review draft pull requests"
             onchange={(value) => (server!.review_drafts = value)}
+          />
+        </div>
+        <div class="toggle-row">
+          <div>
+            <h3>Review pull requests from forks</h3>
+            <p>
+              Off by default. Revera never runs the pull request’s code; models only read its
+              changes.
+            </p>
+          </div>
+          <Toggle
+            checked={config.get(['github', 'allow_forks'], false)}
+            label="Review pull requests from forks"
+            onchange={(value) => config!.set(['github', 'allow_forks'], value)}
           />
         </div>
         <div class="field" style="margin-top: 24px">
@@ -443,6 +485,10 @@
           <div>
             <h2>Review limits</h2>
             <p>A limit stops the affected stage and marks the review partial.</p>
+            <p>
+              Quick and Deep change tool calls per agent, seconds per agent, and seconds per review.
+              Deep also changes the largest diff and maximum findings.
+            </p>
           </div>
         </div>
         <div class="field-grid">
@@ -456,6 +502,18 @@
                   config!.set(['budget', field.key], event.currentTarget.valueAsNumber)}
               /><small>{field.hint}</small>
             </div>{/each}
+          <div class="field">
+            <label for="review-max-diff-bytes">Largest diff</label><input
+              id="review-max-diff-bytes"
+              type="number"
+              min="1"
+              value={config.get(['review', 'max_diff_bytes'], 200000)}
+              onchange={(event) =>
+                config!.set(['review', 'max_diff_bytes'], event.currentTarget.valueAsNumber)}
+            /><small
+              >In bytes. Files that do not fit are left out and the review is marked partial.</small
+            >
+          </div>
         </div>
       </section></Tabs.Content
     >
@@ -496,7 +554,14 @@
                   <h3>Embedding</h3>
                   <p>Turns repository content into a searchable index.</p>
                 </div>
-                <ModelFields {config} role="embedding" {secrets} {setKey} retrieval />
+                <ModelFields
+                  {config}
+                  role="embedding"
+                  {secrets}
+                  {setKey}
+                  removeKey={removeSecret}
+                  retrieval
+                />
                 <div class="model-footer">
                   <button
                     class="button small"
@@ -515,12 +580,12 @@
                 <h3>Reranker <span class="badge" style="margin-left: 8px">Optional</span></h3>
                 <p>Reorders search results for relevance.</p>
               </div>
-              <RerankerFields {config} {secrets} {setKey} />
+              <RerankerFields {config} {secrets} {setKey} removeKey={removeSecret} />
             </section>
           </div>
         {/if}
       </section>
-      <WebSearchFields {config} {secrets} {setKey} />
+      <WebSearchFields {config} {secrets} {setKey} removeKey={removeSecret} />
     </Tabs.Content>
     <Tabs.Content value="access"
       ><section class="settings-section">
@@ -559,7 +624,10 @@
       ><div class="section-heading">
         <div>
           <h2>Configuration file</h2>
-          <p>The same document as the form above. Comments are preserved.</p>
+          <p>
+            The review configuration as YAML. Comments are preserved. Triggers, modes and access are
+            stored separately.
+          </p>
         </div>
         <div class="actions">
           <button class="button small" onclick={validate}><Check size={14} />Validate YAML</button

@@ -8,14 +8,17 @@
     config,
     secrets,
     setKey,
+    removeKey,
   }: {
     config: ConfigDocument;
     secrets: Secret[];
     setKey: (name: string) => void;
+    removeKey: (name: string) => void;
   } = $props();
   const enabled = $derived(config.get(['web_search', 'enabled'], false));
-  const keyEnv = $derived(config.get(['web_search', 'api_key_env'], ''));
-  const source = $derived(secrets.find((key) => key.name === keyEnv)?.source || 'missing');
+  const keyEnv = $derived(config.get(['web_search', 'api_key_env'], 'EXA_API_KEY'));
+  const secret = $derived(secrets.find((key) => key.name === keyEnv));
+  const source = $derived(secret?.source || 'missing');
   function changeEnv(value: string) {
     if (value.trim()) config.set(['web_search', 'api_key_env'], value.trim());
     else config.remove(['web_search', 'api_key_env']);
@@ -58,11 +61,17 @@
         onchange={(event) => changeEnv(event.currentTarget.value)}
       />
       <div class="key-status">
-        {#if source !== 'missing'}<Status status="complete" label={`Set in ${source}`} />
+        {#if source !== 'missing'}<Status
+            status="complete"
+            label={`Set in ${source}${source === 'dashboard' && secret?.environment ? ' (overrides environment)' : ''}`}
+          />
         {:else}<span class="helper">Using the free endpoint</span>{/if}
         <button class="button small" onclick={addKey}
           >{source === 'missing' ? 'Add key' : 'Replace key'}</button
         >
+        {#if source === 'dashboard'}
+          <button class="button ghost small" onclick={() => removeKey(keyEnv)}>Remove</button>
+        {/if}
       </div>
     </div>
     {#if source !== 'missing'}

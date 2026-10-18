@@ -12,12 +12,14 @@
     role,
     secrets,
     setKey,
+    removeKey,
     disabled,
   }: {
     config: ConfigDocument;
     role: Extract<Role, 'investigator' | 'validator'>;
     secrets: Secret[];
     setKey: (name: string) => void;
+    removeKey: (name: string) => void;
     disabled: boolean;
   } = $props();
   const routes = $derived(config.get<Record<string, unknown>[]>(['models', role, 'fallback'], []));
@@ -75,6 +77,7 @@
         {role}
         {secrets}
         {setKey}
+        {removeKey}
         routePath={['models', role, 'fallback', index]}
         fieldId={`model-${role}-fallback-${index}`}
       />

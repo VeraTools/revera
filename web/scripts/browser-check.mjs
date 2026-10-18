@@ -380,6 +380,7 @@ web_search:
   await page.getByRole('tab', { name: 'Models', exact: true }).click();
   const card = page.locator('section[aria-label="investigator"]');
   const validator = page.locator('section[aria-label="validator"]');
+  await validator.getByLabel('Use a different validator model', { exact: true }).click();
   await card.getByText('Fallback models (2)', { exact: true }).click();
   await validator.getByText('Fallback models (2)', { exact: true }).click();
   assert.equal(await page.locator('#model-validator-fallback-0-name').inputValue(), 'first-backup');
@@ -544,7 +545,112 @@ async function checkThemeAndRetrievalLink() {
   await context.close();
 }
 
+async function checkAuditSettings() {
+  const { context, page } = await open('/settings');
+  await page.getByRole('heading', { name: 'Review models', exact: true }).waitFor();
+  const original = await savedConfig(page);
+  const investigator = page.locator('section[aria-label="investigator"]');
+  const investigatorKey = investigator.locator('.field').filter({
+    has: page.locator('#model-investigator-env'),
+  });
+  const validator = page.locator('section[aria-label="validator"]');
+  const keyName = original.getIn(['models', 'investigator', 'api_key_env']);
+  const referenced = page.locator('.secret-row').filter({ hasText: keyName });
+  const override = 'Set in dashboard (overrides environment)';
+  await investigatorKey.getByText(override, { exact: true }).waitFor();
+  await referenced.getByText(override, { exact: true }).waitFor();
+  await page.screenshot({ path: join(output, 'settings-key-override-light.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    true,
+    'Key override status and removal controls fit on mobile',
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+  page.on('dialog', (dialog) => dialog.accept());
+  await investigatorKey.getByRole('button', { name: 'Remove', exact: true }).click();
+  await investigatorKey.getByText('Set in environment', { exact: true }).waitFor();
+  await referenced.getByText('Set in environment', { exact: true }).waitFor();
+  await referenced.getByRole('button', { name: 'Set key', exact: true }).click();
+  await page.getByLabel('API key', { exact: true }).fill('fixture-audit-override-key');
+  await page.getByRole('dialog').getByRole('button', { name: 'Set key', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await referenced.getByText(override, { exact: true }).waitFor();
+  await referenced.getByRole('button', { name: 'Remove', exact: true }).click();
+  await referenced.getByText('Set in environment', { exact: true }).waitFor();
+
+  const separate = validator.getByLabel('Use a different validator model', { exact: true });
+  assert.equal(await separate.getAttribute('aria-checked'), 'true');
+  await separate.click();
+  assert.equal(await page.locator('#model-validator-name').count(), 0);
+  await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+  const editor = page.getByLabel('Review configuration YAML');
+  let doc = parseDocument(await editor.inputValue());
+  assert.equal(doc.hasIn(['models', 'validator']), false, 'Off removes the validator override');
+  assert.deepEqual(
+    doc.getIn(['models', 'investigator']).toJSON(),
+    original.getIn(['models', 'investigator']).toJSON(),
+    'Returning to inheritance leaves the investigator unchanged',
+  );
+  await page.getByRole('tab', { name: 'Models', exact: true }).click();
+  assert.equal(await separate.getAttribute('aria-checked'), 'false');
+  await page.screenshot({
+    path: join(output, 'settings-models-inherited-light.png'),
+    fullPage: true,
+  });
+  await separate.click();
+  await edit(page, 'model-validator-name', 'audit-validator');
+  await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+  doc = parseDocument(await editor.inputValue());
+  assert.equal(doc.getIn(['models', 'validator', 'model']), 'audit-validator');
+  await page.getByRole('tab', { name: 'Models', exact: true }).click();
+  assert.equal(await separate.getAttribute('aria-checked'), 'true');
+  await separate.click();
+
+  await page.getByRole('tab', { name: 'Review', exact: true }).click();
+  assert.equal(await page.getByLabel('Publish mode', { exact: true }).count(), 0);
+  assert.equal(await page.locator('#review-publish').count(), 0);
+  const forks = page.getByLabel('Review pull requests from forks', { exact: true });
+  assert.equal(await forks.getAttribute('aria-checked'), 'false', 'Fork reviews default off');
+  await forks.click();
+  await page.getByRole('tab', { name: 'Budgets', exact: true }).click();
+  assert.equal(await page.getByLabel('Largest diff', { exact: true }).inputValue(), '200000');
+  await edit(page, 'review-max-diff-bytes', '250000');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByText('Settings saved.', { exact: true }).waitFor();
+  doc = await savedConfig(page);
+  assert.equal(doc.getIn(['github', 'allow_forks']), true);
+  assert.equal(doc.getIn(['review', 'max_diff_bytes']), 250000);
+  assert.equal(doc.hasIn(['models', 'validator']), false);
+  await page.getByRole('tab', { name: 'Review', exact: true }).click();
+  assert.equal(await forks.getAttribute('aria-checked'), 'true');
+  await forks.click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByText('Settings saved.', { exact: true }).waitFor();
+  assert.equal((await savedConfig(page)).getIn(['github', 'allow_forks']), false);
+
+  await page.getByRole('tab', { name: 'Retrieval', exact: true }).click();
+  assert.equal(
+    await page.getByLabel('Key environment variable (optional)').inputValue(),
+    'EXA_API_KEY',
+  );
+  await page.getByText('Using the free endpoint', { exact: true }).waitFor();
+  await edit(page, 'web-search-env', keyName);
+  const webSearch = page.locator('.web-search');
+  await webSearch.getByText('Set in environment', { exact: true }).waitFor();
+  await webSearch.getByRole('button', { name: 'Replace key', exact: true }).click();
+  await page.getByLabel('API key', { exact: true }).fill('fixture-audit-search-key');
+  await page.getByRole('dialog').getByRole('button', { name: 'Set key', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await webSearch.getByText(override, { exact: true }).waitFor();
+  await webSearch.getByRole('button', { name: 'Remove', exact: true }).click();
+  await webSearch.getByText('Set in environment', { exact: true }).waitFor();
+  assert.equal((await page.locator('body').innerText()).includes('fixture-audit-'), false);
+  await context.close();
+}
+
 try {
+  if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAuditSettings();
   if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();
   if (!process.argv.includes('--screenshots-only')) await checkWizardReranker();
   if (!process.argv.includes('--screenshots-only')) await checkFallbacksAndWebSearch();
@@ -587,6 +693,12 @@ try {
         `settings-review-${scheme}.png`,
         scheme,
         'Review behavior',
+      );
+      await shot(
+        '/settings?tab=budgets',
+        `settings-budgets-${scheme}.png`,
+        scheme,
+        'Review limits',
       );
       await shot(
         '/settings?tab=retrieval',
@@ -865,7 +977,7 @@ try {
       'PASS: setup link authorization/copy, labelled keyboard selects in both themes/mobile, ' +
         'empty filters, wizard, YAML/comments/reasoning, secret dialog, server settings, ' +
         'trigger/mode defaults and overrides, mention notice/commands, fallback editor/tests, ' +
-        'web search, manual/rerun modes, live updates, no browser runtime errors.',
+        'web search, manual/rerun modes, live updates, audit settings, no browser runtime errors.',
     );
   }
 } finally {

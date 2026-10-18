@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.2
+
+- The rootless Podman quickstart now prepares the data directory with
+  `podman unshare chown`. The previous `sudo chown` left the container unable
+  to write to it.
+- New server docs: a Podman Quadlet setup, upgrade steps for each install
+  method, restoring a backup, and what to do if a secret leaks. Several
+  statements in the docs were corrected to match the code.
+- The dashboard shows when a key saved in the dashboard overrides the same
+  variable from the environment, and dashboard keys can be removed from where
+  they are shown.
+- Settings adds controls for reviewing PRs from forks, the largest diff size
+  and using a separate validator model. The Budgets tab says which limits Quick
+  and Deep change.
+- Removed the Publish mode setting, which had no effect on the server.
+- Web search detects `EXA_API_KEY` when it is set in the environment but not
+  named in the configuration.
+
 ## v0.6.1
 
 - The dashboard has a theme menu in the top bar: System, Light or Dark. The

@@ -11,6 +11,7 @@
     role,
     secrets,
     setKey,
+    removeKey,
     discover,
     models = [],
     listDisabled = false,
@@ -24,6 +25,7 @@
     role: string;
     secrets: Secret[];
     setKey: (name: string) => void;
+    removeKey: (name: string) => void;
     discover?: () => void;
     models?: string[];
     listDisabled?: boolean;
@@ -42,7 +44,8 @@
       retrieval ? `${role.toUpperCase()}_API_KEY` : 'REVERA_MODEL_API_KEY',
     ),
   );
-  const source = $derived(secrets.find((secret) => secret.name === keyName)?.source || 'missing');
+  const secret = $derived(secrets.find((secret) => secret.name === keyName));
+  const source = $derived(secret?.source || 'missing');
   const protocol = $derived(config.get([...path, 'protocol'], 'openai-chat'));
 
   function editKey() {
@@ -167,11 +170,16 @@
       <div class="key-status">
         <Status
           status={source === 'missing' ? 'partial' : 'complete'}
-          label={source === 'missing' ? 'Key not set' : `Set in ${source}`}
+          label={source === 'missing'
+            ? 'Key not set'
+            : `Set in ${source}${source === 'dashboard' && secret?.environment ? ' (overrides environment)' : ''}`}
         />
         <button class="button small" onclick={editKey}
           ><KeyRound size={12} />{source === 'missing' ? 'Set key' : 'Replace key'}</button
         >
+        {#if source === 'dashboard'}
+          <button class="button ghost small" onclick={() => removeKey(keyName)}>Remove</button>
+        {/if}
       </div>
     </div>
   {/if}

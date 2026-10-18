@@ -103,6 +103,7 @@ export interface ServerSettings {
 export interface Secret {
   name: string;
   source: 'dashboard' | 'environment' | 'missing';
+  environment: boolean;
 }
 export interface Settings {
   yaml: string;
