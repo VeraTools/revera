@@ -16,7 +16,7 @@
     disabled,
   }: {
     config: ConfigDocument;
-    role: Extract<Role, 'investigator' | 'validator'>;
+    role: Exclude<Role, 'embedding'>;
     secrets: Secret[];
     setKey: (name: string) => void;
     removeKey: (name: string) => void;
