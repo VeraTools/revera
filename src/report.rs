@@ -68,6 +68,10 @@ pub struct LedgerReport {
     #[serde(default)]
     pub reasoning_tokens: u64,
     pub by_route: Vec<RouteLedger>,
+    #[serde(default)]
+    pub fallback_events: Vec<crate::provider::FallbackEvent>,
+    #[serde(default)]
+    pub unavailable_routes: Vec<crate::provider::UnavailableRoute>,
     pub wall_ms: u64,
 }
 
@@ -482,6 +486,37 @@ pub fn footer_route_label(e: &crate::provider::LedgerEntry) -> String {
     }
 }
 
+/// Only successful requests identify the model that actually served a role.
+/// Preserve the initial model in a switch chain, but never expose endpoints.
+pub fn footer_routes(ledger: &RunLedger) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut roles: BTreeMap<&str, Vec<&crate::provider::LedgerEntry>> = BTreeMap::new();
+    for entry in ledger.entries.iter().filter(|e| e.error.is_none()) {
+        roles.entry(&entry.role).or_default().push(entry);
+    }
+    roles
+        .into_iter()
+        .map(|(role, entries)| {
+            let last = entries.last().unwrap();
+            let label = if let Some(first) = ledger.fallback_events.iter().find(|e| e.role == role)
+            {
+                let mut models = vec![first.from_model.as_str()];
+                for entry in &entries {
+                    if models.last().copied() != Some(entry.model.as_str()) {
+                        models.push(&entry.model);
+                    }
+                }
+                let mut display = (*last).clone();
+                display.model = models.join("→");
+                footer_route_label(&display)
+            } else {
+                footer_route_label(last)
+            };
+            crate::redact::text(&label).into_owned()
+        })
+        .collect()
+}
+
 pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
     use std::collections::BTreeMap;
     let mut by: BTreeMap<(String, String, String, String, String), RouteLedger> = BTreeMap::new();
@@ -527,6 +562,8 @@ pub fn ledger_report(ledger: &RunLedger, wall_ms: u64) -> LedgerReport {
         cache_write_tokens: cwr,
         reasoning_tokens: rr,
         by_route: by.into_values().collect(),
+        fallback_events: ledger.fallback_events.clone(),
+        unavailable_routes: ledger.unavailable_routes.clone(),
         wall_ms,
     }
 }
