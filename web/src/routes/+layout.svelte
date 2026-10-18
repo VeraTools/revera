@@ -7,6 +7,7 @@
   import {
     LayoutDashboard,
     GitPullRequest,
+    Wrench,
     FolderGit2,
     Settings,
     ChevronDown,
@@ -54,6 +55,7 @@
   const nav = [
     { href: '/', name: 'Overview', icon: LayoutDashboard },
     { href: '/reviews', name: 'Reviews', icon: GitPullRequest },
+    { href: '/fixes', name: 'Fixes', icon: Wrench },
     { href: '/repositories', name: 'Repositories', icon: FolderGit2 },
     { href: '/settings', name: 'Settings', icon: Settings },
   ];
