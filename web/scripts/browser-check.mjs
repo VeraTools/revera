@@ -876,7 +876,116 @@ async function checkDashboardQol() {
   await settings.context.close();
 }
 
+// Connected accounts and explicit setup capability choices.
+async function checkConnectedAccounts() {
+  const { context, page } = await open('/repositories');
+  const panel = page.getByRole('region', { name: 'Connected accounts', exact: true });
+  await panel.getByRole('heading', { name: 'Connected accounts', exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole('link', { name: 'Add repositories or organization' }).getAttribute('href'),
+    'https://github.com/apps/revera-northstar/installations/new',
+  );
+  const second = panel.locator('[data-account="second-org"]');
+  await second.getByText('Awaiting Revera approval', { exact: true }).waitFor();
+  assert(
+    !/\d+ repositories/.test(await second.innerText()),
+    'Unapproved accounts have no repository count',
+  );
+  await panel
+    .locator('[data-account="upgrade-org"]')
+    .getByText('Permission update required', { exact: true })
+    .waitFor();
+  await panel
+    .locator('[data-account="paused-org"]')
+    .getByText('Suspended', { exact: true })
+    .waitFor();
+  await panel
+    .locator('[data-account="offline-org"]')
+    .getByText('Not installed', { exact: true })
+    .waitFor();
+  await panel
+    .locator('[data-account="denied-org"]')
+    .getByText('Access unavailable', { exact: true })
+    .waitFor();
+  await second.getByRole('button', { name: 'Approve second-org', exact: true }).click();
+  await second.getByText('Allowed', { exact: true }).waitFor();
+  await second
+    .getByText('Organization · 0 repositories · Selected repositories', { exact: true })
+    .waitFor();
+  page.once('dialog', (dialog) => dialog.accept());
+  await second.getByRole('button', { name: 'Revoke second-org', exact: true }).click();
+  await second.getByText('Awaiting Revera approval', { exact: true }).waitFor();
+  await panel
+    .getByText('Connecting another organization or enabling write permissions', { exact: true })
+    .click();
+  assert.equal(
+    await panel
+      .getByRole('link', { name: 'GitHub app settings → Advanced → Make public' })
+      .getAttribute('href'),
+    'https://github.com/organizations/northstar/settings/apps/revera-northstar/advanced',
+  );
+  await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    const reconcile = api.reconcileInstallations;
+    window.accountReconciles = 0;
+    api.reconcileInstallations = () => {
+      window.accountReconciles++;
+      return reconcile();
+    };
+  });
+  await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+  await page.getByRole('heading', { name: 'Reviews', exact: true }).waitFor();
+  await page.getByRole('link', { name: 'Repositories', exact: true }).evaluate((link) => {
+    link.href += '?installation_id=2&setup_action=install';
+  });
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
+  await page.waitForFunction(() => window.accountReconciles === 1);
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.waitForFunction(() => window.accountReconciles === 2);
+  await context.close();
+}
+
+async function checkManifestChoices() {
+  for (const publicApp of [false, true]) {
+    const { context, page } = await open('/setup?stage=create_app&token=fixture');
+    await page.getByRole('heading', { name: 'Create your GitHub App', exact: true }).waitFor();
+    assert.equal(
+      await page.getByLabel('Allow Revera to publish approved fixes', { exact: true }).isChecked(),
+      false,
+    );
+    assert.equal(
+      await page.getByLabel('Who can install this app?', { exact: true }).innerText(),
+      'Only this account',
+    );
+    if (publicApp) {
+      await choose(page, 'Who can install this app?', 'Any account or organization');
+      await page.getByLabel('Allow Revera to publish approved fixes', { exact: true }).check();
+    }
+    await page.evaluate(async () => {
+      const { api } = await window.importDashboard('/src/lib/api.ts');
+      const manifest = api.manifest;
+      api.manifest = async (...args) => {
+        const result = await manifest(...args);
+        window.createdManifest = result.manifest;
+        return result;
+      };
+    });
+    await page.getByRole('button', { name: 'Create GitHub App', exact: true }).click();
+    await page.getByRole('heading', { name: 'Sign in with GitHub', exact: true }).waitFor();
+    const manifest = await page.evaluate(() => window.createdManifest);
+    assert.equal(manifest.public, publicApp);
+    assert.equal(manifest.default_permissions.contents, publicApp ? 'write' : 'read');
+    assert.equal(manifest.setup_url, 'https://revera.northstar.example.com/repositories');
+    assert.equal(manifest.setup_on_update, true);
+    await context.close();
+  }
+}
+
 try {
+  if (!process.argv.includes('--screenshots-only')) {
+    await checkConnectedAccounts();
+    await checkManifestChoices();
+  }
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkDashboardQol();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAuditSettings();
   if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();

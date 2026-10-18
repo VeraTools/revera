@@ -15,7 +15,14 @@
   import { live } from '#lib/events';
   import { relative } from '#lib/time';
   import { createNotices } from '#lib/notices.svelte';
-  import type { Repository, PullRequest, Trigger, ReviewMode } from '#lib/types';
+  import type {
+    Repository,
+    PullRequest,
+    Trigger,
+    ReviewMode,
+    Installations,
+    Installation,
+  } from '#lib/types';
   import { modes, triggers } from '#lib/config.svelte';
   import SelectField from '#lib/components/SelectField.svelte';
   import ReviewModeField from '#lib/components/ReviewModeField.svelte';
@@ -42,6 +49,49 @@
   let pullsLoading = $state(false);
   let pullError = $state('');
   let installUrl = $state('');
+  let accounts = $state<Installations>();
+  let accountBusy = $state(false);
+  let accountError = $state('');
+  const accountStatus = {
+    allowed: 'Allowed',
+    awaiting_approval: 'Awaiting Revera approval',
+    permission_update: 'Permission update required',
+    suspended: 'Suspended',
+    not_installed: 'Not installed',
+  };
+  async function loadAccounts(refresh = false) {
+    accountBusy = true;
+    try {
+      accounts = refresh ? await api.reconcileInstallations() : await api.installations();
+      installUrl = accounts.install_url;
+      accountError = '';
+      if (refresh) await load();
+    } catch (cause) {
+      accountError = errorMessage(cause);
+    } finally {
+      accountBusy = false;
+    }
+  }
+  async function changeOwner(account: Installation, approve: boolean) {
+    if (
+      !approve &&
+      !window.confirm(
+        `Revoke ${account.account.login}? Queued and running jobs will be cancelled and its repositories removed.`,
+      )
+    )
+      return;
+    accountBusy = true;
+    try {
+      const result = await api.owner(account.account.login, approve);
+      await loadAccounts();
+      await load();
+      if (result.warning) accountError = result.warning;
+    } catch (cause) {
+      accountError = errorMessage(cause);
+    } finally {
+      accountBusy = false;
+    }
+  }
   let ready = $state(false);
   const timestamp = (date?: string) => (date ? Date.parse(date) || 0 : 0);
   const activity = (repo: Repository) =>
@@ -154,14 +204,16 @@
   }
   onMount(() => {
     readQuery();
-    void api
-      .overview()
-      .then((overview) => (installUrl = overview.app.install_url))
-      .catch((cause) => notice.failure(errorMessage(cause)));
+    void loadAccounts(
+      page.url.searchParams.has('installation_id') || page.url.searchParams.has('setup_action'),
+    );
   });
   $effect(() => {
-    $live.repos;
-    if (ready) void load();
+    const revision = $live.repos;
+    if (ready) {
+      void load();
+      if (revision) void loadAccounts();
+    }
   });
   async function update(repo: Repository, field: 'trigger' | 'mode', value: string) {
     busy = repo.full_name;
@@ -273,9 +325,84 @@
     <p>Choose what gets reviewed and keep repository indexes up to date.</p>
   </div>
   {#if installUrl}<a href={installUrl} class="button" target="_blank" rel="noreferrer"
-      >Manage installation <ArrowUpRight size={14} /></a
+      >Add repositories or organization <ArrowUpRight size={14} /></a
     >{/if}
 </div>
+<section class="connected-accounts" aria-label="Connected accounts">
+  <div class="section-heading">
+    <h2>Connected accounts</h2>
+    <button class="button small" disabled={accountBusy} onclick={() => void loadAccounts(true)}
+      ><RefreshCw size={13} />{accountBusy ? 'Refreshing…' : 'Refresh'}</button
+    >
+  </div>
+  <p class="helper">
+    GitHub organization permissions decide who can install the app. Revera administrators separately
+    approve which owners this deployment may review. Installing alone never grants access.
+  </p>
+  {#if accountError}<Notice message={accountError} retry={() => loadAccounts(true)} />{/if}
+  {#if accounts}
+    {#each accounts.installations as account (account.account.login)}
+      <div class="account-row" data-account={account.account.login}>
+        <div>
+          <strong>{account.account.login}</strong>
+          <span class="badge"
+            >{account.error ? 'Access unavailable' : accountStatus[account.status]}</span
+          >
+          <div class="row-meta">
+            {account.account.type ||
+              'GitHub account'}{#if account.repo_count !== undefined}{' · '}{account.repo_count} repositories{/if}{#if account.repository_selection}{' · '}{account.repository_selection ===
+              'all'
+                ? 'All repositories'
+                : 'Selected repositories'}{/if}
+          </div>
+          {#if account.error}<p class="helper">{account.error}</p>{/if}
+        </div>
+        <div class="actions">
+          {#if account.html_url}<a
+              class="button small"
+              href={account.html_url}
+              target="_blank"
+              rel="noreferrer"
+              >{account.id ? 'Manage on GitHub' : 'Install on GitHub'}<ArrowUpRight size={13} /></a
+            >{/if}
+          {#if account.allowed}<button
+              class="button small"
+              disabled={accountBusy}
+              onclick={() => void changeOwner(account, false)}
+              aria-label={`Revoke ${account.account.login}`}>Revoke</button
+            >
+          {:else}<button
+              class="button small"
+              disabled={accountBusy}
+              onclick={() => void changeOwner(account, true)}
+              aria-label={`Approve ${account.account.login}`}>Approve</button
+            >{/if}
+        </div>
+      </div>
+    {:else}<p class="helper">
+        No accounts installed yet. Add an account using GitHub’s installation page.
+      </p>{/each}
+    <details>
+      <summary>Connecting another organization or enabling write permissions</summary>
+      <p class="helper">
+        Private GitHub Apps can only be installed on their owning account. For an existing
+        registration, open <a href={accounts.advanced_url} target="_blank" rel="noreferrer"
+          >GitHub app settings → Advanced → Make public</a
+        > if available. Changing a setup manifest cannot change an existing registration. This does not
+        make your dashboard public.
+      </p>
+      <p class="helper">
+        For approved fix delivery, change Contents to Read and write in <a
+          href={accounts.settings_url}
+          target="_blank"
+          rel="noreferrer">Permissions &amp; events</a
+        >, then have each installation owner accept the new permissions. Add this dashboard’s
+        <code>/repositories</code> URL as the app’s Setup URL for the return flow. Review-only and patch-only
+        setups can keep Contents read.
+      </p>
+    </details>
+  {/if}
+</section>
 <div class="filters">
   <div class="search-field">
     <label class="sr-only" for="repo-search">Search repositories</label><Search size={15} /><input
@@ -509,3 +636,27 @@
     ></Dialog.Portal
   ></Dialog.Root
 >
+
+<style>
+  .connected-accounts {
+    margin-bottom: 24px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .section-heading,
+  .account-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  .account-row {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .connected-accounts details {
+    margin-top: 12px;
+  }
+</style>

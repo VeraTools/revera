@@ -163,3 +163,24 @@ export interface JobsPage {
   jobs: JobSummary[];
   next?: string;
 }
+
+// Connected GitHub accounts (installation does not imply deployment approval).
+export interface Installation {
+  id: number | null;
+  account: { login: string; id: number | null; type: string };
+  repository_selection: string | null;
+  suspended: boolean;
+  permissions: Record<string, string>;
+  html_url: string;
+  status: 'allowed' | 'awaiting_approval' | 'permission_update' | 'suspended' | 'not_installed';
+  allowed: boolean;
+  repo_count?: number;
+  error?: string;
+}
+export interface Installations {
+  installations: Installation[];
+  install_url: string;
+  settings_url: string;
+  advanced_url: string;
+  requested_permissions: Record<string, string>;
+}
