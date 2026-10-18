@@ -1672,3 +1672,6 @@ mod regressions;
 
 #[path = "live_regressions.rs"]
 mod live_regressions;
+
+#[path = "backoff_tests.rs"]
+mod backoff_tests;

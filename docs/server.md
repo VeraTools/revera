@@ -167,7 +167,9 @@ environment for probes, `${VAR}` expansion and child jobs. Deleting that value
 falls back to the environment, or reports the key as missing. GitHub token names
 are reserved and cannot be used for model keys.
 
-Config or referenced-key changes clear cached probe results: run **Test** again. Setup
+Config or referenced-key changes clear cached probe results. The server tests
+roles without a current result at startup and on every reconciliation tick;
+you can also run **Test** immediately. Setup
 stays at configuration until the required model checks pass and active retrieval
 keys are present. Probe results and installation presence survive restarts, so
 completed setup stays complete without waiting for the first inventory. Health is
@@ -196,6 +198,10 @@ review, even if the patch is unchanged.
 Failed jobs show the final error line from the redacted log, or their exit status
 when no error line is available. A failed index keeps its previous push checkpoint
 so reconciliation can retry it.
+After consecutive failed or partial indexes, automatic retries wait 10 minutes,
+then 20, 40, and so on, capped at 24 hours after the latest failure finished.
+A complete index resets the count. Push webhooks and manual **Index now** requests
+bypass this wait. `GET /api/repos` includes `index.retry_at` while a retry is waiting.
 
 Reconciliation runs at startup and every ten minutes by default to recover
 missed events. The first sighting records existing PR heads without reviewing

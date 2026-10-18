@@ -515,6 +515,12 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 if let Some(updated) = updated {
                     index["updated_at"] = json!(updated);
                 }
+                if let Some(retry_at) = dashboard
+                    .index_retry_at(&info.repo.full_name)
+                    .filter(|at| *at > chrono::Utc::now())
+                {
+                    index["retry_at"] = json!(retry_at.to_rfc3339());
+                }
                 let mut value = json!({"full_name": info.repo.full_name, "private": info.private,
             "default_branch": info.repo.default_branch,
             "enabled": dashboard.preferences.enabled(&info.repo.full_name),
@@ -839,7 +845,7 @@ pub(super) async fn test_untested(server: &Server) {
         }
         let role = Role { role: role.into() };
         if let Err(Error(_, error)) = run_test(server, role).await {
-            tracing::warn!("startup model test: {error}");
+            tracing::warn!("automatic model test: {error}");
         }
     }
 }

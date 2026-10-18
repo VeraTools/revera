@@ -186,16 +186,21 @@ pub(super) async fn once(server: &Server) -> Result<()> {
                 )
                 .await?;
             let mut seen = server.seen.lock().await;
-            let (preferences, retry, retry_index) = {
+            let (preferences, retry, retry_at) = {
                 let dashboard = server.dashboard.lock().await;
                 (
                     dashboard.preferences.clone(),
                     dashboard.unconfigured_reviews(&repo.full_name),
-                    dashboard.retry_index(&repo.full_name),
+                    dashboard.index_retry_at(&repo.full_name),
                 )
             };
-            let jobs =
-                seen.observe_with_preferences(&repo, &prs, &preferences, &retry, retry_index);
+            let jobs = seen.observe_with_preferences(
+                &repo,
+                &prs,
+                &preferences,
+                &retry,
+                retry_at.is_some(),
+            );
             save(server, &seen).await?;
             drop(seen);
             let workspace = server.settings.data_dir.join("repos").join(&repo.full_name);
@@ -234,6 +239,13 @@ pub(super) async fn once(server: &Server) -> Result<()> {
                 .repos
                 .insert(repo.full_name.clone(), info);
             for job in jobs {
+                // Both an unadvanced push checkpoint and a failed legacy job can
+                // request an index. Neither may bypass reconcile retry backoff.
+                if matches!(job.kind, Kind::Index)
+                    && retry_at.is_some_and(|at| at > chrono::Utc::now())
+                {
+                    continue;
+                }
                 if !server.queue.lock().await.contains(job.key()) {
                     server.enqueue(job).await;
                 }
@@ -257,12 +269,17 @@ pub(super) async fn once(server: &Server) -> Result<()> {
     Ok(())
 }
 
+pub(super) async fn tick(server: &Server) -> Result<()> {
+    super::api::test_untested(server).await;
+    once(server).await
+}
+
 pub async fn loop_forever(server: Arc<Server>) {
     let mut interval =
         tokio::time::interval(Duration::from_secs(server.settings.reconcile_minutes * 60));
     loop {
         interval.tick().await;
-        if let Err(e) = once(&server).await {
+        if let Err(e) = tick(&server).await {
             server.dashboard.lock().await.github = serde_json::json!({
                 "ok": false, "error": crate::redact::diagnostic(&format!("{e:#}"))
             });
