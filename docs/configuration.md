@@ -9,8 +9,9 @@ referenced variables are configuration errors.
 Installed App reviews use the repository's base-commit `revera.yaml` when
 present, otherwise the server default; they do not merge the two. External
 public PR reviews always use the server file and disable repository guidance.
-Owner approvals and [external review limits](server.md#external-settings-api)
-are server preferences in `settings.json`, not YAML review settings.
+Owner approvals, [external review limits](server.md#external-settings-api) and
+[fix execution policy](server.md#fix-settings-and-limits) are server preferences
+in `settings.json`, not YAML review settings.
 
 Setup guides: [GitHub App](server.md), [Action](action.md), [local CLI](cli.md).
 
@@ -36,6 +37,8 @@ what a run would need.
 |---|---|---|
 | `investigator` | required | route that reads the diff and proposes candidates |
 | `validator` | inherits `investigator` | route that re-derives each candidate in a fresh context |
+| `fixer` | inherits `investigator` | App fixes only: generates edits in a sandbox |
+| `fix_verifier` | inherits effective `validator` | App fixes only: independently checks the patched code, read-only |
 | `lead` | `investigator` | `delegated` only: plans questions and synthesises worker reports |
 | `workers` | `[investigator]` | `delegated` only: list of routes answering the lead's questions |
 | `scouts` | — | `panel` only: list of named routes (`name` plus route fields) |
@@ -44,6 +47,15 @@ Omitting `validator` does not skip validation: the investigator's route is
 called again with an empty conversation for every candidate. Set an
 explicit validator to use a different model (a stronger one, or one from a
 different provider family).
+
+Fixes use the **server's** model configuration, never repository YAML.
+`fix_verifier` inherits `validator`, or `investigator` when neither is set;
+it does not inherit `fixer`. Inheritance includes the route's fallbacks;
+an explicit route uses only its own. Both accept the same route fields below
+and require HTTP protocols for sandbox execution. Configure them in
+**Settings → Fixes → Fix model routes** or under `models` in the server YAML.
+Naming a route does not enable execution or authorize publication; see
+[Fixes (opt-in)](server.md#fixes-opt-in).
 
 ### Route fields
 

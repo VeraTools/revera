@@ -316,7 +316,192 @@ targets are protected from pruning. Reports and logs use the normal
 directory as private. See the [external settings API](#external-settings-api)
 to change limits not exposed as dashboard controls.
 
-## Fixes — phase 2 placeholder
+## Fixes (opt-in)
+
+Fixes are separate from reviews and coding-agent instructions:
+
+- **Offer** shows a summary link and Checks action. It is on by default, but
+  does not start model work or grant write permission.
+- **Execution** permits generation persistently. It is **off by default**;
+  the default trigger is **Manual only**, not automatic repair.
+- **One-time consent** lets an administrator generate one request while
+  execution stays off. It does not enable future requests or approve publication.
+
+No fix commits, branches or draft PRs are written to GitHub until an
+administrator clicks **Approve & publish** in the dashboard. Confirmation
+only starts generation; disabling the advanced approval preference does not
+bypass publication approval. GitHub replies, reactions and the fix-status
+line can update before approval; they are not code writes.
+
+### Request a fix
+
+Start from a **complete** review with accepted findings and an unchanged,
+open PR. Use **Fix with Revera** in the GitHub summary, the **Revera** check's
+**Fix with Revera** button, or the same button on the dashboard review.
+You can also post a new PR conversation comment, using your App's slug:
+
+```text
+@<app-slug> fix
+@<app-slug> fix all
+@<app-slug> fix <id>
+@<app-slug> fix status
+@<app-slug> fix cancel
+```
+
+`fix` and `fix all` select all accepted findings from the latest complete
+installed review. Use a finding's displayed ID, or a unique hexadecimal prefix
+of at least six characters, to select one. `fix status` reports the latest
+request; `fix cancel` stops it before publication, not an already published change.
+
+For mentions and Checks, Revera asks GitHub for the requester's **current
+repository role**: maintainers and repository admins by default, optionally
+writers. Association labels such as MEMBER are not authorization. If **Allow
+PR authors to request previews** is enabled, an otherwise unauthorized PR
+author can request a private, patch-only preview, never publication. Dashboard
+requests and all confirmation, preview access and approval require a Revera
+administrator; a repository role does not grant dashboard access.
+
+In the dashboard, select findings and click **Generate preview** (or
+**Generate preview (this run only)**). A mention or Checks request normally
+waits for dashboard confirmation. With execution off, select **Allow generation
+for this run only**, then **Confirm preview**. In Settings, persistent execution
+can instead allow manual requests without confirmation, trusted requesters to
+skip it, or **After accepted review** generation. Automatic generation still
+cannot publish code and follow-up reviews never start another automatic fix.
+
+### Generation and preview
+
+1. Revera checks the live PR head against the reviewed commit and builds a
+   disposable snapshot. A changed head needs a new review; a closed PR cannot
+   be fixed.
+2. A fixer edits that snapshot in a Linux bubblewrap sandbox. It receives
+   only its selected model credentials, not a GitHub token, the server data
+   directory or checkout's Git metadata. Network is available for model calls;
+   this is **not an outbound-network firewall**. The agent has file tools,
+   not a shell or a tool for running repository programs.
+3. Rust computes and checks the actual patch, rather than trusting the
+   fixer's summary. It rejects unsafe paths, sensitive files or detected
+   credentials, binary files, symlink/submodule changes, `.gitmodules`, newly
+   executable files, files over 1 MiB and more than three deleted files. File and
+   patch-size limits also apply. CI/workflow changes are blocked by default;
+   warnings such as conflict markers remain visible for human review.
+4. If configured, an administrator-approved test command runs on a separate,
+   disposable copy, without network or credentials. A fresh-context, read-only
+   verifier then checks each selected finding against the patched code and
+   reports resolved, unresolved or uncertain findings and new problems.
+
+A preview becomes **ready** only when the verifier resolves at least one
+selected finding, reports no new problems, and configured tests pass. An empty
+test command is recorded as not configured, **not** as a test pass. Ready does
+not mean every finding is fixed. Failed validation can retry with feedback
+within the attempt and request budgets. Open **Fixes** to inspect the diff,
+per-finding verdicts, tests, usage and audit log; regenerate with optional
+guidance while attempts remain, or discard the preview.
+
+### Delivery and follow-up
+
+| Delivery | Availability and effect |
+|---|---|
+| **Patch preview** (default) | Download the patch or agent instructions; Revera makes no code write. |
+| **Draft pull request** | Installed, same-repository PR branch and **Contents: write**. Creates a new fix branch and a draft PR targeting the original PR branch, not its base branch. |
+| **Commit to PR branch** | The same requirements, plus **Allow commits to the PR branch** in server settings. Adds a fast-forward commit to the existing PR branch. |
+
+Contributor-fork PRs are patch-only: Revera neither pushes to the fork nor
+opens a draft fix PR for it. External reviews also stay patch-only and need
+**Allow external fix previews** enabled first, even for one-time generation.
+PR-author-only previews cannot be published. Allowed GitHub workflow changes
+additionally need **Workflows: write** accepted by the installation, as well
+as **Allow workflow changes** in Revera. Update permissions through
+[Change an existing GitHub App](#change-an-existing-github-app).
+
+Choose an available destination and click **Approve & publish**. The server
+rechecks the open PR and exact head, owner/installation access, live permission
+grants, current delivery and patch policy, tests and independent verification.
+It checks again before changing a branch. Revera never force-pushes or
+overwrites an existing fix branch. GitHub branch protection and API errors
+can still prevent delivery; after an interrupted or failed publication,
+check GitHub before retrying.
+
+**Re-review published fixes** is on by default. The follow-up reviews the
+published commit and lists original finding IDs as resolved or still open,
+plus new findings. Same-branch resolution uses review state, not mere absence
+from the new diff. For a draft fix PR, an absent finding counts as resolved
+only when the pre-publication independent verifier also resolved it. An
+incomplete follow-up stays **published**, with an explanation, not an assertion
+that the fix worked. **Verified** means the comparison completed, not that all
+findings resolved. Inspect those counts and evidence before merging.
+
+For installed reviews, Revera updates a **Fix: state · Dashboard** line in
+its existing GitHub summary at confirmation, preview, publication and outcome
+milestones. It links to the private dashboard; it is not proof of resolution.
+External reviews do not write that line or any other GitHub comment.
+
+### Fix settings and limits
+
+Open **Settings → Fixes** for offers, execution, confirmation, requester roles,
+delivery, tests, [model routes](configuration.md#models) and limits, then save.
+In **Repositories**, open a row's menu → **Fix settings** to override execution,
+trigger or preferred delivery. **Inherit** uses the global default. An explicit
+repository execution value **replaces** the global one: Enabled can enable that
+repository while the global default is off; Disabled still permits explicit
+one-time consent. Repository overrides cannot raise server limits or enable
+same-branch writes against the server's safety cap. Repository YAML cannot
+enable fixes or change their policy, tests or limits.
+
+| Limit | Default | Allowed range |
+|---|---|---|
+| Attempts | 2 | 1–10 |
+| Tool calls per agent | 40 | 1–1000 |
+| Runtime budget (seconds) | 300 | 1–3600 |
+| Model requests, shared across attempts and regeneration | 50 | 2–1000 |
+| Changed files | 20 | 1–100 |
+| Patch size (KiB; labelled KB in the dashboard) | 200 | 1–512 |
+| Concurrent fixes | 1 | 1–16 |
+| Requests per user per rolling hour | 3 | 1–1000 |
+| Requests per repository per rolling day | 20 | 1–10000 |
+| Test timeout (seconds, also bounded by remaining runtime) | 300 | 1–3600 |
+
+Attempt, model-request, runtime, tool-call, file and patch ceilings use the
+tighter of admitted and current limits; raising them does not expand an
+existing request. The newest 200 fix records are
+retained, with queued/running generation, publication and follow-up work
+protected. Older ready previews and pending confirmations can be pruned;
+there is no age-based retention setting. Records, patches and redacted logs
+live under `<data_dir>/fixes/<id>/`; temporary workspaces are removed after
+generation and on restart. Rate-limit records live in `fix-admissions.json`.
+Back up and protect these files with the rest of the data directory.
+
+### Sandbox runtime and test tools
+
+Fix execution needs Linux, `/usr/bin/bwrap` (bubblewrap) and `/usr/bin/prlimit`
+(util-linux). The official image includes both. The host and container runtime
+must let the service create user namespaces and the sandbox's other isolation
+namespaces. A `/proc` mount is optional: the probe retries without it. Revera
+refuses generation if isolation is unavailable; it never runs unsandboxed.
+
+Before enabling fixes in any Docker, Podman or Quadlet deployment, open
+**Settings → Fixes → Sandbox, tests and resource limits**. Check for **Sandbox
+available**; **Sandbox unavailable** includes the probe's reason. Runtime and
+host security policies differ, so the container examples below are not a
+guarantee of fix support. To run the same probe in the running container:
+
+```sh
+podman exec revera /usr/local/bin/revera fix probe
+```
+
+Use `docker exec` for Docker, or `sudo podman exec` for rootful Quadlet.
+Read the JSON's `available` value, not just the exit code. `available: true`
+with `proc: false` is supported. Recheck after runtime/security-policy changes
+rather than adding broad container privileges to bypass a failure.
+
+The base image has **no language toolchains**. A configured command such as
+`cargo test --lib` needs its compiler, test runner and dependencies already
+available offline inside the service's sandbox-visible `/usr` tree and test
+workspace. Host tools or a user's home cache are not automatically exposed.
+Build a suitable service image if needed; tests cannot download dependencies.
+**Test command (argv)** runs an executable with space-separated arguments,
+not through a shell; quote arguments containing spaces. Leave it empty if
+tests cannot run, and treat the preview as untested.
 
 ## Review lifecycle
 
@@ -512,7 +697,7 @@ selects keyed REST. Store keys in the dashboard or server environment, never YAM
 ```text
 /data/revera.yaml             default review configuration
 /data/app.json                app credentials and OAuth client secret (0600)
-/data/settings.json           admins, owner approvals, repo and external preferences
+/data/settings.json           admins, owner approvals, repo, external and fix preferences
 /data/secrets.json            dashboard-managed environment values (0600)
 /data/health.json             redacted model probe results
 /data/inventory.json          last successful installation/repository inventory
@@ -525,6 +710,9 @@ selects keyed REST. Store keys in the dashboard or server environment, never YAM
 /data/cache/<owner>/<repo>/   repository-isolated Vera home and cache
 /data/external.json           tracked/ignored public PRs and rate-limit state
 /data/external/<repo-id>/     external pull-<number>/ workspaces, home and cache
+/data/fix-admissions.json     fix request rate-limit records
+/data/fix-checks.json         recent fix Checks action dedupe records
+/data/fixes/<id>/             fix/controller records, patch.diff, patch.json and log.txt
 /data/jobs/<id>/meta.json     status, timestamps, findings and token counts
 /data/jobs/<id>/report.json   redacted CLI report, when available
 /data/jobs/<id>/log.txt       redacted child output
@@ -562,15 +750,19 @@ Check the [trigger migration](#triggers-review-modes-and-mentions) and
 
 No change is required for an existing review-only installation. Keep the data
 volume: old jobs default to installed/GitHub publication, existing settings
-remain valid, private Apps keep working, and external tracking stays off.
+remain valid, private Apps keep working, and external tracking and fix
+execution stay off. Fix offers are visible by default but do not run anything.
 
 - To connect other owners, [make the registered App public and approve each
   owner](#connected-accounts-and-organizations). A setup manifest cannot update
   the existing registration. Add the `/repositories` Setup URL for the return flow.
 - No new Contents permission is needed for reviews, external reviews or agent
-  instructions. If you deliberately request additional permissions on GitHub,
-  each installation owner must accept them; **Permission update required**
-  shows a pending difference. Keep Contents read-only otherwise.
+  instructions. To publish approved fixes, [change the existing App to
+  **Contents: write**](#change-an-existing-github-app) and have each installation
+  owner accept it; **Permission update required** shows a pending difference.
+  Then verify the sandbox and choose consent/execution in
+  [Settings → Fixes](#fixes-opt-in). Permission alone does not enable fixes.
+  Patch-only previews need no Contents write; keep it read-only otherwise.
 - Review details now show accepted findings by default. Use **Show diagnostics**
   for rejected or uncertain candidates; they no longer look like confirmed defects.
 - Quick and Deep still use the budget-scaled behavior introduced in 0.7.0;

@@ -86,6 +86,15 @@ comments or checks.
    `budget.run_max_seconds`, with a reserve kept for validation and the
    final report. A budget breach yields `partial` with the reason in the
    summary, never a silently truncated "clean" review.
+5. [Opt-in App fixes](server.md#fixes-opt-in) have a separate boundary and
+   limits. A fixer can edit only a disposable head snapshot in a bubblewrap
+   sandbox; its fresh-context verifier is read-only. Both receive selected
+   model credentials and network access for model calls, never a GitHub token.
+   Only an administrator-approved test command executes repository code, in a
+   separate sandbox without network or credentials. Rust checks the patch;
+   a dashboard administrator must separately approve code publication, which
+   rechecks the PR head, policy and installation grants. Model output cannot
+   authorize a push.
 
 ## Outcomes
 
