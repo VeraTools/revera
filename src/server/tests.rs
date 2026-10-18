@@ -1986,7 +1986,7 @@ mod mention_tests;
 #[path = "dashboard_qol_tests.rs"]
 mod dashboard_qol_tests;
 
-#[path = "installation_tests.rs"]
-mod installation_tests;
 #[path = "handoff_tests.rs"]
 mod handoff_tests;
+#[path = "installation_tests.rs"]
+mod installation_tests;
