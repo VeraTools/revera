@@ -471,6 +471,488 @@ async fn external_rate_limits_back_off_and_persist() {
     }
 }
 
+fn tracked(number: u64) -> external::Tracked {
+    external::Tracked {
+        url: format!("https://github.com/community/project/pull/{number}"),
+        repo: "community/project".into(),
+        repo_id: 701,
+        number,
+        actor: "admin".into(),
+        title: "Public contribution".into(),
+        head_sha: String::new(),
+        mode: dashboard::Mode::Quick,
+        status: "tracking".into(),
+        reason: None,
+        etag: None,
+        next_poll: 0,
+    }
+}
+
+#[tokio::test]
+async fn external_hourly_and_tracking_caps_persist_and_retry_without_losing_heads() {
+    let mock = MockServer::start().await;
+    no_writes(&mock).await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, csrf) = administrator(&server).await;
+    metadata(&mock, public_repo(), public_pr(&"a".repeat(40))).await;
+    {
+        let mut dashboard = server.dashboard.lock().await;
+        dashboard.preferences.external.tracking_enabled = true;
+        dashboard.preferences.external.max_tracked = 1;
+        dashboard.preferences.external.reviews_per_hour = 1;
+    }
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::new();
+    let selection = tracked(7);
+    // A different tracked PR fills the cap. Rejection never enrolls the new PR.
+    let other = tracked(8);
+    server
+        .external
+        .lock()
+        .await
+        .tracked
+        .insert(other.url.clone(), other);
+    let request = || {
+        client
+            .post(format!("{url}/api/external/tracking"))
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"url": selection.url, "mode": "quick"}))
+    };
+    assert_eq!(request().send().await.unwrap().status(), 409);
+    assert!(
+        !server
+            .external
+            .lock()
+            .await
+            .tracked
+            .contains_key(&selection.url)
+    );
+    server.external.lock().await.tracked.clear();
+    assert_eq!(request().send().await.unwrap().status(), 200);
+    // A manual review consumes the shared external admission allowance.
+    external::submit(&server, &selection.url, dashboard::Mode::Quick, "manual")
+        .await
+        .unwrap();
+    let response = client
+        .post(format!("{url}/api/external/reviews"))
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .json(&json!({"url": selection.url}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 429);
+    assert!(
+        response.headers()["retry-after"]
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
+    external::poll(&server).await.unwrap();
+    let store = external::Store::load(data.path()).unwrap();
+    assert_eq!(store.admissions.len(), 1);
+    assert!(store.tracked[&selection.url].head_sha.is_empty());
+    assert!(store.tracked[&selection.url].etag.is_none());
+    assert!(
+        store.tracked[&selection.url]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("hourly limit")
+    );
+    assert_eq!(server.dashboard.lock().await.jobs.len(), 1);
+    // Expired admissions are removed; the initial head is still due for review.
+    {
+        let mut store = server.external.lock().await;
+        store.admissions[0] = chrono::Utc::now().timestamp() - 3601;
+        store.tracked.get_mut(&selection.url).unwrap().next_poll = 0;
+    }
+    external::poll(&server).await.unwrap();
+    let store = external::Store::load(data.path()).unwrap();
+    assert_eq!(store.admissions.len(), 1);
+    assert_eq!(store.tracked[&selection.url].head_sha, "a".repeat(40));
+    assert!(store.tracked[&selection.url].reason.is_none());
+    assert_eq!(server.dashboard.lock().await.jobs.len(), 2);
+    task.abort();
+}
+
+#[tokio::test]
+async fn external_tracking_new_head_then_deletion_or_visibility_loss_stops_and_cancels() {
+    for scenario in ["repo-deleted", "pr-deleted", "private", "merged"] {
+        let mock = MockServer::start().await;
+        no_writes(&mock).await;
+        let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        let item = tracked(7);
+        server
+            .dashboard
+            .lock()
+            .await
+            .preferences
+            .external
+            .tracking_enabled = true;
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .insert(item.url.clone(), item.clone());
+        metadata(&mock, public_repo(), public_pr(&"a".repeat(40))).await;
+        external::poll(&server).await.unwrap();
+        let first = server
+            .queue
+            .lock()
+            .await
+            .pending
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        mock.reset().await;
+        no_writes(&mock).await;
+        metadata(&mock, public_repo(), public_pr(&"c".repeat(40))).await;
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .get_mut(&item.url)
+            .unwrap()
+            .next_poll = 0;
+        external::poll(&server).await.unwrap();
+        let next = server
+            .queue
+            .lock()
+            .await
+            .pending
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert_ne!(first.id, next.id);
+        assert_eq!(next.head(), "c".repeat(40));
+        assert_eq!(
+            server.dashboard.lock().await.jobs[&first.id].status,
+            "cancelled"
+        );
+        assert_eq!(server.external.lock().await.admissions.len(), 2);
+        // A 200 response with the same head also must not enqueue a duplicate.
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .get_mut(&item.url)
+            .unwrap()
+            .next_poll = 0;
+        external::poll(&server).await.unwrap();
+        assert_eq!(server.external.lock().await.admissions.len(), 2);
+        let (_, cancel) = server.queue.lock().await.take().unwrap();
+        mock.reset().await;
+        no_writes(&mock).await;
+        match scenario {
+            "repo-deleted" => {
+                Mock::given(method("GET"))
+                    .respond_with(ResponseTemplate::new(404))
+                    .mount(&mock)
+                    .await;
+            }
+            "pr-deleted" => {
+                Mock::given(method("GET"))
+                    .and(path("/repos/community/project"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(public_repo()))
+                    .mount(&mock)
+                    .await;
+                Mock::given(method("GET"))
+                    .and(path("/repos/community/project/pulls/7"))
+                    .respond_with(ResponseTemplate::new(404))
+                    .mount(&mock)
+                    .await;
+            }
+            "private" => {
+                let mut repo = public_repo();
+                repo["private"] = json!(true);
+                metadata(&mock, repo, public_pr(&"c".repeat(40))).await;
+            }
+            "merged" => {
+                let mut pr = public_pr(&"c".repeat(40));
+                pr["merged"] = json!(true);
+                metadata(&mock, public_repo(), pr).await;
+            }
+            _ => unreachable!(),
+        }
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .get_mut(&item.url)
+            .unwrap()
+            .next_poll = 0;
+        external::poll(&server).await.unwrap();
+        assert!(*cancel.borrow(), "{scenario}");
+        let store = external::Store::load(data.path()).unwrap();
+        assert_eq!(store.tracked[&item.url].status, "stopped");
+        assert!(store.tracked[&item.url].reason.is_some());
+        assert_eq!(
+            server.dashboard.lock().await.jobs[&next.id].status,
+            "cancelled"
+        );
+        let before = mock.received_requests().await.unwrap().len();
+        external::poll(&server).await.unwrap();
+        assert_eq!(mock.received_requests().await.unwrap().len(), before);
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| !r.headers.contains_key("authorization"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn external_retention_bounds_idle_checkouts_but_preserves_active_and_tracked_targets() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .external
+        .max_checkouts = 2;
+    let now = chrono::Utc::now();
+    for (id, days) in [(1, 0), (2, 1), (3, 2), (4, 8), (5, 9), (6, 9), (7, 9)] {
+        crate::fsutil::ensure_dir(
+            data.path(),
+            &Path::new("external").join(id.to_string()).join("cache"),
+        )
+        .unwrap();
+        let mut review = job(&"a".repeat(40));
+        review.id = format!("retention-{id}");
+        review.repo.id = id;
+        review.repo.installation = None;
+        let mut summary = dashboard::JobSummary::queued(&review);
+        summary.queued_at = (now - chrono::Duration::days(days)).to_rfc3339();
+        summary.set_state("complete", None);
+        server.update_job(summary).await.unwrap();
+        if id == 5 || id == 6 {
+            server.queue.lock().await.enqueue(review);
+        }
+    }
+    let _ = server.queue.lock().await.take().unwrap(); // protect both pending and running
+    let mut item = tracked(7);
+    item.repo_id = 7;
+    server
+        .external
+        .lock()
+        .await
+        .tracked
+        .insert(item.url.clone(), item);
+    let installed =
+        crate::fsutil::ensure_dir(data.path(), Path::new("repos/community/project")).unwrap();
+    // Both count and age eviction run without tracking enabled and without API reads.
+    external::poll(&server).await.unwrap();
+    for id in [1, 2, 5, 6, 7] {
+        assert!(data.path().join(format!("external/{id}")).is_dir(), "{id}");
+    }
+    for id in [3, 4] {
+        assert!(!data.path().join(format!("external/{id}")).exists(), "{id}");
+    }
+    assert!(installed.is_dir());
+    assert_eq!(
+        server.dashboard.lock().await.jobs.len(),
+        7,
+        "checkout pruning retains reports"
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    // Even when the count allows it, an expired, no-longer-active target is removed.
+    server.queue.lock().await.running.clear();
+    server.queue.lock().await.pending.clear();
+    server.external.lock().await.tracked.clear();
+    server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .external
+        .max_checkouts = 50;
+    external::poll(&server).await.unwrap();
+    for id in [5, 6, 7] {
+        assert!(!data.path().join(format!("external/{id}")).exists());
+    }
+}
+
+fn local_git(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(dir)
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[tokio::test]
+async fn external_runner_full_path_uses_operator_config_exact_checkout_and_private_child() {
+    let mock = MockServer::start().await;
+    for verb in ["GET", "POST", "PATCH", "PUT", "DELETE"] {
+        Mock::given(method(verb))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock)
+            .await;
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let script = scratch.path().join("child.py");
+    std::fs::write(&script, r#"import json, os, pathlib, subprocess, sys
+args = sys.argv[1:]
+assert args[0] == 'review'
+get = lambda flag: args[args.index(flag) + 1]
+assert '--private' in args and '--force' in args
+assert get('--publish') == 'dry-run' and get('--profile') == 'quick'
+cwd = pathlib.Path.cwd()
+assert cwd == pathlib.Path(get('--repo')) and cwd.parts[-3:] == ('external', '701', 'pull-7')
+assert pathlib.Path(get('--config')).is_file() and not pathlib.Path(get('--config')).is_relative_to(cwd)
+assert os.environ['REVIEW_API_KEY'] == 'intended-model-key'
+assert os.environ['HOME'] == str(cwd.parent / 'home')
+assert os.environ['XDG_CACHE_HOME'] == str(cwd.parent / 'cache')
+assert os.environ['REVERA_VERA_HOME'] == str(cwd.parent / 'cache/vera-home')
+assert not any(key in os.environ for key in ['GITHUB_TOKEN', 'GH_TOKEN', 'UNREFERENCED_SECRET', 'REVERA_SETUP_TOKEN', 'SSH_AUTH_SOCK'])
+assert not any('AUTHORIZATION' in value for value in os.environ.values())
+event = json.loads(pathlib.Path(get('--event')).read_text())
+pr = event['pull_request']
+assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == pr['head']['sha']
+assert subprocess.check_output(['git', 'cat-file', '-t', pr['base']['sha']], text=True).strip() == 'commit'
+assert (cwd / 'file.txt').read_text() == 'pinned fork head\n'
+pathlib.Path(get('--out')).write_text(json.dumps({'source': 'external', 'status': 'complete', 'publication': {'mode': 'private'}, 'findings': []}))
+"#).unwrap();
+    let runner = runner::Runner {
+        executable: "/usr/bin/python3".into(),
+        prefix: vec![script.display().to_string()],
+    };
+    let (data, server) = server(&mock, runner, true).await;
+    {
+        let mut dashboard = server.dashboard.lock().await;
+        dashboard
+            .secrets
+            .insert("REVIEW_API_KEY".into(), "intended-model-key".into());
+        dashboard
+            .secrets
+            .insert("UNREFERENCED_SECRET".into(), "not-for-child".into());
+        dashboard
+            .secrets
+            .insert("GITHUB_TOKEN".into(), "never-for-child".into());
+        dashboard
+            .secrets
+            .insert("REVERA_SETUP_TOKEN".into(), "never-for-child".into());
+    }
+    let source = crate::fsutil::ensure_dir(scratch.path(), Path::new("source")).unwrap();
+    local_git(&source, &["init", "-q"]);
+    std::fs::write(source.join("file.txt"), "base\n").unwrap();
+    std::fs::write(source.join("revera.yaml"), "invalid repo config: [\n").unwrap();
+    local_git(&source, &["add", "."]);
+    local_git(&source, &["commit", "-qm", "base"]);
+    let base = local_git(&source, &["rev-parse", "HEAD"]);
+    std::fs::write(source.join("file.txt"), "pinned fork head\n").unwrap();
+    local_git(&source, &["commit", "-qam", "head"]);
+    let head = local_git(&source, &["rev-parse", "HEAD"]);
+    std::fs::write(source.join("file.txt"), "newer fork head\n").unwrap();
+    local_git(&source, &["commit", "-qam", "force push"]);
+    let newer = local_git(&source, &["rev-parse", "HEAD"]);
+    let bare = scratch.path().join("remote.git");
+    local_git(
+        scratch.path(),
+        &[
+            "clone",
+            "--bare",
+            source.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    local_git(&bare, &["update-ref", "refs/pull/7/head", &newer]);
+    let ws = crate::fsutil::ensure_dir(data.path(), Path::new("external/701/pull-7")).unwrap();
+    local_git(&ws, &["init", "-q"]);
+    local_git(
+        &ws,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/community/project.git",
+        ],
+    );
+    // Trusted fixture transport only: the production URL and anonymous environment
+    // are unchanged, while this local git config rewrites HTTPS to the bare fixture.
+    local_git(
+        &ws,
+        &[
+            "config",
+            &format!("url.file://{}.insteadOf", bare.display()),
+            "https://github.com/community/project.git",
+        ],
+    );
+    local_git(&ws, &["config", "protocol.file.allow", "always"]);
+    let hook = ws.join(".git/hooks/post-checkout");
+    std::fs::write(&hook, "#!/bin/sh\ntouch hook-executed\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut pr = public_pr(&head);
+    pr["base"]["sha"] = json!(base);
+    let mut review = events::Job::new(
+        events::Repo::parse(&public_repo(), None).unwrap(),
+        events::Kind::Review {
+            number: 7,
+            pr,
+            force: true,
+        },
+        "manual",
+    );
+    review.mode = dashboard::Mode::Quick;
+    server.enqueue(review.clone()).await;
+    let (running, cancel) = server.queue.lock().await.take().unwrap();
+    runner::run(server.clone(), &running, cancel).await;
+    let summary = server.dashboard.lock().await.jobs[&review.id].clone();
+    assert_eq!(
+        summary.status,
+        "complete",
+        "{:?}: {}",
+        summary.reason,
+        std::fs::read_to_string(data.path().join(format!("jobs/{}/log.txt", review.id))).unwrap()
+    );
+    assert_eq!(summary.source, events::Source::External);
+    assert_eq!(summary.publication, events::Publication::Private);
+    assert!(summary.check.is_none() && summary.check_run_url.is_none());
+    assert!(!ws.join("hook-executed").exists());
+    assert!(server.queue.lock().await.running.is_empty());
+    assert!(server.seen.lock().await.0.is_empty());
+    assert!(
+        !data
+            .path()
+            .join(format!("jobs/{}/event.json", review.id))
+            .exists()
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[test]
 fn external_legacy_jobs_repo_check_recovery_and_seen_load() {
     let mut summary = serde_json::to_value(dashboard::JobSummary::queued(&job("legacy"))).unwrap();

@@ -833,7 +833,7 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
             dirs.push((id, recent.get(&id).copied()));
         }
     }
-    dirs.sort_by(|a, b| b.1.cmp(&a.1));
+    dirs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (index, (id, at)) in dirs.into_iter().enumerate() {
         if !keep.contains(&id) && (index >= policy.max_checkouts || at.is_none_or(|at| at < cutoff))
         {

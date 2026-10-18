@@ -647,7 +647,22 @@ fn old_settings_migrate_to_mentions_and_explicit_off_without_legacy_output_field
         assert_eq!(dashboard.preferences.repos["owner/inherit"].trigger, None);
         assert_eq!(dashboard.preferences.trigger("owner/inherit"), expected);
         let saved = std::fs::read_to_string(data.path().join("settings.json")).unwrap();
-        assert!(!saved.contains("enabled"));
+        // Compare the entire persisted schema: legacy fields must be absent,
+        // while the unrelated external.tracking_enabled key is legitimate.
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).unwrap(),
+            json!({
+                "admins": [], "allowed_owners": [], "default_trigger": expected,
+                "default_mode": "standard", "review_drafts": false,
+                "skip_authors": ["dependabot[bot]", "renovate[bot]"],
+                "repos": {"owner/off": {"trigger": "off", "mode": null},
+                    "owner/inherit": {"trigger": null, "mode": null}},
+                "external": {"tracking_enabled": false, "poll_minutes": 60,
+                    "max_tracked": 25, "max_repo_size_kb": 1048576,
+                    "reviews_per_hour": 20, "concurrency": 1,
+                    "retention_days": 7, "max_checkouts": 50}
+            })
+        );
     }
     let fresh = tempfile::tempdir().unwrap();
     crate::fsutil::ensure_dir(fresh.path(), Path::new("jobs")).unwrap();
