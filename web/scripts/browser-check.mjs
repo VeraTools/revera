@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { checkFixes, fixScreenshots } from './browser-fixes.mjs';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
@@ -595,6 +596,15 @@ async function checkAgentHandoff() {
   ]) {
     const { context, page } = await open(`/reviews/${id}`);
     if (status === 'skipped') {
+      // The review may load before the authenticated layout subscribes to SSE.
+      // Wait for that subscription before sending an event-only fixture update.
+      await page.waitForFunction(async () => {
+        const { live } = await window.importDashboard('/src/lib/events.ts');
+        let connected = false;
+        const stop = live.subscribe((state) => (connected = state.connected));
+        stop();
+        return connected;
+      });
       await page.evaluate(async () => {
         const { setMockReviewStatus } = await window.importDashboard('/src/lib/mock.ts');
         setMockReviewStatus('review-101', 'skipped');
@@ -1179,6 +1189,10 @@ async function checkManifestChoices() {
 
 try {
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkExternalReviews();
+  if (!emptyYaml && !process.argv.includes('--screenshots-only'))
+    await checkFixes({ open, choose, edit, savedConfig });
+  if (!emptyYaml && !process.argv.includes('--checks-only'))
+    await fixScreenshots({ open, choose, output });
   if (!process.argv.includes('--screenshots-only')) {
     await checkConnectedAccounts();
     await checkManifestChoices();

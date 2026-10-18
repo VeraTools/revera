@@ -1,8 +1,13 @@
 import { writable } from 'svelte/store';
 import { mockMode } from './api';
-import type { JobSummary } from './types';
+import type { JobSummary, FixSummary } from './types';
 
-export const live = writable<{ job?: JobSummary; repos: number; connected: boolean }>({
+export const live = writable<{
+  job?: JobSummary;
+  fix?: FixSummary;
+  repos: number;
+  connected: boolean;
+}>({
   repos: 0,
   connected: false,
 });
@@ -14,10 +19,11 @@ export function connectEvents() {
     void import('./mock').then(({ subscribeMock }) => {
       if (closed) return;
       live.update((state) => ({ ...state, connected: true }));
-      clean = subscribeMock((event, job) =>
+      clean = subscribeMock((event, payload) =>
         live.update((state) => ({
           ...state,
-          job: event === 'job' ? job : state.job,
+          job: event === 'job' ? (payload as JobSummary) : state.job,
+          fix: event === 'fix' ? (payload as FixSummary) : state.fix,
           repos: state.repos + (event === 'repos' ? 1 : 0),
         })),
       );
@@ -42,5 +48,13 @@ export function connectEvents() {
   source.addEventListener('repos', () =>
     live.update((state) => ({ ...state, repos: state.repos + 1 })),
   );
+  source.addEventListener('fix', (event) => {
+    try {
+      const fix = JSON.parse((event as MessageEvent).data) as FixSummary;
+      live.update((state) => ({ ...state, fix }));
+    } catch {
+      /* The next fetch remains authoritative. */
+    }
+  });
   return () => source.close();
 }

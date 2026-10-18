@@ -28,6 +28,8 @@
   import ReviewModeField from '#lib/components/ReviewModeField.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
+  import RepoFixSettings from '#lib/components/RepoFixSettings.svelte';
+  let fixRepo = $state('');
   let repos = $state<Repository[]>([]);
   let search = $state('');
   let triggerFilter = $state('');
@@ -548,6 +550,9 @@
                       onSelect={() =>
                         void goto(`/reviews?repo=${encodeURIComponent(repo.full_name)}`)}
                       ><ArrowUpRight size={14} />View reviews</DropdownMenu.Item
+                    ><DropdownMenu.Item
+                      class="menu-item"
+                      onSelect={() => (fixRepo = repo.full_name)}>Fix settings</DropdownMenu.Item
                     ></DropdownMenu.Content
                   ></DropdownMenu.Portal
                 ></DropdownMenu.Root
@@ -636,6 +641,11 @@
     ></Dialog.Portal
   ></Dialog.Root
 >
+
+{#if fixRepo}{#key fixRepo}<RepoFixSettings
+      repo={fixRepo}
+      onclose={() => (fixRepo = '')}
+    />{/key}{/if}
 
 <style>
   .connected-accounts {

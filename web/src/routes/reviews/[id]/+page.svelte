@@ -12,6 +12,7 @@
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
   import ExternalBadge from '#lib/components/ExternalBadge.svelte';
+  import ReviewFixes from '#lib/components/ReviewFixes.svelte';
   let detail = $state<JobDetail>();
   let log = $state('');
   const notice = createNotices();
@@ -465,6 +466,7 @@
             onclick={() => void action('rerun')}>Re-run review<RotateCcw size={14} /></button
           >{/if}
       </div>
+      <ReviewFixes job={detail.job} accepted={detail.findings.length} />
     </aside>
   </div>
 {:else if !notice.state.error}<div class="loading" role="status">Loading review…</div>{/if}
