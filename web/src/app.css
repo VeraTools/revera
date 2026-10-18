@@ -528,6 +528,7 @@ code,
   background: var(--muted);
 }
 .table-scroll {
+  position: relative;
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -671,7 +672,7 @@ textarea::placeholder {
   border-radius: 6px;
   padding: 4px;
   box-shadow: 0 8px 24px #00000014;
-  z-index: 100;
+  z-index: 102;
   outline: none;
 }
 .select-viewport {

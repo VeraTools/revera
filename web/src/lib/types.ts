@@ -1,4 +1,6 @@
 export type Role = 'investigator' | 'validator' | 'embedding';
+export type Trigger = 'mention' | 'auto' | 'off';
+export type ReviewMode = 'quick' | 'standard' | 'deep';
 export type JobStatus =
   'queued' | 'running' | 'complete' | 'partial' | 'failed' | 'cancelled' | 'skipped';
 export type SetupStage = 'create_app' | 'sign_in' | 'install' | 'configure' | 'done';
@@ -16,7 +18,8 @@ export interface JobSummary {
   title?: string;
   author?: string;
   head_sha?: string;
-  trigger: 'webhook' | 'reconcile' | 'rerun' | 'manual';
+  trigger: 'mention' | 'auto' | 'manual' | 'rerun' | 'webhook' | 'reconcile';
+  mode: ReviewMode;
   status: JobStatus;
   reason?: string;
   findings: { total: number; high: number; medium: number; low: number };
@@ -41,10 +44,22 @@ export interface JobDetail {
   summary_markdown?: string;
   findings: Finding[];
   timing?: Record<string, unknown>;
-  ledger?: unknown;
+  ledger?: {
+    fallback_events?: { role: string; from_model: string; to_model: string; reason: string }[];
+    unavailable_routes?: { role: string; model: string; reason: string }[];
+    [key: string]: unknown;
+  };
 }
 export interface Overview {
-  app: { name: string; slug: string; html_url: string; install_url: string; owner: string };
+  app: {
+    name: string;
+    slug: string;
+    html_url: string;
+    install_url: string;
+    owner: string;
+    issue_comment_subscribed: boolean | null;
+    settings_url: string;
+  };
   health: {
     github: { ok: boolean; error?: string };
     models: { role: string; model: string; ok?: boolean; checked_at?: string; error?: string }[];
@@ -58,7 +73,10 @@ export interface Repository {
   full_name: string;
   private: boolean;
   default_branch: string;
-  enabled: boolean;
+  trigger: Trigger;
+  mode: ReviewMode;
+  trigger_override: Trigger | null;
+  mode_override: ReviewMode | null;
   has_override: boolean;
   index: { state: 'none' | 'ready' | 'building'; updated_at?: string };
   last_job?: JobSummary;
@@ -76,8 +94,9 @@ export interface PullRequest {
 export interface ServerSettings {
   admins: string[];
   allowed_owners: string[];
-  default_enabled: boolean;
-  repos: Record<string, { enabled: boolean }>;
+  default_trigger: Trigger;
+  default_mode: ReviewMode;
+  repos: Record<string, { trigger?: Trigger | null; mode?: ReviewMode | null }>;
   review_drafts: boolean;
   skip_authors: string[];
 }

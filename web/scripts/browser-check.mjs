@@ -123,7 +123,388 @@ async function checkSetupLink() {
   }
 }
 
+async function choose(page, label, option) {
+  await page.getByLabel(label, { exact: true }).click();
+  await page.getByRole('option', { name: option, exact: true }).click();
+  await page.locator('.select-content').waitFor({ state: 'hidden' });
+}
+
+async function savedConfig(page) {
+  const yaml = await page.evaluate(async () => {
+    const path = '/src/lib/api.ts';
+    const { api } = await import(path);
+    return (await api.settings()).yaml;
+  });
+  const doc = parseDocument(yaml);
+  assert.deepEqual(doc.errors, [], 'Wizard saves valid YAML');
+  return doc;
+}
+
+async function testWizard(page) {
+  // Observe calls without replacing the mock's real save/test behavior.
+  await page.evaluate(async () => {
+    const path = '/src/lib/api.ts';
+    const { api } = await import(path);
+    if (!window.testedRoles) {
+      const test = api.test;
+      api.test = (role) => {
+        window.testedRoles.push(role);
+        return test(role);
+      };
+    }
+    window.testedRoles = [];
+  });
+  await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+  await page.getByRole('button', { name: 'Finish setup', exact: true }).waitFor();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('button')].some(
+      (button) => button.textContent === 'Finish setup' && !button.disabled,
+    ),
+  );
+  assert.deepEqual(await page.evaluate(() => window.testedRoles), [
+    'investigator',
+    'validator',
+    'embedding',
+  ]);
+  return savedConfig(page);
+}
+
+async function checkWizardReranker() {
+  {
+    const { context, page } = await open('/setup?stage=configure');
+    await page.getByRole('heading', { name: 'Connect your review models', exact: true }).waitFor();
+    if (emptyYaml) {
+      await edit(page, 'model-investigator-endpoint', investigator.base_url);
+      await edit(page, 'model-investigator-name', investigator.model);
+      await firstKey(page);
+    }
+    await page.locator('summary').filter({ hasText: 'Repository search' }).click();
+    const retrieval = page.getByLabel('Enable Vera retrieval', { exact: true });
+    if ((await retrieval.getAttribute('aria-checked')) === 'false') await retrieval.click();
+    await choose(page, 'Embedding backend', 'API endpoint');
+    const reranker = page.getByLabel('Enable reranker', { exact: true });
+    assert.equal(await reranker.getAttribute('aria-checked'), 'true', 'Reranker defaults on');
+    assert.equal(await page.locator('#model-reranker-name').inputValue(), '');
+    assert.equal(await page.locator('.reranker-fields input').count(), 1, 'Only a model is needed');
+    await edit(page, 'model-embedding-endpoint', 'https://api.example.com/v1');
+    await edit(page, 'model-embedding-name', 'embedding-model');
+    await edit(page, 'model-embedding-env', 'EMBEDDING_KEY');
+    const embeddingKey = page
+      .locator('.field')
+      .filter({ has: page.locator('#model-embedding-env') });
+    await embeddingKey.getByRole('button', { name: 'Set key', exact: true }).click();
+    await page.getByLabel('API key', { exact: true }).fill('fixture-embedding-key');
+    await page.getByRole('dialog').getByRole('button', { name: 'Set key', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    await edit(page, 'model-reranker-name', 'reranker-model');
+    await choose(page, 'Embedding backend', 'Local (on-device)');
+    assert.equal(await page.locator('.reranker-fields').count(), 0);
+    await choose(page, 'Embedding backend', 'API endpoint');
+    await retrieval.click();
+    await retrieval.click();
+    assert.equal(await reranker.getAttribute('aria-checked'), 'true');
+    assert.equal(await page.locator('#model-reranker-name').inputValue(), 'reranker-model');
+    const doc = await testWizard(page);
+    const expected = {
+      base_url: 'https://api.example.com/v1',
+      model: 'reranker-model',
+      api_key_env: 'EMBEDDING_KEY',
+    };
+    assert.deepEqual(doc.getIn(['vera', 'reranker']).toJSON(), expected);
+    assert.equal((await page.locator('body').innerText()).includes('fixture-embedding-key'), false);
+    await edit(page, 'model-reranker-name', 'changed-reranker');
+    assert.equal(await page.getByRole('button', { name: 'Finish setup' }).isEnabled(), false);
+    await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+    await page.getByRole('button', { name: 'Finish setup', exact: true }).click();
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
+    await page.getByRole('tab', { name: 'Retrieval', exact: true }).click();
+    assert.equal(await page.locator('#model-reranker-endpoint').inputValue(), expected.base_url);
+    assert.equal(await page.locator('#model-reranker-env').inputValue(), expected.api_key_env);
+    assert.equal(await page.locator('#model-reranker-name').inputValue(), 'changed-reranker');
+    await choose(page, 'Reranker format', 'Top-k format');
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    const settings = parseDocument(await page.getByLabel('Review configuration YAML').inputValue());
+    assert.deepEqual(settings.getIn(['vera', 'reranker']).toJSON(), {
+      ...expected,
+      model: 'changed-reranker',
+      protocol: 'voyage',
+    });
+    await context.close();
+  }
+
+  // Resume with an API embedding route, with and without an existing reranker.
+  for (const custom of [false, true]) {
+    const { context, page } = await open('/setup?stage=install');
+    await page.getByRole('button', { name: 'Install on repositories', exact: true }).waitFor();
+    const reranker = {
+      base_url: 'https://reranker.example.com/v1',
+      api_key_env: 'RERANKER_KEY',
+      model: 'saved-reranker',
+      protocol: 'generic',
+      top_k: 12,
+    };
+    const yaml = `# Keep this setup comment
+models:
+  investigator: ${JSON.stringify(investigator)}
+vera:
+  enabled: true
+  backend: api
+  embedding:
+    base_url: https://api.example.com/v1
+    api_key_env: EMBEDDING_KEY
+    model: embedding-model
+${custom ? `  reranker: ${JSON.stringify(reranker)}\n` : ''}`;
+    await page.evaluate(async (yaml) => {
+      const path = '/src/lib/api.ts';
+      const { api } = await import(path);
+      await api.saveConfig(yaml);
+    }, yaml);
+    await page.getByRole('button', { name: 'Install on repositories', exact: true }).click();
+    await page.locator('summary').filter({ hasText: 'Repository search' }).click();
+    const toggle = page.getByLabel('Enable reranker', { exact: true });
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    assert.equal(
+      await page.locator('#model-reranker-name').inputValue(),
+      custom ? reranker.model : '',
+    );
+    await edit(page, 'model-embedding-endpoint', 'https://embedding.example.com/v1');
+    await edit(page, 'model-embedding-env', 'UPDATED_EMBEDDING_KEY');
+    if (custom) {
+      const doc = await testWizard(page);
+      assert.deepEqual(doc.getIn(['vera', 'reranker']).toJSON(), reranker);
+      assert.ok(doc.toString().includes('# Keep this setup comment'));
+    } else {
+      await toggle.click();
+      await choose(page, 'Embedding backend', 'Local (on-device)');
+      await choose(page, 'Embedding backend', 'API endpoint');
+      await page.getByLabel('Enable Vera retrieval', { exact: true }).click();
+      await page.getByLabel('Enable Vera retrieval', { exact: true }).click();
+      assert.equal(await toggle.getAttribute('aria-checked'), 'false', 'Off choice survives');
+      assert.equal((await testWizard(page)).hasIn(['vera', 'reranker']), false);
+      await toggle.click();
+      await edit(page, 'model-reranker-name', 'new-reranker');
+      const doc = await testWizard(page);
+      assert.deepEqual(doc.getIn(['vera', 'reranker']).toJSON(), {
+        base_url: 'https://embedding.example.com/v1',
+        api_key_env: 'UPDATED_EMBEDDING_KEY',
+        model: 'new-reranker',
+      });
+    }
+    await context.close();
+  }
+}
+
+async function checkReviewSettings() {
+  const { context, page } = await open('/settings?tab=review');
+  await page.getByLabel('Default trigger', { exact: true }).waitFor();
+  await choose(page, 'Default trigger', 'Auto');
+  await choose(page, 'Default mode', 'Deep');
+  await page.getByText('Mention commands', { exact: true }).click();
+  await page.getByText('@revera-northstar review', { exact: true }).waitFor();
+  await page.getByText('@revera-northstar help', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByText('Settings saved.', { exact: true }).waitFor();
+  const settings = await page.evaluate(async () => {
+    const { api } = await import('/src/lib/api.ts');
+    return api.serverSettings();
+  });
+  assert.equal(settings.default_trigger, 'auto');
+  assert.equal(settings.default_mode, 'deep');
+  assert.equal('default_enabled' in settings, false);
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
+  assert.equal(
+    await page.getByLabel('Trigger for northstar/api', { exact: true }).innerText(),
+    'Default (Auto)',
+  );
+  assert.equal(
+    await page.getByLabel('Mode for northstar/api', { exact: true }).innerText(),
+    'Default (Deep)',
+  );
+  await choose(page, 'Trigger for northstar/api', 'Off');
+  await page.getByText('northstar/api: trigger saved.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Actions for northstar/api', exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole('menuitem', { name: 'Review a pull request' })
+      .getAttribute('data-disabled'),
+    '',
+  );
+  await page.keyboard.press('Escape');
+  await choose(page, 'Trigger for northstar/api', 'Default (Auto)');
+  await choose(page, 'Mode for northstar/api', 'Quick');
+  await page.getByText('northstar/api: mode saved.', { exact: true }).waitFor();
+  await choose(page, 'Mode for northstar/api', 'Default (Deep)');
+  await page.getByLabel('Search repositories', { exact: true }).fill('worker');
+  assert.equal(await page.locator('tbody tr').count(), 1);
+  await page.getByLabel('Search repositories', { exact: true }).fill('');
+  await choose(page, 'Filter by trigger', 'Off');
+  assert.equal(await page.locator('tbody tr').count(), 1);
+  await choose(page, 'Filter by trigger', 'All triggers');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    true,
+    'Repository controls and the scrollable table stay within the mobile page',
+  );
+  await context.close();
+}
+
+async function checkFallbacksAndWebSearch() {
+  const { context, page } = await open('/settings?tab=advanced');
+  const editor = page.getByLabel('Review configuration YAML');
+  await editor.waitFor();
+  await editor.fill(
+    `# Preserve route comments
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://api.example.com/v1
+    api_key_env: REVERA_MODEL_API_KEY
+    model: primary-model
+    fallback:
+      # Keep the first alternative
+      - protocol: openai-chat
+        base_url: https://backup.example.com/v1
+        api_key_env: REVERA_BACKUP_API_KEY
+        model: first-backup
+        extra_headers: {x-team: northstar}
+      - protocol: openai-chat
+        base_url: https://backup.example.com/v1
+        api_key_env: REVERA_BACKUP_API_KEY
+        model: second-backup
+web_search:
+  enabled: false
+  max_searches_per_review: 7 # Keep this limit
+`,
+  );
+  await page.getByRole('tab', { name: 'Models', exact: true }).click();
+  const card = page.locator('section[aria-label="investigator"]');
+  const validator = page.locator('section[aria-label="validator"]');
+  await card.getByText('Fallback models (2)', { exact: true }).click();
+  await validator.getByText('Fallback models (2)', { exact: true }).click();
+  assert.equal(await page.locator('#model-validator-fallback-0-name').inputValue(), 'first-backup');
+  await card.getByLabel('Move fallback 2 up', { exact: true }).click();
+  assert.equal(
+    await page.locator('#model-investigator-fallback-0-name').inputValue(),
+    'second-backup',
+  );
+  await validator.getByLabel('Remove fallback 2', { exact: true }).click();
+  await validator.getByLabel('Remove fallback 1', { exact: true }).click();
+  assert.equal(
+    await validator.locator('.fallback-route').count(),
+    0,
+    'Explicit validator has no inherited alternatives',
+  );
+  await card.getByRole('button', { name: 'Add fallback', exact: true }).click();
+  await edit(page, 'model-investigator-fallback-2-name', 'third-backup');
+  await card.getByLabel('Remove fallback 1', { exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByText('Settings saved.', { exact: true }).waitFor();
+  await page.evaluate(async () => {
+    const { api } = await import('/src/lib/api.ts');
+    const test = api.test;
+    window.fallbackCalls = [];
+    api.test = (role, fallback) => {
+      window.fallbackCalls.push({ role, fallback });
+      return test(role, fallback);
+    };
+  });
+  await card.getByLabel('Test investigator fallback 1', { exact: true }).click();
+  await card.getByText('342 ms', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.fallbackCalls), [
+    { role: 'investigator', fallback: 0 },
+  ]);
+  await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+  let doc = parseDocument(await editor.inputValue());
+  assert.deepEqual(
+    doc
+      .getIn(['models', 'investigator', 'fallback'])
+      .toJSON()
+      .map((route) => route.model),
+    ['first-backup', 'third-backup'],
+  );
+  assert.deepEqual(doc.getIn(['models', 'investigator', 'fallback', 0, 'extra_headers']).toJSON(), {
+    'x-team': 'northstar',
+  });
+  assert.ok(
+    (await editor.inputValue()).includes('# Keep the first alternative'),
+    'Comments survive moving and cloning routes',
+  );
+  assert.equal(doc.hasIn(['models', 'validator', 'fallback']), false);
+  await page.getByRole('tab', { name: 'Retrieval', exact: true }).click();
+  await page.getByLabel('Enable web search', { exact: true }).click();
+  assert.equal(await page.getByLabel('Use the free endpoint first', { exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Add key', exact: true }).click();
+  await page.getByLabel('API key', { exact: true }).fill('fixture-exa-key');
+  await page.getByRole('dialog').getByRole('button', { name: 'Set key', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await page.getByLabel('Use the free endpoint first', { exact: true }).click();
+  await page.getByLabel('Allow on private repositories', { exact: true }).click();
+  await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+  doc = parseDocument(await editor.inputValue());
+  assert.deepEqual(doc.getIn(['web_search']).toJSON(), {
+    enabled: true,
+    max_searches_per_review: 7,
+    api_key_env: 'EXA_API_KEY',
+    free_first: true,
+    allow_private: true,
+  });
+  assert.ok((await editor.inputValue()).includes('# Keep this limit'));
+  assert.equal((await page.locator('body').innerText()).includes('fixture-exa-key'), false);
+  await context.close();
+}
+
+async function checkMentionsAndReviewDetail() {
+  const { context, page } = await open('/');
+  const notice = page.getByRole('heading', {
+    name: 'Mentions need one change on your GitHub App',
+    exact: true,
+  });
+  await notice.waitFor();
+  assert.ok(
+    (
+      await page.getByRole('link', { name: 'Open GitHub App settings' }).getAttribute('href')
+    ).endsWith('/permissions'),
+  );
+  for (const subscribed of [true, null]) {
+    await page.evaluate(async (value) => {
+      const { api } = await import('/src/lib/api.ts');
+      const overview = await api.overview();
+      overview.app.issue_comment_subscribed = value;
+      api.overview = async () => overview;
+    }, subscribed);
+    await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+    await page.getByRole('link', { name: 'Overview', exact: true }).click();
+    await page.getByText('Everything is connected', { exact: true }).waitFor();
+    assert.equal(await notice.count(), 0);
+  }
+  await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+  await page
+    .getByRole('link', { name: 'Handle empty results in repository search', exact: true })
+    .click();
+  await page
+    .getByText(
+      'Investigator switched from model-name to backup-model: rate limit or server error.',
+      { exact: true },
+    )
+    .waitFor();
+  await page.getByText('Validator skipped retired-model: key not set.', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Review mode', { exact: true }).innerText(), 'Default (Deep)');
+  await choose(page, 'Review mode', 'Quick');
+  await page.getByRole('button', { name: 'Re-run review', exact: true }).click();
+  await page.getByText('A new review has been queued.', { exact: true }).waitFor();
+  const jobs = await page.evaluate(async () => {
+    const { api } = await import('/src/lib/api.ts');
+    return api.jobs();
+  });
+  assert.equal(jobs.jobs[0].mode, 'quick');
+  assert.equal(jobs.jobs[0].trigger, 'rerun');
+  await context.close();
+}
+
 try {
+  if (!process.argv.includes('--screenshots-only')) await checkWizardReranker();
+  if (!process.argv.includes('--screenshots-only')) await checkFallbacksAndWebSearch();
   if (!emptyYaml && !process.argv.includes('--checks-only')) {
     for (const scheme of ['light', 'dark']) {
       await shot(
@@ -158,6 +539,18 @@ try {
       );
       await shot('/repositories', `repositories-${scheme}.png`, scheme, 'Repositories');
       await shot('/settings', `settings-models-${scheme}.png`, scheme, 'Review models');
+      await shot(
+        '/settings?tab=review',
+        `settings-review-${scheme}.png`,
+        scheme,
+        'Review behavior',
+      );
+      await shot(
+        '/settings?tab=retrieval',
+        `settings-retrieval-${scheme}.png`,
+        scheme,
+        'Repository retrieval',
+      );
       await shot(
         '/settings?tab=advanced',
         `settings-advanced-${scheme}.png`,
@@ -235,6 +628,8 @@ try {
   }
 
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) {
+    await checkReviewSettings();
+    await checkMentionsAndReviewDetail();
     await checkSetupLink();
 
     // Selects retain labels, keyboard navigation, and empty filter values.
@@ -393,16 +788,21 @@ try {
     }
     {
       const { context, page } = await open('/repositories');
-      const toggle = page.getByLabel('Enable reviews for northstar/api');
-      await toggle.click();
-      await page.getByText('northstar/api: reviews paused.', { exact: true }).waitFor();
-      assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+      await choose(page, 'Trigger for northstar/api', 'Auto');
+      await page.getByText('northstar/api: trigger saved.', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Actions for northstar/api', exact: true }).click();
       await page.getByRole('menuitem', { name: 'Review a pull request' }).click();
+      await choose(page, 'Review mode', 'Deep');
       await page.getByRole('button', { name: /251 Handle connection timeouts/ }).click();
       await page.getByText('Review queued for northstar/api #251.', { exact: true }).waitFor();
       await page.getByRole('link', { name: 'Reviews', exact: true }).click();
       await page.getByRole('link', { name: 'Manual review', exact: true }).waitFor();
+      const saved = await page.evaluate(async () => {
+        const { api } = await import('/src/lib/api.ts');
+        return api.jobs();
+      });
+      assert.equal(saved.jobs[0].mode, 'deep');
+      assert.equal(saved.jobs[0].trigger, 'manual');
       await context.close();
     }
   }
@@ -410,7 +810,8 @@ try {
   if (emptyYaml) {
     console.log(
       'PASS: empty-YAML wizard and Settings, first key, minimal saved routes, ' +
-        'validator inheritance, new maps, no browser runtime errors.',
+        'validator inheritance, fallback editor/tests, web search, new maps, ' +
+        'no browser runtime errors.',
     );
   } else if (process.argv.includes('--screenshots-only')) {
     console.log(
@@ -420,7 +821,8 @@ try {
     console.log(
       'PASS: setup link authorization/copy, labelled keyboard selects in both themes/mobile, ' +
         'empty filters, wizard, YAML/comments/reasoning, secret dialog, server settings, ' +
-        'repository toggle, manual review, live updates, no browser runtime errors.',
+        'trigger/mode defaults and overrides, mention notice/commands, fallback editor/tests, ' +
+        'web search, manual/rerun modes, live updates, no browser runtime errors.',
     );
   }
 } finally {

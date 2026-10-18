@@ -19,6 +19,7 @@
   import Toggle from '#lib/components/Toggle.svelte';
   import Status from '#lib/components/Status.svelte';
   import SelectField from '#lib/components/SelectField.svelte';
+  import RerankerFields from '#lib/components/RerankerFields.svelte';
 
   const stages: SetupStage[] = ['create_app', 'sign_in', 'install', 'configure'];
   const labels = ['Create app', 'Sign in', 'Install', 'Models'];
@@ -39,6 +40,7 @@
   let models = $state<string[]>([]);
   let tests = $state<Partial<Record<Role, TestResult>>>({});
   let testedYaml = $state('');
+  let apiRerankerInitialized = false;
   const step = $derived(session ? Math.max(0, stages.indexOf(session.setup.stage)) : 0);
   const setupToken = $derived(page.url.searchParams.get('token') || '');
   const needsSetupLink = $derived(
@@ -70,6 +72,7 @@
           config = new ConfigDocument(data.yaml);
           secrets = data.secrets;
           separateValidator = config.has(['models', 'validator']);
+          initializeApiReranker();
         }
       }
     } catch (cause) {
@@ -148,6 +151,25 @@
   function setSeparateValidator(enabled: boolean) {
     separateValidator = enabled;
     if (!enabled) config!.remove(['models', 'validator']);
+  }
+  function initializeApiReranker() {
+    if (
+      !config ||
+      !retrievalOn ||
+      config.get(['vera', 'backend'], 'local') !== 'api' ||
+      apiRerankerInitialized
+    )
+      return;
+    apiRerankerInitialized = true;
+    if (!config.has(['vera', 'reranker'])) config.setRerankerEnabled(true, true);
+  }
+  function setRetrievalEnabled(enabled: boolean) {
+    config!.set(['vera', 'enabled'], enabled);
+    initializeApiReranker();
+  }
+  function setEmbeddingBackend(value: string) {
+    config!.set(['vera', 'backend'], value);
+    initializeApiReranker();
   }
   async function refreshSecrets() {
     secrets = (await api.settings()).secrets;
@@ -371,7 +393,7 @@
             <Toggle
               checked={retrievalOn || false}
               label="Enable Vera retrieval"
-              onchange={(value) => config!.set(['vera', 'enabled'], value)}
+              onchange={setRetrievalEnabled}
             />
           </div>
           {#if retrievalOn}
@@ -381,12 +403,13 @@
                 id="setup-backend"
                 value={config.get(['vera', 'backend'], 'local')}
                 options={backends}
-                onchange={(value) => config!.set(['vera', 'backend'], value)}
+                onchange={setEmbeddingBackend}
               />
             </div>
             {#if config.get(['vera', 'backend'], 'local') === 'api'}
               <div style="margin-top: 20px">
                 <ModelFields {config} role="embedding" {secrets} {setKey} retrieval />
+                <RerankerFields {config} {secrets} {setKey} compact />
               </div>
             {/if}
           {/if}

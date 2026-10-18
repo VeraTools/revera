@@ -1469,6 +1469,184 @@ async fn setup_stage_requires_active_retrieval_keys() {
 }
 
 #[tokio::test]
+async fn fallback_probes_select_routes_without_affecting_primary_health_or_setup() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, csrf) = administrator(&server).await;
+    server.dashboard.lock().await.installations = 1;
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::new();
+    let yaml = format!(
+        "{CONFIG}    fallback:\n      - protocol: openai-chat\n        base_url: {}/v1\n        api_key_env: FALLBACK_PROBE_KEY\n        model: backup-model\nvera:\n  enabled: false\n",
+        mock.uri()
+    );
+    for (route, body) in [
+        (
+            "/api/secrets/REVIEW_API_KEY",
+            json!({"value": "primary-probe-secret"}),
+        ),
+        (
+            "/api/secrets/FALLBACK_PROBE_KEY",
+            json!({"value": "fallback-probe-secret"}),
+        ),
+        ("/api/settings/config", json!({"yaml": yaml})),
+    ] {
+        assert_eq!(
+            client
+                .put(format!("{url}{route}"))
+                .header("Cookie", &cookie)
+                .header("X-Revera-CSRF", &csrf)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("Authorization", "Bearer fallback-probe-secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    for role in ["investigator", "validator"] {
+        let response = client
+            .post(format!("{url}/api/settings/test"))
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"role": role, "fallback": 0}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let result: Value = response.json().await.unwrap();
+        assert_eq!(result["ok"], true);
+        assert!(server.dashboard.lock().await.health.is_empty());
+        let session: Value = client
+            .get(format!("{url}/api/session"))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(session["setup"]["stage"], "configure");
+    }
+    for input in [
+        json!({"role": "investigator", "fallback": 1}),
+        json!({"role": "embedding", "fallback": 0}),
+        json!({"role": "other", "fallback": 0}),
+    ] {
+        assert_eq!(
+            client
+                .post(format!("{url}/api/settings/test"))
+                .header("Cookie", &cookie)
+                .header("X-Revera-CSRF", &csrf)
+                .json(&input)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            422
+        );
+    }
+    let requests = mock.received_requests().await.unwrap();
+    assert!(requests.iter().all(|request| {
+        serde_json::from_slice::<Value>(&request.body).unwrap()["model"] == "backup-model"
+    }));
+    mock.reset().await;
+    let explicit = yaml.replace(
+        "vera:\n",
+        &format!(
+            "  validator:\n    protocol: openai-chat\n    base_url: https://api.example.com/v1\n    api_key_env: REVIEW_API_KEY\n    model: validator-model\n    fallback:\n      - protocol: openai-chat\n        base_url: {}/validator/v1\n        api_key_env: FALLBACK_PROBE_KEY\n        model: validator-backup\nvera:\n",
+            mock.uri()
+        ),
+    );
+    assert_eq!(
+        client
+            .put(format!("{url}/api/settings/config"))
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"yaml": explicit}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    Mock::given(method("POST"))
+        .and(path("/validator/v1/chat/completions"))
+        .and(header("Authorization", "Bearer fallback-probe-secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let result: Value = client
+        .post(format!("{url}/api/settings/test"))
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .json(&json!({"role": "validator", "fallback": 0}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["ok"], true);
+    assert!(server.dashboard.lock().await.health.is_empty());
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["model"],
+        "validator-backup"
+    );
+    // Unavailable optional fallbacks must not prevent setup after the primaries passed.
+    client
+        .delete(format!("{url}/api/secrets/FALLBACK_PROBE_KEY"))
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .send()
+        .await
+        .unwrap();
+    let mut dashboard = server.dashboard.lock().await;
+    for role in ["investigator", "validator"] {
+        dashboard.health.insert(role.into(), json!({"ok": true}));
+    }
+    drop(dashboard);
+    let result: Value = client
+        .post(format!("{url}/api/settings/test"))
+        .header("Cookie", &cookie)
+        .header("X-Revera-CSRF", &csrf)
+        .json(&json!({"role": "validator", "fallback": 0}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(result["ok"], false);
+    assert!(!result.to_string().contains("fallback-probe-secret"));
+    let session: Value = client
+        .get(format!("{url}/api/session"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(session["setup"]["stage"], "done");
+    assert_eq!(server.dashboard.lock().await.health.len(), 2);
+    task.abort();
+}
+
+#[tokio::test]
 async fn provider_probe_labels_inheritance_and_cache_invalidation() {
     let mock = MockServer::start().await;
     let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
