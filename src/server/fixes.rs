@@ -194,6 +194,16 @@ pub struct Audit {
     actor: String,
     action: String,
     detail: String,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_at: Option<String>,
+}
+fn one() -> u64 {
+    1
+}
+fn is_one(n: &u64) -> bool {
+    *n == 1
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
@@ -229,12 +239,37 @@ pub struct Record {
 impl Record {
     fn audit(&mut self, actor: &str, action: &str, detail: &str) {
         self.updated_at = chrono::Utc::now().to_rfc3339();
+        let detail = crate::handoff::text(detail, 4000);
+        if let Some(event) = self
+            .events
+            .iter_mut()
+            .rev()
+            .find(|e| e.actor == actor && e.action == action && e.detail == detail)
+        {
+            event.count = event.count.saturating_add(1);
+            event.last_at = Some(self.updated_at.clone());
+            return;
+        }
         self.events.push(Audit {
             at: self.updated_at.clone(),
             actor: actor.into(),
             action: action.into(),
-            detail: crate::handoff::text(detail, 4000),
+            detail,
+            count: 1,
+            last_at: None,
         });
+        self.bound_events();
+    }
+    fn bound_events(&mut self) {
+        while self.events.len() > 200 {
+            let requested = self.events.iter().position(|e| e.action == "requested");
+            let approved = self.events.iter().rposition(|e| e.action == "approved");
+            let published = self.events.iter().rposition(|e| e.action == "published");
+            let oldest = (0..self.events.len())
+                .find(|i| ![requested, approved, published].contains(&Some(*i)))
+                .unwrap();
+            self.events.remove(oldest);
+        }
     }
     fn transition(&mut self, state: &str, reason: Option<&str>, actor: &str, action: &str) {
         self.state = state.into();
@@ -295,6 +330,8 @@ struct ContextData {
     key: String,
     preview_only: bool,
     #[serde(default)]
+    confirmed_by: Option<String>,
+    #[serde(default)]
     note: String,
 }
 #[derive(Clone)]
@@ -313,6 +350,8 @@ pub struct Store {
     entries: BTreeMap<String, Entry>,
     running: BTreeMap<String, watch::Sender<bool>>,
     admissions: Vec<Admission>,
+    denials: Vec<Admission>,
+    attempts: Vec<Admission>,
 }
 fn dir(data: &FsPath, id: &str) -> Result<PathBuf> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -345,6 +384,8 @@ impl Store {
         let root = crate::fsutil::ensure_dir(data, FsPath::new("fixes"))?;
         let mut store = Self {
             admissions: dashboard::read_json(data, "fix-admissions.json")?,
+            denials: dashboard::read_json(data, "fix-denials.json")?,
+            attempts: dashboard::read_json(data, "fix-attempts.json")?,
             ..Default::default()
         };
         store
@@ -375,6 +416,7 @@ impl Store {
             if entry.record.id != id {
                 bail!("fix record identity mismatch");
             }
+            entry.record.bound_events();
             match entry.record.state.as_str() {
                 "generating" | "validating" => entry.record.transition(
                     "failed",
@@ -711,6 +753,40 @@ async fn authorize(
 }
 
 /// All entry points converge here. Consent is attached to this durable record only.
+fn admit_attempt(
+    s: &Server,
+    store: &mut Store,
+    actor: &str,
+    repo: &str,
+    p: &Policy,
+) -> Outcome<()> {
+    let now = chrono::Utc::now().timestamp();
+    let mut attempts = store.attempts.clone();
+    attempts.retain(|a| a.at > now - 3600);
+    if attempts
+        .iter()
+        .filter(|a| a.actor.eq_ignore_ascii_case(actor))
+        .count()
+        >= p.limits.per_user_hour
+    {
+        return Err(Failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "fix command attempt rate limit reached; try later".into(),
+        ));
+    }
+    attempts.push(Admission {
+        at: now,
+        actor: actor.into(),
+        repo: repo.into(),
+    });
+    crate::fsutil::write_atomic_in(
+        &s.settings.data_dir,
+        "fix-attempts.json",
+        &serde_json::to_vec(&attempts)?,
+    )?;
+    store.attempts = attempts;
+    Ok(())
+}
 pub async fn request(
     server: &Server,
     origin: &str,
@@ -737,6 +813,30 @@ pub async fn request(
     let preview_only = permission.unwrap_or(false);
     let key = key(&job, &selected);
     let mut store = server.fixes.lock().await;
+    if denied.is_some() {
+        let now = chrono::Utc::now().timestamp();
+        let mut denials = store.denials.clone();
+        denials.retain(|a| a.at > now - 3600);
+        if denials.iter().any(|a| a.actor.eq_ignore_ascii_case(actor)) {
+            return Err(Failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "denied command reply limit reached".into(),
+            ));
+        }
+        denials.push(Admission {
+            at: now,
+            actor: actor.into(),
+            repo: job.repo.clone(),
+        });
+        crate::fsutil::write_atomic_in(
+            &server.settings.data_dir,
+            "fix-denials.json",
+            &serde_json::to_vec(&denials)?,
+        )?;
+        store.denials = denials;
+    } else {
+        admit_attempt(server, &mut store, actor, &job.repo, &p)?;
+    }
     if let Some(mut e) = store
         .entries
         .values()
@@ -777,7 +877,10 @@ pub async fn request(
             })
             .count()
     };
-    if count(3600, true) >= p.limits.per_user_hour || count(86400, false) >= p.limits.per_repo_day {
+    if denied.is_none()
+        && (count(3600, true) >= p.limits.per_user_hour
+            || count(86400, false) >= p.limits.per_repo_day)
+    {
         return Err(conflict("fix request rate limit reached; try later"));
     }
     let consent = if denied.is_some() {
@@ -802,19 +905,21 @@ pub async fn request(
     if once && denied.is_none() {
         record.audit(actor, "consent_once", "this request only");
     }
-    let mut admissions = store.admissions.clone();
-    admissions.retain(|a| a.at > now.timestamp() - 86400);
-    admissions.push(Admission {
-        at: now.timestamp(),
-        actor: actor.into(),
-        repo: record.repo.clone(),
-    });
-    crate::fsutil::write_atomic_in(
-        &server.settings.data_dir,
-        "fix-admissions.json",
-        &serde_json::to_vec(&admissions)?,
-    )?;
-    store.admissions = admissions;
+    if denied.is_none() {
+        let mut admissions = store.admissions.clone();
+        admissions.retain(|a| a.at > now.timestamp() - 86400);
+        admissions.push(Admission {
+            at: now.timestamp(),
+            actor: actor.into(),
+            repo: record.repo.clone(),
+        });
+        crate::fsutil::write_atomic_in(
+            &server.settings.data_dir,
+            "fix-admissions.json",
+            &serde_json::to_vec(&admissions)?,
+        )?;
+        store.admissions = admissions;
+    }
     let record = save(
         server,
         &mut store,
@@ -826,6 +931,7 @@ pub async fn request(
                 policy: p,
                 key,
                 preview_only,
+                confirmed_by: (origin == "dashboard").then(|| actor.into()),
                 note: String::new(),
             },
         },
@@ -1076,6 +1182,7 @@ fn preview_entry(
             policy,
             key: String::new(),
             preview_only: false,
+            confirmed_by: None,
             note: String::new(),
         },
     }
@@ -1212,6 +1319,7 @@ async fn confirm(
         ));
     }
     e.record.consent = Some(if input.once { "once" } else { "persistent" }.into());
+    e.context.confirmed_by = Some(session.user.login.clone());
     e.record.audit(
         &session.user.login,
         if input.once {
@@ -1258,6 +1366,7 @@ async fn regenerate(
         return Err(conflict("attempt limit reached or state cannot regenerate"));
     }
     e.context.note = crate::handoff::text(&input.note, 8000);
+    e.context.confirmed_by = Some(session.user.login.clone());
     e.record
         .transition("queued", None, &session.user.login, "confirmed");
     let r = save(&s, &mut store, e).await?;
@@ -1380,6 +1489,7 @@ pub async fn dispatch(server: Arc<Server>) {
                 .fixes
                 .limits
                 .concurrent;
+            let inventory_ready = !server.installations.lock().await.install_url.is_empty();
             let mut store = server.fixes.lock().await;
             if store.running.len() >= max {
                 break;
@@ -1387,7 +1497,11 @@ pub async fn dispatch(server: Arc<Server>) {
             let Some(id) = store
                 .entries
                 .values()
-                .filter(|e| e.record.state == "queued" && !store.running.contains_key(&e.record.id))
+                .filter(|e| {
+                    e.record.state == "queued"
+                        && !store.running.contains_key(&e.record.id)
+                        && (e.record.repo_source == Source::External || inventory_ready)
+                })
                 .min_by_key(|e| &e.record.created_at)
                 .map(|e| e.record.id.clone())
             else {
@@ -1439,7 +1553,8 @@ async fn cancelled(mut rx: watch::Receiver<bool>) {
     }
 }
 async fn run(s: Arc<Server>, id: &str, rx: watch::Receiver<bool>) {
-    let result = tokio::select! {biased;_=cancelled(rx)=>Ok(()),result=generate(&s,id)=>result};
+    let result =
+        tokio::select! {biased;_=cancelled(rx.clone())=>Ok(()),result=generate(&s,id)=>result};
     if let Err(e) = result {
         let reason = crate::redact::diagnostic(&format!("{e:#}"));
         let _ = change(&s, id, |e| {
@@ -1453,6 +1568,14 @@ async fn run(s: Arc<Server>, id: &str, rx: watch::Receiver<bool>) {
         if ws.exists() {
             let _ = std::fs::remove_dir_all(ws);
         }
+    }
+    if !*rx.borrow()
+        && let Err(error) = auto_publish(&s, id).await
+    {
+        tracing::warn!(
+            "automatic fix delivery: {}",
+            crate::redact::diagnostic(&error.1)
+        );
     }
     if let Ok(e) = entry(&s, id).await {
         status(&s, &e.record).await;
@@ -1644,11 +1767,81 @@ async fn checkout(s: &Server, e: &Entry) -> Result<PathBuf> {
     }
     Ok(git_dir)
 }
+async fn authorize_execution(s: &Server, id: &str, pr: &Value) -> Result<()> {
+    let e = entry(s, id).await?;
+    let p = policy(s, &e.record.repo).await;
+    // Legacy dashboard requests retain their original admin; old confirmations
+    // are recovered from their audit record rather than trusting the requester.
+    let admin = e.context.confirmed_by.as_deref().or_else(|| {
+        e.record
+            .events
+            .iter()
+            .rev()
+            .find(|event| {
+                matches!(event.action.as_str(), "confirmed" | "consent_once")
+                    && event.detail == "generation approved"
+            })
+            .map(|event| event.actor.as_str())
+    });
+    let (origin, actor) = admin.map_or(
+        (e.record.source.as_str(), e.record.requested_by.as_str()),
+        |actor| ("dashboard", actor),
+    );
+    match authorize(s, origin, actor, &e.context.repo, pr, &p).await {
+        Ok(preview) => {
+            change(s, id, |e| {
+                // A confirming administrator never promotes an author preview.
+                e.context.preview_only |= preview;
+                e.record
+                    .audit(actor, "confirmed", "execution permission rechecked");
+            })
+            .await?;
+            Ok(())
+        }
+        Err(error) => {
+            change(s, id, |e| {
+                e.record
+                    .audit(actor, "permission_denied", "execution permission revoked")
+            })
+            .await?;
+            Err(error)
+        }
+    }
+}
 async fn generate(s: &Server, id: &str) -> Result<()> {
+    let started = tokio::time::Instant::now();
     let e = entry(s, id).await?;
     if e.record.state != "queued" {
         return Ok(());
     }
+    let current = policy(s, &e.record.repo).await;
+    let seconds = e.context.policy.limits.seconds.min(current.limits.seconds);
+    let deadline = started + Duration::from_secs(seconds);
+    tokio::time::timeout_at(deadline, generate_until(s, id, e, current, deadline))
+        .await
+        .map_err(|_| anyhow::anyhow!("time limit reached"))?
+}
+fn time_left(deadline: tokio::time::Instant) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        bail!("time limit reached");
+    }
+    Ok(remaining)
+}
+fn seconds_left(deadline: tokio::time::Instant) -> Result<u64> {
+    let remaining = time_left(deadline)?;
+    // Model budgets use whole seconds; the enclosing deadline still cancels
+    // them at the exact remaining duration, including fractional seconds.
+    Ok(remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0))
+}
+async fn generate_until(
+    s: &Server,
+    id: &str,
+    e: Entry,
+    current: Policy,
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    time_left(deadline)?;
     let (job, _) = review(s, &e.record.review_job)
         .await
         .map_err(|e| anyhow::anyhow!(e.1))?;
@@ -1672,7 +1865,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         .await?;
         return Ok(());
     }
-    let current = policy(s, &e.record.repo).await;
+    authorize_execution(s, id, &pr).await?;
     if e.record.consent.is_none()
         || (e.record.consent.as_deref() == Some("persistent") && !current.execution)
     {
@@ -1730,10 +1923,10 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         .parent()
         .context("target directory")?
         .join("revera");
+    time_left(deadline)?;
     let git = checkout(s, &e).await?;
     let root = dir(&s.settings.data_dir, id)?;
     let work = crate::fsutil::ensure_dir(&root, FsPath::new("workspace"))?;
-    let started = std::time::Instant::now();
     let used = e
         .record
         .usage
@@ -1746,9 +1939,13 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         .saturating_sub(used.min(u32::MAX as u64) as u32);
     let mut feedback = e.context.note.clone();
     for attempt in (e.record.attempt + 1)..=p.limits.attempts {
-        if remaining < 2 || started.elapsed().as_secs() >= p.limits.seconds {
+        time_left(deadline)?;
+        if remaining < 2 {
             break;
         }
+        let (_, pr) = live(s, &job).await?;
+        fresh(&pr, &e.record.head_sha)?;
+        authorize_execution(s, id, &pr).await?;
         let r = change(s, id, |e| {
             e.record.attempt = attempt;
             e.record.max_attempts = p.limits.attempts;
@@ -1762,17 +1959,14 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         if r.state != "generating" {
             return Ok(());
         }
+        time_left(deadline)?;
         let ws = fix::workspace::prepare(
             &git,
             &e.record.head_sha,
             &work.join(format!("attempt-{attempt}")),
         )
         .await?;
-        let seconds = p
-            .limits
-            .seconds
-            .saturating_sub(started.elapsed().as_secs())
-            .max(1);
+        let seconds = seconds_left(deadline)?;
         let mut req = fix::Request {
             head: e.record.head_sha.clone(),
             findings: e.context.findings.clone(),
@@ -1807,8 +2001,11 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         };
         remaining = remaining.saturating_sub(generated.ledger.requests.min(u32::MAX as u64) as u32);
         change(s,id,|e|{let submission=generated.submission.as_ref();e.record.generation=Some(json!({"stopped":generated.stopped,"summary":submission.map(|s|s.summary.as_str()).unwrap_or(""),"per_finding":submission.map(|s|s.per_finding.clone()).unwrap_or_default()}));add_usage(&mut e.record.usage,&generated.ledger);e.record.transition("validating",None,"revera","generated");}).await?;
+        time_left(deadline)?;
         let patch = ws.diff().await?;
+        time_left(deadline)?;
         let policy_report = fix::policy::check(&patch, &patch_policy(&p));
+        time_left(deadline)?;
         let mut errors = messages(&policy_report.errors);
         if patch.files.is_empty() {
             errors.push("no changes".into());
@@ -1828,6 +2025,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         }
         let meta = json!({"files":patch.files.iter().map(|f|json!({"path":f.path,"status":f.status,"additions":f.additions,"deletions":f.deletions})).collect::<Vec<_>>(),"bytes":patch.unified.len(),"warnings":messages(&policy_report.warnings),"errors":errors});
         change(s, id, |e| e.record.patch = Some(meta)).await?;
+        time_left(deadline)?;
         if safe && policy_report.allowed() && !patch.files.is_empty() {
             crate::fsutil::write_atomic_in(&root, "patch.diff", patch.unified.as_bytes())?;
             crate::fsutil::write_atomic_in(&root, "patch.json", &serde_json::to_vec(&patch)?)?;
@@ -1842,11 +2040,8 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         }
         if errors.is_empty() {
             let mut profile = fix::sandbox::Profile::default();
-            profile.limits.wall = Duration::from_secs(
-                p.test_timeout_seconds
-                    .min(p.limits.seconds.saturating_sub(started.elapsed().as_secs()))
-                    .max(1),
-            );
+            profile.limits.wall =
+                Duration::from_secs(p.test_timeout_seconds).min(time_left(deadline)?);
             let tests = fix::tests::run_copy(
                 &profile,
                 &p.test_command,
@@ -1854,6 +2049,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
                 &work.join(format!("tests-{attempt}")),
             )
             .await?;
+            time_left(deadline)?;
             let text = tests
                 .output
                 .as_ref()
@@ -1871,11 +2067,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
             req.patch = Some(patch);
             req.tests = Some(tests.clone());
             req.budget.model_requests = remaining;
-            req.budget.seconds = p
-                .limits
-                .seconds
-                .saturating_sub(started.elapsed().as_secs())
-                .max(1);
+            req.budget.seconds = seconds_left(deadline)?;
             if remaining == 0 {
                 errors.push("model request limit reached before independent verification".into());
             } else {
@@ -1893,6 +2085,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
                 else {
                     bail!("incorrect verification stage");
                 };
+                time_left(deadline)?;
                 remaining =
                     remaining.saturating_sub(verified.ledger.requests.min(u32::MAX as u64) as u32);
                 let ready = verified.stopped == fix::Stop::Terminal
@@ -1969,7 +2162,60 @@ async fn approve(
     ))
 }
 async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<Record> {
-    if !s.dashboard.lock().await.preferences.admin(actor) {
+    publish_authorized(s, id, PublishAuthority::Admin(actor), mode).await
+}
+#[derive(Clone, Copy)]
+enum PublishAuthority<'a> {
+    Admin(&'a str),
+    AutomaticDraft,
+}
+const AUTO_DRAFT_DETAIL: &str = "auto-published as draft PR (approval not required by settings)";
+fn automatic_draft_allowed(p: &Policy, e: &Entry) -> bool {
+    !p.require_approval
+        && p.delivery == Delivery::DraftPr
+        && e.record.repo_source == Source::Installed
+        && !e.context.preview_only
+}
+async fn auto_publish(s: &Server, id: &str) -> Outcome<Record> {
+    let e = entry(s, id).await?;
+    let p = policy(s, &e.record.repo).await;
+    if e.record.state != "ready" || !automatic_draft_allowed(&p, &e) {
+        return Ok(e.record);
+    }
+    let job = s
+        .dashboard
+        .lock()
+        .await
+        .jobs
+        .get(&e.record.review_job)
+        .cloned()
+        .context("review no longer available")?;
+    let (_, pr) = live(s, &job).await?;
+    if !capabilities(s, &e, Some(&pr), None)
+        .await
+        .iter()
+        .any(|c| c.mode == Delivery::DraftPr && c.available)
+    {
+        return Ok(e.record);
+    }
+    match publish_authorized(s, id, PublishAuthority::AutomaticDraft, Delivery::DraftPr).await {
+        // Another controller invocation may have claimed ready while we fetched
+        // capabilities. It owns delivery; never retry or duplicate its writes.
+        Err(error) if error.0 == StatusCode::CONFLICT => Ok(entry(s, id).await?.record),
+        result => result,
+    }
+}
+async fn publish_authorized(
+    s: &Server,
+    id: &str,
+    authority: PublishAuthority<'_>,
+    mode: Delivery,
+) -> Outcome<Record> {
+    let (actor, automatic) = match authority {
+        PublishAuthority::Admin(actor) => (actor, false),
+        PublishAuthority::AutomaticDraft => ("revera", true),
+    };
+    if !automatic && !s.dashboard.lock().await.preferences.admin(actor) {
         return Err(forbidden("administrator access required"));
     }
     if mode == Delivery::Patch {
@@ -1986,10 +2232,18 @@ async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<R
     if e.record.state != "ready" {
         return Err(conflict("only a ready patch can be approved"));
     }
+    if automatic
+        && (mode != Delivery::DraftPr
+            || !automatic_draft_allowed(&policy(s, &e.record.repo).await, &e))
+    {
+        return Ok(e.record);
+    }
     e.record.audit(
         actor,
         "approved",
-        if mode == Delivery::SameBranch {
+        if automatic {
+            "draft_pr (approval not required by settings)"
+        } else if mode == Delivery::SameBranch {
             "same_branch"
         } else {
             "draft_pr"
@@ -1998,13 +2252,16 @@ async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<R
     e.record.transition("publishing", None, actor, "approved");
     save(s, &mut store, e.clone()).await?;
     drop(store);
-    let result = deliver(s, &e, mode).await;
+    let result = deliver(s, &e, mode, automatic).await;
     let record = match result {
         Ok(delivery) => {
             let r = change(s, id, |e| {
                 e.record.delivery = Some(delivery);
                 e.record
                     .transition("published", None, "revera", "published");
+                if automatic {
+                    e.record.audit("revera", "published", AUTO_DRAFT_DETAIL);
+                }
             })
             .await?;
             if policy(s, &r.repo).await.rereview
@@ -2029,7 +2286,7 @@ async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<R
     status(s, &record).await;
     Ok(record)
 }
-async fn deliver(s: &Server, e: &Entry, mode: Delivery) -> Result<Value> {
+async fn deliver(s: &Server, e: &Entry, mode: Delivery, automatic: bool) -> Result<Value> {
     let job = s
         .dashboard
         .lock()
@@ -2074,6 +2331,9 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery) -> Result<Value> {
         bail!("{}", cap.reason);
     }
     let p = policy(s, &e.record.repo).await;
+    if automatic && !automatic_draft_allowed(&p, e) {
+        bail!("automatic draft publication no longer permitted by settings");
+    }
     let root = dir(&s.settings.data_dir, &e.record.id)?;
     let path = root.join("patch.json");
     crate::fsutil::check_regular_target(&path)?;
@@ -2170,6 +2430,9 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery) -> Result<Value> {
     {
         bail!("installation permissions changed before delivery");
     }
+    if automatic && !automatic_draft_allowed(&policy(s, &e.record.repo).await, e) {
+        bail!("automatic draft publication no longer permitted by settings");
+    }
     let branch = pr["head"]["ref"].as_str().context("PR branch is missing")?;
     if latest["head"]["ref"].as_str() != Some(branch) {
         bail!("PR target branch changed");
@@ -2243,6 +2506,37 @@ async fn followup(s: &Server, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn review_terminated(s: &Server, summary: &dashboard::JobSummary) -> Result<()> {
+    let mut store = s.fixes.lock().await;
+    let ids: Vec<_> = store
+        .entries
+        .values()
+        .filter(|e| {
+            e.record.state == "verifying"
+                && e.record
+                    .verify_review
+                    .as_ref()
+                    .is_some_and(|v| v["job"] == summary.id)
+        })
+        .map(|e| e.record.id.clone())
+        .collect();
+    for id in ids {
+        let mut e = store.entries[&id].clone();
+        e.record.transition(
+            "published",
+            Some("follow-up review did not complete"),
+            "revera",
+            "failed",
+        );
+        if let Some(v) = e.record.verify_review.as_mut() {
+            v["state"] = json!(summary.status);
+            v["note"] = json!("follow-up review did not complete");
+            v["resolved"] = json!([]);
+        }
+        save(s, &mut store, e).await?;
+    }
+    Ok(())
+}
 pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
     let summary = s
         .dashboard
@@ -2267,6 +2561,11 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
         .cloned()
         .collect();
     for e in linked {
+        let incomplete = if summary.status == "complete" {
+            "follow-up review incomplete"
+        } else {
+            "follow-up review did not complete"
+        };
         let report = (|| -> Result<Value> {
             let root = dashboard::job_dir(&s.settings.data_dir, &job.id)?;
             let path = root.join("report.json");
@@ -2286,15 +2585,11 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
             completed_followup(s, &e, job, &report).await?
         } else {
             change(s, &e.record.id, |e| {
-                e.record.transition(
-                    "published",
-                    Some("follow-up review incomplete"),
-                    "revera",
-                    "failed",
-                );
+                e.record
+                    .transition("published", Some(incomplete), "revera", "failed");
                 if let Some(v) = e.record.verify_review.as_mut() {
                     v["state"] = json!(summary.status);
-                    v["note"] = json!("follow-up review incomplete");
+                    v["note"] = json!(incomplete);
                 }
             })
             .await?
@@ -2344,13 +2639,19 @@ async fn completed_followup(s: &Server, e: &Entry, job: &Job, report: &Value) ->
         .filter(|f| f["verdict"] == "resolved")
         .filter_map(|f| f["id"].as_str().map(str::to_owned))
         .collect();
-    let state_present = report["plan"]["state"]["findings"].is_array();
+    let state_resolved: BTreeSet<_> = report["plan"]["state"]["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["status"] == "resolved")
+        .filter_map(|f| f["id"].as_str())
+        .collect();
     let resolved: Vec<_> = selected
         .iter()
         .filter(|id| {
             !open.contains(*id)
                 && if same {
-                    state_present
+                    state_resolved.contains(id.as_str())
                 } else {
                     pre.contains(*id)
                 }
@@ -2362,10 +2663,8 @@ async fn completed_followup(s: &Server, e: &Entry, job: &Job, report: &Value) ->
         .filter(|id| !resolved.contains(id))
         .cloned()
         .collect();
-    let note = if same && !state_present {
-        "Follow-up state unavailable; no resolution inferred"
-    } else if same {
-        "Compared original finding IDs with follow-up review state"
+    let note = if same {
+        "Only explicit resolved follow-up state is resolution evidence; absent IDs remain still_open/uncertain, with no resolution inferred"
     } else {
         "Draft PR resolution uses the pre-publish independent verifier when the finding is absent from the follow-up review"
     };
@@ -2396,6 +2695,10 @@ async fn status(s: &Server, r: &Record) {
 }
 async fn update_status(s: &Server, r: &Record) -> Result<()> {
     let e = entry(s, &r.id).await?;
+    let r = &e.record;
+    if review_busy(s, &e).await {
+        return Ok(());
+    }
     check_installation(s, &e.context.repo).await?;
     let app = s.setup.lock().await.app.clone().context("app missing")?;
     let token = s
@@ -2422,36 +2725,88 @@ async fn update_status(s: &Server, r: &Record) -> Result<()> {
         c["user"]["login"]
             .as_str()
             .is_some_and(|v| v.eq_ignore_ascii_case(&login))
-            && c["body"].as_str().is_some_and(|v| v.contains(&marker))
+            && c["body"].as_str().is_some_and(|v| {
+                v.trim_start().starts_with(&marker)
+                    && crate::github::publish::decode_state(v).is_some()
+            })
     }) else {
         return Ok(());
     };
     let body = comment["body"].as_str().context("comment body missing")?;
+    let id = comment["id"].as_u64().context("comment id missing")?;
+    let route = format!("/repos/{}/issues/comments/{id}", r.repo);
+    let latest = s
+        .api
+        .request(reqwest::Method::GET, &route, &token, None)
+        .await?;
+    let latest_body = latest["body"].as_str().context("comment body missing")?;
+    // The CLI is a separate writer. Never patch an older state snapshot; use
+    // the fresh body even when only prose changed. GitHub has no comment CAS.
+    if summary_state(body) != summary_state(latest_body) || review_busy(s, &e).await {
+        return Ok(());
+    }
+    let current = entry(s, &r.id).await?;
+    let r = &current.record;
     let block = format!(
         "<!-- revera:fix-status -->\nFix: **{}** · [Dashboard]({}/fixes/{})\n<!-- /revera:fix-status -->",
         r.state, s.settings.public_url, r.id
     );
-    let body = if let Some(old) = crate::github::publish::fix_status_block(body) {
-        body.replacen(old, &block, 1)
+    let body = if let Some(old) = crate::github::publish::fix_status_block(latest_body) {
+        latest_body.replacen(old, &block, 1)
     } else {
-        format!("{body}\n{block}")
+        format!("{latest_body}\n{block}")
     };
-    if body == comment["body"].as_str().unwrap_or("") {
+    if body == latest_body {
         return Ok(());
     }
     s.api
         .request(
             reqwest::Method::PATCH,
-            &format!(
-                "/repos/{}/issues/comments/{}",
-                r.repo,
-                comment["id"].as_u64().context("comment id missing")?
-            ),
+            &route,
             &token,
             Some(json!({"body":body})),
         )
         .await?;
     Ok(())
+}
+fn summary_state(body: &str) -> Option<&str> {
+    let start = body.find("<!-- revera-state:")?;
+    let end = body[start..].find(" -->")? + start + 4;
+    Some(&body[start..end])
+}
+async fn review_busy(s: &Server, e: &Entry) -> bool {
+    let queue = s.queue.lock().await;
+    queue
+        .pending
+        .values()
+        .chain(queue.running.values().map(|r| &r.job))
+        .any(|j| {
+            matches!(j.kind, Kind::Review { .. })
+                && j.repo.source() == e.record.repo_source
+                && j.repo.id == e.context.repo.id
+                && j.key().1 == e.record.pr
+        })
+}
+pub async fn refresh_review_status(s: &Server, job: &Job) {
+    if !matches!(job.kind, Kind::Review { .. }) {
+        return;
+    }
+    let record = s
+        .fixes
+        .lock()
+        .await
+        .entries
+        .values()
+        .filter(|e| {
+            e.context.repo.id == job.repo.id
+                && e.record.repo_source == job.repo.source()
+                && e.record.pr == job.key().1
+        })
+        .max_by_key(|e| &e.record.updated_at)
+        .map(|e| e.record.clone());
+    if let Some(record) = record {
+        status(s, &record).await;
+    }
 }
 
 async fn latest(s: &Server, repo: &str, number: u64) -> Option<dashboard::JobSummary> {
@@ -2517,6 +2872,15 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
             match auth {
                 Err(e) => Err(forbidden(&e.to_string())),
                 Ok(preview) => {
+                    let mut store = s.fixes.lock().await;
+                    if let Err(error) = admit_attempt(s, &mut store, &command.actor, &job.repo, &p)
+                    {
+                        if error.0 == StatusCode::TOO_MANY_REQUESTS {
+                            return Ok(());
+                        }
+                        bail!("{}", error.1);
+                    }
+                    drop(store);
                     let e = s
                         .fixes
                         .lock()
@@ -2576,6 +2940,7 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
                 .await?;
             Ok(())
         }
+        Err(e) if e.0 == StatusCode::TOO_MANY_REQUESTS => Ok(()),
         Err(e) => {
             // Only controller-generated explanations are public; never echo PR,
             // model, or arbitrary error text as active Markdown.

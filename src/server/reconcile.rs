@@ -210,6 +210,7 @@ pub(super) async fn discover(server: &Server, app: &super::app::App) -> Result<I
     }
     drop(dashboard);
     *server.installations.lock().await = result.clone();
+    server.fix_notify.notify_one();
     Ok(result)
 }
 

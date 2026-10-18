@@ -105,6 +105,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<Server>, MockServer, String) {
             ResponseTemplate::new(200)
                 .set_body_json(json!({"permission":"write","role_name":"maintain"})),
         )
+        .with_priority(10)
         .mount(&mock)
         .await;
     let job = Job::new(
@@ -666,6 +667,158 @@ async fn approved_draft_and_same_branch_deliver_once_without_force() {
         assert!(publish(&s, &id, "admin", mode).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn automatic_delivery_is_only_for_opted_in_available_installed_draft_previews() {
+    for case in [
+        "default",
+        "patch",
+        "same_branch",
+        "fork",
+        "external",
+        "author",
+        "read_only",
+    ] {
+        let (_data, s, mock, job) = fixture().await;
+        {
+            let mut d = s.dashboard.lock().await;
+            let p = &mut d.preferences.fixes;
+            p.require_approval = case == "default";
+            p.delivery = match case {
+                "patch" => Delivery::Patch,
+                "same_branch" => Delivery::SameBranch,
+                _ => Delivery::DraftPr,
+            };
+            p.allow_same_branch = true;
+        }
+        let id = ready(&s, &job).await;
+        match case {
+            "fork" => {
+                let mut pr = pull(HEAD);
+                pr["head"]["repo"]["full_name"] = json!("contributor/repo");
+                Mock::given(method("GET"))
+                    .and(path("/repos/owner/repo/pulls/7"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(pr))
+                    .mount(&mock)
+                    .await;
+            }
+            "external" => {
+                change(&s, &id, |e| {
+                    e.record.repo_source = Source::External;
+                    e.context.repo.installation = None;
+                })
+                .await
+                .unwrap();
+            }
+            "author" => {
+                change(&s, &id, |e| e.context.preview_only = true)
+                    .await
+                    .unwrap();
+            }
+            "read_only" => {
+                s.installations.lock().await.installations[0]
+                    .permissions
+                    .insert("contents".into(), "read".into());
+            }
+            _ => {}
+        }
+        assert_eq!(
+            auto_publish(&s, &id).await.unwrap().state,
+            "ready",
+            "{case}"
+        );
+        assert_eq!(
+            auto_publish(&s, &id).await.unwrap().state,
+            "ready",
+            "{case}"
+        );
+        assert_eq!(
+            publish(&s, &id, "revera", Delivery::DraftPr)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let r = entry(&s, &id).await.unwrap().record;
+        assert!(
+            r.delivery.is_none() && r.events.iter().all(|e| e.action != "approved"),
+            "{case}"
+        );
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| !r.url.path().contains("/git/")),
+            "{case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn automatic_draft_and_concurrent_manual_approvals_share_one_delivery_claim() {
+    let (_data, s, mock, job) = fixture().await;
+    {
+        let mut d = s.dashboard.lock().await;
+        d.preferences.fixes.require_approval = false;
+        d.preferences.fixes.delivery = Delivery::DraftPr;
+        d.preferences.fixes.rereview = false;
+    }
+    let id = ready(&s, &job).await;
+    delivery_mocks(&mock, HEAD, Delivery::DraftPr, None).await;
+    let (a, b, manual) = tokio::join!(
+        auto_publish(&s, &id),
+        auto_publish(&s, &id),
+        publish(&s, &id, "admin", Delivery::DraftPr)
+    );
+    assert!(a.is_ok() && b.is_ok());
+    assert!(manual.is_ok() || manual.unwrap_err().0 == StatusCode::CONFLICT);
+    assert_eq!(entry(&s, &id).await.unwrap().record.state, "published");
+    assert_eq!(auto_publish(&s, &id).await.unwrap().state, "published");
+    assert!(publish(&s, &id, "admin", Delivery::DraftPr).await.is_err());
+}
+
+#[tokio::test]
+async fn automatic_draft_delivery_rechecks_freshness_and_live_contents_grant() {
+    for case in ["head", "permission"] {
+        let (_data, s, mock, job) = fixture().await;
+        {
+            let mut d = s.dashboard.lock().await;
+            d.preferences.fixes.require_approval = false;
+            d.preferences.fixes.delivery = Delivery::DraftPr;
+        }
+        let id = ready(&s, &job).await;
+        if case == "head" {
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/pulls/7"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(pull(BASE)))
+                .mount(&mock)
+                .await;
+        } else {
+            Mock::given(method("GET"))
+                .and(path("/app/installations/9"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    json!({"id":9,"permissions":{"contents":"read"},"suspended_at":null}),
+                ))
+                .mount(&mock)
+                .await;
+        }
+        let r = auto_publish(&s, &id).await.unwrap();
+        assert_eq!(r.state, "publish_failed", "{case}");
+        assert!(r.reason.unwrap().contains(if case == "head" {
+            "changed since"
+        } else {
+            "Contents: write"
+        }));
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| !r.url.path().contains("/git/"))
+        );
+    }
+}
 #[tokio::test]
 async fn stale_closed_revoked_and_live_permission_changes_block_publish() {
     for case in ["head", "closed", "revoked", "permission"] {
@@ -789,6 +942,13 @@ async fn invoke_fix(s: &Server, payload: &Value) {
 #[tokio::test]
 async fn fix_mentions_reply_or_react_once_with_durable_claims_and_live_authorization() {
     let (_data, s, mock, job) = fixture().await;
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_user_hour = 4;
     Mock::given(method("POST"))
         .and(path("/repos/owner/repo/issues/7/comments"))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
@@ -908,6 +1068,124 @@ async fn fix_mentions_explain_missing_reviews_and_denials_without_trusting_assoc
             assert!(r.events.iter().any(|e| e.action == "permission_denied"));
         }
     }
+}
+
+#[tokio::test]
+async fn denied_commands_do_not_charge_repo_quota_and_reply_only_once_per_user_hour() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_repo_day = 1;
+    for actor in ["outsider", "another"] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/repos/owner/repo/collaborators/{actor}/permission"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"permission":"read","role_name":"read"})),
+            )
+            .mount(&mock)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    invoke_fix(&s, &fix_comment("@revera-test fix", 50, "outsider")).await;
+    invoke_fix(&s, &fix_comment("@revera-test fix", 51, "outsider")).await;
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    invoke_fix(&s, &fix_comment("@revera-test fix", 52, "outsider")).await;
+    assert_eq!(
+        request(&s, "mention", "another", &job, None, false)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert!(s.fixes.lock().await.admissions.is_empty());
+    let r = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    assert_eq!(r.state, "queued");
+    assert_eq!(s.fixes.lock().await.admissions.len(), 1);
+    assert_eq!(s.fixes.lock().await.denials.len(), 2);
+}
+
+#[tokio::test]
+async fn duplicate_attempts_are_limited_before_dedup_and_audit_is_bounded_and_coalesced() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_user_hour = 2;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    for comment in 50..55 {
+        invoke_fix(&s, &fix_comment("@revera-test fix", comment, "maintainer")).await;
+    }
+    let mut r = s
+        .fixes
+        .lock()
+        .await
+        .entries
+        .values()
+        .next()
+        .unwrap()
+        .record
+        .clone();
+    assert_eq!(s.fixes.lock().await.entries.len(), 1);
+    let requested = r
+        .events
+        .iter()
+        .filter(|e| e.action == "requested")
+        .collect::<Vec<_>>();
+    assert_eq!(requested.len(), 1);
+    assert_eq!(requested[0].count, 2);
+    assert!(requested[0].last_at.is_some());
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    assert_eq!(
+        request(&s, "mention", "maintainer", &job, None, false)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    r.audit("admin", "approved", "draft_pr");
+    r.audit("revera", "published", "published");
+    for i in 0..500 {
+        r.audit("revera", "generated", &format!("progress {i}"));
+    }
+    assert_eq!(r.events.len(), 200);
+    for action in ["requested", "approved", "published"] {
+        assert!(r.events.iter().any(|e| e.action == action));
+    }
+    let mut e = entry(&s, &r.id).await.unwrap();
+    e.record = r;
+    e.record
+        .events
+        .extend(vec![e.record.events.last().unwrap().clone(); 300]);
+    persist(&s.settings.data_dir, &e).unwrap();
+    assert_eq!(
+        Store::load(&s.settings.data_dir).unwrap().entries[&e.record.id]
+            .record
+            .events
+            .len(),
+        200
+    );
 }
 
 #[tokio::test]
@@ -1064,6 +1342,242 @@ async fn sandbox_empty_patch_retries_exhaust_attempts_and_preserve_honest_report
 }
 
 #[tokio::test]
+async fn execution_rechecks_requester_or_confirming_admin_and_keeps_author_previews_private() {
+    let (_data, s, mock, job) = fixture().await;
+    let r = request(&s, "mention", "maintainer", &job, None, true)
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/owner/repo/collaborators/maintainer/permission",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"permission":"read","role_name":"read"})),
+        )
+        .mount(&mock)
+        .await;
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let denied = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(denied.state, "failed");
+    assert_eq!(denied.attempt, 0);
+    assert!(
+        denied
+            .events
+            .iter()
+            .any(|e| e.action == "permission_denied")
+    );
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !r.url.path().contains("/v1/"))
+    );
+
+    s.dashboard.lock().await.preferences.fixes.author_preview = true;
+    let mut pr = pull(HEAD);
+    pr["user"]["login"] = json!("maintainer");
+    authorize_execution(&s, &r.id, &pr).await.unwrap();
+    assert!(entry(&s, &r.id).await.unwrap().context.preview_only);
+    change(&s, &r.id, |e| {
+        e.record.state = "awaiting_confirmation".into()
+    })
+    .await
+    .unwrap();
+    let (status, _) = call(
+        s.clone(),
+        reqwest::Method::POST,
+        &format!("/api/fixes/{}/confirm", r.id),
+        Some(json!({"once":true})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    let e = entry(&s, &r.id).await.unwrap();
+    assert_eq!(e.context.confirmed_by.as_deref(), Some("admin"));
+    authorize_execution(&s, &r.id, &pr).await.unwrap();
+    assert!(
+        !capabilities(&s, &entry(&s, &r.id).await.unwrap(), Some(&pr), None).await[1].available
+    );
+    s.dashboard.lock().await.preferences.admins.clear();
+    assert!(authorize_execution(&s, &r.id, &pr).await.is_err());
+}
+
+#[tokio::test]
+async fn sandbox_retry_rechecks_live_requester_permission_before_more_paid_work() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    let (_data, s, mock, job) = fixture().await;
+    let (_, head) = worker_checkout(&s, &job).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+        .mount(&mock)
+        .await;
+    let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = revoked.clone();
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/owner/repo/collaborators/maintainer/permission",
+        ))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    json!({"permission":"read","role_name":"read"})
+                } else {
+                    json!({"permission":"write","role_name":"maintain"})
+                },
+            )
+        })
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST")).and(path("/v1/chat/completions"))
+        .respond_with(move|_:&wiremock::Request|{
+            revoked.store(true,std::sync::atomic::Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"no-fix","type":"function","function":{"name":"submit_fix","arguments":json!({"summary":"No patch","per_finding":[{"id":finding().id(),"disposition":"not_fixed","note":"No patch"}]}).to_string()}}]},"finish_reason":"tool_calls"}]}))
+        }).expect(1).mount(&mock).await;
+    let r = request(&s, "mention", "maintainer", &job, None, true)
+        .await
+        .unwrap();
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let r = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(r.state, "failed");
+    assert_eq!(r.attempt, 1);
+    assert!(r.reason.unwrap().contains("not authorized"));
+}
+
+fn completion(name: &str, args: Value) -> Value {
+    json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture-call","type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":10}})
+}
+
+#[tokio::test]
+async fn sandbox_ready_automatically_publishes_opted_in_draft_once_with_controller_audit() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    let (_data, s, mock, job) = fixture().await;
+    let (_, head) = worker_checkout(&s, &job).await;
+    {
+        let mut d = s.dashboard.lock().await;
+        d.preferences.fixes.require_approval = false;
+        d.preferences.fixes.delivery = Delivery::DraftPr;
+        d.preferences.fixes.rereview = false;
+    }
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+        .mount(&mock)
+        .await;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    Mock::given(method("POST")).and(path("/v1/chat/completions"))
+        .respond_with(move|request:&wiremock::Request|{
+            let body:Value=serde_json::from_slice(&request.body).unwrap();
+            let verifier=body["tools"].as_array().unwrap().iter().any(|t|t["function"]["name"]=="submit_fix_verdicts");
+            let n=count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            let (name,args)=if verifier {("submit_fix_verdicts",json!({"per_finding":[{"id":finding().id(),"verdict":"resolved","rationale":"addition repaired"}],"new_problems":[]}))}
+                else if n==0 {("write_file",json!({"path":"bug.py","content":"def add(a,b):\n    return a+b\n"}))}
+                else {("submit_fix",json!({"summary":"Repair addition","per_finding":[{"id":finding().id(),"disposition":"fixed","note":"Use addition"}]}))};
+            ResponseTemplate::new(200).set_body_json(completion(name,args))
+        }).mount(&mock).await;
+    delivery_mocks(&mock, &head, Delivery::DraftPr, None).await;
+    let r = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let r = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(r.state, "published", "{}", json!(r));
+    assert_eq!(r.delivery.as_ref().unwrap()["mode"], "draft_pr");
+    assert!(r.events.iter().any(|e| e.action == "ready"));
+    assert!(
+        r.events.iter().any(|e| e.actor == "revera"
+            && e.action == "published"
+            && e.detail == AUTO_DRAFT_DETAIL)
+    );
+    assert_eq!(auto_publish(&s, &r.id).await.unwrap().state, "published");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert!(
+        !dir(&s.settings.data_dir, &r.id)
+            .unwrap()
+            .join("workspace")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn sandbox_overall_deadline_cancels_generation_tests_and_cumulative_retries() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    assert!(seconds_left(tokio::time::Instant::now() - Duration::from_millis(1)).is_err());
+    for stage in ["generation", "tests", "retries"] {
+        let (_data, s, mock, job) = fixture().await;
+        let (_, head) = worker_checkout(&s, &job).await;
+        {
+            let mut d = s.dashboard.lock().await;
+            d.preferences.fixes.limits.seconds = 1;
+            d.preferences.fixes.limits.attempts = 3;
+            d.preferences.fixes.test_command = vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                "import time; time.sleep(30)".into(),
+            ];
+        }
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+            .mount(&mock)
+            .await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(move|request:&wiremock::Request|{
+                let body:Value=serde_json::from_slice(&request.body).unwrap();
+                assert!(!body["tools"].as_array().unwrap().iter().any(|t|t["function"]["name"]=="submit_fix_verdicts"),"verifier started after deadline in {stage}");
+                let n=count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                let (name,args)=if stage!="retries" && n==0 { ("write_file",json!({"path":"bug.py","content":"def add(a,b):\n    return a+b\n"})) }
+                    else { ("submit_fix",json!({"summary":"Fixture","per_finding":[{"id":finding().id(),"disposition":if stage=="retries" {"not_fixed"} else {"fixed"},"note":"fixture"}]})) };
+                let response=ResponseTemplate::new(200).set_body_json(completion(name,args));
+                if stage=="generation" { response.set_delay(Duration::from_secs(3)) }
+                else if stage=="retries" { response.set_delay(Duration::from_millis(600)) }
+                else {response}
+            }).mount(&mock).await;
+        let r = request(&s, "dashboard", "admin", &job, None, true)
+            .await
+            .unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let started = std::time::Instant::now();
+        run(s.clone(), &r.id, rx).await;
+        assert!(started.elapsed() < Duration::from_secs(2), "{stage}");
+        let r = entry(&s, &r.id).await.unwrap().record;
+        assert_eq!(r.state, "failed", "{stage}: {}", json!(r));
+        assert_eq!(r.reason.as_deref(), Some("time limit reached"), "{stage}");
+        assert!(
+            r.verification.is_none() && r.tests.is_none() && r.delivery.is_none(),
+            "{stage}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            if stage == "generation" { 1 } else { 2 },
+            "{stage}"
+        );
+        assert_eq!(r.attempt, if stage == "retries" { 2 } else { 1 });
+        assert!(
+            !dir(&s.settings.data_dir, &r.id)
+                .unwrap()
+                .join("workspace")
+                .exists()
+        );
+    }
+}
+
+#[tokio::test]
 async fn after_review_requires_persistent_execution_and_never_loops_from_followups() {
     let (_data, s, _mock, id) = fixture().await;
     let repo = s.dashboard.lock().await.repos["owner/repo"].repo.clone();
@@ -1117,6 +1631,70 @@ async fn after_review_requires_persistent_execution_and_never_loops_from_followu
     assert_eq!(r.consent.as_deref(), Some("persistent"));
     assert_eq!(r.state, "queued");
     assert!(r.delivery.is_none() && r.generation.is_none());
+}
+
+#[tokio::test]
+async fn recovered_queued_fixes_wait_for_successful_installation_discovery() {
+    let (_data, s, mock, job) = fixture().await;
+    let r = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    *s.installations.lock().await = reconcile::Installations::default();
+    let scheduler = tokio::spawn(dispatch(s.clone()));
+    let mut events = s.events.subscribe();
+    s.fix_notify.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.state, "queued");
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+    assert!(
+        reconcile::discover(&s, &super::super::tests::test_app())
+            .await
+            .is_err()
+    );
+    s.fix_notify.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.state, "queued");
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"permissions":{"contents":"read"},"owner":{"type":"User"}})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET")).and(path("/app/installations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id":9,"account":{"login":"owner","id":1,"type":"User"},"permissions":{"contents":"write"},"suspended_at":null}]))).mount(&mock).await;
+    reconcile::discover(&s, &super::super::tests::test_app())
+        .await
+        .unwrap();
+    let failed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let r = entry(&s, &r.id).await.unwrap().record;
+            if r.state == "failed" {
+                break r;
+            }
+            events.recv().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(failed.reason.unwrap().contains("checkout is unavailable"));
+    scheduler.abort();
+    let _ = scheduler.await;
 }
 
 #[tokio::test]
@@ -1229,15 +1807,178 @@ async fn incomplete_followups_never_claim_verified_or_resolved() {
         }
         let r = entry(&s, &id).await.unwrap().record;
         assert_eq!(r.state, "published", "{case}");
-        assert_eq!(
-            r.reason.as_deref(),
-            Some("follow-up review incomplete"),
-            "{case}"
-        );
+        let expected = if matches!(case, "partial" | "failed") {
+            "follow-up review did not complete"
+        } else {
+            "follow-up review incomplete"
+        };
+        assert_eq!(r.reason.as_deref(), Some(expected), "{case}");
         let v = r.verify_review.unwrap();
-        assert_eq!(v["note"], "follow-up review incomplete", "{case}");
+        assert_eq!(v["note"], expected, "{case}");
         assert_eq!(v["resolved"], json!([]), "{case}");
     }
+}
+
+#[tokio::test]
+async fn queued_followup_terminal_transitions_notify_controller_without_a_runner() {
+    for case in ["cancel", "supersede", "remove", "failed", "skipped"] {
+        let (_data, s, _mock, job) = fixture().await;
+        let (id, follow) = linked_followup(&s, &job, Delivery::SameBranch).await;
+        s.enqueue(follow.clone()).await;
+        match case {
+            "cancel" => s.close(follow.key()).await.unwrap(),
+            "supersede" => {
+                let mut replacement = Job::new(follow.repo.clone(), follow.kind.clone(), "manual");
+                replacement.id = "replacement".into();
+                s.enqueue(replacement).await;
+            }
+            "remove" => s.remove_repo(follow.repo.clone()).await.unwrap(),
+            state => s
+                .transition(&follow, state, Some("fixture termination".into()))
+                .await
+                .unwrap(),
+        }
+        let r = entry(&s, &id).await.unwrap().record;
+        assert_eq!(r.state, "published", "{case}");
+        let v = r.verify_review.unwrap();
+        assert_eq!(v["note"], "follow-up review did not complete", "{case}");
+        assert_eq!(v["resolved"], json!([]));
+        assert_eq!(
+            Store::load(&s.settings.data_dir).unwrap().entries[&id]
+                .record
+                .state,
+            "published"
+        );
+    }
+}
+
+fn managed_summary(s: &Server, head: &str) -> String {
+    let state = crate::state::ReviewState {
+        reviewed_head: head.into(),
+        ..Default::default()
+    };
+    let yaml = s.config_yaml().unwrap().unwrap();
+    let marker = crate::config::Config::parse(&yaml, "fixture")
+        .unwrap()
+        .github
+        .summary_marker;
+    format!(
+        "{marker}\nReview prose\n{}",
+        crate::github::publish::encode_state(&state)
+    )
+}
+#[tokio::test]
+async fn status_rereads_managed_state_and_preserves_concurrent_review_prose() {
+    for changed_state in [false, true] {
+        let (_data, s, mock, job) = fixture().await;
+        let id = ready(&s, &job).await;
+        let old = managed_summary(&s, HEAD);
+        let new = format!(
+            "{}\nNew CLI prose",
+            managed_summary(&s, if changed_state { BASE } else { HEAD })
+        );
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!([{"id":44,"user":{"login":"revera-test[bot]"},"body":old}]),
+                ),
+            )
+            .expect(1)
+            .with_priority(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/comments/44"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":44,"body":new})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/issues/comments/44"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(if changed_state { 0 } else { 1 })
+            .mount(&mock)
+            .await;
+        update_status(&s, &entry(&s, &id).await.unwrap().record)
+            .await
+            .unwrap();
+        for request in mock
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "PATCH")
+        {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert!(body["body"].as_str().unwrap().contains("New CLI prose"));
+            assert!(body["body"].as_str().unwrap().contains("Fix: **ready**"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn status_defers_for_queued_running_reviews_and_reapplies_latest_on_completion() {
+    let (_data, s, mock, job) = fixture().await;
+    let r = request(&s, "dashboard", "admin", &job, None, false)
+        .await
+        .unwrap();
+    let repo = s.dashboard.lock().await.repos["owner/repo"].repo.clone();
+    let review = Job::new(
+        repo,
+        Kind::Review {
+            number: 7,
+            pr: pull(HEAD),
+            force: true,
+        },
+        "manual",
+    );
+    s.enqueue(review.clone()).await;
+    let before = mock.received_requests().await.unwrap().len();
+    update_status(&s, &r).await.unwrap();
+    assert_eq!(mock.received_requests().await.unwrap().len(), before);
+    s.queue.lock().await.take().unwrap();
+    change(&s, &r.id, |e| e.record.state = "ready".into())
+        .await
+        .unwrap();
+    update_status(&s, &r).await.unwrap();
+    assert_eq!(mock.received_requests().await.unwrap().len(), before);
+    let body = managed_summary(&s, HEAD);
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"id":44,"user":{"login":"revera-test[bot]"},"body":body}])),
+        )
+        .expect(1)
+        .with_priority(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/comments/44"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":44,"body":body})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/owner/repo/issues/comments/44"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    s.transition(&review, "complete", None).await.unwrap();
+    s.queue.lock().await.running.remove(&review.key());
+    refresh_review_status(&s, &review).await;
+    let requests = mock.received_requests().await.unwrap();
+    let patch = requests.iter().find(|r| r.method == "PATCH").unwrap();
+    let body: Value = serde_json::from_slice(&patch.body).unwrap();
+    assert!(body["body"].as_str().unwrap().contains("Fix: **ready**"));
+    assert!(
+        !body["body"]
+            .as_str()
+            .unwrap()
+            .contains("awaiting_confirmation")
+    );
 }
 
 #[tokio::test]
@@ -1246,6 +1987,10 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
         "open",
         "uncertain",
         "missing_state",
+        "empty_state",
+        "omitted_id",
+        "resolved",
+        "rejected",
         "draft_unresolved",
         "draft_resolved",
     ] {
@@ -1256,8 +2001,12 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
             Delivery::SameBranch
         };
         let (id, follow) = linked_followup(&s, &job, mode).await;
-        let tracked = if matches!(case, "open" | "uncertain") {
+        let tracked = if matches!(case, "open" | "uncertain" | "resolved" | "rejected") {
             json!([{"id":finding().id(),"status":case}])
+        } else if case == "empty_state" {
+            json!([])
+        } else if case == "omitted_id" {
+            json!([{"id":"other-finding","status":"resolved"}])
         } else {
             Value::Null
         };
@@ -1269,7 +2018,7 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
         let r = entry(&s, &id).await.unwrap().record;
         assert_eq!(r.state, "verified");
         let v = r.verify_review.unwrap();
-        if case == "draft_resolved" {
+        if matches!(case, "draft_resolved" | "resolved") {
             assert_eq!(v["resolved"], json!([finding().id()]));
         } else {
             assert_eq!(v["resolved"], json!([]), "{case}");
@@ -1281,6 +2030,14 @@ async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
                     .as_str()
                     .unwrap()
                     .contains("no resolution inferred")
+            );
+        }
+        if case.starts_with("draft") {
+            assert!(
+                v["note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("pre-publish independent verifier")
             );
         }
     }
@@ -1329,6 +2086,14 @@ async fn sandbox_full_worker_generate_tests_verify_approve_deliver_followup() {
     let ready = entry(&s, &r.id).await.unwrap().record;
     assert_eq!(ready.state, "ready", "{}", json!(ready));
     assert_eq!(ready.tests.as_ref().unwrap()["outcome"], "passed");
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !r.url.path().contains("/git/")),
+        "default approval policy wrote before manual approval"
+    );
     assert!(count.load(std::sync::atomic::Ordering::SeqCst) >= 3);
     assert!(
         !dir(&s.settings.data_dir, &r.id)

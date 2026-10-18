@@ -652,6 +652,7 @@ async fn dispatch(server: Arc<Server>) {
                     queue.running.remove(&job.key());
                 }
                 drop(queue);
+                fixes::refresh_review_status(&worker, &job).await;
                 drop(permit);
                 worker.notify.notify_one();
             });
