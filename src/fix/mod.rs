@@ -267,6 +267,13 @@ pub async fn run_agent(
     validate_request(request, stage)?;
     let route = stage.route(cfg);
     check_route(route, &cfg.github.token_env)?;
+    // The child has a fresh redaction registry: registrations in the server
+    // process do not cross exec. Custom model headers may carry credentials.
+    for r in route.routes() {
+        for value in r.extra_headers.values() {
+            crate::redact::register(value);
+        }
+    }
     let ledger = LedgerHandle::new();
     let started = Instant::now();
     let spec = terminal(stage);

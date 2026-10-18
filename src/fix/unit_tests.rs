@@ -743,6 +743,27 @@ async fn configured_fixer_fallback_reuses_provider_chain_and_ledger() {
     assert_eq!(result.ledger.by_route[0].role, "fixer");
 }
 
+#[tokio::test]
+async fn child_redacts_selected_route_header_credentials() {
+    let t = temp();
+    let r = request();
+    let id = r.findings[0].id();
+    let secret = "d1-model-header-private-value";
+    let mut cfg = scripted_config(
+        t.path(),
+        json!([{"tool_calls":[{"name":"submit_fix","arguments":{"summary":secret,"per_finding":[{"id":id,"disposition":"not_fixed","note":"checked"}]}}]}]),
+        "fixer",
+    );
+    cfg.models
+        .investigator
+        .extra_headers
+        .insert("X-Model-Key".into(), secret.into());
+    let result = run_agent(&cfg, &r, t.path(), Stage::Generate)
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&result).unwrap().contains(secret));
+}
+
 /// Opt-in real-provider proof. The fixture, controller diff, policy report,
 /// generate/verify ledgers and test outcome are retained outside the checkout.
 #[tokio::test]
