@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { checkFixes, fixScreenshots } from './browser-fixes.mjs';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
@@ -1076,6 +1077,9 @@ async function checkManifestChoices() {
 }
 
 try {
+  if (!emptyYaml && !process.argv.includes('--screenshots-only'))
+    await checkFixes({ open, choose, edit, savedConfig });
+  if (!emptyYaml && !process.argv.includes('--checks-only')) await fixScreenshots({ open, output });
   if (!process.argv.includes('--screenshots-only')) {
     await checkConnectedAccounts();
     await checkManifestChoices();
