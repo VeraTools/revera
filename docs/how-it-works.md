@@ -91,10 +91,11 @@ comments or checks.
    sandbox; its fresh-context verifier is read-only. Both receive selected
    model credentials and network access for model calls, never a GitHub token.
    Only an administrator-approved test command executes repository code, in a
-   separate sandbox without network or credentials. Rust checks the patch;
-   a dashboard administrator must separately approve code publication, which
-   rechecks the PR head, policy and installation grants. Model output cannot
-   authorize a push.
+   separate sandbox without network or credentials. Rust checks the patch.
+   Publication needs a dashboard administrator's approval (or an
+   administrator's setting that allows draft PRs without it) and rechecks the
+   PR head, policy and installation grants. Model output cannot authorize a
+   push.
 
 ## Outcomes
 

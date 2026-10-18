@@ -195,8 +195,9 @@ Small, exact replacements can appear as suggested changes, not tested patches.
 
 The GitHub App can also generate [fix previews](docs/server.md#fixes-opt-in)
 in a sandbox. Execution is off by default; an administrator can consent to
-one request or enable it persistently. Publishing code to GitHub always needs
-an administrator's approval in the dashboard.
+one request or enable it persistently. Publishing code to GitHub needs an
+administrator's approval in the dashboard unless you allow draft-PR publishing
+without it.
 
 ## How it works
 
