@@ -123,7 +123,178 @@ async function checkSetupLink() {
   }
 }
 
+async function choose(page, label, option) {
+  await page.getByLabel(label, { exact: true }).click();
+  await page.getByRole('option', { name: option, exact: true }).click();
+}
+
+async function savedConfig(page) {
+  const yaml = await page.evaluate(async () => {
+    const path = '/src/lib/api.ts';
+    const { api } = await import(path);
+    return (await api.settings()).yaml;
+  });
+  const doc = parseDocument(yaml);
+  assert.deepEqual(doc.errors, [], 'Wizard saves valid YAML');
+  return doc;
+}
+
+async function testWizard(page) {
+  // Observe calls without replacing the mock's real save/test behavior.
+  await page.evaluate(async () => {
+    const path = '/src/lib/api.ts';
+    const { api } = await import(path);
+    if (!window.testedRoles) {
+      const test = api.test;
+      api.test = (role) => {
+        window.testedRoles.push(role);
+        return test(role);
+      };
+    }
+    window.testedRoles = [];
+  });
+  await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+  await page.getByRole('button', { name: 'Finish setup', exact: true }).waitFor();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('button')].some(
+      (button) => button.textContent === 'Finish setup' && !button.disabled,
+    ),
+  );
+  assert.deepEqual(await page.evaluate(() => window.testedRoles), [
+    'investigator',
+    'validator',
+    'embedding',
+  ]);
+  return savedConfig(page);
+}
+
+async function checkWizardReranker() {
+  {
+    const { context, page } = await open('/setup?stage=configure');
+    await page.getByRole('heading', { name: 'Connect your review models', exact: true }).waitFor();
+    if (emptyYaml) {
+      await edit(page, 'model-investigator-endpoint', investigator.base_url);
+      await edit(page, 'model-investigator-name', investigator.model);
+      await firstKey(page);
+    }
+    await page.locator('summary').filter({ hasText: 'Repository search' }).click();
+    const retrieval = page.getByLabel('Enable Vera retrieval', { exact: true });
+    if ((await retrieval.getAttribute('aria-checked')) === 'false') await retrieval.click();
+    await choose(page, 'Embedding backend', 'API endpoint');
+    const reranker = page.getByLabel('Enable reranker', { exact: true });
+    assert.equal(await reranker.getAttribute('aria-checked'), 'true', 'Reranker defaults on');
+    assert.equal(await page.locator('#model-reranker-name').inputValue(), '');
+    assert.equal(await page.locator('.reranker-fields input').count(), 1, 'Only a model is needed');
+    await edit(page, 'model-embedding-endpoint', 'https://api.example.com/v1');
+    await edit(page, 'model-embedding-name', 'embedding-model');
+    await edit(page, 'model-embedding-env', 'EMBEDDING_KEY');
+    const embeddingKey = page
+      .locator('.field')
+      .filter({ has: page.locator('#model-embedding-env') });
+    await embeddingKey.getByRole('button', { name: 'Set key', exact: true }).click();
+    await page.getByLabel('API key', { exact: true }).fill('fixture-embedding-key');
+    await page.getByRole('dialog').getByRole('button', { name: 'Set key', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    await edit(page, 'model-reranker-name', 'reranker-model');
+    await choose(page, 'Embedding backend', 'Local (on-device)');
+    assert.equal(await page.locator('.reranker-fields').count(), 0);
+    await choose(page, 'Embedding backend', 'API endpoint');
+    await retrieval.click();
+    await retrieval.click();
+    assert.equal(await reranker.getAttribute('aria-checked'), 'true');
+    assert.equal(await page.locator('#model-reranker-name').inputValue(), 'reranker-model');
+    const doc = await testWizard(page);
+    const expected = {
+      base_url: 'https://api.example.com/v1',
+      model: 'reranker-model',
+      api_key_env: 'EMBEDDING_KEY',
+    };
+    assert.deepEqual(doc.getIn(['vera', 'reranker']).toJSON(), expected);
+    assert.equal((await page.locator('body').innerText()).includes('fixture-embedding-key'), false);
+    await edit(page, 'model-reranker-name', 'changed-reranker');
+    assert.equal(await page.getByRole('button', { name: 'Finish setup' }).isEnabled(), false);
+    await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+    await page.getByRole('button', { name: 'Finish setup', exact: true }).click();
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
+    await page.getByRole('tab', { name: 'Retrieval', exact: true }).click();
+    assert.equal(await page.locator('#model-reranker-endpoint').inputValue(), expected.base_url);
+    assert.equal(await page.locator('#model-reranker-env').inputValue(), expected.api_key_env);
+    assert.equal(await page.locator('#model-reranker-name').inputValue(), 'changed-reranker');
+    await choose(page, 'Reranker format', 'Top-k format');
+    await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+    const settings = parseDocument(await page.getByLabel('Review configuration YAML').inputValue());
+    assert.deepEqual(settings.getIn(['vera', 'reranker']).toJSON(), {
+      ...expected,
+      model: 'changed-reranker',
+      protocol: 'voyage',
+    });
+    await context.close();
+  }
+
+  // Resume with an API embedding route, with and without an existing reranker.
+  for (const custom of [false, true]) {
+    const { context, page } = await open('/setup?stage=install');
+    await page.getByRole('button', { name: 'Install on repositories', exact: true }).waitFor();
+    const reranker = {
+      base_url: 'https://reranker.example.com/v1',
+      api_key_env: 'RERANKER_KEY',
+      model: 'saved-reranker',
+      protocol: 'generic',
+      top_k: 12,
+    };
+    const yaml = `# Keep this setup comment
+models:
+  investigator: ${JSON.stringify(investigator)}
+vera:
+  enabled: true
+  backend: api
+  embedding:
+    base_url: https://api.example.com/v1
+    api_key_env: EMBEDDING_KEY
+    model: embedding-model
+${custom ? `  reranker: ${JSON.stringify(reranker)}\n` : ''}`;
+    await page.evaluate(async (yaml) => {
+      const path = '/src/lib/api.ts';
+      const { api } = await import(path);
+      await api.saveConfig(yaml);
+    }, yaml);
+    await page.getByRole('button', { name: 'Install on repositories', exact: true }).click();
+    await page.locator('summary').filter({ hasText: 'Repository search' }).click();
+    const toggle = page.getByLabel('Enable reranker', { exact: true });
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    assert.equal(
+      await page.locator('#model-reranker-name').inputValue(),
+      custom ? reranker.model : '',
+    );
+    await edit(page, 'model-embedding-endpoint', 'https://embedding.example.com/v1');
+    await edit(page, 'model-embedding-env', 'UPDATED_EMBEDDING_KEY');
+    if (custom) {
+      const doc = await testWizard(page);
+      assert.deepEqual(doc.getIn(['vera', 'reranker']).toJSON(), reranker);
+      assert.ok(doc.toString().includes('# Keep this setup comment'));
+    } else {
+      await toggle.click();
+      await choose(page, 'Embedding backend', 'Local (on-device)');
+      await choose(page, 'Embedding backend', 'API endpoint');
+      await page.getByLabel('Enable Vera retrieval', { exact: true }).click();
+      await page.getByLabel('Enable Vera retrieval', { exact: true }).click();
+      assert.equal(await toggle.getAttribute('aria-checked'), 'false', 'Off choice survives');
+      assert.equal((await testWizard(page)).hasIn(['vera', 'reranker']), false);
+      await toggle.click();
+      await edit(page, 'model-reranker-name', 'new-reranker');
+      const doc = await testWizard(page);
+      assert.deepEqual(doc.getIn(['vera', 'reranker']).toJSON(), {
+        base_url: 'https://embedding.example.com/v1',
+        api_key_env: 'UPDATED_EMBEDDING_KEY',
+        model: 'new-reranker',
+      });
+    }
+    await context.close();
+  }
+}
+
 try {
+  if (!process.argv.includes('--screenshots-only')) await checkWizardReranker();
   if (!emptyYaml && !process.argv.includes('--checks-only')) {
     for (const scheme of ['light', 'dark']) {
       await shot(

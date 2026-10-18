@@ -13,6 +13,7 @@
   import Status from './Status.svelte';
   import Notice from './Notice.svelte';
   import SelectField from './SelectField.svelte';
+  import RerankerFields from './RerankerFields.svelte';
 
   const tabs = ['Models', 'Review', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
   const modelRoles = [
@@ -184,21 +185,6 @@
     const result = tests[role];
     if (!result) return '';
     return result.ok ? `${result.latency_ms} ms` : result.error || 'Failed';
-  }
-  function setRerankerEnabled(enabled: boolean) {
-    if (enabled) {
-      config!.set(['vera', 'reranker'], {
-        base_url: 'https://api.example.com/v1',
-        model: 'model-name',
-        api_key_env: 'RERANKER_API_KEY',
-      });
-    } else {
-      config!.remove(['vera', 'reranker']);
-    }
-  }
-  function setRerankerFormat(value: string) {
-    if (value) config!.set(['vera', 'reranker', 'protocol'], value);
-    else config!.remove(['vera', 'reranker', 'protocol']);
   }
   const list = (value: string) =>
     value
@@ -479,31 +465,7 @@
                 <h3>Reranker <span class="badge" style="margin-left: 8px">Optional</span></h3>
                 <p>Reorders search results for relevance.</p>
               </div>
-              <div class="toggle-row" style="padding-top: 0; margin-bottom: 20px">
-                <span class="field-label">Use a reranker</span>
-                <Toggle
-                  checked={config.has(['vera', 'reranker'])}
-                  label="Enable reranker"
-                  onchange={setRerankerEnabled}
-                />
-              </div>
-              {#if config.has(['vera', 'reranker'])}
-                <ModelFields {config} role="reranker" {secrets} {setKey} retrieval />
-                <div class="field" style="margin-top: 16px">
-                  <label for="reranker-protocol">Reranker format</label>
-                  <SelectField
-                    id="reranker-protocol"
-                    value={config.get(['vera', 'reranker', 'protocol'], '')}
-                    options={[
-                      { value: '', label: 'Detect from endpoint' },
-                      { value: 'generic', label: 'Generic' },
-                      { value: 'voyage', label: 'Top-k format' },
-                    ]}
-                    onchange={setRerankerFormat}
-                  />
-                  <small>Reranker options and embedding request limits are in Advanced.</small>
-                </div>
-              {:else}<p class="helper">Search results are used without reranking.</p>{/if}
+              <RerankerFields {config} {secrets} {setKey} />
             </section>
           </div>
         {/if}

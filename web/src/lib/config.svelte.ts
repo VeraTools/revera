@@ -98,6 +98,25 @@ export class ConfigDocument {
     this.yaml = this.document.toString();
     this.revision++;
   }
+  setRerankerEnabled(enabled: boolean, useEmbedding = false) {
+    if (!enabled) {
+      this.remove(['vera', 'reranker']);
+      return;
+    }
+    this.set(['vera', 'reranker'], {
+      base_url: useEmbedding
+        ? this.get(['vera', 'embedding', 'base_url'], '')
+        : 'https://api.example.com/v1',
+      model: useEmbedding ? '' : 'model-name',
+      api_key_env: useEmbedding
+        ? this.get(['vera', 'embedding', 'api_key_env'], 'EMBEDDING_API_KEY')
+        : 'RERANKER_API_KEY',
+    });
+  }
+  setRerankerFormat(value: string) {
+    if (value) this.set(['vera', 'reranker', 'protocol'], value);
+    else this.remove(['vera', 'reranker', 'protocol']);
+  }
   effort(path: string[]) {
     const value = this.get<unknown>([...path, 'reasoning'], 'medium');
     return value && typeof value === 'object'
