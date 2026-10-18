@@ -1,7 +1,7 @@
 name: Revera PR Review
 # PR consumers must check out pull_request.head.sha so tools read the PR head tree.
 # Push, schedule and workflow_dispatch runs build or refresh the checkout's index.
-description: Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval.
+description: "AI code review for pull requests: a second model re-checks every finding before it posts. Any model provider; App or Action."
 branding:
   icon: search
   color: purple
