@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.8.0
+
+Existing setups keep working without changes. Fix execution and external PR
+tracking are off by default, and no new GitHub permission is needed for
+reviews. See [Upgrading from 0.7.0](docs/server.md#from-070-to-080).
+
+- Connected accounts: the Repositories page lists every installation of your
+  GitHub App with its status (allowed, awaiting approval, permission update
+  required, suspended, not installed). Administrators approve or revoke owners
+  there; revoking cancels that owner's work and removes its repositories.
+  Approvals follow GitHub account IDs, so renames keep working. Installation
+  changes refresh through webhooks, and new installations return to this page.
+- Setup asks who can install the App (only your account, or any account) and
+  whether to request Contents write for publishing approved fixes. Both
+  default to the previous behavior. Unapproved owners never get jobs, and their
+  repository names are not shown.
+- External reviews: paste an open public PR URL under **Reviews → Review PR
+  URL** to review it privately, without installing the App there. Nothing is
+  posted to GitHub, only the server's configuration is used, and no GitHub
+  token reaches the review. You can also track your own open public PRs
+  (off by default) so each new push is reviewed.
+- Review details show only accepted findings, with evidence, links to the
+  reviewed lines and a "may be outdated" label when the PR has changed.
+  Rejected and uncertain candidates move behind **Show diagnostics**.
+- Copy or download instructions for your coding agent, per finding or for the
+  whole review. Complete GitHub summaries with findings include a collapsed
+  **Fix with your coding agent** section. The summary's count of accepted
+  findings matches the dashboard.
+- Small, exact replacements checked by the validator appear as GitHub
+  suggested changes. Revera only suggests them when the lines match the
+  reviewed commit exactly and sit inside the PR's changes.
+- Opt-in fixes for the GitHub App. A fixer model edits a snapshot of the PR in
+  a bubblewrap sandbox without a GitHub token; Rust checks the patch, an
+  optional test command runs without network, and a separate verifier model
+  checks each finding. Request fixes from the dashboard, the summary link, the
+  **Fix with Revera** check button or `@<app> fix`. Results are previews you
+  can download; publishing as a draft PR or a commit to the PR branch needs
+  Contents write and, by default, an administrator's approval. Revera never
+  force-pushes, re-reviews what it published and reports which findings were
+  resolved. Settings → Fixes and per-repository overrides control all of it.
+
 ## v0.7.0
 
 - Quick and Deep now scale from your budget instead of using fixed limits.
