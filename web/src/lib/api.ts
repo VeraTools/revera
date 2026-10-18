@@ -12,6 +12,15 @@ import type {
   Trigger,
   ReviewMode,
   Installations,
+  FixSummary,
+  FixRecord,
+  FixPlan,
+  FixDetail,
+  FixAction,
+  FixSettings,
+  FixPolicy,
+  FixOverride,
+  FixDelivery,
 } from './types';
 
 export const mockMode = import.meta.env.VITE_MOCK === '1';
@@ -46,7 +55,7 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
     throw new ApiError(data.error || `Request failed (${response.status})`, response.status);
   }
   if (response.status === 204) return undefined as T;
-  if (response.headers.get('content-type')?.includes('text/plain'))
+  if (response.headers.get('content-type')?.startsWith('text/'))
     return (await response.text()) as T;
   return response.json();
 }
@@ -109,6 +118,27 @@ export const api = {
   test: (role: Role, fallback?: number) =>
     request<TestResult>('/api/settings/test', 'POST', { role, fallback }),
   models: (role: Role) => request<{ models: string[] }>('/api/settings/models', 'POST', { role }),
+  // Fix requests and server-owned policy.
+  fixes: (filters: Record<string, string> = {}) =>
+    request<{ fixes: FixSummary[] }>(`/api/fixes?${new URLSearchParams(filters)}`),
+  fixPlan: (job: string, findings?: string[]) =>
+    request<FixPlan>(
+      `/api/fixes/plan?${new URLSearchParams({ job, ...(findings ? { findings: findings.join(',') } : {}) })}`,
+    ),
+  requestFix: (job: string, findings: string[], once: boolean) =>
+    request<{ fix: FixRecord }>('/api/fixes', 'POST', { job, findings, once }),
+  fix: (id: string) => request<FixDetail>(`/api/fixes/${encodeURIComponent(id)}`),
+  fixAction: (
+    id: string,
+    action: FixAction,
+    body?: { once?: boolean; delivery?: FixDelivery; note?: string },
+  ) => request<{ fix: FixRecord }>(`/api/fixes/${encodeURIComponent(id)}/${action}`, 'POST', body),
+  fixArtifact: (id: string, artifact: 'patch.diff' | 'instructions.md') =>
+    request<string>(`/api/fixes/${encodeURIComponent(id)}/${artifact}`),
+  fixSettings: () => request<FixSettings>('/api/settings/fixes'),
+  saveFixSettings: (fixes: FixPolicy) => request<void>('/api/settings/fixes', 'PUT', { fixes }),
+  repoFixSettings: (repo: string, override: FixOverride | null) =>
+    request<void>(`/api/repos/${repoPath(repo)}/fixes`, 'PUT', override),
 };
 
 export function errorMessage(error: unknown) {

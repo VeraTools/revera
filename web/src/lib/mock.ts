@@ -1,4 +1,5 @@
 import { parseDocument } from 'yaml';
+import { mockFixRequest, updateMockFix } from './mock-fixes';
 import type {
   JobSummary,
   JobDetail,
@@ -11,6 +12,8 @@ import type {
   Trigger,
   Installation,
   Finding,
+  FixSummary,
+  FixState,
 } from './types';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
@@ -29,7 +32,13 @@ const connectedAccounts: Installation[] = [
   account: { login: login as string, id: id as number | null, type: 'Organization' },
   repository_selection: id ? 'selected' : null,
   suspended: status === 'suspended',
-  permissions: id ? { contents: 'read', pull_requests: 'write', checks: 'write' } : {},
+  permissions: id
+    ? {
+        contents: login === 'northstar' ? 'write' : 'read',
+        pull_requests: 'write',
+        checks: 'write',
+      }
+    : {},
   html_url: id
     ? `https://github.com/organizations/${login}/settings/installations/${id}`
     : installationUrl,
@@ -355,15 +364,22 @@ let settings: Settings = {
 let stage: SetupStage = 'done';
 let setupAuthorized = true;
 let signedIn = true;
-const listeners = new Set<(event: 'job' | 'repos', job?: JobSummary) => void>();
-export function subscribeMock(listener: (event: 'job' | 'repos', job?: JobSummary) => void) {
+const listeners = new Set<
+  (event: 'job' | 'repos' | 'fix', payload?: JobSummary | FixSummary) => void
+>();
+export function subscribeMock(
+  listener: (event: 'job' | 'repos' | 'fix', payload?: JobSummary | FixSummary) => void,
+) {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
-const emit = (event: 'job' | 'repos', job?: JobSummary) =>
-  listeners.forEach((listener) => listener(event, job));
+const emit = (event: 'job' | 'repos' | 'fix', payload?: JobSummary | FixSummary) =>
+  listeners.forEach((listener) => listener(event, payload));
+export function setMockFixState(id: string, state: FixState, progress: string | null = null) {
+  updateMockFix(id, state, progress, (fix) => emit('fix', fix));
+}
 export function setMockStage(next: SetupStage, authorized = true) {
   stage = next;
   setupAuthorized = authorized;
@@ -417,6 +433,19 @@ function enqueue(
 export async function mockRequest(path: string, method: string, body?: unknown): Promise<unknown> {
   const url = new URL(path, 'https://revera.example.com');
   const data = body as Record<string, unknown> | undefined;
+  // Fixes product API; kept separate from external-review and inventory fixtures.
+  if (
+    url.pathname.startsWith('/api/fixes') ||
+    url.pathname === '/api/settings/fixes' ||
+    /^\/api\/repos\/[^/]+\/[^/]+\/fixes$/.test(url.pathname)
+  )
+    return mockFixRequest(url, method, body, {
+      jobs,
+      findings: handoffFindings,
+      stale: detailStale,
+      yaml: settings.yaml,
+      emit: (fix) => emit('fix', fix),
+    });
   if (url.pathname === '/api/session')
     return {
       authenticated: signedIn,
