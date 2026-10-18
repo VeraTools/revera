@@ -14,9 +14,10 @@ with 1–2 runs per cell; none of it is a benchmark.
   `eval/large/truth/`, outside the repositories.
 - **Scoring.** `eval/score.py` matches accepted findings against a
   hand-written truth file per corpus (file + defect key, or keywords for
-  looser cases). Every accepted finding was additionally read once by a
-  person; borderline cases are called out below. There is no independent
-  second adjudicator.
+  looser cases). In the strategy and model evaluations, a person also read
+  every accepted finding once; borderline cases are called out below. There
+  is no independent second adjudicator. The web-search table reports automated
+  truth matches only.
 - **Runner.** `eval/run.sh CONFIG CORPUS [REPS]` copies the corpus (with a
   warm `.vera` index), runs `revera review --force`, and appends a scored
   row to `eval/results.jsonl`. `eval/run-all.sh` runs the matrix;
@@ -337,23 +338,75 @@ large set; E2 and E3 ran on one investigator model, whose budget stops
 caused every g1 miss and every ripgrep miss. Wall times depend on
 endpoint load on the day.
 
+## Opt-in web search
+
+One paired run on five synthetic public cases used GLM `glm-5.3` as investigator
+and `glm-5.3-flash` as validator, lexical repository tools and free hosted Exa.
+The arms differed only in `web_search.enabled`; prompts and budgets were the
+same. Truth stayed outside tracked head content. These are the raw results
+from [eval/web-results.md](../eval/web-results.md), not independent human adjudication.
+
+| arm | corpus | TP | FP | uncertain | rejected | tool calls | web attempts | seconds | tokens | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| off | contract | 0 | 0 | 0 | 0 | 8 | 0 | 29.7 | 15341 | partial |
+| on | contract | 1 | 0 | 0 | 0 | 18 | 7 | 288.7 | 85434 | complete |
+| off | version-change | 0 | 0 | 0 | 0 | 5 | 0 | 16.7 | 9290 | complete |
+| on | version-change | 1 | 0 | 0 | 0 | 11 | 3 | 173.2 | 37903 | complete |
+| off | wrong-version | 0 | 0 | 0 | 0 | 7 | 0 | 107.8 | 23134 | partial |
+| on | wrong-version | 0 | 0 | 0 | 0 | 9 | 2 | 169.6 | 35691 | partial |
+| off | clean-libraries | 0 | 0 | 0 | 0 | 2 | 0 | 6.0 | 4246 | complete |
+| on | clean-libraries | 0 | 0 | 0 | 0 | 1 | 0 | 7.0 | 4632 | complete |
+| off | injected-leak | 0 | 0 | 0 | 0 | 4 | 0 | 14.7 | 7211 | complete |
+| on | injected-leak | 0 | 0 | 0 | 0 | 2 | 0 | 13.9 | 5416 | complete |
+
+The two external-fact bugs concern Exa's Contents request contract and PyJWT
+2.10.0 subject validation. Search-on found 2/2 versus 0/2 with search off,
+with zero false positives across both arms. The Pydantic wrong-version decoy
+remained partial in both arms. The clean HTTPX change and injected-leak case
+made no web calls. Web-on took about 10× as long on the two cases where search
+found the bug (9.7× and 10.4×), and 1.6× as long on the wrong-version decoy.
+
+The contract case without search explicitly left the external contract
+unchecked. Both wrong-version runs stopped without a terminal submission.
+In the version-change case, the accepted finding relied on search highlights:
+telemetry recorded search requests but no page read, despite the prompt's
+read-before-accept instruction. Reports contain no transcripts to establish
+another verification path. The contract case made both search and read attempts,
+including a read error.
+
+Tokens are prompt plus completion, not cost. Web attempts count outbound HTTP
+attempts; rejected tool invocations count only as tool calls. External-call
+prices were not estimated. One repetition per arm and case is provisional
+evidence, not a quality guarantee. Web search stays off by default.
+
+Reproduce with `TMPDIR="$HOME/.local/tmp" CARGO_BUILD_JOBS=5 bash eval/run-web.sh 1`
+after setting `REVERA_MODEL_BASE_URL` and `REVERA_MODEL_API_KEY`. Leave
+`EXA_API_KEY` unset for hosted Exa, or set it for REST. Offline tests separately
+cover transport failures, contradictory or missing evidence, private repositories
+and concurrency. See [configuration](configuration.md#web_search) for the
+privacy boundary.
+
+## Reviewer tools
+
+Tools supply evidence; calling one does not prove that a change was covered.
+The evaluations compare review configurations, not each tool in isolation.
+They do not establish a benefit for adding more local tools.
+
+| Tools | Evidence and limits |
+|---|---|
+| `read_file`, `list_changed_files`, `diff_context` | Numbered head code, changed-file inventory and diff hunks; no arbitrary untouched-base reads |
+| `grep_repo`, `find_files` | Exact matches and path lookup in tracked head files, without an index |
+| `vera_search`, `vera_references`, `vera_grep`, `vera_overview` | Optional semantic retrieval, references, indexed matches and orientation; untracked hits are filtered and lexical tools remain available |
+| `web_search`, `web_read` | Opt-in external evidence from Exa search results; selected-result reads, shared limits and a separate privacy boundary |
+
+Repository tools are read-only, use the content exclusions and have bounded
+output. Delegated workers and panel scouts investigate with tools; planning
+has none and synthesis gets only `read_file`. Fresh validators get their own
+conversation and share the review's web limits, with capacity reserved for
+validation. Generic shell execution, file mutation, arbitrary HTTP, browsing
+history and CI logs are not reviewer tools.
+
 ## What a fair next evaluation looks like
-
-### Opt-in web-evidence comparison
-
-`eval/build-corpus-web.sh` defines five frozen synthetic public cases: Exa's
-Contents request contract, the PyJWT 2.10.0 subject-validation change, a
-Pydantic v1/v2 documentation decoy, a clean HTTPX comment-only change and an
-injected outbound-leak instruction. Truth stays outside tracked head content.
-`WEB-off.yaml` and `WEB-on.yaml` differ only in `web_search.enabled`, with the
-same GLM investigator/validator, prompts, retrieval and budgets. Run
-`TMPDIR="$HOME/.local/tmp" CARGO_BUILD_JOBS=5 bash eval/run-web.sh 1` after setting
-`REVERA_MODEL_BASE_URL` and `REVERA_MODEL_API_KEY`; unset `EXA_API_KEY` for the
-free-backend comparison, or set it for REST. The script prints raw TP/FP,
-uncertain/rejected, tool/web attempts, duration, tokens and completion status;
-it makes no quality claim. Review accepted findings against frozen truth before
-drawing conclusions. Contradictory/missing evidence, transport failures, private
-repositories and concurrency are covered separately by offline web-tool tests.
 
 1. **Vera on vs lexical-only under equal budgets** on repositories larger
    than the ripgrep cases, reporting cold and warm indexing time separately

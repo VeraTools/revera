@@ -146,9 +146,31 @@ against prior ids.
 
 ## Strategies
 
-`baseline` is the pipeline above. `delegated` and `panel` replace the
-investigate step with multiple lanes and share everything else (tools,
-schema, validator, anchoring, publication). See [strategies.md](strategies.md).
+Select `review.strategy`, `--strategy` in the CLI or the Action's `strategy`
+input. Every strategy uses the same fresh validator, anchoring, state and
+publication. They change how candidates are produced, not what can post.
+
+| Strategy | Candidate production |
+|---|---|
+| `baseline` (default) | One investigator explores the change and submits candidates |
+| `delegated` | A lead plans bounded questions; workers investigate in parallel; the lead synthesises candidates |
+| `panel` | Independent scouts investigate with focus labels; their candidates are combined and collapsed |
+
+Baseline is the recommended starting point. The validator can use the same
+model in a new conversation or a separate `models.validator` route.
+
+Delegated review uses `models.lead` and `models.workers`, both inheriting the
+investigator when omitted. Planning has no tools; synthesis has `read_file`.
+A failed worker creates a coverage gap and makes the run partial. Panel uses
+named `models.scouts` with labels from `panel.focuses`, in order; a single
+scout runs once per label. There is no voting: a claim from one scout still
+goes to validation.
+
+In the [strategy evaluation](evaluation.md#strategy-and-retrieval-comparison-meta-muse-spark-on-every-route),
+multiple lanes did not improve recall and cost more. Panels also produced
+more false positives. Measure a benefit on your own repositories before
+choosing them. Route and budget keys are in the
+[configuration reference](configuration.md#delegated-and-panel).
 
 ## Vera integration
 
@@ -157,7 +179,7 @@ sets `VERA_BACKEND=api` plus `EMBEDDING_*`/`RERANKER_*` from the configured
 env names). `.revera/vera-cache.json` records Vera version, backend,
 embedding model and vector dimension and is rewritten only after a
 successful, health-checked index or update; a restored cache that does not
-match is discarded. `revera cache-key` hashes just the index-shaping
+match is discarded. `revera cache-key` hashes only the index-shaping
 configuration (backend, embedding origin and model, excludes, Vera
 version) so the Action's cache survives investigator, validator, reranker,
 prompt, budget and credential-name changes; it prints

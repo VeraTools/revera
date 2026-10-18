@@ -9,6 +9,10 @@ Revera reviews a PR diff with an investigator model, re-checks every
 candidate with a fresh-context validator, and publishes only validated
 findings. Use this skill only for Revera itself.
 
+Setup guides: [GitHub App](../../docs/server.md), [Action](../../docs/action.md)
+and [local CLI](../../docs/cli.md). The App defaults to mention-triggered
+reviews; the Action uses workflow events.
+
 ## Workflow
 
 1. **Find the config.** `revera.yaml` at the repository root, or the path in

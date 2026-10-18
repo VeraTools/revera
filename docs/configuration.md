@@ -1,9 +1,12 @@
 # Configuration reference
 
-Revera reads `revera.yaml` from the working directory (or `--config <path>` /
-the Action's `config` input). Unknown keys are errors. `${VAR}` in any string
-value expands from the environment; a referenced variable that is missing or
-empty is a configuration error.
+Revera reads `revera.yaml` from the working directory, unless you pass
+`--config <path>` or the Action's `config` input. The GitHub App dashboard
+writes its server default to `/data/revera.yaml`. Unknown keys are errors.
+`${VAR}` in string values expands from the environment; missing or empty
+referenced variables are configuration errors.
+
+Setup guides: [GitHub App](server.md), [Action](action.md), [local CLI](cli.md).
 
 The smallest valid file is one investigator route:
 
@@ -49,7 +52,7 @@ different provider family).
 | `cache` | `true` | send explicit prompt-cache hints where the provider supports them |
 | `reasoning` | `medium` | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`, or the long form below |
 | `extra_headers` | `{}` | header name → value (values may use `${VAR}`) |
-| `session_header` | — | header that carries a stable per-run session id (set automatically for `opencode.ai` hosts) |
+| `session_header` | — | header that carries a stable per-run session id |
 | `script` | — | `scripted` protocol only: path to a JSON transcript (tests, Action smoke) |
 | `fallback` | `[]` | ordered alternative routes; entries cannot contain `fallback` |
 
@@ -59,7 +62,7 @@ Reasoning long form:
 reasoning:
   effort: high
   budget_tokens: 16384      # optional; overrides the effort→budget mapping where budgets are the native knob
-  field: auto               # openai-chat only: auto | openai (reasoning_effort) | openrouter (reasoning object)
+  field: auto               # openai-chat only; detect the provider's reasoning format
 ```
 
 Effort maps to a thinking budget where the provider takes one: minimal 1024,
@@ -82,7 +85,8 @@ request budget, the run deadline and the ledger. Routes can mix protocols.
 
 ### Fallback models
 
-Any role can configure ordered alternatives with the same route fields:
+Add `fallback` to a model route to try alternatives in order. Each entry
+uses the same route fields and may use a different provider or protocol:
 
 ```yaml
 models:
@@ -90,22 +94,23 @@ models:
     protocol: openai-responses
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
-    model: gpt-5.2
+    model: your-openai-model
     fallback:
       - protocol: anthropic
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-sonnet-4-5
+        model: your-anthropic-model
 ```
 
-After a route exhausts its own retries and request-reshaping steps, Revera
-tries the next available route on HTTP 429 or 5xx, timeout/connect/transport
-errors, HTTP 401/403 or 404, or an empty/malformed provider response. Other
-HTTP errors (including an unhandled 400), request-budget or deadline
-exhaustion, cancellation, and agent tool/terminal-protocol failures do not
-trigger fallback. Missing or empty key environments make only that route
-unavailable; a missing primary key is allowed when an alternative has a key.
-`revera doctor` lists each alternative's key presence; unavailable routes
-are noted in logs and the run ledger.
+Revera tries the next available route after the current route exhausts its
+retries and request adjustments. Fallback applies to HTTP 429, 5xx, 401, 403
+and 404; timeouts, connection and transport errors; and empty or malformed
+provider responses. Other HTTP errors, exhausted budgets or deadlines,
+cancellation and agent submission failures do not trigger fallback.
+
+A missing or empty key makes that route unavailable. The primary key may
+be missing if an alternative has a key. `revera doctor` lists key presence
+for each route; logs and the ledger record unavailable routes. `${VAR}`
+expansion still requires every variable referenced in a string value.
 
 The last successful route is sticky per role for the rest of the run,
 including fresh validator conversations. Switching replays the complete
@@ -132,7 +137,7 @@ both per route and in the totals.
 
 | key | default | notes |
 |---|---|---|
-| `strategy` | `baseline` | `baseline` · `delegated` · `panel` (see [strategies.md](strategies.md)) |
+| `strategy` | `baseline` | `baseline` · `delegated` · `panel` (see [strategies](how-it-works.md#strategies)) |
 | `publish` | `dry-run` | `dry-run` prints the plan; `comment` posts to the PR (the Action passes `comment`) |
 | `validate` | `true` | evaluation-only switch; `false` reports candidates as unvalidated, never publishes or stores them, and is rejected with `publish: comment` |
 | `min_severity` | `low` | `low` · `medium` · `high`; findings below are dropped |
@@ -174,9 +179,10 @@ Hard limits. Breaching one ends the affected stage and marks the run
 | `run_max_seconds` | `900` | run deadline; provider calls, tools and Vera subprocesses are bounded by the remaining time, with a reserve for validation and the report |
 | `retries` | `3` | per request, honouring `Retry-After` |
 
-For repositories above ~20k LOC, `agent_max_seconds: 420`–`600` avoids
-investigator time-outs (the 300 s default produced the only misses in our
-large-repository runs).
+Larger repositories may need more agent time. Earlier runs benefited from
+`agent_max_seconds: 420`–`600`, but later runs still failed to submit within
+those budgets. See the [large-repository results](evaluation.md#e3-current-engine-end-to-end)
+before choosing a budget; more time does not guarantee completion.
 
 ## `vera`
 
@@ -247,35 +253,20 @@ fingerprint instead.
 
 ### Warm index for new pull requests
 
-GitHub lets a pull request restore caches saved by its own earlier runs or
-by its base branch, never by other pull requests. With only a
-`pull_request` trigger, every new PR therefore builds its index from
-scratch, which on a large repository means minutes and a full round of
-embedding requests. Add a push trigger for the base branch:
-
-```yaml
-on:
-  pull_request:
-  push:
-    branches: [main]
-```
-
-On a push the Action does not review. It restores `main`'s previous index,
-runs `revera index` on the pushed commit (only changed files are
-re-embedded) and saves the result under `main`, where every new PR into
-`main` finds it. The checkout step from the quickstart needs no change: on
-a push, `github.event.pull_request.head.sha` is empty and it checks out the
-pushed commit. Index runs need the embedding credentials and any variable
-the config references; a failed index fails the step under the default
-`fail-on: failed` and saves nothing. Busy repositories can use a
-`schedule:` trigger instead of `push`; PRs then re-embed only what changed
-since the last refresh. With Vera disabled an index run does nothing.
+A new PR can restore its base branch's index but not another PR's. Add a
+base-branch push trigger to refresh the shared starting index after merges.
+Push, schedule and manual Action runs index only; they do not review or
+publish. See the [workflow example](action.md#keep-the-index-warm).
+The GitHub App warms the default-branch index in mention and auto modes.
 
 ## `web_search`
 
-Optional external technical evidence, **off by default**, independent of Vera.
-It helps check version-specific API contracts, release notes and advisories;
-local repository tools remain primary. No import-by-import browsing is required.
+External web search is **off by default** and independent of Vera. Enable
+it when a correctness claim depends on an external API contract, an exact
+dependency version, release notes or an advisory that is not in the checkout.
+Repository tools remain the primary evidence source. The small
+[paired evaluation](evaluation.md#opt-in-web-search) found external-fact bugs
+with search enabled, but results are provisional and searches add time.
 
 ```yaml
 web_search:
@@ -287,11 +278,12 @@ web_search:
   max_reads_per_review: 4
 ```
 
-`web_search(query)` returns up to five untrusted excerpts with review-local IDs;
-`web_read(result_id)` reads one selected result (up to 6000 characters). No
-arbitrary URL tool is available. Official sources and exact dependency versions
-must be verified; snippets alone cannot establish a finding. Fresh validators
-independently establish load-bearing external facts, or abstain.
+Set `enabled: true` to expose the tools. `web_search(query)` returns up to
+five untrusted excerpts with review-local IDs. `web_read(result_id)` reads
+one selected result, up to 6000 characters; there is no arbitrary-URL tool.
+Prompts require official sources, exact versions and independent verification
+by the fresh validator. This is not an enforced read-before-accept gate:
+one evaluation finding was accepted from search highlights without a page read.
 
 Queries and selected URLs go to **Exa, a third party**. Public visibility must
 come from event repository metadata; private or unknown repositories (including
@@ -357,18 +349,25 @@ cache scope is the base branch's and their tree is the PR head.
 
 ## `profiles`
 
-Named overrides of `review` and `budget` keys, applied with `--profile <name>`
-(CLI) or the `profile` input (Action) before the strategy is resolved and
-credentials are checked:
+Profiles override selected `review` and `budget` keys. Select one with
+`--profile <name>` in the CLI or `profile` in the Action. The App's quick and
+deep modes select the matching profile; standard mode applies no profile.
+Profiles are applied before strategy resolution and credential checks.
 
-`quick` and `deep` are built in: `revera review --profile quick` and the Action's
-`profile: quick` work without a `profiles` block. Both keep the configured
-strategy and validation. Quick uses 12 tool calls per agent, 150 seconds per
-agent and 420 seconds per run. Deep uses 50 calls, 600 seconds per agent and
-1800 seconds per run, with a 400,000-byte diff budget and up to 20 findings.
-Standard mode applies no profile. These effective settings enter review identity
-just like user profiles. A user profile named `quick` or `deep` replaces that
-built-in entirely, not just the listed keys. For example:
+`quick` and `deep` work without a `profiles` block. They change only these
+settings, keeping the configured strategy and validation:
+
+| Setting | `quick` | `deep` |
+|---|---|---|
+| `budget.agent_max_tool_calls` | `12` | `50` |
+| `budget.agent_max_seconds` | `150` | `600` |
+| `budget.run_max_seconds` | `420` | `1800` |
+| `review.max_diff_bytes` | unchanged | `400000` |
+| `review.max_findings` | unchanged | `20` |
+
+A user profile named `quick` or `deep` replaces the built-in override, rather
+than extending it. Keys it does not set keep the underlying configuration.
+Effective profile settings are part of review identity. For a custom profile:
 
 ```yaml
 profiles:
@@ -380,6 +379,8 @@ profiles:
 `--strategy` on the command line overrides both the file and the profile.
 
 ## Command line
+
+The [CLI guide](cli.md) covers installation and the first local review.
 
 ```sh
 revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
@@ -394,6 +395,9 @@ revera cache-info [--repo <path>]
 and effective configuration was `complete`.
 
 ## Action inputs
+
+See the [Action guide](action.md) for workflow setup, outputs, fork handling
+and version pinning.
 
 | input | default | notes |
 |---|---|---|

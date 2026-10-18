@@ -1,5 +1,7 @@
 # Vera retrieval
 
+See the [retrieval reference](../../../docs/configuration.md#vera) for all keys.
+
 Lexical search over the PR head is always on. Add Vera for semantic search
 and references on larger repositories:
 
@@ -31,3 +33,9 @@ vera:
   A suffix such as `(keyword-only on 2 searches)` or `(rerank fell back on
   1 searches)` counts searches where the embedding or reranker endpoint
   failed and Vera returned weaker results.
+
+## External web evidence
+
+Web search is separate from Vera and off by default. Queries go to Exa;
+private or unknown repositories, including local CLI reviews, also need
+trusted `allow_private: true`. See [web-search settings and privacy](../../../docs/configuration.md#web_search).
