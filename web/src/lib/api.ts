@@ -64,13 +64,22 @@ export const api = {
     ),
   overview: () => request<Overview>('/api/overview'),
   jobs: (filters: Record<string, string> = {}) =>
-    request<JobsPage>(`/api/jobs?${new URLSearchParams({ limit: '25', ...filters })}`),
+    request<JobsPage>(
+      `/api/jobs?${new URLSearchParams({
+        limit: '25',
+        ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
+      })}`,
+    ),
   job: (id: string) => request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}`),
   log: (id: string) => request<string>(`/api/jobs/${encodeURIComponent(id)}/log`),
   rerun: (id: string, mode: ReviewMode | null = null) =>
     request<{ id: string }>(`/api/jobs/${encodeURIComponent(id)}/rerun`, 'POST', { mode }),
   cancel: (id: string) => request<void>(`/api/jobs/${encodeURIComponent(id)}/cancel`, 'POST'),
   repos: () => request<Repository[]>('/api/repos'),
+  bulkRepoSettings: (
+    repos: string[],
+    settings: { trigger?: Trigger | null; mode?: ReviewMode | null },
+  ) => request<{ ok: boolean; updated: number }>('/api/repos', 'PATCH', { repos, ...settings }),
   repoSettings: (repo: string, settings: { trigger?: Trigger | null; mode?: ReviewMode | null }) =>
     request<void>(`/api/repos/${repoPath(repo)}`, 'PATCH', settings),
   index: (repo: string) => request<void>(`/api/repos/${repoPath(repo)}/index`, 'POST'),

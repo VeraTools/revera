@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../app.css';
+  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto, afterNavigate } from '$app/navigation';
   import { DropdownMenu } from 'bits-ui';
@@ -29,6 +30,21 @@
   let error = $state('');
   let appName = $state('Revera');
   let collapsed = $state(false);
+  onMount(() => {
+    try {
+      collapsed = localStorage.getItem('revera-sidebar') === 'collapsed';
+    } catch {
+      /* Storage may be disabled. */
+    }
+  });
+  function toggleSidebar() {
+    collapsed = !collapsed;
+    try {
+      localStorage.setItem('revera-sidebar', collapsed ? 'collapsed' : 'expanded');
+    } catch {
+      /* Storage may be disabled. */
+    }
+  }
   const themes = [
     { value: 'system', label: 'System', icon: Monitor },
     { value: 'light', label: 'Light', icon: Sun },
@@ -116,7 +132,7 @@
       <div class="sidebar-bottom">
         <button
           class="sidebar-collapse"
-          onclick={() => (collapsed = !collapsed)}
+          onclick={toggleSidebar}
           aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
           >{#if collapsed}<PanelLeftOpen size={17} />{:else}<PanelLeftClose size={17} /><span
               class="sidebar-label">Collapse sidebar</span

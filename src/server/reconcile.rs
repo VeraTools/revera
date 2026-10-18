@@ -240,6 +240,7 @@ pub(super) async fn once(server: &Server) -> Result<()> {
                 private: value["private"].as_bool().unwrap_or(false),
                 html_url: value["html_url"].as_str().unwrap_or("").into(),
                 has_override,
+                open_prs: Some(prs.len() as u64),
             };
             inventory.insert(repo.full_name.clone(), info.clone());
             server

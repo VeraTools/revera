@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
-const output = join(homedir(), '.local/tmp/revera-server/shots');
+const output = join(homedir(), '.local/tmp/revera-qol/shots');
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   executablePath:
@@ -23,7 +23,22 @@ async function open(path, scheme = 'light', viewport = { width: 1440, height: 90
     reducedMotion: 'reduce',
   });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    // Reuse the app's module instance, including Vite's HMR timestamp. Importing
+    // the unversioned URL can create a second mock state and miss observed calls.
+    window.importDashboard = (path) => {
+      const loaded = performance
+        .getEntriesByType('resource')
+        .map((entry) => entry.name)
+        .findLast((name) => new URL(name).pathname === path);
+      return import(loaded || path);
+    };
+  });
   page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error' && message.text().startsWith('Svelte error:'))
+      errors.push(message.text());
+  });
   await page.goto(`${base}${path}`);
   await page.waitForFunction(() => !document.body.innerText.includes('Loading '));
   return { context, page };
@@ -32,7 +47,7 @@ async function shot(path, filename, scheme, ready, action) {
   const { context, page } = await open(path, scheme);
   await page.getByRole('heading', { name: ready, exact: true }).waitFor();
   await action?.(page);
-  await page.screenshot({ path: join(output, filename) });
+  await page.screenshot({ path: join(output, filename), fullPage: path.startsWith('/reviews/') });
   await context.close();
 }
 
@@ -100,7 +115,7 @@ async function checkSetupLink() {
   // Simulate the server recognizing the setup cookie in this browser.
   await page.evaluate(async () => {
     const path = '/src/lib/mock.ts';
-    const { setMockStage } = await import(path);
+    const { setMockStage } = await window.importDashboard(path);
     setMockStage('create_app', true);
   });
   await page.getByRole('button', { name: 'Check again', exact: true }).click();
@@ -132,7 +147,7 @@ async function choose(page, label, option) {
 async function savedConfig(page) {
   const yaml = await page.evaluate(async () => {
     const path = '/src/lib/api.ts';
-    const { api } = await import(path);
+    const { api } = await window.importDashboard(path);
     return (await api.settings()).yaml;
   });
   const doc = parseDocument(yaml);
@@ -144,7 +159,7 @@ async function testWizard(page) {
   // Observe calls without replacing the mock's real save/test behavior.
   await page.evaluate(async () => {
     const path = '/src/lib/api.ts';
-    const { api } = await import(path);
+    const { api } = await window.importDashboard(path);
     if (!window.testedRoles) {
       const test = api.test;
       api.test = (role) => {
@@ -256,7 +271,7 @@ vera:
 ${custom ? `  reranker: ${JSON.stringify(reranker)}\n` : ''}`;
     await page.evaluate(async (yaml) => {
       const path = '/src/lib/api.ts';
-      const { api } = await import(path);
+      const { api } = await window.importDashboard(path);
       await api.saveConfig(yaml);
     }, yaml);
     await page.getByRole('button', { name: 'Install on repositories', exact: true }).click();
@@ -305,7 +320,7 @@ async function checkReviewSettings() {
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await page.getByText('Settings saved.', { exact: true }).waitFor();
   const settings = await page.evaluate(async () => {
-    const { api } = await import('/src/lib/api.ts');
+    const { api } = await window.importDashboard('/src/lib/api.ts');
     return api.serverSettings();
   });
   assert.equal(settings.default_trigger, 'auto');
@@ -337,9 +352,15 @@ async function checkReviewSettings() {
   await page.getByLabel('Search repositories', { exact: true }).fill('worker');
   assert.equal(await page.locator('tbody tr').count(), 1);
   await page.getByLabel('Search repositories', { exact: true }).fill('');
-  await choose(page, 'Filter by trigger', 'Off');
-  assert.equal(await page.locator('tbody tr').count(), 1);
-  await choose(page, 'Filter by trigger', 'All triggers');
+  await page
+    .getByRole('group', { name: 'Filter by trigger' })
+    .getByRole('button', { name: /^Off / })
+    .click();
+  assert.equal(await page.locator('tbody tr').count(), 2);
+  await page
+    .getByRole('group', { name: 'Filter by trigger' })
+    .getByRole('button', { name: /^All / })
+    .click();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -402,7 +423,7 @@ web_search:
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await page.getByText('Settings saved.', { exact: true }).waitFor();
   await page.evaluate(async () => {
-    const { api } = await import('/src/lib/api.ts');
+    const { api } = await window.importDashboard('/src/lib/api.ts');
     const test = api.test;
     window.fallbackCalls = [];
     api.test = (role, fallback) => {
@@ -469,7 +490,7 @@ async function checkMentionsAndReviewDetail() {
   );
   for (const subscribed of [true, null]) {
     await page.evaluate(async (value) => {
-      const { api } = await import('/src/lib/api.ts');
+      const { api } = await window.importDashboard('/src/lib/api.ts');
       const overview = await api.overview();
       overview.app.issue_comment_subscribed = value;
       api.overview = async () => overview;
@@ -485,17 +506,19 @@ async function checkMentionsAndReviewDetail() {
     .click();
   await page
     .getByText(
-      'Investigator switched from gpt-5.2 to claude-sonnet-4-5: rate limit or server error.',
+      'Investigator switched from model-large to model-small: rate limit or server error.',
       { exact: true },
     )
     .waitFor();
-  await page.getByText('Validator skipped gemini-3-pro: key not set.', { exact: true }).waitFor();
+  await page
+    .getByText('Validator skipped model-alternative: key not set.', { exact: true })
+    .waitFor();
   assert.equal(await page.getByLabel('Review mode', { exact: true }).innerText(), 'Default (Deep)');
   await choose(page, 'Review mode', 'Quick');
   await page.getByRole('button', { name: 'Re-run review', exact: true }).click();
   await page.getByText('A new review has been queued.', { exact: true }).waitFor();
   const jobs = await page.evaluate(async () => {
-    const { api } = await import('/src/lib/api.ts');
+    const { api } = await window.importDashboard('/src/lib/api.ts');
     return api.jobs();
   });
   assert.equal(jobs.jobs[0].mode, 'quick');
@@ -649,7 +672,212 @@ async function checkAuditSettings() {
   await context.close();
 }
 
+async function checkDashboardQol() {
+  const { context, page } = await open('/repositories');
+  await page.getByRole('heading', { name: 'Repositories', exact: true }).waitFor();
+  await page.locator('tbody tr').first().waitFor();
+  const names = () => page.locator('tbody .row-title').allTextContents();
+  const recentOrder = await names();
+  assert.equal(recentOrder.length, 12);
+  await choose(page, 'Sort repositories', 'Sort: Name');
+  const nameOrder = await names();
+  assert.notDeepEqual(nameOrder, recentOrder, 'Name sort changes row order');
+  assert.deepEqual(
+    nameOrder,
+    [...nameOrder].sort((a, b) => a.localeCompare(b)),
+  );
+  assert.equal(new URL(page.url()).searchParams.get('sort'), 'name');
+  const segments = page.getByRole('group', { name: 'Filter by trigger' });
+  await segments.getByRole('button', { name: /^Auto / }).click();
+  assert.equal(await page.locator('tbody tr').count(), 3);
+  assert.equal(new URL(page.url()).searchParams.get('trigger'), 'auto');
+  await page.reload();
+  await page.getByLabel('Sort repositories', { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel('Sort repositories', { exact: true }).innerText(),
+    'Sort: Name',
+  );
+  assert.equal(
+    await segments.getByRole('button', { name: /^Auto / }).getAttribute('aria-pressed'),
+    'true',
+  );
+  await segments.getByRole('button', { name: /^All / }).click();
+  await page.getByLabel('Select northstar/api', { exact: true }).check();
+  await page.getByLabel('Select northstar/billing', { exact: true }).check();
+  assert.equal(
+    await page
+      .getByLabel('Select all visible repositories', { exact: true })
+      .evaluate((el) => el.indeterminate),
+    true,
+  );
+  await choose(page, 'Set trigger for selected repositories', 'Auto');
+  await page.getByText('Trigger set to Auto for 2 repositories.', { exact: true }).waitFor();
+  for (const name of ['api', 'billing'])
+    assert.equal(
+      await page.getByLabel(`Trigger for northstar/${name}`, { exact: true }).innerText(),
+      'Auto',
+    );
+  assert.equal(
+    await page.getByLabel('Set trigger for selected repositories', { exact: true }).innerText(),
+    'Set trigger…',
+  );
+  await choose(page, 'Set mode for selected repositories', 'Quick');
+  await page.getByText('Mode set to Quick for 2 repositories.', { exact: true }).waitFor();
+  for (const name of ['api', 'billing'])
+    assert.equal(
+      await page.getByLabel(`Mode for northstar/${name}`, { exact: true }).innerText(),
+      'Quick',
+    );
+  await page.getByLabel('Search repositories', { exact: true }).fill('api');
+  await page.getByText('1 selected', { exact: true }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('q'), 'api');
+  await page.getByLabel('Search repositories', { exact: true }).fill('');
+  await page.getByLabel('Select all visible repositories', { exact: true }).check();
+  await page.getByText('12 selected', { exact: true }).waitFor();
+  await page
+    .getByLabel('Bulk repository actions')
+    .getByRole('button', { name: 'Index now', exact: true })
+    .click();
+  await page
+    .getByText(
+      'Index queued for 9 repositories. 2 skipped (reviews off). 1 skipped (index building).',
+      { exact: true },
+    )
+    .waitFor();
+  await choose(page, 'Activity', 'No activity in 30 days');
+  assert.deepEqual(await names(), ['northstar/docs', 'northstar/notifications', 'northstar/sdk']);
+  await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+  await page.getByLabel('Search reviews', { exact: true }).fill('empty results');
+  await page.waitForFunction(
+    () => document.querySelector('.result-count')?.textContent === '1 job',
+  );
+  assert.equal(new URL(page.url()).searchParams.get('q'), 'empty results');
+  await page.getByLabel('Search reviews', { exact: true }).fill('#234');
+  await page.waitForFunction(
+    () => document.querySelector('.result-count')?.textContent === '1 job',
+  );
+  await page
+    .getByRole('link', { name: 'Handle empty results in repository search', exact: true })
+    .click();
+  await page.locator('.summary ul').first().waitFor();
+  assert.equal((await page.locator('.summary').innerText()).includes('##'), false);
+  assert.ok(await page.locator('.summary blockquote').count());
+  assert.ok(await page.locator('.summary code').count());
+  assert.equal(await page.locator('.summary-footer').count(), 1);
+  assert.ok(
+    (
+      await page
+        .getByRole('link', { name: 'src/search/results.ts:84', exact: true })
+        .getAttribute('href')
+    ).endsWith('/blob/8c74a1e9bf062d4a18f60c32/src/search/results.ts#L84'),
+  );
+  await page.getByRole('heading', { name: 'Model usage', exact: true }).waitFor();
+  await page.getByText('Raw report data', { exact: true }).click();
+  assert.ok((await page.locator('.data-disclosure pre').innerText()).includes('"stats"'));
+  const rendered = await page.evaluate(async () => {
+    const { renderSummary } = await import('/src/lib/markdown.ts');
+    return {
+      xss: renderSummary('<img src=x onerror=alert(1)> & " \' <script>alert(1)</script>'),
+      links: renderSummary('[safe](https://example.com/a?q=1&x=2) [unsafe](javascript:alert(1))'),
+      inline: renderSummary('`**literal**` **bold** _italic_ file_name_unchanged'),
+      example: renderSummary(
+        '## Revera review\n\n**Status: complete** — 1 new finding\n\n- **[medium]** `slop/compare.go`:146 — Negative deltas\n\n> Review incomplete: investigator reported 1 unchecked area(s).\n\n### Resolved since last review\n\n- shortSHA panics on abbreviated commits\n\n_Timing: total 75s_\n\n<sub>revera · strategy baseline</sub>',
+      ),
+    };
+  });
+  assert.equal(rendered.xss.includes('<img'), false);
+  assert.equal(rendered.xss.includes('<script'), false);
+  for (const entity of ['&lt;', '&gt;', '&amp;', '&quot;', '&#39;'])
+    assert.ok(rendered.xss.includes(entity));
+  assert.equal((rendered.links.match(/<a /g) || []).length, 1);
+  assert.ok(rendered.links.includes('rel="noreferrer" target="_blank"'));
+  assert.ok(rendered.inline.includes('<code>**literal**</code>'));
+  assert.ok(rendered.inline.includes('<strong>bold</strong>'));
+  assert.ok(rendered.inline.includes('<em>italic</em>'));
+  assert.ok(rendered.inline.includes('file_name_unchanged'));
+  for (const tag of ['<ul>', '<blockquote>', '<code>', '<h4>', 'summary-footer'])
+    assert.ok(rendered.example.includes(tag));
+  assert.equal(rendered.example.includes('##'), false);
+  await page.goto(`${base}/reviews?repo=northstar%2Fapi&status=complete&kind=review&q=%23227`);
+  await page.waitForFunction(
+    () => document.querySelector('.result-count')?.textContent === '1 job',
+  );
+  assert.equal(await page.getByLabel('Search reviews', { exact: true }).inputValue(), '#227');
+  assert.equal(await page.getByLabel('Repository', { exact: true }).innerText(), 'northstar/api');
+  assert.equal(await page.getByLabel('Status', { exact: true }).innerText(), 'Complete');
+  assert.equal(await page.getByLabel('Job kind', { exact: true }).innerText(), 'Reviews only');
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
+  await page.getByRole('heading', { name: 'Repositories', exact: true }).waitFor();
+  await page.goBack();
+  await page.waitForFunction(
+    () => document.querySelector('.result-count')?.textContent === '1 job',
+  );
+  assert.equal(await page.getByLabel('Search reviews', { exact: true }).inputValue(), '#227');
+  await context.close();
+
+  const overview = await open('/');
+  await overview.page
+    .getByRole('group', { name: 'Overview period' })
+    .getByRole('button', { name: '7 days', exact: true })
+    .click();
+  await overview.page.getByText(/History keeps\s+the\s+last 500 jobs/).waitFor();
+  await overview.page.reload();
+  assert.equal(
+    await overview.page
+      .getByRole('group', { name: 'Overview period' })
+      .getByRole('button', { name: '7 days', exact: true })
+      .getAttribute('aria-pressed'),
+    'true',
+  );
+  await overview.page.getByRole('button', { name: 'Collapse navigation', exact: true }).click();
+  await overview.page.reload();
+  await overview.page.getByRole('button', { name: 'Expand navigation', exact: true }).waitFor();
+  await overview.context.close();
+
+  const settings = await open('/settings?tab=budgets');
+  await settings.page
+    .getByText('Quick: 12 tool calls and 2.5 min per agent, 7.5 min per review.', { exact: true })
+    .waitFor();
+  await settings.page
+    .getByText(
+      'Deep: 50 tool calls and 10 min per agent, 30 min per review, diffs up to 400 KB, up to 20 findings.',
+      { exact: true },
+    )
+    .waitFor();
+  await edit(settings.page, 'budget-agent_max_tool_calls', '40');
+  await settings.page
+    .getByText('Quick: 20 tool calls and 2.5 min per agent, 7.5 min per review.', { exact: true })
+    .waitFor();
+  const profiles = await settings.page.evaluate(async () => {
+    const { quickBudget, deepBudget } = await import('/src/lib/profiles.ts');
+    const b = {
+      agent_max_tool_calls: 1,
+      agent_max_seconds: 20,
+      run_max_seconds: 40,
+      run_max_requests: 120,
+      retries: 3,
+    };
+    return {
+      quick: quickBudget(b),
+      deep: deepBudget(
+        { ...b, agent_max_seconds: 4000, run_max_seconds: 2000 },
+        { max_diff_bytes: 500000, max_findings: 25 },
+      ),
+    };
+  });
+  assert.equal(profiles.quick.agent_max_tool_calls, 1);
+  assert.equal(profiles.quick.agent_max_seconds, 30);
+  assert.equal(profiles.quick.run_max_seconds, 60);
+  assert.equal(profiles.deep.agent_max_seconds, 4000);
+  assert.equal(profiles.deep.run_max_seconds, 3000);
+  assert.equal(profiles.deep.run_max_requests, 240);
+  assert.equal(profiles.deep.review.max_diff_bytes, 500000);
+  assert.equal(profiles.deep.review.max_findings, 25);
+  await settings.context.close();
+}
+
 try {
+  if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkDashboardQol();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAuditSettings();
   if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();
   if (!process.argv.includes('--screenshots-only')) await checkWizardReranker();
@@ -686,7 +914,17 @@ try {
           await page.getByLabel('Run log output').waitFor();
         },
       );
-      await shot('/repositories', `repositories-${scheme}.png`, scheme, 'Repositories');
+      await shot(
+        '/repositories',
+        `repositories-${scheme}.png`,
+        scheme,
+        'Repositories',
+        async (page) => {
+          await page.getByLabel('Select northstar/api', { exact: true }).check();
+          await page.getByLabel('Select northstar/web', { exact: true }).check();
+          await page.getByText('2 selected', { exact: true }).waitFor();
+        },
+      );
       await shot('/settings', `settings-models-${scheme}.png`, scheme, 'Review models');
       await shot(
         '/settings?tab=review',
@@ -723,6 +961,38 @@ try {
       );
       await page.screenshot({ path: join(output, 'overview-mobile-dark.png') });
       await context.close();
+    }
+    for (const scheme of ['light', 'dark']) {
+      for (const [route, name] of [
+        ['/', 'Overview'],
+        ['/repositories', 'Repositories'],
+        ['/reviews', 'Reviews'],
+        ['/reviews/review-105', 'Handle empty results in repository search'],
+      ]) {
+        const { context, page } = await open(route, scheme, { width: 800, height: 1000 });
+        await page.getByRole('heading', { name, exact: true }).waitFor();
+        if (route === '/repositories') {
+          await page.getByLabel('Select northstar/api', { exact: true }).check();
+          await page.getByLabel('Select northstar/web', { exact: true }).check();
+          const bar = await page.getByLabel('Bulk repository actions').boundingBox();
+          assert.ok(
+            bar && bar.y >= 0 && bar.y + bar.height <= 1000,
+            'Bulk bar stays in the viewport',
+          );
+        }
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+          `${route} fits at 800px`,
+        );
+        await page.screenshot({
+          path: join(
+            output,
+            `${route === '/' ? 'overview' : route.includes('review-') ? 'review-detail' : route.slice(1)}-800-${scheme}.png`,
+          ),
+        });
+        await context.close();
+      }
     }
   }
 
@@ -953,7 +1223,7 @@ try {
       await page.getByRole('link', { name: 'Reviews', exact: true }).click();
       await page.getByRole('link', { name: 'Manual review', exact: true }).waitFor();
       const saved = await page.evaluate(async () => {
-        const { api } = await import('/src/lib/api.ts');
+        const { api } = await window.importDashboard('/src/lib/api.ts');
         return api.jobs();
       });
       assert.equal(saved.jobs[0].mode, 'deep');
@@ -977,7 +1247,8 @@ try {
       'PASS: setup link authorization/copy, labelled keyboard selects in both themes/mobile, ' +
         'empty filters, wizard, YAML/comments/reasoning, secret dialog, server settings, ' +
         'trigger/mode defaults and overrides, mention notice/commands, fallback editor/tests, ' +
-        'web search, manual/rerun modes, live updates, audit settings, no browser runtime errors.',
+        'web search, manual/rerun modes, live updates, audit settings, repository sorting/filtering/bulk, ' +
+        'review search/URL, safe markdown, overview period/sidebar persistence, budget previews, no browser runtime errors.',
     );
   }
 } finally {

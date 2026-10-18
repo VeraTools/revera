@@ -6,6 +6,7 @@
   import { Save, Check } from '@lucide/svelte';
   import { api, errorMessage } from '#lib/api';
   import { ConfigDocument, backends, triggers, modes } from '#lib/config.svelte';
+  import { quickBudget, deepBudget, type Budget } from '#lib/profiles';
   import type {
     Settings,
     Secret,
@@ -246,6 +247,22 @@
       hint: 'Retry failed requests, respecting the endpoint’s retry delay.',
     },
   ];
+  const budget = $derived(
+    Object.fromEntries(
+      budgetFields.map((field) => [
+        field.key,
+        config?.get(['budget', field.key], field.value) ?? field.value,
+      ]),
+    ) as unknown as Budget,
+  );
+  const quick = $derived(quickBudget(budget));
+  const deep = $derived(
+    deepBudget(budget, {
+      max_diff_bytes: config?.get(['review', 'max_diff_bytes'], 200000) ?? 200000,
+      max_findings: config?.get(['review', 'max_findings'], 10) ?? 10,
+    }),
+  );
+  const minutes = (seconds: number) => Number((seconds / 60).toFixed(1));
 </script>
 
 <svelte:window onbeforeunload={beforeUnload} />
@@ -436,7 +453,7 @@
               type="number"
               min="1"
               value={config.get(['review', 'max_findings'], 10)}
-              onchange={(event) =>
+              oninput={(event) =>
                 config!.set(['review', 'max_findings'], event.currentTarget.valueAsNumber)}
             />
           </div>
@@ -486,8 +503,20 @@
             <h2>Review limits</h2>
             <p>A limit stops the affected stage and marks the review partial.</p>
             <p>
-              Quick and Deep change tool calls per agent, seconds per agent, and seconds per review.
-              Deep also changes the largest diff and maximum findings.
+              {#if config.get(['profiles', 'quick'], null) !== null}Quick uses the <code>quick</code
+                > profile from your configuration.
+              {:else}Quick: {quick.agent_max_tool_calls} tool calls and {minutes(
+                  quick.agent_max_seconds,
+                )} min per agent, {minutes(quick.run_max_seconds)} min per review.{/if}
+            </p>
+            <p>
+              {#if config.get(['profiles', 'deep'], null) !== null}Deep uses the <code>deep</code> profile
+                from your configuration.
+              {:else}Deep: {deep.agent_max_tool_calls} tool calls and {minutes(
+                  deep.agent_max_seconds,
+                )} min per agent, {minutes(deep.run_max_seconds)} min per review, diffs up to {Number(
+                  (deep.review.max_diff_bytes / 1000).toFixed(1),
+                )} KB, up to {deep.review.max_findings} findings.{/if}
             </p>
           </div>
         </div>
@@ -498,7 +527,7 @@
                 type="number"
                 min={field.key === 'retries' ? 0 : 1}
                 value={config.get(['budget', field.key], field.value)}
-                onchange={(event) =>
+                oninput={(event) =>
                   config!.set(['budget', field.key], event.currentTarget.valueAsNumber)}
               /><small>{field.hint}</small>
             </div>{/each}
@@ -508,7 +537,7 @@
               type="number"
               min="1"
               value={config.get(['review', 'max_diff_bytes'], 200000)}
-              onchange={(event) =>
+              oninput={(event) =>
                 config!.set(['review', 'max_diff_bytes'], event.currentTarget.valueAsNumber)}
             /><small
               >In bytes. Files that do not fit are left out and the review is marked partial.</small

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { relative, duration } from '#lib/time';
+  import { relative, duration, severitySplit } from '#lib/time';
   import type { JobSummary } from '#lib/types';
   import Status from './Status.svelte';
   let { jobs }: { jobs: JobSummary[] } = $props();
@@ -30,9 +30,9 @@
           >
           <td><Status status={job.status} /></td>
           <td
-            >{#if job.findings.total}<span class="finding-count">{job.findings.total}</span
-              >{:else}<span class="muted"
-                >{['queued', 'running'].includes(job.status) ? '—' : '0'}</span
+            >{#if job.findings.total}<span class="finding-count">{job.findings.total}</span>
+              <div class="row-meta nowrap">{severitySplit(job.findings)}</div>{:else}<span
+                class="muted">{['queued', 'running'].includes(job.status) ? '—' : '0'}</span
               >{/if}</td
           >
           <td class="muted tabular">{duration(job.duration_ms)}</td>

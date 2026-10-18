@@ -67,6 +67,10 @@ let repos: Repository[] = [
     has_override: false,
     index: { state: 'ready', updated_at: ago(34) },
     last_job: jobs[0],
+    pushed_at: ago(8),
+    open_prs: 8,
+    review_count: 18,
+    finding_count: 7,
     html_url: 'https://github.com/northstar/api',
   },
   {
@@ -80,6 +84,10 @@ let repos: Repository[] = [
     has_override: true,
     index: { state: 'ready', updated_at: ago(68) },
     last_job: jobs[3],
+    pushed_at: ago(240),
+    open_prs: 3,
+    review_count: 12,
+    finding_count: 5,
     html_url: 'https://github.com/northstar/web',
   },
   {
@@ -93,6 +101,10 @@ let repos: Repository[] = [
     has_override: false,
     index: { state: 'building' },
     last_job: jobs[2],
+    pushed_at: ago(65),
+    open_prs: 2,
+    review_count: 6,
+    finding_count: 2,
     html_url: 'https://github.com/northstar/worker',
   },
   {
@@ -105,6 +117,10 @@ let repos: Repository[] = [
     mode_override: null,
     has_override: false,
     index: { state: 'none' },
+    pushed_at: ago(45 * 1440),
+    open_prs: 0,
+    review_count: 0,
+    finding_count: 0,
     html_url: 'https://github.com/northstar/docs',
   },
   {
@@ -116,9 +132,38 @@ let repos: Repository[] = [
     trigger_override: 'auto',
     mode_override: null,
     has_override: false,
-    index: { state: 'none' },
+    index: { state: 'none', retry_at: new Date(Date.now() + 5 * 60000).toISOString() },
+    pushed_at: ago(10 * 1440),
+    open_prs: 1,
+    review_count: 3,
+    finding_count: 1,
     html_url: 'https://github.com/northstar/internal-tools',
   },
+  ...['billing', 'cli', 'design-system', 'gateway', 'mobile', 'notifications', 'sdk'].map(
+    (name, i): Repository => ({
+      full_name: `northstar/${name}`,
+      private: i % 2 === 0,
+      default_branch: i === 2 ? 'develop' : 'main',
+      trigger: i === 6 ? 'off' : i === 3 ? 'auto' : 'mention',
+      mode: i === 0 ? 'deep' : 'standard',
+      trigger_override: i === 6 ? 'off' : i === 3 ? 'auto' : null,
+      mode_override: i === 0 ? 'deep' : null,
+      has_override: i === 0,
+      index: {
+        state: i === 6 ? 'none' : 'ready',
+        ...(i === 6 ? {} : { updated_at: ago((i + 1) * 1440) }),
+      },
+      ...(i === 5
+        ? {}
+        : {
+            pushed_at: ago([180, 2 * 1440, 6 * 1440, 30, 20 * 1440, 0, 60 * 1440][i]),
+            open_prs: [4, 1, 0, 6, 2, 0, 0][i],
+          }),
+      review_count: [15, 2, 0, 9, 4, 0, 1][i],
+      finding_count: [3, 1, 0, 2, 1, 0, 0][i],
+      html_url: `https://github.com/northstar/${name}`,
+    }),
+  ),
 ];
 const initialYaml = `# Default review configuration
 # Repositories can supply their own revera.yaml on the base branch.
@@ -126,22 +171,22 @@ models:
   # Reads the diff and proposes findings.
   investigator:
     protocol: openai-responses
-    base_url: https://api.openai.com/v1
+    base_url: https://api.example.com/v1
     api_key_env: OPENAI_API_KEY
-    model: gpt-5.2
+    model: model-large
     max_output_tokens: 16000
     reasoning: medium
     fallback:
       - protocol: anthropic
-        base_url: https://api.anthropic.com
+        base_url: https://backup.example.com
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-sonnet-4-5
+        model: model-small
   # Re-checks each finding in a fresh context.
   validator:
     protocol: anthropic
-    base_url: https://api.anthropic.com
+    base_url: https://backup.example.com
     api_key_env: ANTHROPIC_API_KEY
-    model: claude-sonnet-4-5
+    model: model-small
     max_output_tokens: 8000
     reasoning: medium
 
@@ -231,6 +276,7 @@ function references() {
     if (!settings.secrets.some((secret) => secret.name === name))
       settings.secrets.push({ name, source: 'missing', environment: false });
 }
+let jobSequence = 0;
 function enqueue(
   repo: string,
   pr?: number,
@@ -240,7 +286,7 @@ function enqueue(
   const repository = repos.find((item) => item.full_name === repo);
   if (repository?.trigger === 'off') throw new Error('Reviews are off for this repository.');
   const job: JobSummary = {
-    id: `job-${Date.now()}`,
+    id: `job-${Date.now()}-${++jobSequence}`,
     repo,
     pr,
     title: pr ? 'Manual review' : 'Repository index',
@@ -295,7 +341,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         github: { ok: true },
         models: ['investigator', 'validator'].map((role) => ({
           role,
-          model: role === 'investigator' ? 'gpt-5.2' : 'claude-sonnet-4-5',
+          model: role === 'investigator' ? 'model-large' : 'model-small',
           ok: true,
           checked_at: ago(12),
         })),
@@ -305,16 +351,41 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         running: jobs.filter((job) => job.status === 'running'),
         queued: jobs.filter((job) => job.status === 'queued'),
       },
-      last_24h: { reviews: 24, findings: 8, failed: 1, tokens: 382400 },
+      last_24h: {
+        reviews: 24,
+        findings: 8,
+        failed: 1,
+        tokens: 382400,
+        severity: { high: 2, medium: 4, low: 2 },
+        prompt_tokens: 340000,
+        cached_tokens: 129200,
+        median_duration_ms: 156000,
+      },
+      last_7d: {
+        reviews: 127,
+        findings: 35,
+        failed: 3,
+        tokens: 2148000,
+        severity: { high: 7, medium: 19, low: 9 },
+        prompt_tokens: 1900000,
+        cached_tokens: 893000,
+        median_duration_ms: 182000,
+      },
+      history_since: ago(5 * 1440),
       recent: jobs.slice(0, 10),
     };
   if (url.pathname === '/api/jobs') {
-    const selected = jobs.filter((job) =>
-      ['repo', 'status', 'kind'].every(
-        (field) =>
-          !url.searchParams.get(field) ||
-          job[field as 'repo' | 'status' | 'kind'] === url.searchParams.get(field),
-      ),
+    const q = (url.searchParams.get('q') || '').toLowerCase();
+    const selected = jobs.filter(
+      (job) =>
+        ['repo', 'status', 'kind'].every(
+          (field) =>
+            !url.searchParams.get(field) ||
+            job[field as 'repo' | 'status' | 'kind'] === url.searchParams.get(field),
+        ) &&
+        (!q ||
+          [job.title, job.author, job.repo].some((value) => value?.toLowerCase().includes(q)) ||
+          (/^#?\d+$/.test(q) && job.pr === Number(q.replace(/^#/, '')))),
     );
     const start = url.searchParams.get('before')
       ? selected.findIndex((job) => job.id === url.searchParams.get('before')) + 1
@@ -351,8 +422,25 @@ export async function mockRequest(path: string, method: string, body?: unknown):
       job: { ...job },
       summary_markdown:
         job.status === 'complete'
-          ? 'Reviewed the changed code and its surrounding context. ' +
-            'Two findings were independently re-checked in a fresh context before publication.'
+          ? `## Revera review
+
+**Status: complete** — ${job.findings.total} validated findings
+
+- **[high]** \`src/search/results.ts\`:84 — An empty result can leave the previous query visible
+- **[medium]** \`src/search/results.ts\`:112 — A late response can overwrite a newer search
+
+Checked: the changed search handler and its callers.
+- not checked: the deployment environment.
+
+> Review incomplete: investigator reported 1 unchecked area(s).
+
+### Resolved since last review
+
+- Retry policy no longer drops the final attempt
+
+_Timing: total 182s · index 0.1s · lanes 112s · validation 68s (p50 16s, p95 24s)_
+
+<sub>revera · strategy baseline · models: investigator=model-large@high, validator=model-small@medium</sub>`
           : (job.reason ??
             'The review is in progress. Findings will appear here after validation.'),
       findings: job.findings.total
@@ -381,29 +469,120 @@ export async function mockRequest(path: string, method: string, body?: unknown):
             },
           ].slice(0, job.findings.total)
         : [],
-      timing: { investigator_ms: 112000, validation_ms: 68000 },
+      strategy: 'baseline',
+      stats: {
+        candidates: 4,
+        accepted: job.findings.total,
+        rejected: 2,
+        files_read: 12,
+        retrieval: 'vera',
+        validation: true,
+      },
+      timing: {
+        total_ms: 182000,
+        vera_index_ms: 100,
+        lanes_ms: 112000,
+        validate_ms: 68000,
+        validate_p50_ms: 16000,
+        validate_p95_ms: 24000,
+        first_candidate_ms: 21000,
+        first_validated_ms: 128000,
+        incomplete_phases: [],
+        phases: [],
+        skipped_phases: [],
+      },
       ledger: {
         requests: 14,
-        retries: 0,
+        prompt_tokens: job.tokens?.prompt ?? 0,
+        completion_tokens: job.tokens?.completion ?? 0,
+        cached_prompt_tokens: job.tokens?.cached ?? 0,
+        reasoning_tokens: 1400,
+        cache_write_tokens: 0,
+        wall_ms: 180000,
+        by_route: [
+          {
+            role: 'investigator',
+            model: 'model-large',
+            route: 'investigator',
+            requests: 9,
+            prompt_tokens: 14220,
+            completion_tokens: 1420,
+            cached_prompt_tokens: 6000,
+            reasoning_tokens: 1000,
+            requested_reasoning: 'high',
+            effective_reasoning: 'high',
+            cache_write_tokens: 0,
+          },
+          {
+            role: 'validator',
+            model: 'model-small',
+            route: 'validator',
+            requests: 5,
+            prompt_tokens: 7000,
+            completion_tokens: 700,
+            cached_prompt_tokens: 2400,
+            reasoning_tokens: 400,
+            requested_reasoning: 'medium',
+            effective_reasoning: 'medium',
+            cache_write_tokens: 0,
+          },
+        ],
         ...(job.id === 'review-105'
           ? {
               fallback_events: [
                 {
                   role: 'investigator',
-                  from_model: 'gpt-5.2',
-                  to_model: 'claude-sonnet-4-5',
+                  from_model: 'model-large',
+                  to_model: 'model-small',
                   reason: 'rate_limit_or_server',
                 },
               ],
               unavailable_routes: [
-                { role: 'validator', model: 'gemini-3-pro', reason: 'missing_key' },
+                { role: 'validator', model: 'model-alternative', reason: 'missing_key' },
               ],
             }
           : {}),
       },
     } satisfies JobDetail;
   }
-  if (url.pathname === '/api/repos') return structuredClone(repos);
+  if (url.pathname === '/api/repos') {
+    if (method !== 'PATCH')
+      return structuredClone(
+        repos.map((repo) => ({
+          ...repo,
+          last_review: jobs.find((job) => job.repo === repo.full_name && job.kind === 'review'),
+        })),
+      );
+    const names = data?.repos;
+    if (
+      !Array.isArray(names) ||
+      !names.length ||
+      names.length > 1000 ||
+      !data ||
+      !('trigger' in data || 'mode' in data)
+    )
+      throw new Error('Choose 1–1000 repositories and at least one setting.');
+    if (names.some((name) => !repos.some((repo) => repo.full_name === name)))
+      throw new Error('Repository not found.');
+    if (
+      ('trigger' in data &&
+        data.trigger !== null &&
+        !['mention', 'auto', 'off'].includes(String(data.trigger))) ||
+      ('mode' in data &&
+        data.mode !== null &&
+        !['quick', 'standard', 'deep'].includes(String(data.mode)))
+    )
+      throw new Error('Invalid repository setting.');
+    for (const name of new Set(names as string[])) {
+      const override = { ...settings.server.repos[name] };
+      if ('trigger' in data) override.trigger = data.trigger as Trigger | null;
+      if ('mode' in data) override.mode = data.mode as ReviewMode | null;
+      settings.server.repos[name] = override;
+    }
+    syncRepos();
+    emit('repos');
+    return { ok: true, updated: new Set(names).size };
+  }
   const repoMatch = url.pathname.match(
     /^\/api\/repos\/([^/]+)\/([^/]+)(?:\/(index|pulls)(?:\/(\d+)\/review)?)?$/,
   );
@@ -438,6 +617,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
           draft: false,
           head_sha: '9a32b88',
           updated_at: ago(23),
+          last_job: { ...jobs[2], repo: name, pr: 251 },
         },
         {
           number: 249,
@@ -493,7 +673,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     return { ok: true, latency_ms: 342 };
   }
   if (url.pathname === '/api/settings/models')
-    return { models: ['gpt-5.2', 'gpt-5.2-mini', 'gpt-5.1'] };
+    return { models: ['model-large', 'model-small', 'model-alternative'] };
   throw new Error(`Mock endpoint not found: ${method} ${path}`);
 }
 

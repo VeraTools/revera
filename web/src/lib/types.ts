@@ -43,12 +43,48 @@ export interface JobDetail {
   job: JobSummary;
   summary_markdown?: string;
   findings: Finding[];
-  timing?: Record<string, unknown>;
+  strategy?: string;
+  stats?: {
+    candidates?: number;
+    accepted?: number;
+    rejected?: number;
+    files_read?: number;
+    retrieval?: string;
+    [key: string]: unknown;
+  };
+  timing?: {
+    total_ms?: number;
+    vera_index_ms?: number;
+    lanes_ms?: number;
+    validate_ms?: number;
+    validate_p95_ms?: number;
+    [key: string]: unknown;
+  };
   ledger?: {
+    by_route?: {
+      role: string;
+      model: string;
+      effective_reasoning?: string;
+      requests: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      cached_prompt_tokens: number;
+      [key: string]: unknown;
+    }[];
     fallback_events?: { role: string; from_model: string; to_model: string; reason: string }[];
     unavailable_routes?: { role: string; model: string; reason: string }[];
     [key: string]: unknown;
   };
+}
+export interface OverviewWindow {
+  reviews: number;
+  findings: number;
+  failed: number;
+  severity: { high: number; medium: number; low: number };
+  tokens: number;
+  prompt_tokens: number;
+  cached_tokens: number;
+  median_duration_ms: number | null;
 }
 export interface Overview {
   app: {
@@ -66,7 +102,9 @@ export interface Overview {
     vera: { enabled: boolean; version: string };
   };
   queue: { running: JobSummary[]; queued: JobSummary[] };
-  last_24h: { reviews: number; findings: number; failed: number; tokens: number };
+  last_24h: OverviewWindow;
+  last_7d: OverviewWindow;
+  history_since: string | null;
   recent: JobSummary[];
 }
 export interface Repository {
@@ -78,8 +116,13 @@ export interface Repository {
   trigger_override: Trigger | null;
   mode_override: ReviewMode | null;
   has_override: boolean;
-  index: { state: 'none' | 'ready' | 'building'; updated_at?: string };
+  pushed_at?: string;
+  open_prs?: number;
+  review_count: number;
+  finding_count: number;
+  index: { state: 'none' | 'ready' | 'building'; updated_at?: string; retry_at?: string };
   last_job?: JobSummary;
+  last_review?: JobSummary;
   html_url: string;
 }
 export interface PullRequest {

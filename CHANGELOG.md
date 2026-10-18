@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.7.0
+
+- Quick and Deep now scale from your budget instead of using fixed limits.
+  Quick halves the tool calls and time limits. Deep doubles them, up to 50
+  minutes per review, and doubles the request limit. Before, a raised budget
+  could make Deep shorter than a normal review. With the default budget the
+  numbers barely change; Quick's per-review time goes from 420 to 450
+  seconds, and Deep's request limit goes from 120 to 240. Custom `quick` and
+  `deep` profiles still replace the built-ins.
+- Repositories page: sort by recent activity, name, last review, open pull
+  requests or review count; filter by trigger and by recent activity; select
+  several repositories and change their trigger or mode, or index them, in
+  one step. Rows show open PRs, the last push and a `revera.yaml` badge. The
+  view is kept in the URL.
+- Overview: switch between the last 24 hours and the last 7 days. It shows
+  findings by severity, the median review time, the share of cached tokens,
+  and each model with its own status.
+- Reviews page: search by title, author, repository or PR number. Filters
+  are kept in the URL, and each repository's menu links to its reviews.
+- Review details: the summary is formatted instead of shown as raw Markdown.
+  Finding locations link to the file at the reviewed commit. Readable timing,
+  review counts and per-model usage replace the raw JSON, which is still
+  available under "Raw report data".
+- Settings → Budgets shows the Quick and Deep limits your current budget
+  produces.
+- Fixed: the Reviews page showed no jobs unless a repository, a status and a
+  kind were all chosen, because the server treated unset filters as filters
+  for empty values. Also fixed: the Repositories page showed an index job as
+  the last review.
+- Success messages disappear after a few seconds, and the sidebar remembers
+  whether it is collapsed.
+
 ## v0.6.2
 
 - The rootless Podman quickstart now prepares the data directory with
