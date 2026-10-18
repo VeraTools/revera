@@ -167,8 +167,8 @@
     busy = repo.full_name;
     try {
       await api.repoSettings(repo.full_name, { [field]: value || null });
-      await load();
       notice.success(`${repo.full_name}: ${field} saved.`);
+      await load();
     } catch (cause) {
       notice.failure(errorMessage(cause));
     } finally {
@@ -179,8 +179,8 @@
     busy = repo;
     try {
       await api.index(repo);
-      await load();
       notice.success(`Index queued for ${repo}.`);
+      await load();
     } catch (cause) {
       notice.failure(errorMessage(cause));
     } finally {
@@ -198,10 +198,10 @@
         value === 'default'
           ? `Default (${field === 'trigger' ? defaultTrigger : defaultMode})`
           : value[0].toUpperCase() + value.slice(1);
-      await load();
       notice.success(
-        `${field === 'trigger' ? 'Trigger' : 'Mode'} set to ${label} for ${result.updated} repositories.`,
+        `${field === 'trigger' ? 'Trigger' : 'Mode'} set to ${label} for ${result.updated} ${result.updated === 1 ? 'repository' : 'repositories'}.`,
       );
+      await load();
     } catch (cause) {
       notice.failure(errorMessage(cause));
     } finally {
@@ -224,10 +224,10 @@
         await api.index(repo.full_name);
         queued++;
       }
-      await load();
       notice.success(
-        `Index queued for ${queued} repositories.${off ? ` ${off} skipped (reviews off).` : ''}${building ? ` ${building} skipped (index building).` : ''}`,
+        `Index queued for ${queued} ${queued === 1 ? 'repository' : 'repositories'}.${off ? ` ${off} skipped (reviews off).` : ''}${building ? ` ${building} skipped (index building).` : ''}`,
       );
+      await load();
     } catch (cause) {
       const failure = `Index queued for ${queued} repositories before an error: ${errorMessage(cause)}`;
       await load();

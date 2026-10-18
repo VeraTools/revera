@@ -247,19 +247,24 @@
       hint: 'Retry failed requests, respecting the endpoint’s retry delay.',
     },
   ];
+  // Number inputs are empty (NaN) mid-edit; keep the last valid value until then.
+  function setNumber(path: (string | number)[], value: number) {
+    if (Number.isFinite(value)) config!.set(path, value);
+  }
+  const numberAt = (path: string[], fallback: number) => {
+    const value = config?.get(path, fallback);
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  };
   const budget = $derived(
     Object.fromEntries(
-      budgetFields.map((field) => [
-        field.key,
-        config?.get(['budget', field.key], field.value) ?? field.value,
-      ]),
+      budgetFields.map((field) => [field.key, numberAt(['budget', field.key], field.value)]),
     ) as unknown as Budget,
   );
   const quick = $derived(quickBudget(budget));
   const deep = $derived(
     deepBudget(budget, {
-      max_diff_bytes: config?.get(['review', 'max_diff_bytes'], 200000) ?? 200000,
-      max_findings: config?.get(['review', 'max_findings'], 10) ?? 10,
+      max_diff_bytes: numberAt(['review', 'max_diff_bytes'], 200000),
+      max_findings: numberAt(['review', 'max_findings'], 10),
     }),
   );
   const minutes = (seconds: number) => Number((seconds / 60).toFixed(1));
@@ -454,7 +459,7 @@
               min="1"
               value={config.get(['review', 'max_findings'], 10)}
               oninput={(event) =>
-                config!.set(['review', 'max_findings'], event.currentTarget.valueAsNumber)}
+                setNumber(['review', 'max_findings'], event.currentTarget.valueAsNumber)}
             />
           </div>
         </div>
@@ -514,9 +519,9 @@
                 from your configuration.
               {:else}Deep: {deep.agent_max_tool_calls} tool calls and {minutes(
                   deep.agent_max_seconds,
-                )} min per agent, {minutes(deep.run_max_seconds)} min per review, diffs up to {Number(
-                  (deep.review.max_diff_bytes / 1000).toFixed(1),
-                )} KB, up to {deep.review.max_findings} findings.{/if}
+                )} min per agent, {minutes(deep.run_max_seconds)} min and {deep.run_max_requests} requests
+                per review, diffs up to {Number((deep.review.max_diff_bytes / 1000).toFixed(1))} KB, up
+                to {deep.review.max_findings} findings.{/if}
             </p>
           </div>
         </div>
@@ -528,7 +533,7 @@
                 min={field.key === 'retries' ? 0 : 1}
                 value={config.get(['budget', field.key], field.value)}
                 oninput={(event) =>
-                  config!.set(['budget', field.key], event.currentTarget.valueAsNumber)}
+                  setNumber(['budget', field.key], event.currentTarget.valueAsNumber)}
               /><small>{field.hint}</small>
             </div>{/each}
           <div class="field">
@@ -538,7 +543,7 @@
               min="1"
               value={config.get(['review', 'max_diff_bytes'], 200000)}
               oninput={(event) =>
-                config!.set(['review', 'max_diff_bytes'], event.currentTarget.valueAsNumber)}
+                setNumber(['review', 'max_diff_bytes'], event.currentTarget.valueAsNumber)}
             /><small
               >In bytes. Files that do not fit are left out and the review is marked partial.</small
             >

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
-const output = join(homedir(), '.local/tmp/revera-qol/shots');
+const output = join(homedir(), '.local/tmp/revera-server/shots');
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   executablePath:
@@ -840,7 +840,7 @@ async function checkDashboardQol() {
     .waitFor();
   await settings.page
     .getByText(
-      'Deep: 50 tool calls and 10 min per agent, 30 min per review, diffs up to 400 KB, up to 20 findings.',
+      'Deep: 50 tool calls and 10 min per agent, 30 min and 240 requests per review, diffs up to 400 KB, up to 20 findings.',
       { exact: true },
     )
     .waitFor();

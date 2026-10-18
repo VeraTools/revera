@@ -111,7 +111,7 @@ async fn bulk_repository_settings_set_clear_and_preserve_omitted_overrides() {
         (json!({"mode": null}), None, None),
     ] {
         let mut input = fields;
-        input["repos"] = json!(["owner/a", "owner/b"]);
+        input["repos"] = json!(["owner/a", "owner/b", "owner/a"]);
         let response = client
             .patch(format!("{url}/api/repos"))
             .header("Cookie", &cookie)

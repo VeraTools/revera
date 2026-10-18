@@ -693,7 +693,7 @@ input[type='checkbox'] {
   justify-content: space-between;
   gap: 12px;
 }
-.compact-details dt {
+.detail-meta .compact-details dt {
   margin: 0;
 }
 .compact-details dd {

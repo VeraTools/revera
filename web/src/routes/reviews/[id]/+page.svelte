@@ -118,10 +118,10 @@
     try {
       if (which === 'rerun') await api.rerun(detail.job.id, reviewMode || null);
       else await api.cancel(detail.job.id);
-      await load(detail.job.id);
       notice.success(
         which === 'rerun' ? 'A new review has been queued.' : 'The job has been cancelled.',
       );
+      await load(detail.job.id);
     } catch (cause) {
       notice.failure(errorMessage(cause));
     } finally {
@@ -329,7 +329,7 @@
           <div>
             <dt>Cached</dt>
             <dd class="tabular">
-              {integer(detail.job.tokens.cached)}{#if detail.job.tokens.prompt}{' '}
+              {number(detail.job.tokens.cached)}{#if detail.job.tokens.prompt}{' '}
                 ({Math.round((100 * detail.job.tokens.cached) / detail.job.tokens.prompt)}%){/if}
             </dd>
           </div>

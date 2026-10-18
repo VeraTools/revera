@@ -735,8 +735,9 @@ async fn bulk_repo_settings(
     {
         return Err(missing());
     }
+    let names: std::collections::BTreeSet<_> = input.repos.into_iter().collect();
     let mut preferences = dashboard.preferences.clone();
-    for name in &input.repos {
+    for name in &names {
         let settings = preferences.repos.entry(name.clone()).or_default();
         if let Some(trigger) = input.trigger {
             settings.trigger = trigger;
@@ -748,7 +749,7 @@ async fn bulk_repo_settings(
     dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
     dashboard.preferences = preferences;
     let _ = server.events.send(("repos", json!({})));
-    Ok(output(json!({"ok": true, "updated": input.repos.len()})))
+    Ok(output(json!({"ok": true, "updated": names.len()})))
 }
 
 async fn repo_settings(

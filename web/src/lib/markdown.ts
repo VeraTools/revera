@@ -57,6 +57,10 @@ export function renderSummary(md: string): string {
       if (footer) blocks.push(`<p class="summary-footer">${inline(footer[1])}</p>`);
       continue;
     }
+    if (kind === 'ul' && /^\s+\S/.test(line)) {
+      group[group.length - 1] += ` ${line.trim()}`;
+      continue;
+    }
     const next = line.startsWith('- ') ? 'ul' : line.startsWith('&gt; ') ? 'quote' : 'p';
     if (next !== kind) flush();
     kind = next;
