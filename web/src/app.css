@@ -9,48 +9,33 @@
     'Segoe UI',
     sans-serif;
   font-size: 14px;
-  color: #27272a;
-  background: #fff;
-  --bg: #fff;
-  --sidebar: #fafafa;
-  --surface: #fafafa;
-  --hover: #f4f4f5;
-  --text: #27272a;
-  --muted: #71717a;
-  --border: #e4e4e7;
-  --strong-border: #d4d4d8;
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --active: #eeedff;
-  --green: #15803d;
-  --red: #b91c1c;
-  --amber: #a16207;
-  --blue: #2563eb;
+  color-scheme: light dark;
+  color: light-dark(#27272a, #e4e4e7);
+  background: light-dark(#fff, #18181b);
+  --bg: light-dark(#fff, #18181b);
+  --sidebar: light-dark(#fafafa, #141416);
+  --surface: light-dark(#fafafa, #1d1d20);
+  --hover: light-dark(#f4f4f5, #27272a);
+  --text: light-dark(#27272a, #e4e4e7);
+  --muted: light-dark(#71717a, #a1a1aa);
+  --border: light-dark(#e4e4e7, #303034);
+  --strong-border: light-dark(#d4d4d8, #45454c);
+  --accent: light-dark(#4f46e5, #a5a1fb);
+  --accent-hover: light-dark(#4338ca, #bebafd);
+  --active: light-dark(#eeedff, #28263b);
+  --green: light-dark(#15803d, #68b888);
+  --red: light-dark(#b91c1c, #ed8989);
+  --amber: light-dark(#a16207, #d3aa62);
+  --blue: light-dark(#2563eb, #80a5ef);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    color: #e4e4e7;
-    background: #18181b;
-    --bg: #18181b;
-    --sidebar: #141416;
-    --surface: #1d1d20;
-    --hover: #27272a;
-    --text: #e4e4e7;
-    --muted: #a1a1aa;
-    --border: #303034;
-    --strong-border: #45454c;
-    --accent: #a5a1fb;
-    --accent-hover: #bebafd;
-    --active: #28263b;
-    --green: #68b888;
-    --red: #ed8989;
-    --amber: #d3aa62;
-    --blue: #80a5ef;
-  }
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 * {
   box-sizing: border-box;
@@ -153,12 +138,7 @@ code,
 .button.primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #fff;
-}
-@media (prefers-color-scheme: dark) {
-  .button.primary {
-    color: #18181b;
-  }
+  color: light-dark(#fff, #18181b);
 }
 .button.primary:hover {
   background: var(--accent-hover);
@@ -756,10 +736,8 @@ textarea {
 .switch[data-state='checked'] .switch-thumb {
   transform: translateX(12px);
 }
-@media (prefers-color-scheme: dark) {
-  .switch[data-state='unchecked'] .switch-thumb {
-    background: #e4e4e7;
-  }
+.switch[data-state='unchecked'] .switch-thumb {
+  background: light-dark(var(--bg), #e4e4e7);
 }
 .toggle-row {
   display: flex;
