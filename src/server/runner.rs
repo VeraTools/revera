@@ -443,6 +443,9 @@ async fn execute(
             if *force {
                 command.arg("--force");
             }
+            if let Some(profile) = job.mode.profile() {
+                command.arg("--profile").arg(profile);
+            }
         }
         Kind::Index => {
             command.arg("index").arg("--repo").arg(&ws);

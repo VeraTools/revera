@@ -1,3 +1,4 @@
+use super::dashboard::{Mode, Trigger};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -62,6 +63,7 @@ pub enum Kind {
 pub struct Job {
     pub id: String,
     pub trigger: String,
+    pub mode: Mode,
     pub repo: Repo,
     pub kind: Kind,
 }
@@ -71,6 +73,7 @@ impl Job {
         Self {
             id: uuid::Uuid::new_v4().simple().to_string(),
             trigger: trigger.into(),
+            mode: Mode::Standard,
             repo,
             kind,
         }
@@ -109,6 +112,7 @@ pub enum Event {
     Job(Job),
     Close(u64, u64),
     Rerequest(Repo, u64),
+    Mention(super::mentions::Request),
     RemoveInstallation(u64),
     RemoveRepos(Vec<Repo>),
     Ignore,
@@ -116,7 +120,15 @@ pub enum Event {
 
 #[cfg(test)]
 pub fn map(event: &str, v: &Value, app_id: u64) -> Result<Event> {
-    map_with_preferences(event, v, app_id, &super::dashboard::Preferences::default())
+    map_with_preferences(
+        event,
+        v,
+        app_id,
+        &super::dashboard::Preferences {
+            default_trigger: Trigger::Auto,
+            ..Default::default()
+        },
+    )
 }
 
 pub fn map_with_preferences(
@@ -145,20 +157,29 @@ pub fn map_with_preferences(
         return Ok(Event::Ignore);
     }
     let repo = Repo::parse(&v["repository"], installation)?;
+    if event == "pull_request" && action == "closed" {
+        return Ok(Event::Close(
+            repo.id,
+            v["number"].as_u64().context("missing PR number")?,
+        ));
+    }
+    let trigger = preferences.trigger(&repo.full_name);
+    if trigger == Trigger::Off {
+        return Ok(Event::Ignore);
+    }
     match event {
         "pull_request" => {
             let number = v["number"].as_u64().context("event missing PR number")?;
-            if action == "closed" {
-                return Ok(Event::Close(repo.id, number));
-            }
             if matches!(
                 action,
                 "opened" | "reopened" | "synchronize" | "ready_for_review"
-            ) && preferences.reviewable(&v["pull_request"])
+            ) && trigger == Trigger::Auto
+                && preferences.reviewable(&v["pull_request"])
             {
                 return Ok(Event::Job(Job {
                     id: uuid::Uuid::new_v4().simple().to_string(),
-                    trigger: "webhook".into(),
+                    trigger: "auto".into(),
+                    mode: preferences.mode(&repo.full_name),
                     repo,
                     kind: Kind::Review {
                         number,
@@ -175,6 +196,7 @@ pub fn map_with_preferences(
             return Ok(Event::Job(Job {
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 trigger: "webhook".into(),
+                mode: Mode::Standard,
                 repo,
                 kind: Kind::Index,
             }));

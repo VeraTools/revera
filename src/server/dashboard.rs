@@ -12,21 +12,105 @@ use std::{
     path::Path,
 };
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Trigger {
+    #[default]
+    Mention,
+    Auto,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Quick,
+    #[default]
+    Standard,
+    Deep,
+}
+
+impl Mode {
+    pub fn profile(self) -> Option<&'static str> {
+        match self {
+            Self::Quick => Some("quick"),
+            Self::Standard => None,
+            Self::Deep => Some("deep"),
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(from = "PreferencesFile")]
 pub struct Preferences {
     pub admins: Vec<String>,
     pub allowed_owners: Vec<String>,
-    pub default_enabled: bool,
+    pub default_trigger: Trigger,
+    pub default_mode: Mode,
     pub repos: BTreeMap<String, RepoPreference>,
     pub review_drafts: bool,
     pub skip_authors: Vec<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(from = "RepoPreferenceFile")]
 pub struct RepoPreference {
-    pub enabled: bool,
+    pub trigger: Option<Trigger>,
+    pub mode: Option<Mode>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RepoPreferenceFile {
+    trigger: Option<Trigger>,
+    mode: Option<Mode>,
+    enabled: Option<bool>,
+}
+
+impl From<RepoPreferenceFile> for RepoPreference {
+    fn from(file: RepoPreferenceFile) -> Self {
+        Self {
+            trigger: file
+                .trigger
+                .or_else(|| (file.enabled == Some(false)).then_some(Trigger::Off)),
+            mode: file.mode,
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PreferencesFile {
+    admins: Vec<String>,
+    allowed_owners: Vec<String>,
+    default_trigger: Option<Trigger>,
+    default_mode: Mode,
+    default_enabled: Option<bool>,
+    repos: BTreeMap<String, RepoPreference>,
+    review_drafts: bool,
+    skip_authors: Option<Vec<String>>,
+}
+
+impl From<PreferencesFile> for Preferences {
+    fn from(file: PreferencesFile) -> Self {
+        Self {
+            admins: file.admins,
+            allowed_owners: file.allowed_owners,
+            default_trigger: file.default_trigger.unwrap_or_else(|| {
+                if file.default_enabled == Some(false) {
+                    Trigger::Off
+                } else {
+                    Trigger::Mention
+                }
+            }),
+            default_mode: file.default_mode,
+            repos: file.repos,
+            review_drafts: file.review_drafts,
+            skip_authors: file
+                .skip_authors
+                .unwrap_or_else(|| Self::default().skip_authors),
+        }
+    }
 }
 
 impl Default for Preferences {
@@ -34,7 +118,8 @@ impl Default for Preferences {
         Self {
             admins: vec![],
             allowed_owners: vec![],
-            default_enabled: true,
+            default_trigger: Trigger::Mention,
+            default_mode: Mode::Standard,
             repos: BTreeMap::new(),
             review_drafts: false,
             skip_authors: vec!["dependabot[bot]".into(), "renovate[bot]".into()],
@@ -43,10 +128,34 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    pub fn enabled(&self, repo: &str) -> bool {
+    fn load(data: &Path) -> Result<Self> {
+        let path = data.join("settings.json");
+        crate::fsutil::check_regular_target(&path)?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let value: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let legacy = value.get("default_enabled").is_some()
+            || value["repos"]
+                .as_object()
+                .is_some_and(|repos| repos.values().any(|repo| repo.get("enabled").is_some()));
+        let preferences = serde_json::from_value(value)?;
+        if legacy {
+            write_preferences(data, &preferences)?;
+        }
+        Ok(preferences)
+    }
+    pub fn trigger(&self, repo: &str) -> Trigger {
         self.repos
             .get(repo)
-            .map_or(self.default_enabled, |r| r.enabled)
+            .and_then(|r| r.trigger)
+            .unwrap_or(self.default_trigger)
+    }
+    pub fn mode(&self, repo: &str) -> Mode {
+        self.repos
+            .get(repo)
+            .and_then(|r| r.mode)
+            .unwrap_or(self.default_mode)
     }
     pub fn reviewable(&self, pr: &Value) -> bool {
         (self.review_drafts || pr["draft"].as_bool() != Some(true))
@@ -94,6 +203,8 @@ pub struct JobSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_sha: Option<String>,
     pub trigger: String,
+    #[serde(default)]
+    pub mode: Mode,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -135,6 +246,7 @@ impl JobSummary {
             author,
             head_sha,
             trigger: job.trigger.clone(),
+            mode: job.mode,
             status: "queued".into(),
             reason: None,
             findings: FindingCounts::default(),
@@ -223,7 +335,7 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(data: &Path, name: &s
 
 impl Dashboard {
     pub fn load(data: &Path, seen: &super::reconcile::Seen) -> Result<Self> {
-        let preferences: Preferences = read_json(data, "settings.json")?;
+        let preferences = Preferences::load(data)?;
         crate::fsutil::check_regular_target(&data.join("bootstrap-admin"))?;
         let bootstrap_used =
             data.join("bootstrap-admin").exists() || !preferences.admins.is_empty();

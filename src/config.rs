@@ -439,14 +439,14 @@ pub struct PanelConfig {
     pub scout_max_tool_calls: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileOverride {
     pub review: Option<ReviewOverride>,
     pub budget: Option<BudgetOverride>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewOverride {
     pub strategy: Option<Strategy>,
@@ -460,7 +460,7 @@ pub struct ReviewOverride {
     pub guidance: Option<GuidanceMode>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetOverride {
     pub agent_max_tool_calls: Option<u32>,
@@ -1260,9 +1260,12 @@ impl Config {
     }
 
     pub fn apply_profile(&mut self, name: &str) -> Result<()> {
-        let Some(p) = self.profiles.get(name) else {
-            bail!("unknown profile {name:?}");
-        };
+        let p = self
+            .profiles
+            .get(name)
+            .cloned()
+            .or_else(|| ProfileOverride::builtin(name))
+            .with_context(|| format!("unknown profile {name:?}"))?;
         if let Some(r) = &p.review {
             if let Some(v) = r.strategy {
                 self.review.strategy = v;
@@ -1310,6 +1313,29 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+impl ProfileOverride {
+    fn builtin(name: &str) -> Option<Self> {
+        let (calls, agent_seconds, run_seconds) = match name {
+            "quick" => (12, 150, 420),
+            "deep" => (50, 600, 1800),
+            _ => return None,
+        };
+        Some(Self {
+            review: (name == "deep").then_some(ReviewOverride {
+                max_diff_bytes: Some(2 * default_diff_bytes()),
+                max_findings: Some(20),
+                ..Default::default()
+            }),
+            budget: Some(BudgetOverride {
+                agent_max_tool_calls: Some(calls),
+                agent_max_seconds: Some(agent_seconds),
+                run_max_seconds: Some(run_seconds),
+                ..Default::default()
+            }),
+        })
     }
 }
 

@@ -153,9 +153,7 @@ signing in alone is not enough for an API mutation.
 - **Overview** shows connection health, active jobs and recent results.
 - **Reviews** shows findings, timing, token use and redacted logs, with
   **Re-run** and **Cancel** actions.
-- **Repositories** controls automatic reviews and indexing per repository.
-  Manual **Index now** and **Review a PR** actions remain available when
-  automatic work is disabled.
+- **Repositories** controls triggers and review modes per repository.
 - **Settings** edits the default review YAML, models, budgets, retrieval and
   access. Saving YAML runs the same parse, trust and credential checks as a
   review. Invalid input leaves the previous file unchanged.
@@ -178,9 +176,10 @@ never stored in the health file. Unrelated keys and unchanged saves do not clear
 
 ## What happens on PRs, pushes and re-runs
 
-Opened, reopened, updated and ready-for-review PRs enqueue a review. Drafts and
-PRs by `dependabot[bot]` or `renovate[bot]` are skipped by default; draft and
-author preferences are editable in Settings. Closing a PR cancels its
+In **auto** mode, opened, reopened, updated and ready-for-review PRs enqueue a review.
+Drafts and PRs by `dependabot[bot]` or `renovate[bot]` are skipped by default for
+automatic reviews only; draft and author preferences are editable in Settings.
+Closing a PR cancels its
 pending and running work. A newer head replaces pending work and cancels an
 older running review. Fork PRs use the same fork guard as Actions; they are
 skipped by default.
@@ -206,7 +205,75 @@ bypass this wait. `GET /api/repos` includes `index.retry_at` while a retry is wa
 Reconciliation runs at startup and every ten minutes by default to recover
 missed events. The first sighting records existing PR heads without reviewing
 them: installing the app does not backfill every open PR. Later head changes
-are reviewed if they are not already queued or running.
+are reviewed in auto mode if they are not already queued or running.
+
+## Triggers, review modes and mentions
+
+The default trigger is **mention**, including when upgrading old settings without
+a trigger field. Mention mode keeps the index warm but never reviews new heads
+automatically. **Auto** enables PR-event and reconciliation reviews. **Off** stops
+new reviews and indexing, including mentions and manual requests; removal and
+cancellation still work. Existing work is not cancelled just by changing a setting.
+Old `enabled: false` overrides become off; `enabled: true` becomes inherited.
+Old `default_enabled: false` becomes a global off default.
+
+The default review mode is **standard** (the configured review, no profile).
+**Quick** and **deep** select the matching profiles described in
+[configuration](configuration.md#profiles); neither changes strategy or disables
+validation. Repositories may override the global trigger and mode independently.
+
+On a PR conversation comment, use `@<app-slug> review` for the repository mode,
+`@<app-slug> quick`, `@<app-slug> deep`, or
+`@<app-slug> review quick|standard|deep`. `@<app-slug> help` lists commands;
+unknown commands get the same short reply. The slug is case-insensitive.
+Only OWNER, MEMBER and COLLABORATOR commenters can trigger commands. Bots,
+edits, ordinary issues, quoted lines and code are ignored. Valid commands receive
+an eyes reaction and force a review of the current head, even for drafts or skipped
+authors. A closed PR gets a reply instead of a review. Owner admission still applies.
+
+### Enable mentions on an existing GitHub App
+
+New apps request Issues write and subscribe to Issue comment automatically.
+For an existing app:
+
+1. Open **GitHub Settings → Developer settings → GitHub Apps → Edit** for the app.
+   For an organization app, use **Organization Settings → Developer settings →
+   GitHub Apps → Edit** instead.
+2. Open **Permissions & events**. Under **Repository permissions**, set **Issues**
+   to **Read and write**. Keep the existing Pull requests, Contents and Checks
+   permissions. Under **Subscribe to events**, check **Issue comment** and save.
+3. Each installation owner must approve the added permission. Open **Settings →
+   Applications → Installed GitHub Apps**, then under the app click **Review
+   request → Accept new permissions**. Organization owners use **Organization
+   Settings → Third-party Access → GitHub Apps** instead. The approval link in
+   GitHub's permission-change email also works.
+
+[Issue comment delivery](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment)
+requires Issues read; the
+[eyes reaction](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-an-issue-comment)
+requires Issues write. Existing Pull requests write already permits conversation
+replies. Subscribing to the event alone is not enough for reactions.
+
+### Server API
+
+- `GET /api/settings/server` returns preferences, also under `server` in
+  `GET /api/settings`. `PUT /api/settings/server` replaces the preferences:
+  `{admins, allowed_owners, default_trigger, default_mode, repos, review_drafts,
+  skip_authors}`. Triggers are `mention|auto|off`; modes are `quick|standard|deep`.
+  `repos` maps full repository names to `{trigger: value|null, mode: value|null}`.
+- `GET /api/repos` includes effective `trigger` and `mode`, plus nullable
+  `trigger_override` and `mode_override`, alongside existing index/job metadata.
+  `PATCH /api/repos/:owner/:repo` accepts `{trigger?: value|null, mode?: value|null}`;
+  omitted fields are unchanged, null inherits. Legacy `{enabled: false}` maps to
+  off and `{enabled: true}` clears the trigger override for one release.
+- `POST /api/repos/:owner/:repo/pulls/:number/review` and
+  `POST /api/jobs/:id/rerun` accept an optional JSON body `{mode?: value}`;
+  absent or null mode uses the effective repository mode. Success returns `{id}`.
+  An off repository returns HTTP 409, including for manual indexing.
+- `GET /api/overview` includes `app.issue_comment_subscribed` (boolean, or null
+  when GitHub registration metadata is unavailable) and `app.settings_url` for
+  the app's permissions page. Review job summaries include `mode` and trigger
+  `mention|auto|manual|rerun`; index jobs keep their existing trigger labels.
 
 ## Per-repository override
 
