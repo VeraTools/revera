@@ -177,6 +177,12 @@ Accepted findings appear inline when they can be anchored to the diff;
 others appear in the managed summary. The summary reports completion and
 tracks open, resolved and reopened findings across pushes.
 
+The dashboard shows accepted findings with evidence and links to the reviewed
+code. Copy or download instructions for your coding agent; complete reviews
+with findings also include a **Fix with your coding agent** section on GitHub.
+Small, exact replacements can appear as suggested changes, not tested patches.
+[Finding details and handoff](docs/how-it-works.md#findings).
+
 ## How it works
 
 1. Rust computes the base-to-head diff over the exact committed head.
@@ -184,7 +190,7 @@ tracks open, resolved and reopened findings across pushes.
 3. The investigator explores with read-only tools and submits candidates.
 4. A fresh-context validator re-derives each candidate independently.
 5. Rust anchors and deduplicates accepted findings, then reconciles prior state.
-6. It posts comments or prints a dry-run plan. Models cannot run shell commands or write files.
+6. It posts comments or prints a dry-run plan. Review models cannot run shell commands or write files.
 
 ## Documentation
 

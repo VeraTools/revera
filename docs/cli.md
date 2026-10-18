@@ -63,6 +63,11 @@ failure. A partial review with no findings is not a clean verdict. The JSON
 report includes stop reasons, coverage gaps, findings, timing and model usage.
 Without `--out`, it is written to `.revera/last-report.json`.
 
+The report's `findings` list can contain rejected or uncertain candidates as
+well as accepted findings. Check `validation_status`; only `accepted` findings
+are publishable. A validator's `validated_fix` is a suggested remedy, not a
+tested patch. See [finding details](how-it-works.md#findings).
+
 An identical completed review can be reused. Add `--force` to run it again.
 
 ## Local files and retrieval
@@ -88,4 +93,5 @@ requires trusted `allow_private: true`. Leave it off if outbound queries are
 not acceptable.
 
 To publish reviews, use the [Action](action.md) or [GitHub App](server.md).
-The [configuration reference](configuration.md#command-line) lists all CLI flags.
+The [configuration reference](configuration.md#command-line) lists common
+commands. Run `revera --help` or `revera review --help` for all available flags.
