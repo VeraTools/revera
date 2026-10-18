@@ -99,7 +99,7 @@ pub fn manifest(public_url: &str, name: &str) -> Value {
         "callback_urls": [format!("{public_url}/auth/callback")],
         "default_permissions": {
             "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read",
-            "issues": "write"
+            "issues": "read"
         },
         "default_events": ["pull_request", "push", "check_run", "issue_comment"]
     })
@@ -219,7 +219,9 @@ impl Api {
     ) -> Result<String> {
         let permissions = match permissions {
             Permissions::Comments => {
-                json!({"issues": "write", "pull_requests": "read", "metadata": "read"})
+                // Replies and reactions on PR conversations need Pull requests
+                // write; Issues write alone is refused there.
+                json!({"pull_requests": "write", "metadata": "read"})
             }
             Permissions::Review => {
                 json!({

@@ -99,7 +99,7 @@ this change on GitHub before mentions work:
 1. Open **GitHub Settings → Developer settings → GitHub Apps → Edit** for the
    app. For an organization app, start from **Organization Settings**.
 2. In **Permissions & events → Repository permissions**, set **Issues** to
-   **Read and write**. Keep the existing Pull requests, Contents and Checks
+   **Read-only**. Keep the existing Pull requests, Contents and Checks
    permissions. Under **Subscribe to events**, select **Issue comment** and save.
 3. Each installation owner must approve the added permission. Open **Settings →
    Applications → Installed GitHub Apps**, then the app's **Review request →
@@ -108,10 +108,8 @@ this change on GitHub before mentions work:
    email also works.
 
 [Issue comment delivery](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment)
-requires Issues read; the
-[eyes reaction](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-an-issue-comment)
-requires Issues write. Existing Pull requests write permits conversation
-replies. Subscribing to the event alone is not enough for reactions.
+requires Issues read. Replies and the eyes reaction on a pull request use the
+existing Pull requests write permission.
 
 ## Dashboard
 

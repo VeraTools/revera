@@ -80,7 +80,7 @@
     <section class="mention-notice" aria-labelledby="mention-notice-title">
       <h2 id="mention-notice-title">Mentions need one change on your GitHub App</h2>
       <ol>
-        <li>Set Issues to Read and write in Permissions &amp; events.</li>
+        <li>Set Issues to Read-only in Permissions &amp; events.</li>
         <li>Subscribe to Issue comment and save.</li>
         <li>Accept the new permissions on the installation.</li>
       </ol>

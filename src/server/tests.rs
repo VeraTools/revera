@@ -292,7 +292,7 @@ fn manifest_fields() {
     assert_eq!(
         v["default_permissions"],
         json!({"contents": "read", "pull_requests": "write", "checks": "write",
-            "metadata": "read", "issues": "write"})
+            "metadata": "read", "issues": "read"})
     );
     assert_eq!(
         v["default_events"],
