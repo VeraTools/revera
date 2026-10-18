@@ -141,11 +141,11 @@ async fn reconcile_waits_for_backoff_on_both_index_triggers_but_not_reviews() {
             {
                 let queue = server.queue.lock().await;
                 assert!(
-                    !queue.pending.contains_key(&(repo.id, 0)),
+                    !queue.pending.contains_key(&(repo.id, 0, Installed)),
                     "{status}/{state}"
                 );
                 if state != "first-inventory" {
-                    assert_eq!(queue.pending[&(repo.id, 7)].head(), "after");
+                    assert_eq!(queue.pending[&(repo.id, 7, Installed)].head(), "after");
                 }
             }
             assert_eq!(
@@ -157,7 +157,7 @@ async fn reconcile_waits_for_backoff_on_both_index_triggers_but_not_reviews() {
             server.update_job(due).await.unwrap();
             reconcile::once(&server).await.unwrap();
             let queue = server.queue.lock().await;
-            let retry = &queue.pending[&(repo.id, 0)];
+            let retry = &queue.pending[&(repo.id, 0, Installed)];
             assert_eq!(retry.trigger, "reconcile");
             assert_eq!(retry.repo.pushed_at, repo.pushed_at);
             assert!(matches!(retry.kind, events::Kind::Index));
@@ -205,7 +205,7 @@ async fn push_webhook_with_new_pushed_at_bypasses_index_backoff() {
         202
     );
     let queue = server.queue.lock().await;
-    let index = &queue.pending[&(1, 0)];
+    let index = &queue.pending[&(1, 0, Installed)];
     assert_eq!(index.trigger, "webhook");
     assert_eq!(index.repo.pushed_at, "new-push");
     assert!(matches!(index.kind, events::Kind::Index));
@@ -255,7 +255,7 @@ async fn manual_index_bypasses_backoff_and_repo_api_reports_retry_time() {
     assert_eq!(response.status(), 200);
     let value: Value = response.json().await.unwrap();
     let queue = server.queue.lock().await;
-    let index = &queue.pending[&(1, 0)];
+    let index = &queue.pending[&(1, 0, Installed)];
     assert_eq!(index.id, value["id"].as_str().unwrap());
     assert_eq!(index.trigger, "manual");
     assert!(matches!(index.kind, events::Kind::Index));

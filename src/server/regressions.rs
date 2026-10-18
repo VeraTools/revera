@@ -357,7 +357,13 @@ async fn real_delivery_owners_gate_repo_and_installation_events() {
             StatusCode::ACCEPTED
         );
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !server.queue.lock().await.pending.contains_key(&key) {
+            while !server
+                .queue
+                .lock()
+                .await
+                .pending
+                .contains_key(&(key.0, key.1, Installed))
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -376,7 +382,7 @@ async fn real_delivery_owners_gate_repo_and_installation_events() {
     payload["installation"]["account"]["login"] = json!("owner");
     deliver(&server, "installation_repositories", payload).await;
     assert!(matches!(
-        server.queue.lock().await.pending[&(1, 0)].kind,
+        server.queue.lock().await.pending[&(1, 0, Installed)].kind,
         events::Kind::Remove
     ));
 }

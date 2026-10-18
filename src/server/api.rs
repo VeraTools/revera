@@ -86,6 +86,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/secrets/{name}", put(secret).delete(delete_secret))
         .route("/api/settings/test", post(test))
         .route("/api/settings/models", post(models))
+        .merge(super::external::router())
         .route("/api/events", get(events))
         .route("/api", any(|| async { StatusCode::NOT_FOUND }))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
@@ -501,7 +502,7 @@ async fn fetch_pr(server: &Server, repo: &Repo, number: u64) -> Result<Value> {
         .api
         .installation_token(
             &app,
-            repo.installation,
+            repo.installation_id()?,
             Some(repo.id),
             app::Permissions::ReadPulls,
         )
@@ -580,6 +581,15 @@ async fn rerun(
     let number = job
         .pr
         .ok_or_else(|| Error(StatusCode::CONFLICT, "not a review job".into()))?;
+    // External reruns re-resolve current public metadata, including force-pushed heads.
+    if job.source == super::events::Source::External {
+        let url = job.pr_url.as_deref().ok_or_else(missing)?;
+        let mode = input.and_then(|v| v.0.mode).unwrap_or(job.mode);
+        return super::external::submit(&server, url, mode, "rerun")
+            .await
+            .map(output)
+            .map_err(|error| Error(error.status, error.message));
+    }
     let repo = repo(&server, &job.repo).await?;
     submit_review(&server, repo, number, "rerun", input.and_then(|v| v.0.mode)).await
 }
@@ -796,7 +806,7 @@ async fn pulls(
         .api
         .installation_token(
             &app,
-            repo.installation,
+            repo.installation_id()?,
             Some(repo.id),
             app::Permissions::ReadPulls,
         )
@@ -896,6 +906,7 @@ async fn server_settings(
     State(server): State<Arc<Server>>,
     Json(input): Json<Preferences>,
 ) -> ApiResult {
+    input.external.validate().map_err(invalid)?;
     if input.admins.iter().any(|name| name.trim().is_empty()) {
         return Err(Error(
             StatusCode::UNPROCESSABLE_ENTITY,

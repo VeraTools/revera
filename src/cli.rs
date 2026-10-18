@@ -50,6 +50,9 @@ enum Cmd {
         /// Override the GitHub bot identity (for installation tokens).
         #[arg(long)]
         bot_login: Option<String>,
+        /// Private external review: operator config only, no GitHub API, no repo guidance.
+        #[arg(long)]
+        private: bool,
     },
     /// Build or refresh the Vera index without reviewing.
     Index {
@@ -146,6 +149,7 @@ pub async fn run() -> i32 {
             body_file,
             force,
             bot_login,
+            private,
         } => {
             review(ReviewArgs {
                 repo,
@@ -161,6 +165,7 @@ pub async fn run() -> i32 {
                 body_file,
                 force,
                 bot_login,
+                private,
             })
             .await
         }
@@ -181,6 +186,7 @@ struct ReviewArgs {
     body_file: Option<PathBuf>,
     force: bool,
     bot_login: Option<String>,
+    private: bool,
 }
 
 fn load_cfg_unvalidated(
@@ -430,18 +436,37 @@ async fn review(a: ReviewArgs) -> i32 {
     }
     // credentials are not checked here: the fork guard must run (and emit
     // its partial report) before any credential check can abort the run
-    let loaded = match &ev {
-        Some(e) => {
-            load_event_config(
-                &repo,
-                a.config.as_deref(),
-                a.profile.as_deref(),
-                &e.base_sha,
-            )
-            .await
+    let loaded = if a.private {
+        match a.config.as_deref() {
+            Some(path) if ev.is_some() => {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let abs = lexical_abs(&cwd, path);
+                if abs.starts_with(&repo) || abs.canonicalize().is_ok_and(|p| p.starts_with(&repo))
+                {
+                    Err("--private requires operator --config outside the checkout".into())
+                } else {
+                    load_cfg_unvalidated(Some(&abs), a.profile.as_deref())
+                        .map(|(_, cfg)| (ConfigOrigin::External(abs), cfg))
+                }
+            }
+            _ => {
+                Err("--private requires --event and operator --config outside the checkout".into())
+            }
         }
-        None => load_cfg_unvalidated(a.config.as_deref(), a.profile.as_deref())
-            .map(|(p, c)| (ConfigOrigin::WorkingTree(p), c)),
+    } else {
+        match &ev {
+            Some(e) => {
+                load_event_config(
+                    &repo,
+                    a.config.as_deref(),
+                    a.profile.as_deref(),
+                    &e.base_sha,
+                )
+                .await
+            }
+            None => load_cfg_unvalidated(a.config.as_deref(), a.profile.as_deref())
+                .map(|(p, c)| (ConfigOrigin::WorkingTree(p), c)),
+        }
     };
     let (origin, mut cfg) = match loaded {
         Ok(c) => c,
@@ -449,6 +474,7 @@ async fn review(a: ReviewArgs) -> i32 {
             // no trusted base config: a fork cannot be reviewed with
             // credentials anyway, so report the skip instead of failing
             if let Some(e) = ev.as_ref().filter(|e| e.is_fork())
+                && !a.private
                 && a.publish.is_some_and(|p| matches!(p, PublishArg::Comment))
             {
                 eprintln!("config: {err}");
@@ -466,9 +492,19 @@ async fn review(a: ReviewArgs) -> i32 {
     if let Some(login) = &a.bot_login {
         cfg.github.bot_login.clone_from(login);
     }
+    if a.private {
+        cfg.review.guidance = crate::config::GuidanceMode::Off;
+        cfg.review.publish = PublishMode::DryRun;
+        // Server sets a target-isolated cache home; do not share configured Vera homes.
+        cfg.vera.home = None;
+    }
     eprintln!("config: {origin}");
     let effective_strategy = strategy.unwrap_or(cfg.review.strategy);
-    let publish = a.publish.map(publish_arg).unwrap_or(cfg.review.publish);
+    let publish = if a.private {
+        PublishMode::DryRun
+    } else {
+        a.publish.map(publish_arg).unwrap_or(cfg.review.publish)
+    };
     if publish == PublishMode::Comment && a.event.is_none() {
         eprintln!("error: --publish comment requires --event");
         return 1;
@@ -507,12 +543,12 @@ async fn review(a: ReviewArgs) -> i32 {
         .unwrap_or_default();
 
     // Event mode supplies base/head/title/body and GitHub-backed state.
-    let api = ev.as_ref().map(|e| {
+    let api = ev.as_ref().filter(|_| !a.private).map(|e| {
         let token = crate::redact::secret_env(&cfg.github.token_env).unwrap_or_default();
         (e.clone(), crate::github::api::GitHubApi::new(&token))
     });
-    let (base, head, title, pr_body) = match &api {
-        Some((e, api)) => {
+    let (base, head, title, pr_body) = match &ev {
+        Some(e) => {
             let current = match crate::git::current_head(&repo).await {
                 Ok(current) => current,
                 Err(err) => {
@@ -535,30 +571,33 @@ async fn review(a: ReviewArgs) -> i32 {
                 );
             }
             // seed state from our managed summary comment (fallback: empty)
-            let (owner, rname) = e.owner_repo();
-            let seeded = match api.list_issue_comments(owner, rname, e.number).await {
-                Ok(comments) => {
-                    let me =
-                        crate::github::publish::Identity::resolve(api, &cfg.github.bot_login).await;
-                    crate::github::publish::find_managed(
-                        &comments,
-                        &cfg.github.summary_marker,
-                        None,
-                        &me,
-                    )
-                    .and_then(|c| {
-                        let mut s = crate::github::publish::decode_state(&c.body)?;
-                        s.summary_comment_id = Some(c.id);
-                        Some(s)
-                    })
-                    .unwrap_or_default()
-                }
-                Err(err) => {
-                    tracing::warn!("could not list PR comments for state: {err:#}");
-                    crate::state::ReviewState::default()
-                }
-            };
-            let _ = seeded.save(&repo);
+            if let Some((_, api)) = &api {
+                let (owner, rname) = e.owner_repo();
+                let seeded = match api.list_issue_comments(owner, rname, e.number).await {
+                    Ok(comments) => {
+                        let me =
+                            crate::github::publish::Identity::resolve(api, &cfg.github.bot_login)
+                                .await;
+                        crate::github::publish::find_managed(
+                            &comments,
+                            &cfg.github.summary_marker,
+                            None,
+                            &me,
+                        )
+                        .and_then(|c| {
+                            let mut s = crate::github::publish::decode_state(&c.body)?;
+                            s.summary_comment_id = Some(c.id);
+                            Some(s)
+                        })
+                        .unwrap_or_default()
+                    }
+                    Err(err) => {
+                        tracing::warn!("could not list PR comments for state: {err:#}");
+                        crate::state::ReviewState::default()
+                    }
+                };
+                let _ = seeded.save(&repo);
+            }
             (
                 e.base_sha.clone(),
                 Some(e.head_sha.clone()),
@@ -587,6 +626,9 @@ async fn review(a: ReviewArgs) -> i32 {
     };
     match pipeline_run(&cfg, &req).await {
         Ok((mut report, mut state)) => {
+            if a.private {
+                report.publication.mode = "private".into();
+            }
             let mut publish_failed = false;
             if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {
                 let publish_start = std::time::Instant::now();
@@ -687,6 +729,9 @@ fn write_report(
     report: &crate::report::RunReport,
 ) -> anyhow::Result<()> {
     let mut v = serde_json::to_value(report)?;
+    if report.publication.mode == "private" {
+        v["source"] = serde_json::json!("external");
+    }
     sanitize_report_fixes(&mut v);
     crate::redact::json(&mut v);
     crate::fsutil::write_output(repo, out, serde_json::to_string_pretty(&v)?.as_bytes())

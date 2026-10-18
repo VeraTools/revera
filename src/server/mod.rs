@@ -5,6 +5,7 @@ mod assets;
 mod auth;
 mod dashboard;
 mod events;
+mod external;
 mod mentions;
 mod queue;
 mod reconcile;
@@ -70,6 +71,10 @@ pub(super) struct Server {
     events: broadcast::Sender<(&'static str, serde_json::Value)>,
     stopping: watch::Sender<bool>,
     workers: Mutex<tokio::task::JoinSet<()>>,
+    // External public targets never enter installation inventory or credential paths.
+    external: Mutex<external::Store>,
+    external_poll: Mutex<()>,
+    external_heads: Mutex<std::collections::BTreeMap<String, (i64, String)>>,
 }
 
 impl Server {
@@ -91,7 +96,8 @@ impl Server {
         admission: Option<&queue::ReviewAdmission>,
     ) {
         let preferences = self.dashboard.lock().await.preferences.clone();
-        if !matches!(job.kind, events::Kind::Remove)
+        if job.repo.source() == events::Source::Installed
+            && !matches!(job.kind, events::Kind::Remove)
             && preferences.trigger(&job.repo.full_name) == dashboard::Trigger::Off
         {
             return;
@@ -166,7 +172,7 @@ impl Server {
                 .any(|allowed| allowed.eq_ignore_ascii_case(owner))
     }
 
-    async fn close(&self, key: (u64, u64)) -> Result<()> {
+    async fn close(&self, key: events::Key) -> Result<()> {
         let mut queue = self.queue.lock().await;
         let jobs: Vec<_> = queue
             .pending
@@ -210,7 +216,10 @@ impl Server {
     async fn handle(&self, app: &app::App, event: events::Event) -> Result<()> {
         match event {
             events::Event::Job(job) => self.enqueue(job).await,
-            events::Event::Close(repo, number) => self.close((repo, number)).await?,
+            events::Event::Close(repo, number) => {
+                self.close((repo, number, events::Source::Installed))
+                    .await?
+            }
             events::Event::Rerequest(repo, number) => {
                 if self
                     .dashboard
@@ -226,7 +235,7 @@ impl Server {
                     .api
                     .installation_token(
                         app,
-                        repo.installation,
+                        repo.installation_id()?,
                         Some(repo.id),
                         app::Permissions::ReadPulls,
                     )
@@ -274,7 +283,7 @@ impl Server {
                     .await
                     .0
                     .values()
-                    .filter(|r| r.repo.installation == id)
+                    .filter(|r| r.repo.installation == Some(id))
                     .map(|r| r.repo.clone())
                     .collect();
                 {
@@ -284,7 +293,7 @@ impl Server {
                             .pending
                             .values()
                             .chain(queue.running.values().map(|r| &r.job))
-                            .filter(|j| j.repo.installation == id)
+                            .filter(|j| j.repo.installation == Some(id))
                             .map(|j| j.repo.clone()),
                     );
                 }
@@ -348,7 +357,7 @@ async fn initialize(
         .context("data directory must be absolute")?;
     crate::fsutil::ensure_dir(std::path::Path::new("/"), relative)?;
     settings.data_dir = settings.data_dir.canonicalize()?;
-    for dir in ["repos", "jobs", "cache"] {
+    for dir in ["repos", "jobs", "cache", "external"] {
         crate::fsutil::ensure_dir(&settings.data_dir, std::path::Path::new(dir))?;
     }
     let config = settings
@@ -372,7 +381,9 @@ async fn initialize(
     } else {
         config
     };
-    if config.starts_with(settings.data_dir.join("repos")) {
+    if config.starts_with(settings.data_dir.join("repos"))
+        || config.starts_with(settings.data_dir.join("external"))
+    {
         bail!("server default config must be outside the repository workspaces");
     }
     dashboard.sync_health(&settings.data_dir, yaml.as_deref(), &session_key)?;
@@ -419,6 +430,8 @@ async fn initialize(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let external = external::Store::load(&settings.data_dir)?;
+    dashboard.preferences.external.validate()?;
     let server = Arc::new(Server {
         settings,
         config,
@@ -435,6 +448,9 @@ async fn initialize(
         events: broadcast::channel(1024).0,
         stopping: watch::channel(false).0,
         workers: Mutex::new(tokio::task::JoinSet::new()),
+        external: Mutex::new(external),
+        external_poll: Mutex::new(()),
+        external_heads: Mutex::new(std::collections::BTreeMap::new()),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(
@@ -530,11 +546,18 @@ async fn dispatch(server: Arc<Server>) {
             let Ok(permit) = semaphore.clone().try_acquire_owned() else {
                 break;
             };
+            let external_limit = server
+                .dashboard
+                .lock()
+                .await
+                .preferences
+                .external
+                .concurrency;
             let mut queue = server.queue.lock().await;
             if *server.stopping.borrow() {
                 return;
             }
-            let Some((job, cancel)) = queue.take() else {
+            let Some((job, cancel)) = queue.take_with_external_limit(external_limit) else {
                 break;
             };
             drop(queue);

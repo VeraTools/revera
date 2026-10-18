@@ -193,16 +193,16 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
     }
     // Capture before any network wait. Closing the PR invalidates this token;
     // the queue rechecks it under the same lock that applies the close.
-    let admission = server
-        .queue
-        .lock()
-        .await
-        .review_admission((request.repo.id, request.number));
+    let admission = server.queue.lock().await.review_admission((
+        request.repo.id,
+        request.number,
+        super::events::Source::Installed,
+    ));
     let token = server
         .api
         .installation_token(
             app,
-            request.repo.installation,
+            request.repo.installation_id()?,
             Some(request.repo.id),
             app::Permissions::Comments,
         )

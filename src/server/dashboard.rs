@@ -50,6 +50,7 @@ pub struct Preferences {
     pub repos: BTreeMap<String, RepoPreference>,
     pub review_drafts: bool,
     pub skip_authors: Vec<String>,
+    pub external: super::external::Policy,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -89,6 +90,7 @@ struct PreferencesFile {
     repos: BTreeMap<String, RepoPreference>,
     review_drafts: bool,
     skip_authors: Option<Vec<String>>,
+    external: super::external::Policy,
 }
 
 impl From<PreferencesFile> for Preferences {
@@ -106,6 +108,7 @@ impl From<PreferencesFile> for Preferences {
             default_mode: file.default_mode,
             repos: file.repos,
             review_drafts: file.review_drafts,
+            external: file.external,
             skip_authors: file
                 .skip_authors
                 .unwrap_or_else(|| Self::default().skip_authors),
@@ -122,6 +125,7 @@ impl Default for Preferences {
             default_mode: Mode::Standard,
             repos: BTreeMap::new(),
             review_drafts: false,
+            external: super::external::Policy::default(),
             skip_authors: vec!["dependabot[bot]".into(), "renovate[bot]".into()],
         }
     }
@@ -188,6 +192,14 @@ pub struct CheckRecovery {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobSummary {
+    #[serde(default)]
+    pub source: super::events::Source,
+    #[serde(default)]
+    pub publication: super::events::Publication,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
     /// Persisted by `persist_job`, but never included in dashboard responses.
     #[serde(default, skip_serializing)]
     pub check: Option<CheckRecovery>,
@@ -238,6 +250,13 @@ impl JobSummary {
         };
         Self {
             check: None,
+            source: job.repo.source(),
+            publication: job.publication(),
+            repo_id: Some(job.repo.id),
+            base_sha: match &job.kind {
+                Kind::Review { pr, .. } => string(&pr["base"]["sha"]),
+                _ => None,
+            },
             id: job.id.clone(),
             kind: if pr.is_some() { "review" } else { "index" }.into(),
             repo: job.repo.full_name.clone(),
@@ -350,7 +369,7 @@ impl Dashboard {
             installations: seen
                 .0
                 .values()
-                .map(|known| known.repo.installation)
+                .filter_map(|known| known.repo.installation)
                 .collect::<BTreeSet<_>>()
                 .len(),
             repos: BTreeMap::new(),
@@ -634,7 +653,9 @@ impl Server {
             .jobs
             .values()
             .filter(|job| {
-                !active.contains(&job.id) && job.check.as_ref().is_some_and(|check| check.pending)
+                job.source == super::events::Source::Installed
+                    && !active.contains(&job.id)
+                    && job.check.as_ref().is_some_and(|check| check.pending)
             })
             .cloned()
             .collect();
@@ -644,7 +665,7 @@ impl Server {
                 .api
                 .installation_token(
                     &app,
-                    check.repo.installation,
+                    check.repo.installation_id()?,
                     Some(check.repo.id),
                     super::app::Permissions::Checks,
                 )

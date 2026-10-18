@@ -121,6 +121,19 @@ pub enum Permissions {
 }
 
 impl Api {
+    /// Anonymous, read-only external metadata path. It cannot mint tokens or write.
+    pub async fn public_get(&self, path: &str, etag: Option<&str>) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        Ok(request.send().await?)
+    }
+
     pub async fn oauth_token(&self, app: &App, code: &str, redirect: &str) -> Result<String> {
         let response = self
             .http

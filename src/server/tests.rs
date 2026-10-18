@@ -1,3 +1,4 @@
+use super::events::Source::Installed;
 use super::*;
 use aws_lc_rs::{encoding::AsDer, signature::KeyPair};
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -192,8 +193,8 @@ fn queue_coalesces_cancels_and_serializes() {
     other.repo.full_name = "owner/other".into();
     queue.enqueue(other);
     assert_eq!(queue.take().unwrap().0.repo.id, 2);
-    queue.close((1, 7));
-    assert!(!queue.pending.contains_key(&(1, 7)));
+    queue.close((1, 7, Installed));
+    assert!(!queue.pending.contains_key(&(1, 7, Installed)));
 }
 
 #[test]
@@ -766,7 +767,10 @@ async fn reconcile_api_first_sighting_and_stale_head_are_not_backfilled() {
         .mount(&mock)
         .await;
     reconcile::once(&server).await.unwrap();
-    assert_eq!(server.queue.lock().await.pending[&(1, 7)].head(), "later");
+    assert_eq!(
+        server.queue.lock().await.pending[&(1, 7, Installed)].head(),
+        "later"
+    );
     assert_eq!(server.seen.lock().await.0[&1].heads[&7], "first");
     reconcile::once(&server).await.unwrap();
     assert_eq!(server.queue.lock().await.pending.len(), 1);
@@ -1417,7 +1421,7 @@ async fn removal_cancels_pending_and_running_job_metadata() {
         server.enqueue(pending.clone()).await;
         let mut other = job("other-head");
         other.repo.id = 2;
-        other.repo.installation = 10;
+        other.repo.installation = Some(10);
         other.repo.full_name = "owner/other".into();
         server.enqueue(other.clone()).await;
         let event = if installation {
@@ -1435,7 +1439,7 @@ async fn removal_cancels_pending_and_running_job_metadata() {
         }
         assert_eq!(job_metadata(data.path(), &other)["status"], "queued");
         assert!(matches!(
-            server.queue.lock().await.pending[&(1, 0)].kind,
+            server.queue.lock().await.pending[&(1, 0, Installed)].kind,
             events::Kind::Remove
         ));
         // A runner that was already finishing must not overwrite cancellation.
@@ -1974,3 +1978,6 @@ mod mention_tests;
 
 #[path = "dashboard_qol_tests.rs"]
 mod dashboard_qol_tests;
+
+#[path = "external_tests.rs"]
+mod external_tests;

@@ -111,6 +111,9 @@ impl Seen {
     }
 
     pub fn finished(&mut self, job: &Job) {
+        if job.repo.source() == super::events::Source::External {
+            return;
+        }
         let known = self.0.entry(job.repo.id).or_insert_with(|| SeenRepo {
             repo: job.repo.clone(),
             pushed_at: String::new(),
@@ -282,6 +285,7 @@ pub(super) async fn once(server: &Server) -> Result<()> {
 
 pub(super) async fn tick(server: &Server) -> Result<()> {
     super::api::test_untested(server).await;
+    super::external::poll(server).await?;
     once(server).await
 }
 

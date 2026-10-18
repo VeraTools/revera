@@ -354,7 +354,7 @@ async fn closed_webhook_during_delayed_mention_lookup_cannot_resurrect_review() 
     reopened["comment"]["id"] = json!(34);
     invoke(&server, reopened).await;
     assert_eq!(
-        server.queue.lock().await.pending[&(1, 7)].head(),
+        server.queue.lock().await.pending[&(1, 7, Installed)].head(),
         "reopened-head"
     );
 }
@@ -456,7 +456,7 @@ async fn mentions_acknowledge_then_force_current_head_and_ignore_auto_filters() 
             .await
             .unwrap();
         let queue = server.queue.lock().await;
-        let review = &queue.pending[&(1, 7)];
+        let review = &queue.pending[&(1, 7, Installed)];
         assert_eq!(review.head(), "current-head-not-webhook-head");
         assert_eq!(review.mode, expected);
         assert_eq!(review.trigger, "mention");
@@ -850,9 +850,9 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
         let body: Value = response.json().await.unwrap();
         id = body["id"].as_str().unwrap().into();
         let queue = server.queue.lock().await;
-        assert_eq!(queue.pending[&(1, 7)].mode, expected);
+        assert_eq!(queue.pending[&(1, 7, Installed)].mode, expected);
         assert_eq!(
-            queue.pending[&(1, 7)].trigger,
+            queue.pending[&(1, 7, Installed)].trigger,
             if rerun { "rerun" } else { "manual" }
         );
     }
@@ -882,7 +882,7 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
             409
         );
     }
-    assert_eq!(server.queue.lock().await.pending[&(1, 7)].id, id);
+    assert_eq!(server.queue.lock().await.pending[&(1, 7, Installed)].id, id);
     task.abort();
 }
 
