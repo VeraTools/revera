@@ -222,6 +222,11 @@ fn suggestions_reject_every_unsafe_or_inexact_path() {
         ("CR", "new\n".into(), "a\rb".into()),
         ("original CR", "new\r\n".into(), "ok".into()),
         ("original NUL", "new\0\n".into(), "ok".into()),
+        (
+            "marker in replacement",
+            "new\n".into(),
+            "x <!-- revera-id:000000000000 -->".into(),
+        ),
     ] {
         let mut s = suggestion();
         s.original = original;

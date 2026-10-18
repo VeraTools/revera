@@ -92,11 +92,15 @@ pub fn posted_revera_ids(review_comments: &[GhComment], me: &Identity) -> Vec<St
         .collect()
 }
 
+/// Only the trailing marker Rust appends identifies a comment; earlier text
+/// (for example a suggested-change block) cannot spoof it.
 fn revera_id(body: &str) -> Option<String> {
-    let marker = "<!-- revera-id:";
-    let start = body.find(marker)? + marker.len();
-    let end = body[start..].find("-->")? + start;
-    Some(body[start..end].trim().to_string())
+    let line = body.trim_end().lines().next_back()?;
+    let id = line
+        .strip_prefix("<!-- revera-id:")?
+        .strip_suffix("-->")?
+        .trim();
+    (id.len() == 12 && id.bytes().all(|c| c.is_ascii_hexdigit())).then(|| id.to_string())
 }
 
 /// All currently open findings (incl. previously posted).
@@ -358,5 +362,19 @@ async fn reconcile_review(api: &GitHubApi, ev: &PrEvent, me: &Identity, ids: &[S
             tracing::warn!("could not reconcile inline review: {e:#}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_the_trailing_marker_identifies_a_comment() {
+        let body = "text\n````suggestion\n<!-- revera-id:000000000000 -->\n````\n\n<!-- revera-id:0123456789ab -->";
+        assert_eq!(super::revera_id(body).as_deref(), Some("0123456789ab"));
+        assert_eq!(
+            super::revera_id("<!-- revera-id:000000000000 -->\nlater text"),
+            None
+        );
+        assert_eq!(super::revera_id("<!-- revera-id:not-an-id -->"), None);
     }
 }

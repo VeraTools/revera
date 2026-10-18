@@ -204,9 +204,11 @@ pub fn checked_suggestion(
         || s.end_line != f.end_line.unwrap_or(f.start_line)
         || s.replacement.len() > 2000
         || s.replacement.lines().count() > 20
-        || [&s.original, &s.replacement]
-            .iter()
-            .any(|v| v.contains(['\0', '\r']) || crate::redact::text(v).as_ref() != v.as_str())
+        || [&s.original, &s.replacement].iter().any(|v| {
+            v.contains(['\0', '\r'])
+                || v.contains("<!--")
+                || crate::redact::text(v).as_ref() != v.as_str()
+        })
         || crate::tools::glob_set(crate::config::SENSITIVE_GLOBS).is_match(&f.file)
     {
         return None;
