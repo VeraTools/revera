@@ -1553,7 +1553,8 @@ async fn cancelled(mut rx: watch::Receiver<bool>) {
     }
 }
 async fn run(s: Arc<Server>, id: &str, rx: watch::Receiver<bool>) {
-    let result = tokio::select! {biased;_=cancelled(rx)=>Ok(()),result=generate(&s,id)=>result};
+    let result =
+        tokio::select! {biased;_=cancelled(rx.clone())=>Ok(()),result=generate(&s,id)=>result};
     if let Err(e) = result {
         let reason = crate::redact::diagnostic(&format!("{e:#}"));
         let _ = change(&s, id, |e| {
@@ -1567,6 +1568,14 @@ async fn run(s: Arc<Server>, id: &str, rx: watch::Receiver<bool>) {
         if ws.exists() {
             let _ = std::fs::remove_dir_all(ws);
         }
+    }
+    if !*rx.borrow()
+        && let Err(error) = auto_publish(&s, id).await
+    {
+        tracing::warn!(
+            "automatic fix delivery: {}",
+            crate::redact::diagnostic(&error.1)
+        );
     }
     if let Ok(e) = entry(&s, id).await {
         status(&s, &e.record).await;
@@ -2153,7 +2162,60 @@ async fn approve(
     ))
 }
 async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<Record> {
-    if !s.dashboard.lock().await.preferences.admin(actor) {
+    publish_authorized(s, id, PublishAuthority::Admin(actor), mode).await
+}
+#[derive(Clone, Copy)]
+enum PublishAuthority<'a> {
+    Admin(&'a str),
+    AutomaticDraft,
+}
+const AUTO_DRAFT_DETAIL: &str = "auto-published as draft PR (approval not required by settings)";
+fn automatic_draft_allowed(p: &Policy, e: &Entry) -> bool {
+    !p.require_approval
+        && p.delivery == Delivery::DraftPr
+        && e.record.repo_source == Source::Installed
+        && !e.context.preview_only
+}
+async fn auto_publish(s: &Server, id: &str) -> Outcome<Record> {
+    let e = entry(s, id).await?;
+    let p = policy(s, &e.record.repo).await;
+    if e.record.state != "ready" || !automatic_draft_allowed(&p, &e) {
+        return Ok(e.record);
+    }
+    let job = s
+        .dashboard
+        .lock()
+        .await
+        .jobs
+        .get(&e.record.review_job)
+        .cloned()
+        .context("review no longer available")?;
+    let (_, pr) = live(s, &job).await?;
+    if !capabilities(s, &e, Some(&pr), None)
+        .await
+        .iter()
+        .any(|c| c.mode == Delivery::DraftPr && c.available)
+    {
+        return Ok(e.record);
+    }
+    match publish_authorized(s, id, PublishAuthority::AutomaticDraft, Delivery::DraftPr).await {
+        // Another controller invocation may have claimed ready while we fetched
+        // capabilities. It owns delivery; never retry or duplicate its writes.
+        Err(error) if error.0 == StatusCode::CONFLICT => Ok(entry(s, id).await?.record),
+        result => result,
+    }
+}
+async fn publish_authorized(
+    s: &Server,
+    id: &str,
+    authority: PublishAuthority<'_>,
+    mode: Delivery,
+) -> Outcome<Record> {
+    let (actor, automatic) = match authority {
+        PublishAuthority::Admin(actor) => (actor, false),
+        PublishAuthority::AutomaticDraft => ("revera", true),
+    };
+    if !automatic && !s.dashboard.lock().await.preferences.admin(actor) {
         return Err(forbidden("administrator access required"));
     }
     if mode == Delivery::Patch {
@@ -2170,10 +2232,18 @@ async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<R
     if e.record.state != "ready" {
         return Err(conflict("only a ready patch can be approved"));
     }
+    if automatic
+        && (mode != Delivery::DraftPr
+            || !automatic_draft_allowed(&policy(s, &e.record.repo).await, &e))
+    {
+        return Ok(e.record);
+    }
     e.record.audit(
         actor,
         "approved",
-        if mode == Delivery::SameBranch {
+        if automatic {
+            "draft_pr (approval not required by settings)"
+        } else if mode == Delivery::SameBranch {
             "same_branch"
         } else {
             "draft_pr"
@@ -2182,13 +2252,16 @@ async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<R
     e.record.transition("publishing", None, actor, "approved");
     save(s, &mut store, e.clone()).await?;
     drop(store);
-    let result = deliver(s, &e, mode).await;
+    let result = deliver(s, &e, mode, automatic).await;
     let record = match result {
         Ok(delivery) => {
             let r = change(s, id, |e| {
                 e.record.delivery = Some(delivery);
                 e.record
                     .transition("published", None, "revera", "published");
+                if automatic {
+                    e.record.audit("revera", "published", AUTO_DRAFT_DETAIL);
+                }
             })
             .await?;
             if policy(s, &r.repo).await.rereview
@@ -2213,7 +2286,7 @@ async fn publish(s: &Server, id: &str, actor: &str, mode: Delivery) -> Outcome<R
     status(s, &record).await;
     Ok(record)
 }
-async fn deliver(s: &Server, e: &Entry, mode: Delivery) -> Result<Value> {
+async fn deliver(s: &Server, e: &Entry, mode: Delivery, automatic: bool) -> Result<Value> {
     let job = s
         .dashboard
         .lock()
@@ -2258,6 +2331,9 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery) -> Result<Value> {
         bail!("{}", cap.reason);
     }
     let p = policy(s, &e.record.repo).await;
+    if automatic && !automatic_draft_allowed(&p, e) {
+        bail!("automatic draft publication no longer permitted by settings");
+    }
     let root = dir(&s.settings.data_dir, &e.record.id)?;
     let path = root.join("patch.json");
     crate::fsutil::check_regular_target(&path)?;
@@ -2353,6 +2429,9 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery) -> Result<Value> {
             .any(|c| c.mode == mode && c.available)
     {
         bail!("installation permissions changed before delivery");
+    }
+    if automatic && !automatic_draft_allowed(&policy(s, &e.record.repo).await, e) {
+        bail!("automatic draft publication no longer permitted by settings");
     }
     let branch = pr["head"]["ref"].as_str().context("PR branch is missing")?;
     if latest["head"]["ref"].as_str() != Some(branch) {
