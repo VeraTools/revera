@@ -884,7 +884,9 @@ async function checkExternalReviews() {
   await page.getByLabel('GitHub PR URL', { exact: true }).fill('https://evil.example/o/r/pull/1');
   await page.getByRole('button', { name: 'Queue private review', exact: true }).click();
   await page.getByText('Use https://github.com/OWNER/REPO/pull/NUMBER', { exact: true }).waitFor();
-  await page.getByLabel('GitHub PR URL', { exact: true }).fill('https://github.com/community/project/pull/7');
+  await page
+    .getByLabel('GitHub PR URL', { exact: true })
+    .fill('https://github.com/community/project/pull/7');
   await choose(page, 'External review mode', 'Quick');
   await page.getByRole('button', { name: 'Queue private review', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
@@ -900,7 +902,10 @@ async function checkExternalReviews() {
   await page.locator('summary').filter({ hasText: 'Track my external PRs' }).click();
   await page.getByRole('button', { name: 'Find my open PRs', exact: true }).click();
   const actions = page.locator('[aria-label="Choose action for community/small-project #1"]');
-  assert.equal(await actions.getByRole('button', { name: 'Track', exact: true }).isEnabled(), false);
+  assert.equal(
+    await actions.getByRole('button', { name: 'Track', exact: true }).isEnabled(),
+    false,
+  );
   await page.getByRole('link', { name: 'External PR settings', exact: true }).click();
   await page.getByRole('checkbox', { name: 'Track my external PRs', exact: true }).check();
   await page.getByLabel('Check tracked PRs every (minutes)', { exact: true }).fill('30');
@@ -914,7 +919,10 @@ async function checkExternalReviews() {
   const ignored = page.locator('[aria-label="Choose action for community/small-project #2"]');
   await ignored.getByRole('button', { name: 'Ignore', exact: true }).click();
   await page.getByText('PR ignored in discovery.', { exact: true }).waitFor();
-  await page.locator('[aria-label="Choose action for community/small-project #3"]').getByRole('button', { name: 'Review once', exact: true }).click();
+  await page
+    .locator('[aria-label="Choose action for community/small-project #3"]')
+    .getByRole('button', { name: 'Review once', exact: true })
+    .click();
   await page.getByText('Private review queued.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Untrack', exact: true }).click();
   await page.getByText('stopped · untracked manually', { exact: true }).waitFor();

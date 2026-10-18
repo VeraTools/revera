@@ -32,7 +32,7 @@
   <Dialog.Portal>
     <Dialog.Overlay class="dialog-overlay" />
     <Dialog.Content class="dialog">
-      <Dialog.Title class="dialog-title"><h2>Review a public PR</h2></Dialog.Title>
+      <Dialog.Title class="dialog-title">Review a public PR</Dialog.Title>
       <Dialog.Description class="dialog-description"
         >Review any open public GitHub PR, including forks, without an app installation. Results
         stay private here. No upstream comments, checks, or code writes.</Dialog.Description
