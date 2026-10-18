@@ -34,9 +34,10 @@ return, without duplicate comments for still-open defects. Built-in text search
 works without an index; optional [Vera](https://github.com/VeraTools/Vera)
 adds semantic search and reference lookup across the repository.
 
-The self-hosted GitHub App supports on-demand `@mention` reviews with quick
-and deep modes. Revera is open source under MIT, and you can run the App,
-Action or CLI on infrastructure you control.
+The self-hosted GitHub App supports on-demand `@mention` reviews with budget-scaled
+Quick and Deep modes, approved accounts across organizations, and private reviews
+of public PRs without an installation. Revera is open source under MIT. Run the
+App, Action or CLI on infrastructure you control.
 
 ## Good fit / not a fit
 
@@ -52,7 +53,7 @@ but it can still miss bugs or accept a wrong finding; keep human review.
 
 | Run it as | Choose this when | Guide |
 |---|---|---|
-| Self-hosted GitHub App | You want a dashboard, mentions and reviews across installed repositories, without per-repository workflows | [GitHub App](docs/server.md) |
+| Self-hosted GitHub App | You want a dashboard, mentions, multiple organizations or private reviews of public PRs, without per-repository workflows | [GitHub App](docs/server.md) |
 | GitHub Action | You want reviews in one repository without running a server | [Action](docs/action.md) |
 | Local CLI | You want to review a committed branch before opening a PR | [CLI](docs/cli.md) |
 
@@ -78,6 +79,15 @@ but it can still miss bugs or accept a wrong finding; keep human review.
 
 Docker works too. [The App guide](docs/server.md#quickstart) includes proxy
 examples and setup instructions. No YAML file is needed for dashboard setup.
+
+Use **Repositories → Add repositories or organization** to connect another
+owner. GitHub installation and Revera approval are separate; an App must be
+public-installable to connect other accounts. [Connected accounts](docs/server.md#connected-accounts-and-organizations).
+
+For an open public PR elsewhere, use **Reviews → Review PR URL**. Results stay
+in your dashboard: no GitHub comment or check is posted. Optional tracking of
+your own public PRs starts off and reviews only PRs you select.
+[External reviews, limits and privacy](docs/server.md#external-public-pr-reviews).
 
 ### GitHub Action
 
@@ -199,6 +209,7 @@ Small, exact replacements can appear as suggested changes, not tested patches.
 - [How it works](docs/how-it-works.md), including review strategies and trust boundaries
 - [Evaluation](docs/evaluation.md): measurements, limitations and reproduction
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+- [Upgrading from 0.7.0](docs/server.md#from-070-to-080): existing review-only installations need no change
 
 ## License
 

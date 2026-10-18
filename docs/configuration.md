@@ -6,6 +6,12 @@ writes its server default to `/data/revera.yaml`. Unknown keys are errors.
 `${VAR}` in string values expands from the environment; missing or empty
 referenced variables are configuration errors.
 
+Installed App reviews use the repository's base-commit `revera.yaml` when
+present, otherwise the server default; they do not merge the two. External
+public PR reviews always use the server file and disable repository guidance.
+Owner approvals and [external review limits](server.md#external-settings-api)
+are server preferences in `settings.json`, not YAML review settings.
+
 Setup guides: [GitHub App](server.md), [Action](action.md), [local CLI](cli.md).
 
 The smallest valid file is one investigator route:
@@ -183,6 +189,8 @@ Larger repositories may need more agent time. Earlier runs benefited from
 `agent_max_seconds: 420`–`600`, but later runs still failed to submit within
 those budgets. See the [large-repository results](evaluation.md#e3-current-engine-end-to-end)
 before choosing a budget; more time does not guarantee completion.
+In the App, **Settings → Budgets** previews the Quick and Deep limits produced
+by these values. Custom profiles are labelled instead of showing built-in limits.
 
 ## `vera`
 
@@ -319,6 +327,12 @@ A path outside the checkout is read as-is (operator-provided). Before any
 credential is resolved, event mode requires `https` endpoints (loopback
 excepted), valid credential variable names that are not GitHub token
 variables, and `review.validate: true` for `publish: comment`.
+
+The server uses `--private` for external jobs. It requires `--event` and an
+operator `--config` outside the checkout, forces dry-run/private publication,
+disables repository guidance and makes no GitHub API calls in the review child.
+It does not turn an arbitrary local checkout into a public-PR URL client; use
+the App's [Review PR URL dialog](server.md#external-public-pr-reviews) for that.
 
 Index runs (`revera index`, and the Action on push, schedule or manual
 events) read the config from the checked-out commit: they have no pull
