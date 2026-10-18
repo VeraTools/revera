@@ -19,3 +19,4 @@ pub mod timing;
 pub mod tls;
 pub mod tools;
 pub mod vera;
+pub mod web;

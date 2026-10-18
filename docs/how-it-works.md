@@ -38,6 +38,12 @@ note to each system prompt listing the tools actually available in that run.
 If Vera is disabled or index setup fails, its tools are hidden and the note
 describes lexical-only retrieval.
 
+Optional `web_search`/`web_read` supply untrusted public technical evidence only
+when enabled in trusted config; private/unknown repositories need a separate
+opt-in. Investigation and fresh validation share bounded requests with validator
+capacity reserved; planning and synthesis have no web access. See
+[configuration](configuration.md#web_search) for the third-party data boundary.
+
 **Validate.** Candidates are first collapsed (same file, overlapping lines,
 same `defect_key`), then each one is given to a validator agent that starts
 from an empty conversation: it sees the claim and the diff, has the same
@@ -61,7 +67,8 @@ the PR head SHA and refuses to publish if it moved.
 1. Models return findings and verdicts through tools (`submit_findings`,
    `submit_verdict`). They never post comments, run shell commands or write
    files.
-2. All model tools are read-only and scoped to the exact head tree.
+2. Repository tools are read-only and scoped to the exact head tree; opt-in web
+   evidence is a separate, bounded external data source, never instructions.
 3. Providers, models and credential *names* come from trusted configuration;
    credential values are read from the environment and never logged or
    fingerprinted.

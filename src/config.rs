@@ -470,6 +470,32 @@ pub struct BudgetOverride {
     pub retries: Option<u32>,
 }
 
+/// Opt-in public technical evidence. Credentials are optional (hosted Exa is free).
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebSearchConfig {
+    pub enabled: bool,
+    #[serde(skip_serializing)]
+    pub api_key_env: String,
+    pub free_first: bool,
+    pub allow_private: bool,
+    pub max_searches_per_review: u32,
+    pub max_reads_per_review: u32,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key_env: "EXA_API_KEY".into(),
+            free_first: false,
+            allow_private: false,
+            max_searches_per_review: 4,
+            max_reads_per_review: 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -480,6 +506,8 @@ pub struct Config {
     pub models: ModelsConfig,
     #[serde(default)]
     pub vera: VeraConfig,
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
     #[serde(default)]
     pub github: GithubConfig,
     #[serde(default)]
@@ -969,6 +997,17 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+        for (name, limit) in [
+            (
+                "max_searches_per_review",
+                self.web_search.max_searches_per_review,
+            ),
+            ("max_reads_per_review", self.web_search.max_reads_per_review),
+        ] {
+            if !(1..=32).contains(&limit) {
+                bail!("web_search.{name} must be between 1 and 32");
+            }
+        }
         let m = &self.github.summary_marker;
         if !(m.starts_with("<!-- revera") && m.trim_end().ends_with("-->")) {
             bail!(
@@ -1100,6 +1139,9 @@ impl Config {
         if !is_env_name(gh) {
             bail!("github.token_env: {gh:?} is not a valid environment variable name");
         }
+        if self.web_search.enabled && !self.web_search.api_key_env.is_empty() {
+            check_env("web_search.api_key_env", &self.web_search.api_key_env)?;
+        }
         let mut routes: Vec<(String, &ModelRoute)> =
             vec![("models.investigator".into(), &self.models.investigator)];
         if let Some(v) = &self.models.validator {
@@ -1225,6 +1267,7 @@ impl Config {
             "validate": self.review.validate,
             "guidance": self.review.guidance.as_str(),
             "guidance_max_bytes": self.review.guidance_max_bytes,
+            "web_search": self.web_search,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
             "max_diff_bytes": self.review.max_diff_bytes,

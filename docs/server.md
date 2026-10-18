@@ -216,6 +216,13 @@ from that PR's base commit. A PR cannot change its own review configuration.
 Without that file, the operator-trusted server config is used. Keep API keys in
 the dashboard or server environment, not in configuration files.
 
+External web evidence is separately opt-in through `web_search` in that same
+trusted YAML (see [configuration](configuration.md#web_search)). Queries go to
+Exa; private or unknown repositories additionally require `allow_private: true`.
+No key is required for free hosted Exa; an optional `EXA_API_KEY` selects keyed
+REST. The dashboard web-search controls are not yet implemented; use YAML and
+the server environment for this feature. Never put key values in the YAML.
+
 ## Data directory layout
 
 ```text
