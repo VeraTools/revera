@@ -206,6 +206,14 @@ impl Server {
     }
 
     async fn close(&self, key: events::Key) -> Result<()> {
+        fixes::invalidate(
+            self,
+            key.0,
+            key.2,
+            Some(key.1),
+            "PR closed or review cancelled",
+        )
+        .await?;
         let mut queue = self.queue.lock().await;
         let jobs: Vec<_> = queue
             .pending
@@ -223,6 +231,14 @@ impl Server {
     }
 
     async fn remove_repo(&self, repo: events::Repo) -> Result<()> {
+        fixes::invalidate(
+            self,
+            repo.id,
+            events::Source::Installed,
+            None,
+            "repository removed or approval revoked",
+        )
+        .await?;
         {
             let mut dashboard = self.dashboard.lock().await;
             dashboard.repos.retain(|_, info| info.repo.id != repo.id);

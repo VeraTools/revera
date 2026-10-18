@@ -715,6 +715,14 @@ pub async fn run(server: Arc<Server>, job: &Job, cancel: watch::Receiver<bool>) 
             crate::redact::diagnostic(&format!("{e:#}"))
         );
     }
+    if matches!(job.kind, Kind::Review { .. })
+        && let Err(error) = super::fixes::review_finished(&server, job).await
+    {
+        tracing::warn!(
+            "fix review completion: {}",
+            crate::redact::diagnostic(&error.to_string())
+        );
+    }
 }
 
 fn prepare_job(server: &Server, job: &Job) -> Result<(PathBuf, Log, Execution)> {
@@ -911,7 +919,6 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
         std::fs::remove_file(event)?;
     }
     server.prune_jobs().await?;
-    super::fixes::review_finished(server, job).await?;
     Ok(())
 }
 

@@ -302,10 +302,17 @@ struct Entry {
     record: Record,
     context: ContextData,
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct Admission {
+    at: i64,
+    actor: String,
+    repo: String,
+}
 #[derive(Default)]
 pub struct Store {
     entries: BTreeMap<String, Entry>,
     running: BTreeMap<String, watch::Sender<bool>>,
+    admissions: Vec<Admission>,
 }
 fn dir(data: &FsPath, id: &str) -> Result<PathBuf> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -336,7 +343,13 @@ fn persist(data: &FsPath, entry: &Entry) -> Result<()> {
 impl Store {
     pub fn load(data: &FsPath) -> Result<Self> {
         let root = crate::fsutil::ensure_dir(data, FsPath::new("fixes"))?;
-        let mut store = Self::default();
+        let mut store = Self {
+            admissions: dashboard::read_json(data, "fix-admissions.json")?,
+            ..Default::default()
+        };
+        store
+            .admissions
+            .retain(|a| a.at > chrono::Utc::now().timestamp() - 86400);
         for item in std::fs::read_dir(root)? {
             let item = item?;
             if !item.file_type()?.is_dir() {
@@ -375,6 +388,17 @@ impl Store {
                     "revera",
                     "failed",
                 ),
+                "verifying" => {
+                    entry.record.transition(
+                        "published",
+                        Some("follow-up review incomplete"),
+                        "revera",
+                        "failed",
+                    );
+                    if let Some(v) = entry.record.verify_review.as_mut() {
+                        v["note"] = json!("follow-up review incomplete");
+                    }
+                }
                 _ => {}
             }
             persist(data, &entry)?;
@@ -705,30 +729,50 @@ pub async fn request(
     }
     let (repo, pr) = live(server, &job).await?;
     fresh(&pr, job.head_sha.as_deref().unwrap_or(""))?;
-    let preview_only = authorize(server, origin, actor, &repo, &pr, &p)
-        .await
-        .map_err(|e| forbidden(&e.to_string()))?;
+    let permission = authorize(server, origin, actor, &repo, &pr, &p).await;
+    let denied = permission
+        .as_ref()
+        .err()
+        .map(|e| crate::redact::diagnostic(&e.to_string()));
+    let preview_only = permission.unwrap_or(false);
     let key = key(&job, &selected);
     let mut store = server.fixes.lock().await;
-    if let Some(e) = store
+    if let Some(mut e) = store
         .entries
         .values()
         .find(|e| e.context.key == key && e.record.active())
+        .cloned()
     {
-        return Ok(e.record.clone());
+        e.record.audit(actor, "requested", origin);
+        e.record.audit(
+            actor,
+            if denied.is_some() {
+                "permission_denied"
+            } else {
+                "confirmed"
+            },
+            denied
+                .as_deref()
+                .unwrap_or("permission granted; existing request"),
+        );
+        let record = save(server, &mut store, e).await?;
+        return if let Some(reason) = denied {
+            Err(forbidden(&reason))
+        } else {
+            Ok(record)
+        };
     }
     let now = chrono::Utc::now();
     let count = |window: i64, user: bool| {
         store
-            .entries
-            .values()
-            .filter(|e| {
-                chrono::DateTime::parse_from_rfc3339(&e.record.created_at)
-                    .is_ok_and(|at| at.timestamp() > now.timestamp() - window)
+            .admissions
+            .iter()
+            .filter(|a| {
+                a.at > now.timestamp() - window
                     && if user {
-                        e.record.requested_by.eq_ignore_ascii_case(actor)
+                        a.actor.eq_ignore_ascii_case(actor)
                     } else {
-                        e.record.repo.eq_ignore_ascii_case(&job.repo)
+                        a.repo.eq_ignore_ascii_case(&job.repo)
                     }
             })
             .count()
@@ -736,7 +780,9 @@ pub async fn request(
     if count(3600, true) >= p.limits.per_user_hour || count(86400, false) >= p.limits.per_repo_day {
         return Err(conflict("fix request rate limit reached; try later"));
     }
-    let consent = if once {
+    let consent = if denied.is_some() {
+        None
+    } else if once {
         Some("once".into())
     } else {
         p.execution.then(|| "persistent".into())
@@ -748,10 +794,27 @@ pub async fn request(
     let queue = consent.is_some() && (once || origin == "auto" || !p.confirm || trusted_skip);
     let mut record = Record { id: uuid::Uuid::new_v4().simple().to_string(), created_at: now.to_rfc3339(), updated_at: now.to_rfc3339(), state: if queue {"queued"} else {"awaiting_confirmation"}.into(), reason: None, source: origin.into(), requested_by: actor.into(), consent, repo: job.repo.clone(), repo_source:job.source, pr:job.pr.unwrap(), pr_url:format!("https://github.com/{}/pull/{}",job.repo,job.pr.unwrap()), pr_title:crate::handoff::text(pr["title"].as_str().unwrap_or(""),500), review_job:job.id, base_sha:job.base_sha.clone().filter(|s|crate::git::is_oid(s)).context("review missing base SHA")?, head_sha:job.head_sha.clone().filter(|s|crate::git::is_oid(s)).context("review missing head SHA")?, findings:selected.iter().map(|f|json!({"id":f.id(),"severity":f.severity,"title":crate::handoff::text(&f.title,500),"file":crate::handoff::text(&f.file,1000),"start_line":f.start_line,"end_line":f.end_line.unwrap_or(f.start_line)})).collect(), attempt:0, max_attempts:p.limits.attempts, progress:None, generation:None, verification:None, tests:None, patch:None, usage:None, delivery:None, verify_review:None, events:vec![] };
     record.audit(actor, "requested", origin);
-    record.audit(actor, "confirmed", "permission granted");
-    if once {
+    if let Some(reason) = denied.as_deref() {
+        record.transition("failed", Some(reason), actor, "permission_denied");
+    } else {
+        record.audit(actor, "confirmed", "permission granted");
+    }
+    if once && denied.is_none() {
         record.audit(actor, "consent_once", "this request only");
     }
+    let mut admissions = store.admissions.clone();
+    admissions.retain(|a| a.at > now.timestamp() - 86400);
+    admissions.push(Admission {
+        at: now.timestamp(),
+        actor: actor.into(),
+        repo: record.repo.clone(),
+    });
+    crate::fsutil::write_atomic_in(
+        &server.settings.data_dir,
+        "fix-admissions.json",
+        &serde_json::to_vec(&admissions)?,
+    )?;
+    store.admissions = admissions;
     let record = save(
         server,
         &mut store,
@@ -770,6 +833,9 @@ pub async fn request(
     .await?;
     store.prune(&server.settings.data_dir)?;
     drop(store);
+    if let Some(reason) = denied {
+        return Err(forbidden(&reason));
+    }
     server.fix_notify.notify_one();
     status(server, &record).await;
     Ok(record)
@@ -788,6 +854,20 @@ async fn capabilities(
     permissions: Option<&BTreeMap<String, String>>,
 ) -> Vec<Capability> {
     let p = policy(server, &e.record.repo).await;
+    let settings_url = server.installations.lock().await.settings_url.clone();
+    let settings_url = if settings_url.is_empty() {
+        let slug = server
+            .setup
+            .lock()
+            .await
+            .app
+            .as_ref()
+            .map(|a| a.slug.clone())
+            .unwrap_or_default();
+        format!("https://github.com/settings/apps/{slug}/permissions")
+    } else {
+        settings_url
+    };
     let owned;
     let permissions = if let Some(v) = permissions {
         Some(v)
@@ -827,10 +907,7 @@ async fn capabilities(
             return "PR author requests are private previews only".into();
         }
         if !permissions.is_some_and(|p| p.get("contents").is_some_and(|v| v == "write")) {
-            return format!(
-                "Needs Contents: write — update the app's permissions: https://github.com/settings/apps/{}/permissions",
-                "revera"
-            );
+            return format!("Needs Contents: write — update the app's permissions: {settings_url}");
         }
         if fork {
             return if mode == Delivery::SameBranch {
@@ -1380,6 +1457,42 @@ async fn run(s: Arc<Server>, id: &str, rx: watch::Receiver<bool>) {
     if let Ok(e) = entry(&s, id).await {
         status(&s, &e.record).await;
     }
+    let _ = s.fixes.lock().await.prune(&s.settings.data_dir);
+}
+
+/// Revocations/closures interrupt paid work promptly, not just at publication.
+pub async fn invalidate(
+    s: &Server,
+    repo: u64,
+    source: Source,
+    number: Option<u64>,
+    reason: &str,
+) -> Result<()> {
+    let mut store = s.fixes.lock().await;
+    let ids: Vec<_> = store
+        .entries
+        .values()
+        .filter(|e| {
+            e.context.repo.id == repo
+                && e.record.repo_source == source
+                && number.is_none_or(|n| e.record.pr == n)
+                && matches!(
+                    e.record.state.as_str(),
+                    "awaiting_confirmation" | "queued" | "generating" | "validating" | "ready"
+                )
+        })
+        .map(|e| e.record.id.clone())
+        .collect();
+    for id in ids {
+        if let Some(tx) = store.running.get(&id) {
+            tx.send_replace(true);
+        }
+        let mut e = store.entries[&id].clone();
+        e.record
+            .transition("cancelled", Some(reason), "revera", "cancelled");
+        save(s, &mut store, e).await?;
+    }
+    Ok(())
 }
 fn patch_policy(p: &Policy) -> fix::policy::Policy {
     fix::policy::Policy {
@@ -1539,7 +1652,18 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
     let (job, _) = review(s, &e.record.review_job)
         .await
         .map_err(|e| anyhow::anyhow!(e.1))?;
-    let (_, pr) = live(s, &job).await?;
+    let (_, pr) = match live(s, &job).await {
+        Ok(live) => live,
+        Err(error) if error.to_string().contains("closed or merged") => {
+            change(s, id, |e| {
+                e.record
+                    .transition("stale", Some("PR closed"), "revera", "stale")
+            })
+            .await?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     if let Err(error) = fresh(&pr, &e.record.head_sha) {
         change(s, id, |e| {
             e.record
@@ -2521,12 +2645,12 @@ pub async fn check_action(s: &Server, app: &app::App, payload: &Value) -> Result
     // issue-comment IDs. Claim before any request/status write.
     {
         let _store = s.fixes.lock().await;
-        let mut claims: Vec<(u64, u64)> =
+        let mut claims: Vec<(u64, u64, String)> =
             dashboard::read_json(&s.settings.data_dir, "fix-checks.json")?;
-        if claims.contains(&(repo.id, id)) {
+        if claims.contains(&(repo.id, id, actor.into())) {
             return Ok(());
         }
-        claims.push((repo.id, id));
+        claims.push((repo.id, id, actor.into()));
         if claims.len() > 4096 {
             claims.remove(0);
         }
