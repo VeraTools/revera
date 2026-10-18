@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.1
+
+- The dashboard has a theme menu in the top bar: System, Light or Dark. The
+  choice is saved in the browser; System follows the operating system as before.
+- Settings → Models points to the Retrieval tab, where the embedding and
+  reranker models are configured.
+
 ## v0.6.0
 
 - The GitHub App accepts PR conversation commands: `@<app-slug> review`,
