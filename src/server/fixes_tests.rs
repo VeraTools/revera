@@ -470,12 +470,7 @@ async fn ready(s: &Server, id: &str) -> String {
     change(s,&r.id,|e|{e.record.tests=Some(json!({"outcome":"passed","output":""}));e.record.verification=Some(json!({"per_finding":[{"id":finding().id(),"verdict":"resolved","rationale":"evidence"}],"new_problems":[]}));e.record.state="ready".into();}).await.unwrap();
     r.id
 }
-async fn delivery_mocks(
-    mock: &MockServer,
-    parent: &str,
-    mode: Delivery,
-    fail: Option<(u16, &str)>,
-) {
+async fn commit_mocks(mock: &MockServer, parent: &str) {
     Mock::given(method("GET"))
         .and(path("/app/installations/9"))
         .respond_with(
@@ -504,6 +499,14 @@ async fn delivery_mocks(
             .mount(mock)
             .await;
     }
+}
+async fn delivery_mocks(
+    mock: &MockServer,
+    parent: &str,
+    mode: Delivery,
+    fail: Option<(u16, &str)>,
+) {
+    commit_mocks(mock, parent).await;
     let branch = if mode == Delivery::SameBranch {
         "topic".into()
     } else {
@@ -650,6 +653,227 @@ async fn protected_branches_fail_honestly_without_retry() {
         .unwrap();
     assert_eq!(r.state, "publish_failed");
     assert!(r.reason.unwrap().contains("protect"));
+}
+
+#[tokio::test]
+async fn approval_head_race_after_commit_creation_never_mutates_a_ref() {
+    for mode in [Delivery::DraftPr, Delivery::SameBranch] {
+        let (_data, s, mock, job) = fixture().await;
+        s.dashboard.lock().await.preferences.fixes.allow_same_branch = true;
+        let id = ready(&s, &job).await;
+        commit_mocks(&mock, HEAD).await;
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = reads.clone();
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/7"))
+            .respond_with(move |_: &wiremock::Request| {
+                let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(pull(if n == 0 { HEAD } else { BASE }))
+            })
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let r = publish(&s, &id, "admin", mode).await.unwrap();
+        assert_eq!(r.state, "publish_failed");
+        assert!(r.reason.unwrap().contains("changed since"));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(publish(&s, &id, "admin", mode).await.is_err());
+        let requests = mock.received_requests().await.unwrap();
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.method == "POST" && r.url.path().ends_with("/git/commits"))
+        );
+        assert!(requests.iter().all(|r| !r.url.path().contains("/git/ref")
+            && !(r.method == "POST" && r.url.path().ends_with("/pulls"))));
+    }
+}
+
+fn fix_comment(body: &str, id: u64, actor: &str) -> Value {
+    json!({"action":"created","installation":{"id":9},"repository":{"id":1,"full_name":"owner/repo","default_branch":"main"},"issue":{"number":7,"pull_request":{}},"comment":{"id":id,"body":body,"author_association":"NONE","user":{"login":actor,"type":"User"}}})
+}
+async fn invoke_fix(s: &Server, payload: &Value) {
+    let app = super::super::tests::test_app();
+    let command =
+        super::super::mentions::event(payload, &app.slug, &s.dashboard.lock().await.preferences)
+            .unwrap()
+            .unwrap();
+    super::super::mentions::handle(s, &app, command)
+        .await
+        .unwrap();
+}
+#[tokio::test]
+async fn fix_mentions_reply_or_react_once_with_durable_claims_and_live_authorization() {
+    let (_data, s, mock, job) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+        .expect(3)
+        .mount(&mock)
+        .await;
+    let payload = fix_comment("@revera-test fix", 33, "maintainer");
+    futures::future::join_all((0..4).map(|_| invoke_fix(&s, &payload))).await;
+    let r = s
+        .fixes
+        .lock()
+        .await
+        .entries
+        .values()
+        .next()
+        .unwrap()
+        .record
+        .clone();
+    assert_eq!(r.state, "awaiting_confirmation");
+    let requests = mock.received_requests().await.unwrap().len();
+    *s.mentions.lock().await = super::super::mentions::Recent::load(&s.settings.data_dir).unwrap();
+    invoke_fix(&s, &payload).await;
+    assert_eq!(mock.received_requests().await.unwrap().len(), requests);
+    invoke_fix(
+        &s,
+        &fix_comment(
+            &format!("@revera-test fix {}", &finding().id()[..6]),
+            34,
+            "maintainer",
+        ),
+    )
+    .await;
+    invoke_fix(
+        &s,
+        &fix_comment("@revera-test fix status", 35, "maintainer"),
+    )
+    .await;
+    assert_eq!(s.fixes.lock().await.entries.len(), 1);
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.review_job, job);
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/comments/36/reactions"))
+        .and(body_partial_json(json!({"content":"eyes"})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":45})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let cancel = fix_comment("@revera-test fix cancel", 36, "maintainer");
+    invoke_fix(&s, &cancel).await;
+    invoke_fix(&s, &cancel).await;
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.state, "cancelled");
+    let requests = mock.received_requests().await.unwrap();
+    for request in requests
+        .iter()
+        .filter(|r| r.method == "POST" && r.url.path().ends_with("/issues/7/comments"))
+    {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(
+            body["body"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("https://revera.example.com/fixes/{}", r.id))
+        );
+    }
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.url.path().contains("/v1/") && !r.url.path().contains("/git/"))
+    );
+}
+
+#[tokio::test]
+async fn fix_mentions_explain_missing_reviews_and_denials_without_trusting_associations() {
+    for missing in [true, false] {
+        let (_data, s, mock, job) = fixture().await;
+        if missing {
+            s.dashboard.lock().await.jobs.get_mut(&job).unwrap().status = "partial".into();
+        } else {
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/collaborators/outsider/permission"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"permission":"write","role_name":"write"})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut payload = fix_comment("@revera-test fix", 33, "outsider");
+        payload["comment"]["author_association"] = json!("OWNER");
+        invoke_fix(&s, &payload).await;
+        invoke_fix(&s, &payload).await;
+        let requests = mock.received_requests().await.unwrap();
+        let reply = requests
+            .iter()
+            .find(|r| r.method == "POST" && r.url.path().ends_with("/issues/7/comments"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&reply.body).unwrap();
+        assert!(body["body"].as_str().unwrap().contains(if missing {
+            "Ask for a review first"
+        } else {
+            "not authorized"
+        }));
+        assert!(s.queue.lock().await.pending.is_empty());
+        let store = s.fixes.lock().await;
+        if missing {
+            assert!(store.entries.is_empty());
+        } else {
+            let r = &store.entries.values().next().unwrap().record;
+            assert_eq!(r.state, "failed");
+            assert!(r.consent.is_none());
+            assert!(r.events.iter().any(|e| e.action == "permission_denied"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn external_preview_requires_opt_in_uses_public_reads_and_rejects_publish() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard.lock().await.jobs.get_mut(&job).unwrap().source = Source::External;
+    let denied = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap_err();
+    assert_eq!(denied.0, StatusCode::FORBIDDEN);
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    s.dashboard.lock().await.preferences.fixes.external = true;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":1,"full_name":"owner/repo","private":false,"size":10,"default_branch":"main"})))
+        .mount(&mock).await;
+    let id = ready(&s, &job).await;
+    let (status, detail) = call(
+        s.clone(),
+        reqwest::Method::GET,
+        &format!("/api/fixes/{id}"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["fix"]["repo_source"], "external");
+    assert_eq!(detail["patch"], "diff fixture\n");
+    assert_eq!(detail["delivery"][0]["available"], true);
+    assert_eq!(detail["delivery"][1]["available"], false);
+    assert_eq!(detail["actions"]["approve"], false);
+    let (status, error) = call(
+        s.clone(),
+        reqwest::Method::POST,
+        &format!("/api/fixes/{id}/approve"),
+        Some(json!({"delivery":"draft_pr"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        error["error"],
+        "Revera cannot publish to a repository where it is not installed"
+    );
+    assert_eq!(entry(&s, &id).await.unwrap().record.state, "ready");
+    for r in mock.received_requests().await.unwrap() {
+        assert_eq!(r.method, "GET");
+        assert!(!r.headers.contains_key("authorization"));
+        assert!(!r.url.path().contains("/app/"));
+    }
 }
 
 fn git(path: &FsPath, args: &[&str]) -> String {
