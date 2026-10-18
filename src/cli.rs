@@ -382,6 +382,8 @@ fn fork_skip(
             cache_write_tokens: 0,
             reasoning_tokens: 0,
             by_route: vec![],
+            fallback_events: vec![],
+            unavailable_routes: vec![],
             wall_ms: 0,
         },
         publication: crate::report::Publication {
@@ -782,45 +784,60 @@ async fn doctor(
             }
         }
     }
-    for (name, r) in routes {
-        if r.protocol.is_http() {
-            let env = r.api_key_env.clone().unwrap_or_default();
-            if env.is_empty() {
-                println!("{name}: FAIL — api_key_env not set for an HTTP route");
-                println!("  next: set api_key_env = \"YOUR_PROVIDER_KEY\" on the route");
-                ok = false;
-            } else if crate::config::env_is_set(&env) {
-                println!(
-                    "{name}: {} via {} (key env {env} set)",
-                    r.model,
-                    crate::config::identity_url(
-                        r.base_url.as_deref().unwrap_or("(default base url)")
-                    )
-                );
+    for (name, primary) in routes {
+        let usable = primary
+            .routes()
+            .any(|r| r.credentials_available(&crate::config::env_is_set));
+        for (index, r) in primary.routes().enumerate() {
+            let name = if index == 0 {
+                name.clone()
             } else {
-                println!("{name}: FAIL — key env {env} missing or empty");
-                println!(
-                    "  next: export {env}=<your key> (or add it as a repository secret in CI)"
-                );
-                ok = false;
-            }
-            if r.reasoning.enabled() {
-                println!(
-                    "{name}: reasoning effort={} (budget {})",
-                    r.reasoning.effort().as_str(),
-                    r.reasoning.effective_budget()
-                );
-            }
-        } else {
-            match &r.script {
-                Some(p) if p.exists() => println!("{name}: scripted route {}", p.display()),
-                Some(p) => {
-                    println!("{name}: FAIL — script {} not found", p.display());
+                format!("{name}.fallback[{}]", index - 1)
+            };
+            if r.protocol.is_http() {
+                let env = r.api_key_env.clone().unwrap_or_default();
+                if env.is_empty() {
+                    println!("{name}: FAIL — api_key_env not set for an HTTP route");
+                    println!("  next: set api_key_env = \"YOUR_PROVIDER_KEY\" on the route");
                     ok = false;
+                } else if crate::config::env_is_set(&env) {
+                    println!(
+                        "{name}: {} via {} (key env {env} set)",
+                        r.model,
+                        crate::config::identity_url(
+                            r.base_url.as_deref().unwrap_or("(default base url)")
+                        )
+                    );
+                } else {
+                    let status = if usable {
+                        "UNAVAILABLE (skipped; another route has a key)"
+                    } else {
+                        "FAIL"
+                    };
+                    println!("{name}: {status} — key env {env} missing or empty");
+                    println!(
+                        "  next: export {env}=<your key> (or add it as a repository secret in CI)"
+                    );
+                    ok &= usable;
                 }
-                None => {
-                    println!("{name}: FAIL — scripted route without `script` path");
-                    ok = false;
+                if r.reasoning.enabled() {
+                    println!(
+                        "{name}: reasoning effort={} (budget {})",
+                        r.reasoning.effort().as_str(),
+                        r.reasoning.effective_budget()
+                    );
+                }
+            } else {
+                match &r.script {
+                    Some(p) if p.exists() => println!("{name}: scripted route {}", p.display()),
+                    Some(p) => {
+                        println!("{name}: FAIL — script {} not found", p.display());
+                        ok = false;
+                    }
+                    None => {
+                        println!("{name}: FAIL — scripted route without `script` path");
+                        ok = false;
+                    }
                 }
             }
         }

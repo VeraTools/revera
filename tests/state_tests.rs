@@ -116,6 +116,8 @@ fn surfaced_ids_only_returns_accepted_findings() {
             cache_write_tokens: 0,
             reasoning_tokens: 0,
             by_route: vec![],
+            fallback_events: vec![],
+            unavailable_routes: vec![],
             wall_ms: 0,
         },
         publication: Default::default(),

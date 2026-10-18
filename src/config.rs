@@ -240,6 +240,35 @@ pub struct ModelRoute {
     /// Reasoning/thinking level; on by default (medium). `none` disables.
     #[serde(default)]
     pub reasoning: Reasoning,
+    /// Ordered alternatives; fallback entries cannot themselves have fallbacks.
+    #[serde(default, deserialize_with = "deserialize_fallbacks")]
+    pub fallback: Vec<ModelRoute>,
+}
+
+fn deserialize_fallbacks<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<ModelRoute>, D::Error> {
+    use serde::de::Error;
+    let routes = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    routes
+        .into_iter()
+        .map(|route| {
+            if route.get("fallback").is_some() {
+                return Err(D::Error::custom("fallback routes cannot contain fallback"));
+            }
+            serde_json::from_value(route).map_err(D::Error::custom)
+        })
+        .collect()
+}
+
+impl ModelRoute {
+    pub fn routes(&self) -> impl Iterator<Item = &ModelRoute> {
+        std::iter::once(self).chain(self.fallback.iter())
+    }
+
+    pub fn credentials_available(&self, is_set: &dyn Fn(&str) -> bool) -> bool {
+        !self.protocol.is_http() || self.api_key_env.as_deref().is_some_and(is_set)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -805,6 +834,9 @@ pub fn expand_env_with(s: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<
 }
 
 fn expand_route(r: &mut ModelRoute, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+    for fallback in &mut r.fallback {
+        expand_route(fallback, env)?;
+    }
     if let Some(b) = &mut r.base_url {
         *b = expand_env_with(b, env)?;
     }
@@ -878,6 +910,9 @@ pub fn is_opencode_host(base_url: &str) -> bool {
 /// Runs for every route at load time; credentials are checked separately by
 /// `validate_for` so an unused route cannot block a run.
 fn check_route_shape(name: &str, r: &ModelRoute) -> Result<()> {
+    for (i, fallback) in r.fallback.iter().enumerate() {
+        check_route_shape(&format!("{name}.fallback[{i}]"), fallback)?;
+    }
     match r.protocol {
         Protocol::OpenaiChat | Protocol::OpenaiResponses => {
             if r.base_url.as_deref().is_none_or(|s| s.is_empty()) {
@@ -917,16 +952,21 @@ pub(crate) fn check_lane_cardinality(focuses: usize, scouts: usize) -> Result<()
     Ok(())
 }
 
-/// Credential check: HTTP routes need their api_key_env populated.
+/// At least one route in the chain needs usable credentials.
 fn check_route_credentials(
     name: &str,
     r: &ModelRoute,
     is_set: &dyn Fn(&str) -> bool,
 ) -> Result<()> {
+    if r.routes().any(|route| route.credentials_available(is_set)) {
+        return Ok(());
+    }
     if r.protocol.is_http() {
         let env = r.api_key_env.as_deref().unwrap_or_default();
         if !env.is_empty() && !is_set(env) {
-            bail!("models.{name}: api_key_env {env} is not set (or empty) in the environment");
+            bail!(
+                "models.{name}: api_key_env {env} is not set (or empty) in the environment; no fallback has usable credentials"
+            );
         }
     }
     Ok(())
@@ -1114,6 +1154,16 @@ impl Config {
         for s in self.models.scouts.iter().flatten() {
             routes.push((format!("models.scouts.{}", s.name), &s.route));
         }
+        let routes = routes.into_iter().flat_map(|(name, r)| {
+            r.routes().enumerate().map(move |(i, route)| {
+                let name = if i == 0 {
+                    name.clone()
+                } else {
+                    format!("{name}.fallback[{}]", i - 1)
+                };
+                (name, route)
+            })
+        });
         for (name, r) in routes {
             if !r.protocol.is_http() {
                 continue;
@@ -1197,12 +1247,12 @@ impl Config {
     /// stored result is only reused when the same review would run again.
     /// Contains no secrets: credential values and their env var names stay out.
     pub fn review_fingerprint(&self, strategy: &str) -> serde_json::Value {
-        let route = |r: &ModelRoute| {
+        fn route(r: &ModelRoute) -> serde_json::Value {
             // header names only: values may be interpolated from env vars
             let mut headers: Vec<&str> = r.extra_headers.keys().map(String::as_str).collect();
             headers.sort_unstable();
             // Cache hints do not change model output, so toggling them must not invalidate stored reviews.
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "extra_headers": headers,
                 "session_header": r.session_header,
                 "protocol": format!("{:?}", r.protocol).to_lowercase(),
@@ -1213,8 +1263,12 @@ impl Config {
                 "reasoning": r.reasoning.effort().as_str(),
                 "reasoning_budget": r.reasoning.effective_budget(),
                 "script": r.script.as_ref().map(|p| p.to_string_lossy().to_string()),
-            })
-        };
+            });
+            if !r.fallback.is_empty() {
+                value["fallback"] = r.fallback.iter().map(route).collect();
+            }
+            value
+        }
         serde_json::json!({
             "engine": env!("CARGO_PKG_VERSION"),
             "prompts": crate::prompts::prompt_version(),
@@ -1316,6 +1370,121 @@ impl Config {
 #[cfg(test)]
 mod identity_tests {
     use super::Config;
+
+    fn fallback_config() -> Config {
+        Config::parse(
+            r#"
+models:
+  investigator:
+    protocol: openai-chat
+    base_url: https://primary.example/v1
+    api_key_env: PRIMARY_KEY
+    model: primary
+    fallback:
+      - protocol: anthropic
+        base_url: https://fallback.example/v1?key=private-value
+        api_key_env: BACKUP_KEY
+        extra_headers: {x-private: private-header}
+        model: backup
+vera: {enabled: false}
+"#,
+            "fallback-test",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fallback_inheritance_credentials_fingerprint_and_index_identity() {
+        let cfg = fallback_config();
+        assert!(cfg.validator_inherited());
+        assert_eq!(cfg.effective_validator().fallback[0].model, "backup");
+        cfg.validate_for_with_env(super::Strategy::Baseline, &|name| name == "BACKUP_KEY")
+            .unwrap();
+        cfg.validate_for_with_env(super::Strategy::Baseline, &|name| name == "PRIMARY_KEY")
+            .unwrap();
+        let error = cfg
+            .validate_for_with_env(super::Strategy::Baseline, &|_| false)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no fallback has usable credentials")
+        );
+        let fingerprint = cfg.review_fingerprint("baseline");
+        let text = fingerprint.to_string();
+        for secret in [
+            "PRIMARY_KEY",
+            "BACKUP_KEY",
+            "private-value",
+            "private-header",
+        ] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        let mut changed = cfg.clone();
+        changed.models.investigator.fallback[0].model = "changed-backup".into();
+        assert_ne!(fingerprint, changed.review_fingerprint("baseline"));
+        assert_eq!(cfg.vera.index_key(), changed.vera.index_key());
+        changed.models.investigator.fallback[0].model = "backup".into();
+        changed.models.investigator.fallback[0].base_url =
+            Some("https://fallback.example/v1?key=another-secret".into());
+        changed.models.investigator.fallback[0].api_key_env = Some("OTHER_KEY".into());
+        changed.models.investigator.fallback[0]
+            .extra_headers
+            .insert("x-private".into(), "another-header".into());
+        assert_eq!(fingerprint, changed.review_fingerprint("baseline"));
+        let mut validator = cfg.models.investigator.clone();
+        validator.fallback.clear();
+        changed.models.validator = Some(validator);
+        assert!(changed.effective_validator().fallback.is_empty());
+    }
+
+    #[test]
+    fn fallback_shape_nesting_expansion_and_trust_are_checked() {
+        let cfg = fallback_config();
+        cfg.check_trust(true).unwrap();
+        let mut forbidden = cfg.clone();
+        forbidden.models.investigator.fallback[0].api_key_env = Some("GITHUB_TOKEN".into());
+        assert!(
+            forbidden
+                .check_trust(true)
+                .unwrap_err()
+                .to_string()
+                .contains("fallback[0]")
+        );
+        forbidden = cfg.clone();
+        forbidden.models.investigator.fallback[0].base_url =
+            Some("http://untrusted.example".into());
+        assert!(forbidden.check_trust(true).is_err());
+        let template = r#"
+models:
+  investigator:
+    protocol: scripted
+    model: primary
+    script: unused.json
+    fallback:
+      - protocol: openai-chat
+        model: backup
+        api_key_env: BACKUP_KEY
+        base_url: https://api.opencode.ai/v1
+"#;
+        let expanded = Config::parse(template, "fallback").unwrap();
+        assert_eq!(
+            expanded.models.investigator.fallback[0]
+                .session_header
+                .as_deref(),
+            Some("x-opencode-session")
+        );
+        for field in ["fallback: []", "unexpected: true"] {
+            assert!(Config::parse(&format!("{template}        {field}\n"), "fallback").is_err());
+        }
+        assert!(
+            Config::parse(
+                &template.replace("        base_url: https://api.opencode.ai/v1\n", ""),
+                "fallback"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn query_values_do_not_enter_review_or_cache_identity() {

@@ -51,6 +51,7 @@ different provider family).
 | `extra_headers` | `{}` | header name → value (values may use `${VAR}`) |
 | `session_header` | — | header that carries a stable per-run session id (set automatically for `opencode.ai` hosts) |
 | `script` | — | `scripted` protocol only: path to a JSON transcript (tests, Action smoke) |
+| `fallback` | `[]` | ordered alternative routes; entries cannot contain `fallback` |
 
 Reasoning long form:
 
@@ -78,6 +79,42 @@ Protocol wire formats:
 
 All HTTP protocols share one transport: retries with `Retry-After`, the run
 request budget, the run deadline and the ledger. Routes can mix protocols.
+
+### Fallback models
+
+Any role can configure ordered alternatives with the same route fields:
+
+```yaml
+models:
+  investigator:
+    protocol: openai-responses
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-5.2
+    fallback:
+      - protocol: anthropic
+        api_key_env: ANTHROPIC_API_KEY
+        model: claude-sonnet-4-5
+```
+
+After a route exhausts its own retries and request-reshaping steps, Revera
+tries the next available route on HTTP 429 or 5xx, timeout/connect/transport
+errors, HTTP 401/403 or 404, or an empty/malformed provider response. Other
+HTTP errors (including an unhandled 400), request-budget or deadline
+exhaustion, cancellation, and agent tool/terminal-protocol failures do not
+trigger fallback. Missing or empty key environments make only that route
+unavailable; a missing primary key is allowed when an alternative has a key.
+`revera doctor` lists each alternative's key presence; unavailable routes
+are noted in logs and the run ledger.
+
+The last successful route is sticky per role for the rest of the run,
+including fresh validator conversations. Switching replays the complete
+provider-neutral transcript without the previous route's opaque state.
+Every HTTP attempt shares the run request budget and existing deadlines.
+An inherited validator inherits the investigator's alternatives; an explicit
+validator has only its own. Nested `fallback` is rejected. Fallback routes
+affect the review fingerprint, not the Vera index identity. The ledger records
+switches and per-route usage; the summary footer shows the served model chain.
 
 ### Prompt caching
 

@@ -46,7 +46,10 @@ tools, and must re-establish the defect from the code before returning
 single configured model still gets an independent second look; configure
 `models.validator` to use a different model. Only `accepted` findings are
 published. `uncertain` findings stay in the report and are listed in the
-summary only when `review.publish_uncertain` is on.
+summary only when `review.publish_uncertain` is on. Optional per-role
+[fallback models](configuration.md#fallback-models) inherit with the route;
+switching providers replays the full conversation and keeps the last
+successful alternative for that role for the remainder of the run.
 
 **Reconcile and publish.** Inline comments require the finding to sit on a
 head-side line of a diff hunk; other accepted findings go into the summary

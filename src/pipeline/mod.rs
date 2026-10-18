@@ -38,6 +38,51 @@ pub fn make_client(
     retries: u32,
     terminal_tool: &str,
 ) -> Result<Arc<dyn ModelClient>, ProviderError> {
+    if route.fallback.is_empty() {
+        return make_single_client(
+            route,
+            role,
+            cache_key,
+            ledger,
+            max_requests,
+            retries,
+            terminal_tool,
+        );
+    }
+    let mut clients = Vec::new();
+    for alternative in route.routes() {
+        let client = match make_single_client(
+            alternative,
+            role,
+            cache_key.clone(),
+            ledger.clone(),
+            max_requests,
+            retries,
+            terminal_tool,
+        ) {
+            Ok(client) => Some(client),
+            Err(ProviderError::MissingKey(_)) => None,
+            Err(error) => return Err(error),
+        };
+        clients.push((alternative.model.clone(), client));
+    }
+    Ok(Arc::new(crate::provider::fallback::FallbackClient::new(
+        clients,
+        role,
+        ledger,
+        max_requests,
+    )))
+}
+
+fn make_single_client(
+    route: &ModelRoute,
+    role: &str,
+    cache_key: Option<String>,
+    ledger: LedgerHandle,
+    max_requests: u32,
+    retries: u32,
+    terminal_tool: &str,
+) -> Result<Arc<dyn ModelClient>, ProviderError> {
     match route.protocol {
         Protocol::OpenaiChat => Ok(Arc::new(OpenAiChatClient::new_with_cache_key(
             route.clone(),
