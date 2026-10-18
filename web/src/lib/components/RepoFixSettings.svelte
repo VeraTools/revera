@@ -42,8 +42,8 @@
   }}
   ><Dialog.Portal
     ><Dialog.Overlay class="dialog-overlay" /><Dialog.Content class="dialog"
-      ><Dialog.Title><h2>Repository Fixes</h2></Dialog.Title><Dialog.Description
-        class="dialog-description"
+      ><Dialog.Title style="font-size: 18px; font-weight: 600">Repository Fixes</Dialog.Title
+      ><Dialog.Description class="dialog-description"
         >{repo} · server-owned overrides, independent of repository YAML. Limits and write safety caps
         cannot be raised here.</Dialog.Description
       >

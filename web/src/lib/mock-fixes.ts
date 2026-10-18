@@ -498,7 +498,8 @@ export function mockFixRequest(url: URL, method: string, body: unknown, ctx: Con
     f.state = policy.rereview ? 'verifying' : 'published';
     f.progress = policy.rereview ? 'Published. Reviewing the new SHA.' : null;
   } else if (action === 'confirm') {
-    if (!policy.execution && !data?.once)
+    const execution = overrides[f.repo]?.execution ?? policy.execution;
+    if (!execution && !data?.once)
       throw new Error('One-time consent is required while fix execution is disabled.');
     f.consent = data?.once ? 'once' : 'persistent';
     f.state = 'queued';

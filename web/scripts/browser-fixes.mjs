@@ -104,6 +104,50 @@ export async function checkFixes({ open, choose, edit, savedConfig }) {
     await page.locator('.detail-header').getByText('Queued', { exact: true }).waitFor();
     await context.close();
   }
+  for (const execution of [true, false]) {
+    const { context, page } = await open('/fixes');
+    await page.locator('tbody tr').last().waitFor();
+    await page.evaluate(async (execution) => {
+      const { api } = await window.importDashboard('/src/lib/api.ts');
+      const settings = await api.fixSettings();
+      await api.saveFixSettings({ ...settings.fixes, execution: !execution });
+      await api.repoFixSettings('northstar/worker', { execution });
+    }, execution);
+    await page.locator('a[href="/fixes/fix-confirm"]').click();
+    const confirm = page.getByRole('button', { name: 'Confirm preview', exact: true });
+    await confirm.waitFor();
+    if (execution) {
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll('button')].some(
+          (button) => button.textContent === 'Confirm preview' && !button.disabled,
+        ),
+      );
+      assert.equal(
+        await page
+          .getByRole('checkbox', { name: 'Allow generation for this run only', exact: true })
+          .count(),
+        0,
+      );
+    } else {
+      await page
+        .getByRole('checkbox', { name: 'Allow generation for this run only', exact: true })
+        .waitFor();
+      assert.equal(
+        await confirm.isEnabled(),
+        false,
+        'A disabled repo override still requires consent when the global policy is enabled',
+      );
+      await page
+        .getByRole('checkbox', { name: 'Allow generation for this run only', exact: true })
+        .check();
+    }
+    await confirm.click();
+    await page.locator('.detail-header').getByText('Queued', { exact: true }).waitFor();
+    await page
+      .getByText(execution ? 'Persistent execution' : 'This run only', { exact: true })
+      .waitFor();
+    await context.close();
+  }
   for (const id of ['review-103', 'review-101']) {
     const { context, page } = await open(`/reviews/${id}`);
     await page.getByRole('heading', { name: 'Summary', exact: true }).waitFor();
@@ -356,7 +400,7 @@ export async function checkFixes({ open, choose, edit, savedConfig }) {
   }
 }
 
-export async function fixScreenshots({ open, output }) {
+export async function fixScreenshots({ open, choose, output }) {
   for (const scheme of ['light', 'dark']) {
     for (const [path, name] of [
       ['/fixes', 'fixes-list'],
@@ -365,13 +409,45 @@ export async function fixScreenshots({ open, output }) {
       ['/fixes/fix-external', 'fixes-external'],
       ['/fixes/fix-verified', 'fixes-verified'],
       ['/settings?tab=fixes', 'fixes-settings'],
+      ['/reviews/review-105', 'fixes-review-detail'],
+      ['/repositories', 'fixes-repo-override'],
     ]) {
       const { context, page } = await open(path, scheme);
+      if (name === 'fixes-list') await page.locator('tbody tr').last().waitFor();
+      if (name === 'fixes-plan')
+        await page
+          .getByRole('button', { name: 'Generate preview (this run only)', exact: true })
+          .waitFor();
+      if (name === 'fixes-preview' || name === 'fixes-external')
+        await page.getByRole('region', { name: 'Patch diff', exact: true }).waitFor();
+      if (name === 'fixes-verified')
+        await page.getByRole('heading', { name: 'Follow-up review', exact: true }).waitFor();
       if (name === 'fixes-settings') {
+        await page.getByText('Delivery and requester permissions', { exact: true }).click();
         await page.getByText('Fix model routes', { exact: true }).click();
         await page.getByText('Sandbox, tests and resource limits', { exact: true }).click();
       }
-      await page.screenshot({ path: join(output, `${name}-${scheme}.png`), fullPage: true });
+      if (name === 'fixes-review-detail') {
+        await page.getByRole('link', { name: 'Fix with Revera', exact: true }).waitFor();
+        await page
+          .getByRole('region', { name: 'Review fix requests' })
+          .getByRole('link', { name: 'fix-confirm', exact: true })
+          .waitFor();
+      }
+      if (name === 'fixes-repo-override') {
+        await page.getByRole('button', { name: 'Actions for northstar/api', exact: true }).click();
+        await page.getByRole('menuitem', { name: 'Fix settings', exact: true }).click();
+        await choose(page, 'Fix execution', 'Disabled');
+        await choose(page, 'Fix trigger', 'Manual only');
+        await choose(page, 'Fix delivery', 'Patch preview');
+        await page.getByRole('button', { name: 'Save fix override', exact: true }).click();
+        await page.getByText('Repository fix settings saved.', { exact: true }).waitFor();
+      }
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({
+        path: join(output, `${name}-${scheme}.png`),
+        fullPage: name !== 'fixes-repo-override',
+      });
       await context.close();
     }
   }

@@ -44,7 +44,11 @@
         note = '';
       }
       detail = result;
-      if (result.actions.confirm) executionEnabled = (await api.fixSettings()).fixes.execution;
+      if (result.actions.confirm) {
+        const settings = await api.fixSettings();
+        if (current !== generation) return;
+        executionEnabled = settings.repos[result.fix.repo]?.execution ?? settings.fixes.execution;
+      }
       error = '';
     } catch (cause) {
       if (current === generation) error = errorMessage(cause);

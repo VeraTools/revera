@@ -596,6 +596,15 @@ async function checkAgentHandoff() {
   ]) {
     const { context, page } = await open(`/reviews/${id}`);
     if (status === 'skipped') {
+      // The review may load before the authenticated layout subscribes to SSE.
+      // Wait for that subscription before sending an event-only fixture update.
+      await page.waitForFunction(async () => {
+        const { live } = await window.importDashboard('/src/lib/events.ts');
+        let connected = false;
+        const stop = live.subscribe((state) => (connected = state.connected));
+        stop();
+        return connected;
+      });
       await page.evaluate(async () => {
         const { setMockReviewStatus } = await window.importDashboard('/src/lib/mock.ts');
         setMockReviewStatus('review-101', 'skipped');
@@ -1079,7 +1088,8 @@ async function checkManifestChoices() {
 try {
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
     await checkFixes({ open, choose, edit, savedConfig });
-  if (!emptyYaml && !process.argv.includes('--checks-only')) await fixScreenshots({ open, output });
+  if (!emptyYaml && !process.argv.includes('--checks-only'))
+    await fixScreenshots({ open, choose, output });
   if (!process.argv.includes('--screenshots-only')) {
     await checkConnectedAccounts();
     await checkManifestChoices();
