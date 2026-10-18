@@ -4,7 +4,8 @@
   import { ArrowLeft, ArrowUpRight, RotateCcw, Square, ChevronDown, Copy } from '@lucide/svelte';
   import { api, errorMessage } from '#lib/api';
   import { duration, number } from '#lib/time';
-  import type { JobDetail } from '#lib/types';
+  import type { JobDetail, ReviewMode, Repository } from '#lib/types';
+  import ReviewModeField from '#lib/components/ReviewModeField.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
   let detail = $state<JobDetail>();
@@ -14,11 +15,36 @@
   let busy = $state(false);
   let showLog = $state(false);
   let generation = 0;
+  let repository = $state<Repository>();
+  let reviewMode = $state<ReviewMode | ''>('');
+  const reasons: Record<string, string> = {
+    rate_limit_or_server: 'rate limit or server error',
+    authentication: 'key rejected',
+    not_found: 'model not found',
+    timeout: 'request timed out',
+    transport: 'connection failed',
+    malformed_response: 'invalid response',
+    missing_key: 'key not set',
+  };
+  const roleLabel = (role: string) => role[0].toUpperCase() + role.slice(1);
+  async function loadRepository(repo: string) {
+    try {
+      const match = (await api.repos()).find((item) => item.full_name === repo);
+      if (detail?.job.repo === repo) repository = match;
+    } catch (cause) {
+      if (detail?.job.repo === repo) error = errorMessage(cause);
+    }
+  }
   async function load(id: string) {
     const current = ++generation;
     try {
       const result = await api.job(id);
       if (current === generation) {
+        if (detail?.job.id !== result.job.id) {
+          repository = undefined;
+          reviewMode = '';
+          void loadRepository(result.job.repo);
+        }
         detail = result;
         error = '';
       }
@@ -41,7 +67,8 @@
     if (!detail) return;
     busy = true;
     try {
-      await api[which](detail.job.id);
+      if (which === 'rerun') await api.rerun(detail.job.id, reviewMode || null);
+      else await api.cancel(detail.job.id);
       message = which === 'rerun' ? 'A new review has been queued.' : 'The job has been cancelled.';
       await load(detail.job.id);
     } catch (cause) {
@@ -88,6 +115,24 @@
       <p class="detail-summary">
         {detail.summary_markdown || detail.job.reason || 'No summary is available yet.'}
       </p>
+      {#if detail.ledger?.fallback_events?.length || detail.ledger?.unavailable_routes?.length}
+        <section class="route-notes" aria-label="Model changes">
+          <h2>Model changes</h2>
+          {#each detail.ledger.fallback_events || [] as event}
+            <p>
+              {roleLabel(event.role)} switched from {event.from_model} to {event.to_model}: {reasons[
+                event.reason
+              ] || event.reason}.
+            </p>
+          {/each}
+          {#each detail.ledger.unavailable_routes || [] as route}
+            <p>
+              {roleLabel(route.role)} skipped {route.model}: {reasons[route.reason] ||
+                route.reason}.
+            </p>
+          {/each}
+        </section>
+      {/if}
       <div class="section-heading">
         <h2>
           Findings <span class="muted" style="font-weight: 400; margin-left: 8px; font-size: 12px"
@@ -140,6 +185,10 @@
     <aside class="detail-meta" aria-label="Run details">
       <h3>Run details</h3>
       <dl>
+        {#if detail.job.kind === 'review'}<div>
+            <dt>Mode</dt>
+            <dd style="text-transform: capitalize">{detail.job.mode}</dd>
+          </div>{/if}
         <div>
           <dt>Duration</dt>
           <dd class="tabular">{duration(detail.job.duration_ms)}</dd>
@@ -182,6 +231,18 @@
           <summary>Stage timing</summary>
           <pre>{JSON.stringify(detail.timing, null, 2)}</pre>
         </details>{/if}
+      {#if detail.job.kind === 'review' && !['queued', 'running'].includes(detail.job.status)}
+        <div style="margin-bottom: 16px">
+          <ReviewModeField
+            id="rerun-mode"
+            bind:value={reviewMode}
+            defaultMode={repository?.mode || 'standard'}
+          />
+          {#if repository?.trigger === 'off'}<p class="helper">
+              Reviews are off for this repository.
+            </p>{/if}
+        </div>
+      {/if}
       <div class="actions">
         {#if detail.job.pr_url}<a
             class="button"
@@ -199,10 +260,29 @@
             onclick={() => void action('cancel')}>Cancel job<Square size={13} /></button
           >{:else if detail.job.kind === 'review'}<button
             class="button"
-            disabled={busy}
+            disabled={busy || !repository || repository.trigger === 'off'}
             onclick={() => void action('rerun')}>Re-run review<RotateCcw size={14} /></button
           >{/if}
       </div>
     </aside>
   </div>
 {:else if !error}<div class="loading" role="status">Loading review…</div>{/if}
+
+<style>
+  .route-notes {
+    margin: 0 0 28px;
+    padding: 16px 20px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .route-notes h2 {
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .route-notes p {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.8;
+    overflow-wrap: anywhere;
+  }
+</style>

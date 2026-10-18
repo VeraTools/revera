@@ -12,12 +12,19 @@
   import { api, errorMessage } from '#lib/api';
   import { live } from '#lib/events';
   import { relative } from '#lib/time';
-  import type { Repository, PullRequest } from '#lib/types';
-  import Toggle from '#lib/components/Toggle.svelte';
+  import type { Repository, PullRequest, Trigger, ReviewMode } from '#lib/types';
+  import { modes, triggers } from '#lib/config.svelte';
+  import SelectField from '#lib/components/SelectField.svelte';
+  import ReviewModeField from '#lib/components/ReviewModeField.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
   let repos = $state<Repository[]>([]);
   let search = $state('');
+  let triggerFilter = $state('');
+  let defaultTrigger = $state<Trigger>('mention');
+  let defaultMode = $state<ReviewMode>('standard');
+  let reviewMode = $state<ReviewMode | ''>('');
+  let selectedMode = $state<ReviewMode>('standard');
   let error = $state('');
   let message = $state('');
   let loading = $state(true);
@@ -30,11 +37,29 @@
   let installUrl = $state('');
   let ready = $state(false);
   const filtered = $derived(
-    repos.filter((repo) => repo.full_name.toLowerCase().includes(search.toLowerCase())),
+    repos.filter(
+      (repo) =>
+        repo.full_name.toLowerCase().includes(search.toLowerCase()) &&
+        (!triggerFilter || repo.trigger === triggerFilter),
+    ),
   );
+  const triggerOptions = $derived([
+    {
+      value: '',
+      label: `Default (${triggers.find((item) => item.value === defaultTrigger)?.label})`,
+    },
+    ...triggers,
+  ]);
+  const modeOptions = $derived([
+    { value: '', label: `Default (${modes.find((item) => item.value === defaultMode)?.label})` },
+    ...modes,
+  ]);
   async function load() {
     try {
-      repos = await api.repos();
+      const [items, defaults] = await Promise.all([api.repos(), api.serverSettings()]);
+      repos = items;
+      defaultTrigger = defaults.default_trigger;
+      defaultMode = defaults.default_mode;
       error = '';
     } catch (cause) {
       error = errorMessage(cause);
@@ -53,12 +78,12 @@
     $live.repos;
     if (ready) void load();
   });
-  async function toggle(repo: Repository, enabled: boolean) {
+  async function update(repo: Repository, field: 'trigger' | 'mode', value: string) {
     busy = repo.full_name;
     try {
-      await api.enable(repo.full_name, enabled);
-      repo.enabled = enabled;
-      message = `${repo.full_name}: reviews ${enabled ? 'enabled' : 'paused'}.`;
+      await api.repoSettings(repo.full_name, { [field]: value || null });
+      await load();
+      message = `${repo.full_name}: ${field} saved.`;
     } catch (cause) {
       error = errorMessage(cause);
     } finally {
@@ -77,14 +102,16 @@
       busy = '';
     }
   }
-  async function choosePull(repo: string) {
-    selected = repo;
+  async function choosePull(repo: Repository) {
+    selected = repo.full_name;
+    selectedMode = repo.mode;
+    reviewMode = '';
     pulls = [];
     pullError = '';
     dialog = true;
     pullsLoading = true;
     try {
-      pulls = await api.pulls(repo);
+      pulls = await api.pulls(repo.full_name);
     } catch (cause) {
       pullError = errorMessage(cause);
     } finally {
@@ -94,7 +121,7 @@
   async function review(number: number) {
     busy = selected;
     try {
-      await api.review(selected, number);
+      await api.review(selected, number, reviewMode || null);
       message = `Review queued for ${selected} #${number}.`;
       dialog = false;
     } catch (cause) {
@@ -124,6 +151,12 @@
       placeholder="Search repositories…"
     />
   </div>
+  <SelectField
+    id="repo-trigger-filter"
+    label="Filter by trigger"
+    bind:value={triggerFilter}
+    options={[{ value: '', label: 'All triggers' }, ...triggers]}
+  />
   <span class="result-count">{filtered.length} repositories</span>
 </div>
 {#if error}<Notice message={error} retry={load} />{/if}{#if message}<Notice
@@ -134,9 +167,9 @@
     <table style="min-width: 760px">
       <thead
         ><tr
-          ><th style="width: 30%">Repository</th><th>Reviews</th><th>Search index</th><th
-            >Configuration</th
-          ><th>Last review</th><th><span class="sr-only">Actions</span></th></tr
+          ><th style="width: 25%">Repository</th><th>Trigger</th><th>Mode</th><th>Search index</th
+          ><th>Configuration</th><th>Last review</th><th><span class="sr-only">Actions</span></th
+          ></tr
         ></thead
       ><tbody
         >{#each filtered as repo}<tr
@@ -149,14 +182,23 @@
                 >{repo.default_branch}
               </div></td
             ><td
-              ><div class="actions">
-                <Toggle
-                  checked={repo.enabled}
-                  label={`Enable reviews for ${repo.full_name}`}
-                  disabled={busy === repo.full_name}
-                  onchange={(enabled) => void toggle(repo, enabled)}
-                /><span class="muted">{repo.enabled ? 'On' : 'Paused'}</span>
-              </div></td
+              ><SelectField
+                id={`trigger-${repo.full_name}`}
+                label={`Trigger for ${repo.full_name}`}
+                value={repo.trigger_override || ''}
+                options={triggerOptions}
+                disabled={busy === repo.full_name}
+                onchange={(value) => void update(repo, 'trigger', value)}
+              /></td
+            ><td
+              ><SelectField
+                id={`mode-${repo.full_name}`}
+                label={`Mode for ${repo.full_name}`}
+                value={repo.mode_override || ''}
+                options={modeOptions}
+                disabled={busy === repo.full_name}
+                onchange={(value) => void update(repo, 'mode', value)}
+              /></td
             ><td
               ><Status
                 status={repo.index.state}
@@ -190,12 +232,15 @@
                   ><DropdownMenu.Content class="menu" sideOffset={4} align="end"
                     ><DropdownMenu.Item
                       class="menu-item"
-                      disabled={busy === repo.full_name || repo.index.state === 'building'}
+                      disabled={busy === repo.full_name ||
+                        repo.index.state === 'building' ||
+                        repo.trigger === 'off'}
                       onSelect={() => void index(repo.full_name)}
                       ><RefreshCw size={14} />Index now</DropdownMenu.Item
                     ><DropdownMenu.Item
                       class="menu-item"
-                      onSelect={() => void choosePull(repo.full_name)}
+                      disabled={repo.trigger === 'off'}
+                      onSelect={() => void choosePull(repo)}
                       ><GitPullRequest size={14} />Review a pull request</DropdownMenu.Item
                     ></DropdownMenu.Content
                   ></DropdownMenu.Portal
@@ -212,8 +257,14 @@
 {:else if loading}<div class="loading" role="status">Loading repositories…</div>{:else}<div
     class="empty-state"
   >
-    {search ? 'No repositories match your search.' : 'No repositories are installed yet.'}<br
-    />{#if search}<button class="button" onclick={() => (search = '')}>Clear search</button
+    {search || triggerFilter
+      ? 'No repositories match your filters.'
+      : 'No repositories are installed yet.'}<br />{#if search || triggerFilter}<button
+        class="button"
+        onclick={() => {
+          search = '';
+          triggerFilter = '';
+        }}>Clear filters</button
       >{:else if installUrl}<a class="button" href={installUrl}>Install on repositories</a>{/if}
   </div>{/if}
 
@@ -223,7 +274,12 @@
       ><Dialog.Title class="dialog-title"><h2>Review a pull request</h2></Dialog.Title
       ><Dialog.Description class="dialog-description"
         >Choose an open pull request in {selected}.</Dialog.Description
-      >{#if pullError}<Notice message={pullError} />{/if}{#if pullsLoading}<p class="loading">
+      ><ReviewModeField
+        id="manual-review-mode"
+        bind:value={reviewMode}
+        defaultMode={selectedMode}
+      />
+      {#if pullError}<Notice message={pullError} />{/if}{#if pullsLoading}<p class="loading">
           Loading pull requests…
         </p>{:else}{#each pulls as pull}<button
             class="pull-option"

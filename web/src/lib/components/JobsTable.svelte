@@ -23,6 +23,9 @@
               <span>{job.repo}</span><span class="meta-separator">·</span><span
                 >{job.kind === 'index' ? 'Index' : `#${job.pr}`}</span
               >{#if job.author}<span class="meta-separator">·</span><span>{job.author}</span>{/if}
+              {#if job.kind === 'review'}<span>·</span><span class="review-kind"
+                  >{job.mode} · {job.trigger}</span
+                >{/if}
             </div></td
           >
           <td><Status status={job.status} /></td>
@@ -45,3 +48,9 @@
     </tbody>
   </table>
 </div>
+
+<style>
+  .review-kind {
+    text-transform: capitalize;
+  }
+</style>

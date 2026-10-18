@@ -5,8 +5,16 @@
   import { beforeNavigate } from '$app/navigation';
   import { Save, Check } from '@lucide/svelte';
   import { api, errorMessage } from '#lib/api';
-  import { ConfigDocument, backends } from '#lib/config.svelte';
-  import type { Settings, Secret, ServerSettings, Role, TestResult } from '#lib/types';
+  import { ConfigDocument, backends, triggers, modes } from '#lib/config.svelte';
+  import type {
+    Settings,
+    Secret,
+    ServerSettings,
+    Role,
+    TestResult,
+    Trigger,
+    ReviewMode,
+  } from '#lib/types';
   import ModelFields from './ModelFields.svelte';
   import SecretDialog from './SecretDialog.svelte';
   import Toggle from './Toggle.svelte';
@@ -14,6 +22,9 @@
   import Notice from './Notice.svelte';
   import SelectField from './SelectField.svelte';
   import RerankerFields from './RerankerFields.svelte';
+  import FallbackModels from './FallbackModels.svelte';
+  import WebSearchFields from './WebSearchFields.svelte';
+  import MentionCommands from './MentionCommands.svelte';
 
   const tabs = ['Models', 'Review', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
   const modelRoles = [
@@ -42,6 +53,7 @@
   let secretName = $state('');
   let modelLists = $state<Partial<Record<Role, string[]>>>({});
   let tests = $state<Partial<Record<Role, TestResult>>>({});
+  let appSlug = $state('');
   const yamlDirty = $derived(config?.yaml !== savedYaml);
   const serverDirty = $derived(JSON.stringify(server) !== savedServer);
   const dirty = $derived(!!config && (yamlDirty || serverDirty));
@@ -71,6 +83,10 @@
     const requested = page.url.searchParams.get('tab');
     if (requested && tabs.some((item) => item.toLowerCase() === requested)) tab = requested;
     void load();
+    void api
+      .overview()
+      .then((data) => (appSlug = data.app.slug))
+      .catch(() => {});
   });
   beforeNavigate(({ cancel }) => {
     if (dirty && !window.confirm('Discard your unsaved settings?')) cancel();
@@ -282,6 +298,7 @@
                   label={connectionLabel(role)}
                 />{/if}
             </div>
+            <FallbackModels {config} {role} {secrets} {setKey} disabled={dirty || !!busy} />
           </section>{/each}
       </div>
       <p class="helper" style="margin-top: 16px">
@@ -318,6 +335,31 @@
           </div>
         </div>
         <div class="field-grid">
+          <div class="field">
+            <label for="default-trigger">Default trigger</label>
+            <SelectField
+              id="default-trigger"
+              value={server.default_trigger}
+              options={triggers}
+              onchange={(value) => (server!.default_trigger = value as Trigger)}
+            />
+            <small
+              >Mention waits for a comment. Auto reviews new changes. Off stops reviews and
+              indexing.</small
+            >
+          </div>
+          <div class="field">
+            <label for="default-mode">Default mode</label>
+            <SelectField
+              id="default-mode"
+              value={server.default_mode}
+              options={modes}
+              onchange={(value) => (server!.default_mode = value as ReviewMode)}
+            />
+            <small
+              >Quick uses a smaller budget. Standard uses your settings. Deep allows more time.</small
+            >
+          </div>
           <div class="field">
             <label for="review-strategy">Strategy</label><SelectField
               id="review-strategy"
@@ -366,8 +408,8 @@
         </div>
         <div class="toggle-row" style="margin-top: 24px">
           <div>
-            <h3>Review drafts</h3>
-            <p>Automatically review draft pull requests.</p>
+            <h3>Review drafts automatically</h3>
+            <p>Applies only to automatic reviews, not mentions or manual requests.</p>
           </div>
           <Toggle
             checked={server.review_drafts}
@@ -382,9 +424,10 @@
             value={server.skip_authors.join('\n')}
             onchange={(event) => (server!.skip_authors = list(event.currentTarget.value))}
           ></textarea><small
-            >One GitHub login per line. Pull requests from these authors are skipped.</small
+            >One GitHub login per line. These authors are skipped only for automatic reviews.</small
           >
         </div>
+        {#if appSlug}<MentionCommands slug={appSlug} />{/if}
       </section></Tabs.Content
     >
     <Tabs.Content value="budgets"
@@ -470,6 +513,7 @@
           </div>
         {/if}
       </section>
+      <WebSearchFields {config} {secrets} {setKey} />
     </Tabs.Content>
     <Tabs.Content value="access"
       ><section class="settings-section">
@@ -501,17 +545,6 @@
               the server.</small
             >
           </div>
-        </div>
-        <div class="toggle-row" style="margin-top: 24px">
-          <div>
-            <h3>Enable newly installed repositories</h3>
-            <p>Start reviewing future pull requests in new repositories.</p>
-          </div>
-          <Toggle
-            checked={server.default_enabled}
-            label="Enable new repositories by default"
-            onchange={(value) => (server!.default_enabled = value)}
-          />
         </div>
       </section></Tabs.Content
     >

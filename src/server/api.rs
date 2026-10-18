@@ -847,6 +847,7 @@ async fn delete_secret(State(server): State<Arc<Server>>, Path(name): Path<Strin
 #[derive(Deserialize)]
 struct Role {
     role: String,
+    fallback: Option<usize>,
 }
 enum Probe {
     Model(crate::config::ModelRoute, String),
@@ -940,7 +941,10 @@ pub(super) async fn test_untested(server: &Server) {
         if server.dashboard.lock().await.health.contains_key(role) {
             continue;
         }
-        let role = Role { role: role.into() };
+        let role = Role {
+            role: role.into(),
+            fallback: None,
+        };
         if let Err(Error(_, error)) = run_test(server, role).await {
             tracing::warn!("automatic model test: {error}");
         }
@@ -968,6 +972,12 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
             "invalid role".into(),
         ));
     }
+    if input.fallback.is_some() && input.role == "embedding" {
+        return Err(Error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "embedding does not support fallback model tests".into(),
+        ));
+    }
     let start = Instant::now();
     let (generation, model, started, prepared) = {
         let mut dashboard = server.dashboard.lock().await;
@@ -980,6 +990,24 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         let config = yaml
             .context("models are not configured yet")
             .and_then(|yaml| dashboard.parse(&yaml));
+        let config = if let Some(index) = input.fallback {
+            let mut config = config.map_err(invalid)?;
+            config.check_trust(true).map_err(invalid)?;
+            let route = if input.role == "validator" {
+                config.effective_validator()
+            } else {
+                &config.models.investigator
+            };
+            config.models.investigator = route.fallback.get(index).cloned().ok_or_else(|| {
+                Error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "fallback model index is out of range".into(),
+                )
+            })?;
+            Ok(config)
+        } else {
+            config
+        };
         let model = config
             .as_ref()
             .ok()
@@ -995,10 +1023,18 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         let inherited = config
             .as_ref()
             .is_ok_and(|config| config.validator_inherited());
-        let prepared = config.and_then(|config| probe(&config, &dashboard, &input.role));
-        let mut roles = vec![input.role.clone()];
-        if input.role == "investigator" && inherited {
-            roles.push("validator".into());
+        let probe_role = if input.fallback.is_some() {
+            "investigator"
+        } else {
+            &input.role
+        };
+        let prepared = config.and_then(|config| probe(&config, &dashboard, probe_role));
+        let mut roles = Vec::new();
+        if input.fallback.is_none() {
+            roles.push(input.role.clone());
+            if input.role == "investigator" && inherited {
+                roles.push("validator".into());
+            }
         }
         let started: Vec<(String, u64)> = roles
             .into_iter()
@@ -1029,6 +1065,10 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
             value["error"] = json!(crate::redact::diagnostic(&error));
         }
     };
+    // Optional fallback probes never replace primary health or complete setup.
+    if input.fallback.is_some() {
+        return Ok(value);
+    }
     let mut health = value.clone();
     health["role"] = json!(input.role);
     health["model"] = json!(model.unwrap_or_default());

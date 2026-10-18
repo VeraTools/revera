@@ -76,6 +76,19 @@
       />{#if overview.health.vera.enabled}<Status status="complete" label="Vera" />{/if}
     </div>
   </div>
+  {#if overview.app.issue_comment_subscribed === false}
+    <section class="mention-notice" aria-labelledby="mention-notice-title">
+      <h2 id="mention-notice-title">Mentions need one change on your GitHub App</h2>
+      <ol>
+        <li>Set Issues to Read and write in Permissions &amp; events.</li>
+        <li>Subscribe to Issue comment and save.</li>
+        <li>Accept the new permissions on the installation.</li>
+      </ol>
+      <a class="text-link" href={overview.app.settings_url} target="_blank" rel="noreferrer"
+        >Open GitHub App settings <ArrowRight size={13} /></a
+      >
+    </section>
+  {/if}
   <section class="metrics" aria-labelledby="metrics-title">
     <h2 id="metrics-title" class="metrics-title">Last 24 hours</h2>
     <div class="stats">
@@ -127,3 +140,28 @@
       </div>{/if}
   </section>
 {:else if !error}<div class="loading" role="status">Loading overview…</div>{/if}
+
+<style>
+  .mention-notice {
+    padding: 20px 24px;
+    margin: 24px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .mention-notice h2 {
+    font-size: 14px;
+  }
+  ol {
+    margin: 12px 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.9;
+    list-style: decimal;
+  }
+  .mention-notice .text-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+</style>

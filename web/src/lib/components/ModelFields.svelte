@@ -1,6 +1,7 @@
 <script lang="ts">
   import { List, KeyRound } from '@lucide/svelte';
   import { ConfigDocument, protocols, efforts } from '#lib/config.svelte';
+  import type { ConfigPath } from '#lib/config.svelte';
   import type { Secret } from '#lib/types';
   import Status from './Status.svelte';
   import SelectField from './SelectField.svelte';
@@ -16,6 +17,8 @@
     retrieval = false,
     compact = false,
     showConnection = true,
+    routePath,
+    fieldId,
   }: {
     config: ConfigDocument;
     role: string;
@@ -27,10 +30,12 @@
     retrieval?: boolean;
     compact?: boolean;
     showConnection?: boolean;
+    routePath?: ConfigPath;
+    fieldId?: string;
   } = $props();
 
-  const path = $derived(retrieval ? ['vera', role] : ['models', role]);
-  const id = $derived(`model-${role}`);
+  const path = $derived(routePath || (retrieval ? ['vera', role] : ['models', role]));
+  const id = $derived(fieldId || `model-${role}`);
   const keyName = $derived(
     config.get(
       [...path, 'api_key_env'],

@@ -1,4 +1,16 @@
-import { parseDocument, isMap } from 'yaml';
+import { parseDocument, isMap, isSeq } from 'yaml';
+
+export type ConfigPath = (string | number)[];
+export const triggers = [
+  { value: 'mention', label: 'Mention' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'off', label: 'Off' },
+];
+export const modes = [
+  { value: 'quick', label: 'Quick' },
+  { value: 'standard', label: 'Standard' },
+  { value: 'deep', label: 'Deep' },
+];
 
 export const protocols = [
   { value: 'openai-chat', label: 'Chat completions' },
@@ -27,28 +39,33 @@ export class ConfigDocument {
     this.errors = this.document.errors.map((error) => error.message);
     this.revision++;
   }
-  get(path: string[], fallback: string): string;
-  get(path: string[], fallback: number): number;
-  get(path: string[], fallback: boolean): boolean;
-  get<T>(path: string[], fallback: T): T;
-  get<T>(path: string[], fallback: T): T {
+  get(path: ConfigPath, fallback: string): string;
+  get(path: ConfigPath, fallback: number): number;
+  get(path: ConfigPath, fallback: boolean): boolean;
+  get<T>(path: ConfigPath, fallback: T): T;
+  get<T>(path: ConfigPath, fallback: T): T {
     this.revision;
     let value = this.document.getIn(path);
-    if (value === undefined && path[0] === 'models' && path[1] === 'validator')
+    if (
+      value === undefined &&
+      path[0] === 'models' &&
+      path[1] === 'validator' &&
+      !this.document.hasIn(['models', 'validator'])
+    )
       value = this.document.getIn(['models', 'investigator', ...path.slice(2)]);
     if (value && typeof value === 'object' && 'toJSON' in value)
       value = (value as { toJSON: () => unknown }).toJSON();
     return value === undefined || value === null ? fallback : (value as T);
   }
-  has(path: string[]) {
+  has(path: ConfigPath) {
     this.revision;
     return this.document.hasIn(path);
   }
-  set(path: string[], value: unknown) {
+  set(path: ConfigPath, value: unknown) {
     if (this.errors.length) return;
     if (
       path[0] === 'models' &&
-      ['investigator', 'validator'].includes(path[1]) &&
+      ['investigator', 'validator'].includes(String(path[1])) &&
       !this.document.hasIn(['models', 'investigator'])
     ) {
       this.document.setIn(
@@ -78,7 +95,7 @@ export class ConfigDocument {
       path,
       value !== null && typeof value === 'object' ? this.document.createNode(value) : value,
     );
-    if (path[0] === 'models' && ['investigator', 'validator'].includes(path[1])) {
+    if (path[0] === 'models' && ['investigator', 'validator'].includes(String(path[1]))) {
       const investigator = this.document.getIn(['models', 'investigator']);
       const validator = this.document.getIn(['models', 'validator']);
       if (
@@ -92,9 +109,47 @@ export class ConfigDocument {
     this.yaml = this.document.toString();
     this.revision++;
   }
-  remove(path: string[]) {
+  remove(path: ConfigPath) {
     if (this.errors.length) return;
     this.document.deleteIn(path);
+    this.yaml = this.document.toString();
+    this.revision++;
+  }
+  private fallbackList(role: string) {
+    if (this.errors.length) return;
+    const path = ['models', role, 'fallback'];
+    if (role === 'validator' && !this.has(['models', role])) {
+      const route = this.document.getIn(['models', 'investigator']);
+      if (isMap(route)) this.document.setIn(['models', role], route.clone());
+    }
+    if (!this.has(path)) this.set(path, []);
+    const node = this.document.getIn(path);
+    return isSeq(node) ? node : undefined;
+  }
+  addFallback(role: string) {
+    const route = this.get<Record<string, unknown>>(['models', role], {
+      protocol: 'openai-chat',
+      base_url: '',
+      api_key_env: 'REVERA_MODEL_API_KEY',
+    });
+    const { fallback: _fallback, ...fields } = route;
+    const routes = this.fallbackList(role);
+    if (!routes) return;
+    routes.add(this.document.createNode({ ...fields, model: '' }));
+    this.yaml = this.document.toString();
+    this.revision++;
+  }
+  changeFallback(role: string, index: number, direction?: -1 | 1) {
+    const routes = this.fallbackList(role);
+    if (!routes || index < 0 || index >= routes.items.length) return;
+    if (direction) {
+      const target = index + direction;
+      if (target < 0 || target >= routes.items.length) return;
+      [routes.items[index], routes.items[target]] = [routes.items[target], routes.items[index]];
+    } else {
+      routes.items.splice(index, 1);
+      if (!routes.items.length) this.document.deleteIn(['models', role, 'fallback']);
+    }
     this.yaml = this.document.toString();
     this.revision++;
   }
@@ -117,13 +172,13 @@ export class ConfigDocument {
     if (value) this.set(['vera', 'reranker', 'protocol'], value);
     else this.remove(['vera', 'reranker', 'protocol']);
   }
-  effort(path: string[]) {
+  effort(path: ConfigPath) {
     const value = this.get<unknown>([...path, 'reasoning'], 'medium');
     return value && typeof value === 'object'
       ? String((value as Record<string, unknown>).effort ?? 'medium')
       : String(value);
   }
-  setEffort(path: string[], value: string) {
+  setEffort(path: ConfigPath, value: string) {
     const reasoning = this.get<unknown>([...path, 'reasoning'], 'medium');
     this.set(
       reasoning && typeof reasoning === 'object'
