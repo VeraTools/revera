@@ -18,6 +18,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(hide = true)]
+    Fix {
+        #[command(subcommand)]
+        command: crate::fix::FixCommand,
+    },
     /// Run a self-hosted GitHub App backend.
     Serve(crate::server::Settings),
     Review {
@@ -113,6 +118,7 @@ enum PublishArg {
 pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Fix { command } => crate::fix::cli(command).await,
         Cmd::Serve(settings) => match crate::server::serve(settings).await {
             Ok(()) => 0,
             Err(e) => {

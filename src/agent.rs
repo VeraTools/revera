@@ -3,6 +3,34 @@ use crate::tools::ToolBox;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+/// Tools available to one agent. Fix agents use a separate, confined dispatcher;
+/// the review toolbox and the loop's budgeting/terminal semantics are unchanged.
+#[async_trait::async_trait]
+pub trait AgentTools: Send + Sync {
+    fn specs(&self) -> Vec<ToolSpec>;
+    async fn call(&self, name: &str, args: serde_json::Value) -> String;
+}
+
+#[async_trait::async_trait]
+impl AgentTools for ToolBox {
+    fn specs(&self) -> Vec<ToolSpec> {
+        ToolBox::specs(self)
+    }
+    async fn call(&self, name: &str, args: serde_json::Value) -> String {
+        ToolBox::call(self, name, args).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: AgentTools> AgentTools for std::sync::Arc<T> {
+    fn specs(&self) -> Vec<ToolSpec> {
+        (**self).specs()
+    }
+    async fn call(&self, name: &str, args: serde_json::Value) -> String {
+        (**self).call(name, args).await
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
@@ -34,7 +62,10 @@ pub struct AgentBudget {
     pub max_seconds: u64,
 }
 
-async fn run_tool_calls(toolbox: &ToolBox, calls: &[ToolCall]) -> Vec<(String, String, String)> {
+async fn run_tool_calls(
+    toolbox: &dyn AgentTools,
+    calls: &[ToolCall],
+) -> Vec<(String, String, String)> {
     futures::future::join_all(calls.iter().map(|c| {
         let name = c.name.clone();
         let args = c.arguments.clone();
@@ -82,7 +113,7 @@ pub async fn run_agent(
     client: &dyn ModelClient,
     system: &str,
     user: &str,
-    toolbox: &ToolBox,
+    toolbox: &dyn AgentTools,
     terminal_tool: &ToolSpec,
     budget: &AgentBudget,
 ) -> Result<AgentRun, ProviderError> {
@@ -132,7 +163,7 @@ pub async fn run_agent_checked(
     client: &dyn ModelClient,
     system: &str,
     user: &str,
-    toolbox: &ToolBox,
+    toolbox: &dyn AgentTools,
     terminal_tool: &ToolSpec,
     budget: &AgentBudget,
     check: TerminalCheck<'_>,

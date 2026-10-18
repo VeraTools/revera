@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod diff;
 pub mod findings;
+pub mod fix;
 pub mod fsutil;
 pub mod git;
 pub mod github;

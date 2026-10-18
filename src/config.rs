@@ -285,6 +285,8 @@ pub struct ModelsConfig {
     pub investigator: ModelRoute,
     /// Omitted validator inherits the investigator route (fresh context).
     pub validator: Option<ModelRoute>,
+    pub fixer: Option<ModelRoute>,
+    pub fix_verifier: Option<ModelRoute>,
     pub lead: Option<ModelRoute>,
     pub workers: Option<Vec<ModelRoute>>,
     pub scouts: Option<Vec<ScoutRoute>>,
@@ -1061,6 +1063,12 @@ impl Config {
             self.models.scouts = None;
         }
         expand_route(&mut self.models.investigator, env)?;
+        for r in [&mut self.models.fixer, &mut self.models.fix_verifier]
+            .into_iter()
+            .flatten()
+        {
+            expand_route(r, env)?;
+        }
         if let Some(v) = &mut self.models.validator {
             expand_route(v, env)?;
         }
@@ -1078,6 +1086,14 @@ impl Config {
             }
         }
         check_route_shape("investigator", &self.models.investigator)?;
+        for (name, r) in [
+            ("fixer", &self.models.fixer),
+            ("fix_verifier", &self.models.fix_verifier),
+        ] {
+            if let Some(r) = r {
+                check_route_shape(name, r)?;
+            }
+        }
         if let Some(v) = &self.models.validator {
             check_route_shape("validator", v)?;
         }
@@ -1104,6 +1120,20 @@ impl Config {
             .validator
             .as_ref()
             .unwrap_or(&self.models.investigator)
+    }
+
+    pub fn effective_fixer(&self) -> &ModelRoute {
+        self.models
+            .fixer
+            .as_ref()
+            .unwrap_or(&self.models.investigator)
+    }
+
+    pub fn effective_fix_verifier(&self) -> &ModelRoute {
+        self.models
+            .fix_verifier
+            .as_ref()
+            .unwrap_or_else(|| self.effective_validator())
     }
 
     /// True when no explicit validator is configured (inherits investigator).
@@ -1186,6 +1216,14 @@ impl Config {
             vec![("models.investigator".into(), &self.models.investigator)];
         if let Some(v) = &self.models.validator {
             routes.push(("models.validator".into(), v));
+        }
+        for (name, r) in [
+            ("models.fixer", &self.models.fixer),
+            ("models.fix_verifier", &self.models.fix_verifier),
+        ] {
+            if let Some(r) = r {
+                routes.push((name.into(), r));
+            }
         }
         if let Some(l) = &self.models.lead {
             routes.push(("models.lead".into(), l));
