@@ -50,6 +50,12 @@ enum Cmd {
         /// Override the GitHub bot identity (for installation tokens).
         #[arg(long)]
         bot_login: Option<String>,
+        /// Dashboard deep link for this review.
+        #[arg(long)]
+        review_url: Option<String>,
+        /// Offer link only; does not authorize fix execution.
+        #[arg(long)]
+        fix_url: Option<String>,
     },
     /// Build or refresh the Vera index without reviewing.
     Index {
@@ -146,6 +152,8 @@ pub async fn run() -> i32 {
             body_file,
             force,
             bot_login,
+            review_url,
+            fix_url,
         } => {
             review(ReviewArgs {
                 repo,
@@ -161,6 +169,8 @@ pub async fn run() -> i32 {
                 body_file,
                 force,
                 bot_login,
+                review_url,
+                fix_url,
             })
             .await
         }
@@ -181,6 +191,8 @@ struct ReviewArgs {
     body_file: Option<PathBuf>,
     force: bool,
     bot_login: Option<String>,
+    review_url: Option<String>,
+    fix_url: Option<String>,
 }
 
 fn load_cfg_unvalidated(
@@ -587,6 +599,24 @@ async fn review(a: ReviewArgs) -> i32 {
     };
     match pipeline_run(&cfg, &req).await {
         Ok((mut report, mut state)) => {
+            if let Some(e) = &ev {
+                let pr_url = format!("https://github.com/{}/pull/{}", e.repo_full_name, e.number);
+                let base = report.base.clone();
+                let head = report.head.clone();
+                crate::report::append_handoff(
+                    &mut report,
+                    &crate::handoff::Context {
+                        repo: &e.repo_full_name,
+                        pr_url: &pr_url,
+                        base: &base,
+                        head: &head,
+                        review_url: a.review_url.as_deref(),
+                        stale: Some(false),
+                    },
+                    a.fix_url.as_deref(),
+                    &cfg.github.bot_login,
+                );
+            }
             let mut publish_failed = false;
             if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {
                 let publish_start = std::time::Instant::now();
@@ -630,6 +660,7 @@ async fn review(a: ReviewArgs) -> i32 {
                         );
                         eprintln!("error: publish failed: {err:#}");
                         report.status = RunStatus::Partial;
+                        crate::report::mark_incomplete_summary(&mut report);
                         report.reason = Some(match report.reason.take() {
                             Some(r) => format!("{r}; publish failed: {err:#}"),
                             None => format!("publish failed: {err:#}"),

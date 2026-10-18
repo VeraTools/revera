@@ -169,7 +169,27 @@ pub fn surfaced_ids(report: &RunReport) -> Vec<String> {
 
 /// Strip `<!--` so model text cannot forge our HTML markers.
 fn sanitize(t: &str) -> String {
-    t.replace("<!--", "<!\u{200b}--")
+    let t = crate::redact::text(t);
+    let mut out = String::new();
+    for c in t.chars() {
+        match c {
+            '@' => out.push_str("@\u{200b}"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '`' => out.push_str("&#96;"),
+            '\\' | '[' | ']' | '(' | ')' | '*' | '_' | '!' | '#' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn public_text(t: &str) -> String {
+    sanitize(t)
 }
 
 /// Longest run of backticks in `s`.
@@ -199,9 +219,22 @@ pub fn finding_body(f: &Finding) -> String {
         b.push_str(&format!("Evidence: {}\n", ev.join(", ")));
     }
     if let Some(fix) = &f.validated_fix {
-        let fix = sanitize(fix);
+        let fix = crate::redact::text(fix).replace("<!--", "<!\u{200b}--");
         let fence = "`".repeat(3.max(backtick_run(&fix) + 1));
-        b.push_str(&format!("\nSuggested fix:\n{fence}\n{fix}\n{fence}\n"));
+        b.push_str(&format!(
+            "\nValidator's suggested remedy — not a tested patch:\n{fence}\n{fix}\n{fence}\n"
+        ));
+    }
+    if f.validation_status == Some(ValidationStatus::Accepted)
+        && let Some(s) = &f.suggestion
+        && s.start_line == f.start_line
+        && s.end_line == f.end_line.unwrap_or(f.start_line)
+    {
+        let fence = "`".repeat(3.max(backtick_run(&s.replacement) + 1));
+        b.push_str(&format!(
+            "\n{fence}suggestion\n{}\n{fence}\n",
+            s.replacement.strip_suffix('\n').unwrap_or(&s.replacement)
+        ));
     }
     b.push_str(&format!("\n<!-- revera-id:{} -->", f.id()));
     b
@@ -250,6 +283,7 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         .iter()
         .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
         .collect();
+    let counts = crate::findings::accepted_counts(inp.findings);
     let uncertain = inp
         .findings
         .iter()
@@ -267,15 +301,9 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         let mut c = if accepted.is_empty() {
             "no new findings".to_string()
         } else {
-            let high = accepted
-                .iter()
-                .filter(|f| f.severity == crate::findings::Severity::High)
-                .count();
-            let med = accepted
-                .iter()
-                .filter(|f| f.severity == crate::findings::Severity::Medium)
-                .count();
-            let low = accepted.len() - high - med;
+            let high = counts.high;
+            let med = counts.medium;
+            let low = counts.low;
             let mut parts = vec![];
             if high > 0 {
                 parts.push(format!("{high} high"));
@@ -304,12 +332,16 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         c
     };
     s.push_str(&format!("**Status: {status_word}** \u{2014} {count}\n"));
+    s.push_str(&format!(
+        "\nAccepted findings in this review: **{}**.\n",
+        counts.total
+    ));
     if status != RunStatus::Complete {
         s.push_str(&format!(
             "\n> Review incomplete{}. Absence of findings is not evidence the change is clean; rerun or inspect the parts listed as not checked.\n",
             inp.reason
                 .filter(|r| !r.is_empty())
-                .map(|r| format!(": {r}"))
+                .map(|r| format!(": {}", sanitize(r)))
                 .unwrap_or_default()
         ));
     }
@@ -329,7 +361,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         for f in &accepted {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                sanitize(&f.file),
+                f.start_line,
+                sanitize(&f.title)
             ));
         }
     }
@@ -341,7 +376,10 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         {
             s.push_str(&format!(
                 "- _(unconfirmed)_ **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                sanitize(&f.file),
+                f.start_line,
+                sanitize(&f.title)
             ));
         }
     }
@@ -350,30 +388,33 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         for f in inp.outside_diff {
             s.push_str(&format!(
                 "- **[{}]** `{}`:{} — {}\n",
-                f.severity, f.file, f.start_line, f.title
+                f.severity,
+                sanitize(&f.file),
+                f.start_line,
+                sanitize(&f.title)
             ));
         }
     }
     if !inp.reopened.is_empty() {
         s.push_str("\n### Reopened (previously resolved, reintroduced)\n\n");
         for t in inp.reopened {
-            s.push_str(&format!("- {t}\n"));
+            s.push_str(&format!("- {}\n", sanitize(t)));
         }
     }
     if !inp.resolved.is_empty() {
         s.push_str("\n### Resolved since last review\n\n");
         for t in inp.resolved {
-            s.push_str(&format!("- {t}\n"));
+            s.push_str(&format!("- {}\n", sanitize(t)));
         }
     }
     if !inp.reused {
-        s.push_str(&format!("\nChecked: {}\n", inp.coverage));
+        s.push_str(&format!("\nChecked: {}\n", sanitize(inp.coverage)));
         for g in inp.coverage_gaps {
-            s.push_str(&format!("- not checked: {g}\n"));
+            s.push_str(&format!("- not checked: {}\n", sanitize(g)));
         }
     }
     if let Some(n) = inp.note {
-        s.push_str(&format!("\n_{n}_\n"));
+        s.push_str(&format!("\n_{}_\n", sanitize(n)));
     }
     if let Some(t) = inp.timing {
         s.push('\n');
@@ -397,6 +438,70 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         ));
     }
     s
+}
+
+fn dashboard_link(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(
+        parsed
+            .to_string()
+            .replace(['<', '>'], "")
+            .replace('(', "%28")
+            .replace(')', "%29"),
+    )
+}
+
+/// CLI decoration, after the pipeline has pinned the reviewed SHAs.
+pub fn append_handoff(
+    report: &mut RunReport,
+    context: &crate::handoff::Context<'_>,
+    fix_url: Option<&str>,
+    bot_login: &str,
+) {
+    if report.status != RunStatus::Complete
+        || crate::findings::accepted_counts(&report.findings).total == 0
+    {
+        return;
+    }
+    let s = &mut report.plan.summary_markdown;
+    s.push_str("\n<details><summary>Fix with your coding agent</summary>\n\n");
+    if let Some(link) = context.review_url.and_then(dashboard_link) {
+        s.push_str(&format!(
+            "[Open this review and download instructions](<{link}>).\n\n"
+        ));
+    }
+    let instructions = crate::handoff::build(context, &report.findings, None);
+    if instructions.chars().count() <= 3000 {
+        let instructions = instructions.replace("<!--", "<!\u{200b}--");
+        let fence = "`".repeat(3.max(backtick_run(&instructions) + 1));
+        s.push_str(&format!("{fence}text\n{instructions}\n{fence}\n\n"));
+    }
+    s.push_str("</details>\n");
+    if let Some(link) = fix_url.and_then(dashboard_link) {
+        s.push_str(&format!(
+            "\n**Want Revera to fix these?** [Fix with Revera](<{link}>)"
+        ));
+        let slug = bot_login.strip_suffix("[bot]").unwrap_or(bot_login);
+        if !slug.is_empty() && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            s.push_str(&format!(" · or comment `@{slug} fix`"));
+        }
+        s.push_str(".\n");
+    }
+}
+
+pub fn mark_incomplete_summary(report: &mut RunReport) {
+    let s = &mut report.plan.summary_markdown;
+    if let Some(start) = s.find("\n<details><summary>Fix with your coding agent</summary>") {
+        s.truncate(start);
+    }
+    *s = s.replace("**Status: complete**", "**Status: partial**");
+    s.push_str("\n> Review incomplete: publication did not finish. Absence of findings is not evidence the change is clean.\n");
 }
 
 /// "62s" for >=10s, "6.2s" below.

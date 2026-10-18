@@ -53,6 +53,11 @@ pub async fn validate_candidates(
     strategy_name: &str,
     phase_name: &str,
 ) -> Option<String> {
+    // Neither investigator proposals nor prior-run replacements are authority.
+    for candidate in candidates.iter_mut() {
+        candidate.suggestion = None;
+        candidate.validated_fix = None;
+    }
     let sem = Arc::new(Semaphore::new(cfg.review.concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_from = None;
@@ -195,6 +200,20 @@ pub async fn validate_candidates(
                             cand.end_line = Some(l);
                         }
                         cand.validated_fix = approved_fix;
+                        if let Some(suggestion) = v.suggestion.as_ref()
+                            && let Some(head) = toolbox.reviewed_head()
+                            && let Ok(Some(bytes)) = crate::git::read_blob(
+                                &toolbox.repo_root,
+                                head,
+                                &cand.file,
+                                4 * 1024 * 1024,
+                            )
+                            .await
+                            && let Ok(text) = std::str::from_utf8(&bytes)
+                        {
+                            cand.suggestion =
+                                crate::findings::checked_suggestion(cand, suggestion, diff, text);
+                        }
                         cand.rationale = Some(v.rationale);
                         if v.validation_status == ValidationStatus::Accepted {
                             "ok:accepted".to_string()
@@ -255,7 +274,14 @@ pub async fn validate_candidates(
 }
 
 pub fn validator_terminal() -> ToolSpec {
-    terminal_submit_verdict_spec()
+    let mut spec = terminal_submit_verdict_spec();
+    spec.parameters["properties"]["suggestion"] = serde_json::json!({
+        "type": "object",
+        "description": "Optional exact changed-line replacement; original must quote the head range byte-for-byte, including its final newline. Anchor the finding at precisely this range. Omit if not proven.",
+        "properties": {"start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "original": {"type": "string"}, "replacement": {"type": "string"}},
+        "required": ["start_line", "end_line", "original", "replacement"]
+    });
+    spec
 }
 
 pub fn validator_prompt() -> &'static str {
@@ -296,6 +322,7 @@ mod tests {
             end_line: None,
             rationale: String::new(),
             fix: Some("verified remedy".into()),
+            suggestion: None,
         };
         assert_eq!(
             approved_fix(&verdict(ValidationStatus::Accepted)).as_deref(),
