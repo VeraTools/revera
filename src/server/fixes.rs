@@ -295,6 +295,8 @@ struct ContextData {
     key: String,
     preview_only: bool,
     #[serde(default)]
+    confirmed_by: Option<String>,
+    #[serde(default)]
     note: String,
 }
 #[derive(Clone)]
@@ -826,6 +828,7 @@ pub async fn request(
                 policy: p,
                 key,
                 preview_only,
+                confirmed_by: (origin == "dashboard").then(|| actor.into()),
                 note: String::new(),
             },
         },
@@ -1076,6 +1079,7 @@ fn preview_entry(
             policy,
             key: String::new(),
             preview_only: false,
+            confirmed_by: None,
             note: String::new(),
         },
     }
@@ -1212,6 +1216,7 @@ async fn confirm(
         ));
     }
     e.record.consent = Some(if input.once { "once" } else { "persistent" }.into());
+    e.context.confirmed_by = Some(session.user.login.clone());
     e.record.audit(
         &session.user.login,
         if input.once {
@@ -1258,6 +1263,7 @@ async fn regenerate(
         return Err(conflict("attempt limit reached or state cannot regenerate"));
     }
     e.context.note = crate::handoff::text(&input.note, 8000);
+    e.context.confirmed_by = Some(session.user.login.clone());
     e.record
         .transition("queued", None, &session.user.login, "confirmed");
     let r = save(&s, &mut store, e).await?;
@@ -1644,6 +1650,47 @@ async fn checkout(s: &Server, e: &Entry) -> Result<PathBuf> {
     }
     Ok(git_dir)
 }
+async fn authorize_execution(s: &Server, id: &str, pr: &Value) -> Result<()> {
+    let e = entry(s, id).await?;
+    let p = policy(s, &e.record.repo).await;
+    // Legacy dashboard requests retain their original admin; old confirmations
+    // are recovered from their audit record rather than trusting the requester.
+    let admin = e.context.confirmed_by.as_deref().or_else(|| {
+        e.record
+            .events
+            .iter()
+            .rev()
+            .find(|event| {
+                matches!(event.action.as_str(), "confirmed" | "consent_once")
+                    && event.detail == "generation approved"
+            })
+            .map(|event| event.actor.as_str())
+    });
+    let (origin, actor) = admin.map_or(
+        (e.record.source.as_str(), e.record.requested_by.as_str()),
+        |actor| ("dashboard", actor),
+    );
+    match authorize(s, origin, actor, &e.context.repo, pr, &p).await {
+        Ok(preview) => {
+            change(s, id, |e| {
+                // A confirming administrator never promotes an author preview.
+                e.context.preview_only |= preview;
+                e.record
+                    .audit(actor, "confirmed", "execution permission rechecked");
+            })
+            .await?;
+            Ok(())
+        }
+        Err(error) => {
+            change(s, id, |e| {
+                e.record
+                    .audit(actor, "permission_denied", "execution permission revoked")
+            })
+            .await?;
+            Err(error)
+        }
+    }
+}
 async fn generate(s: &Server, id: &str) -> Result<()> {
     let e = entry(s, id).await?;
     if e.record.state != "queued" {
@@ -1673,6 +1720,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         return Ok(());
     }
     let current = policy(s, &e.record.repo).await;
+    authorize_execution(s, id, &pr).await?;
     if e.record.consent.is_none()
         || (e.record.consent.as_deref() == Some("persistent") && !current.execution)
     {
@@ -1749,6 +1797,9 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         if remaining < 2 || started.elapsed().as_secs() >= p.limits.seconds {
             break;
         }
+        let (_, pr) = live(s, &job).await?;
+        fresh(&pr, &e.record.head_sha)?;
+        authorize_execution(s, id, &pr).await?;
         let r = change(s, id, |e| {
             e.record.attempt = attempt;
             e.record.max_attempts = p.limits.attempts;

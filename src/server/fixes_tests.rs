@@ -105,6 +105,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<Server>, MockServer, String) {
             ResponseTemplate::new(200)
                 .set_body_json(json!({"permission":"write","role_name":"maintain"})),
         )
+        .with_priority(10)
         .mount(&mock)
         .await;
     let job = Job::new(
@@ -1061,6 +1062,116 @@ async fn sandbox_empty_patch_retries_exhaust_attempts_and_preserve_honest_report
             .iter()
             .all(|r| !r.url.path().contains("/git/"))
     );
+}
+
+#[tokio::test]
+async fn execution_rechecks_requester_or_confirming_admin_and_keeps_author_previews_private() {
+    let (_data, s, mock, job) = fixture().await;
+    let r = request(&s, "mention", "maintainer", &job, None, true)
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/owner/repo/collaborators/maintainer/permission",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"permission":"read","role_name":"read"})),
+        )
+        .mount(&mock)
+        .await;
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let denied = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(denied.state, "failed");
+    assert_eq!(denied.attempt, 0);
+    assert!(
+        denied
+            .events
+            .iter()
+            .any(|e| e.action == "permission_denied")
+    );
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !r.url.path().contains("/v1/"))
+    );
+
+    s.dashboard.lock().await.preferences.fixes.author_preview = true;
+    let mut pr = pull(HEAD);
+    pr["user"]["login"] = json!("maintainer");
+    authorize_execution(&s, &r.id, &pr).await.unwrap();
+    assert!(entry(&s, &r.id).await.unwrap().context.preview_only);
+    change(&s, &r.id, |e| {
+        e.record.state = "awaiting_confirmation".into()
+    })
+    .await
+    .unwrap();
+    let (status, _) = call(
+        s.clone(),
+        reqwest::Method::POST,
+        &format!("/api/fixes/{}/confirm", r.id),
+        Some(json!({"once":true})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    let e = entry(&s, &r.id).await.unwrap();
+    assert_eq!(e.context.confirmed_by.as_deref(), Some("admin"));
+    authorize_execution(&s, &r.id, &pr).await.unwrap();
+    assert!(
+        !capabilities(&s, &entry(&s, &r.id).await.unwrap(), Some(&pr), None).await[1].available
+    );
+    s.dashboard.lock().await.preferences.admins.clear();
+    assert!(authorize_execution(&s, &r.id, &pr).await.is_err());
+}
+
+#[tokio::test]
+async fn sandbox_retry_rechecks_live_requester_permission_before_more_paid_work() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    let (_data, s, mock, job) = fixture().await;
+    let (_, head) = worker_checkout(&s, &job).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+        .mount(&mock)
+        .await;
+    let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = revoked.clone();
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/owner/repo/collaborators/maintainer/permission",
+        ))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    json!({"permission":"read","role_name":"read"})
+                } else {
+                    json!({"permission":"write","role_name":"maintain"})
+                },
+            )
+        })
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST")).and(path("/v1/chat/completions"))
+        .respond_with(move|_:&wiremock::Request|{
+            revoked.store(true,std::sync::atomic::Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"no-fix","type":"function","function":{"name":"submit_fix","arguments":json!({"summary":"No patch","per_finding":[{"id":finding().id(),"disposition":"not_fixed","note":"No patch"}]}).to_string()}}]},"finish_reason":"tool_calls"}]}))
+        }).expect(1).mount(&mock).await;
+    let r = request(&s, "mention", "maintainer", &job, None, true)
+        .await
+        .unwrap();
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let r = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(r.state, "failed");
+    assert_eq!(r.attempt, 1);
+    assert!(r.reason.unwrap().contains("not authorized"));
 }
 
 #[tokio::test]
