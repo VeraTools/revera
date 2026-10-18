@@ -11,6 +11,7 @@ import type {
   TestResult,
   Trigger,
   ReviewMode,
+  Installations,
 } from './types';
 
 export const mockMode = import.meta.env.VITE_MOCK === '1';
@@ -58,9 +59,9 @@ export const api = {
     return session;
   },
   logout: () => request<void>('/api/logout', 'POST'),
-  manifest: (token: string, name: string, org: string) =>
+  manifest: (token: string, name: string, org: string, publicApp = false, publishFixes = false) =>
     request<{ post_url: string; manifest: unknown }>(
-      `/api/setup/manifest?${new URLSearchParams({ token, name, org })}`,
+      `/api/setup/manifest?${new URLSearchParams({ token, name, org, public: String(publicApp), publish_fixes: String(publishFixes) })}`,
     ),
   overview: () => request<Overview>('/api/overview'),
   jobs: (filters: Record<string, string> = {}) =>
@@ -76,6 +77,14 @@ export const api = {
     request<{ id: string }>(`/api/jobs/${encodeURIComponent(id)}/rerun`, 'POST', { mode }),
   cancel: (id: string) => request<void>(`/api/jobs/${encodeURIComponent(id)}/cancel`, 'POST'),
   repos: () => request<Repository[]>('/api/repos'),
+  // Connected accounts.
+  installations: () => request<Installations>('/api/installations'),
+  reconcileInstallations: () => request<Installations>('/api/installations/reconcile', 'POST'),
+  owner: (login: string, approve: boolean) =>
+    request<{ ok: boolean; warning: string | null }>(
+      `/api/owners/${encodeURIComponent(login)}`,
+      approve ? 'PUT' : 'DELETE',
+    ),
   bulkRepoSettings: (
     repos: string[],
     settings: { trigger?: Trigger | null; mode?: ReviewMode | null },

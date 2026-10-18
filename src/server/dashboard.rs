@@ -45,6 +45,11 @@ impl Mode {
 pub struct Preferences {
     pub admins: Vec<String>,
     pub allowed_owners: Vec<String>,
+    /// Login aliases pinned to GitHub account IDs. Keep old aliases to prevent
+    /// a newly registered account taking over a previously approved login.
+    pub owner_accounts: BTreeMap<String, u64>,
+    pub revoked_owners: Vec<String>,
+    pub revoked_owner_ids: BTreeSet<u64>,
     pub default_trigger: Trigger,
     pub default_mode: Mode,
     pub repos: BTreeMap<String, RepoPreference>,
@@ -83,6 +88,9 @@ impl From<RepoPreferenceFile> for RepoPreference {
 struct PreferencesFile {
     admins: Vec<String>,
     allowed_owners: Vec<String>,
+    owner_accounts: BTreeMap<String, u64>,
+    revoked_owners: Vec<String>,
+    revoked_owner_ids: BTreeSet<u64>,
     default_trigger: Option<Trigger>,
     default_mode: Mode,
     default_enabled: Option<bool>,
@@ -96,6 +104,9 @@ impl From<PreferencesFile> for Preferences {
         Self {
             admins: file.admins,
             allowed_owners: file.allowed_owners,
+            owner_accounts: file.owner_accounts,
+            revoked_owners: file.revoked_owners,
+            revoked_owner_ids: file.revoked_owner_ids,
             default_trigger: file.default_trigger.unwrap_or_else(|| {
                 if file.default_enabled == Some(false) {
                     Trigger::Off
@@ -118,6 +129,9 @@ impl Default for Preferences {
         Self {
             admins: vec![],
             allowed_owners: vec![],
+            owner_accounts: BTreeMap::new(),
+            revoked_owners: vec![],
+            revoked_owner_ids: BTreeSet::new(),
             default_trigger: Trigger::Mention,
             default_mode: Mode::Standard,
             repos: BTreeMap::new(),
@@ -128,6 +142,74 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    pub fn owner_allowed(&self, login: &str, id: Option<u64>, implicit: bool) -> bool {
+        let pinned = self
+            .owner_accounts
+            .iter()
+            .find(|(v, _)| v.eq_ignore_ascii_case(login));
+        if self
+            .revoked_owners
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(login))
+            || id
+                .or_else(|| pinned.map(|(_, id)| *id))
+                .is_some_and(|id| self.revoked_owner_ids.contains(&id))
+        {
+            return false;
+        }
+        if let (Some(id), Some((_, pinned))) = (id, pinned)
+            && id != *pinned
+        {
+            return false;
+        }
+        implicit
+            || self.allowed_owners.iter().any(|allowed| {
+                allowed.eq_ignore_ascii_case(login)
+                    || id.is_some_and(|id| {
+                        self.owner_accounts.get(&allowed.to_ascii_lowercase()) == Some(&id)
+                    })
+            })
+    }
+
+    pub fn approve_owner(&mut self, login: &str, id: Option<u64>) {
+        let login = login.to_ascii_lowercase();
+        self.revoked_owners
+            .retain(|v| !v.eq_ignore_ascii_case(&login));
+        if let Some(id) = id.filter(|id| *id != 0) {
+            self.revoked_owner_ids.remove(&id);
+            self.allowed_owners.retain(|owner| {
+                self.owner_accounts.get(&owner.to_ascii_lowercase()) != Some(&id)
+                    || owner.eq_ignore_ascii_case(&login)
+            });
+            self.owner_accounts.insert(login.clone(), id);
+        }
+        if !self
+            .allowed_owners
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(&login))
+        {
+            self.allowed_owners.push(login);
+        }
+    }
+
+    pub fn revoke_owner(&mut self, login: &str, id: Option<u64>) {
+        self.allowed_owners.retain(|v| {
+            !v.eq_ignore_ascii_case(login)
+                && !id
+                    .is_some_and(|id| self.owner_accounts.get(&v.to_ascii_lowercase()) == Some(&id))
+        });
+        if !self
+            .revoked_owners
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(login))
+        {
+            self.revoked_owners.push(login.to_ascii_lowercase());
+        }
+        if let Some(id) = id {
+            self.revoked_owner_ids.insert(id);
+        }
+    }
+
     fn load(data: &Path) -> Result<Self> {
         let path = data.join("settings.json");
         crate::fsutil::check_regular_target(&path)?;
@@ -640,6 +722,19 @@ impl Server {
             .collect();
         for mut job in jobs {
             let check = job.check.as_mut().unwrap();
+            let owner = check.repo.full_name.split('/').next().unwrap_or("");
+            let inventory = self.installations.lock().await;
+            let inaccessible = !inventory.install_url.is_empty()
+                && !inventory
+                    .installations
+                    .iter()
+                    .any(|i| i.id == Some(check.repo.installation) && i.allowed && !i.suspended);
+            drop(inventory);
+            if inaccessible || !self.allowed_owner(&app, owner).await {
+                check.pending = false;
+                self.update_job(job).await?;
+                continue;
+            }
             let token = self
                 .api
                 .installation_token(

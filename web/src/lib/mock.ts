@@ -9,9 +9,52 @@ import type {
   Role,
   ReviewMode,
   Trigger,
+  Installation,
 } from './types';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+
+// Connected-account fixtures: no repository names for unapproved accounts.
+const installationUrl = 'https://github.com/apps/revera-northstar/installations/new';
+const connectedAccounts: Installation[] = [
+  ['northstar', 1, 'allowed', true],
+  ['second-org', 2, 'awaiting_approval', false],
+  ['upgrade-org', 3, 'permission_update', true],
+  ['paused-org', 4, 'suspended', true],
+  ['offline-org', null, 'not_installed', true],
+  ['denied-org', 5, 'allowed', true],
+].map(([login, id, status, allowed]): Installation => ({
+  id: id as number | null,
+  account: { login: login as string, id: id as number | null, type: 'Organization' },
+  repository_selection: id ? 'selected' : null,
+  suspended: status === 'suspended',
+  permissions: id ? { contents: 'read', pull_requests: 'write', checks: 'write' } : {},
+  html_url: id
+    ? `https://github.com/organizations/${login}/settings/installations/${id}`
+    : installationUrl,
+  status: status as Installation['status'],
+  allowed: allowed as boolean,
+  error: login === 'denied-org' ? 'GitHub access unavailable: HTTP 403' : undefined,
+}));
+function installationInventory() {
+  return {
+    installations: connectedAccounts.map((account) => ({
+      ...account,
+      ...(account.allowed && !account.suspended && account.id
+        ? {
+            repo_count: repos.filter((r) => r.full_name.startsWith(`${account.account.login}/`))
+              .length,
+          }
+        : {}),
+    })),
+    install_url: installationUrl,
+    settings_url:
+      'https://github.com/organizations/northstar/settings/apps/revera-northstar/permissions',
+    advanced_url:
+      'https://github.com/organizations/northstar/settings/apps/revera-northstar/advanced',
+    requested_permissions: { contents: 'write', pull_requests: 'write', checks: 'write' },
+  };
+}
 const repoNames = ['api', 'web', 'worker'];
 const titles = [
   'Preserve session expiry when refreshing tokens',
@@ -323,8 +366,32 @@ export async function mockRequest(path: string, method: string, body?: unknown):
   if (url.pathname === '/api/setup/manifest')
     return {
       post_url: 'https://github.com/settings/apps/new',
-      manifest: { name: url.searchParams.get('name'), public: false },
+      manifest: {
+        name: url.searchParams.get('name'),
+        public: url.searchParams.get('public') === 'true',
+        setup_url: 'https://revera.northstar.example.com/repositories',
+        setup_on_update: true,
+        default_permissions: {
+          contents: url.searchParams.get('publish_fixes') === 'true' ? 'write' : 'read',
+        },
+      },
     };
+  // Connected accounts.
+  if (['/api/installations', '/api/installations/reconcile'].includes(url.pathname))
+    return installationInventory();
+  const ownerMatch = url.pathname.match(/^\/api\/owners\/([^/]+)$/);
+  if (ownerMatch) {
+    const account = connectedAccounts.find(
+      (a) => a.account.login === decodeURIComponent(ownerMatch[1]),
+    );
+    if (!account) throw new Error('Account not found.');
+    account.allowed = method === 'PUT';
+    account.status = account.allowed ? 'allowed' : 'awaiting_approval';
+    if (!account.allowed)
+      repos = repos.filter((r) => !r.full_name.startsWith(`${account.account.login}/`));
+    emit('repos');
+    return { ok: true, warning: null };
+  }
   if (url.pathname === '/api/overview')
     return {
       app: {

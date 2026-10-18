@@ -70,6 +70,11 @@ pub(super) struct Server {
     events: broadcast::Sender<(&'static str, serde_json::Value)>,
     stopping: watch::Sender<bool>,
     workers: Mutex<tokio::task::JoinSet<()>>,
+    // Connected-account inventory and policy mutations are serialized, never
+    // holding a dashboard/queue lock across GitHub requests.
+    reconcile_lock: Mutex<()>,
+    reconcile_request: watch::Sender<u64>,
+    installations: Mutex<reconcile::Installations>,
 }
 
 impl Server {
@@ -107,7 +112,28 @@ impl Server {
             job.trigger = "auto".into();
             job.mode = preferences.mode(&job.repo.full_name);
         }
+        let app = self.setup.lock().await.app.clone();
         let mut queue = self.queue.lock().await;
+        if !matches!(job.kind, events::Kind::Remove) {
+            let installations = self.installations.lock().await;
+            if !installations.install_url.is_empty()
+                && !installations.installations.iter().any(|i| {
+                    i.id == Some(job.repo.installation)
+                        && i.allowed
+                        && !i.suspended
+                        && i.error.is_none()
+                })
+            {
+                return;
+            }
+            drop(installations);
+            let owner = job.repo.full_name.split('/').next().unwrap_or("");
+            if let Some(app) = app.as_ref()
+                && !self.allowed_owner(app, owner).await
+            {
+                return;
+            }
+        }
         if *self.stopping.borrow() || admission.is_some_and(|token| !queue.admits(job.key(), token))
         {
             return;
@@ -155,15 +181,20 @@ impl Server {
     }
 
     async fn allowed_owner(&self, app: &app::App, owner: &str) -> bool {
-        self.allowed(app, owner)
-            || self
-                .dashboard
-                .lock()
-                .await
-                .preferences
-                .allowed_owners
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(owner))
+        self.allowed_account(app, owner, None).await
+    }
+
+    async fn allowed_account(&self, app: &app::App, owner: &str, id: Option<u64>) -> bool {
+        self.dashboard
+            .lock()
+            .await
+            .preferences
+            .owner_allowed(owner, id, self.allowed(app, owner))
+    }
+
+    fn request_reconcile(&self) {
+        self.reconcile_request
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
     async fn close(&self, key: (u64, u64)) -> Result<()> {
@@ -184,6 +215,15 @@ impl Server {
     }
 
     async fn remove_repo(&self, repo: events::Repo) -> Result<()> {
+        {
+            let mut dashboard = self.dashboard.lock().await;
+            dashboard.repos.retain(|_, info| info.repo.id != repo.id);
+            dashboard::write_inventory(
+                &self.settings.data_dir,
+                dashboard.installations,
+                &dashboard.repos,
+            )?;
+        }
         let mut queue = self.queue.lock().await;
         for job in queue.remove_repo(repo) {
             self.transition(&job, "cancelled", Some("repository removed".into()))
@@ -288,6 +328,15 @@ impl Server {
                             .map(|j| j.repo.clone()),
                     );
                 }
+                repos.extend(
+                    self.dashboard
+                        .lock()
+                        .await
+                        .repos
+                        .values()
+                        .filter(|info| info.repo.installation == id)
+                        .map(|info| info.repo.clone()),
+                );
                 repos.sort_by_key(|repo| repo.id);
                 repos.dedup_by_key(|repo| repo.id);
                 for repo in repos {
@@ -435,6 +484,9 @@ async fn initialize(
         events: broadcast::channel(1024).0,
         stopping: watch::channel(false).0,
         workers: Mutex::new(tokio::task::JoinSet::new()),
+        reconcile_lock: Mutex::new(()),
+        reconcile_request: watch::channel(0).0,
+        installations: Mutex::new(reconcile::Installations::default()),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(
@@ -669,19 +721,76 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
     if event == "ping" {
         return StatusCode::OK;
     }
-    let owner = if matches!(event, "installation" | "installation_repositories") {
-        &payload["installation"]["account"]["login"]
-    } else {
-        &payload["repository"]["owner"]["login"]
+    // Lifecycle events from unapproved installers can refresh account status,
+    // but must never reach the job mapper (or expose their repositories).
+    if reconcile::installation_event(event, &payload) {
+        if event == "installation"
+            && matches!(payload["action"].as_str(), Some("deleted" | "suspend"))
+        {
+            let mut inventory = server.installations.lock().await;
+            for installation in inventory
+                .installations
+                .iter_mut()
+                .filter(|i| i.id == payload["installation"]["id"].as_u64())
+            {
+                installation.suspended = true;
+                installation.status = "suspended".into();
+                installation.repo_count = None;
+            }
+        }
+        let account = &payload["installation"]["account"];
+        if matches!(
+            payload["action"].as_str(),
+            Some("deleted" | "removed" | "suspend")
+        ) && server
+            .allowed_account(
+                &app,
+                account["login"].as_str().unwrap_or(""),
+                account["id"].as_u64(),
+            )
+            .await
+        {
+            let mapped = if payload["action"] == "suspend" {
+                payload["installation"]["id"]
+                    .as_u64()
+                    .map(events::Event::RemoveInstallation)
+                    .ok_or_else(|| anyhow::anyhow!("missing installation"))
+            } else {
+                events::map_with_preferences(
+                    event,
+                    &payload,
+                    app.id,
+                    &server.dashboard.lock().await.preferences,
+                )
+            };
+            match mapped {
+                Ok(removal) => {
+                    if let Err(error) = server.handle(&app, removal).await {
+                        tracing::warn!(
+                            "installation removal: {}",
+                            crate::redact::diagnostic(&format!("{error:#}"))
+                        );
+                    }
+                }
+                Err(_) => return StatusCode::BAD_REQUEST,
+            }
+        }
+        server.request_reconcile();
+        return StatusCode::ACCEPTED;
     }
-    .as_str()
-    .unwrap_or("");
-    if !server.allowed_owner(&app, owner).await {
+    let owner = &payload["repository"]["owner"];
+    if !server
+        .allowed_account(
+            &app,
+            owner["login"].as_str().unwrap_or(""),
+            owner["id"].as_u64(),
+        )
+        .await
+    {
         tracing::warn!("ignored webhook from an owner outside the allowed owners");
         return StatusCode::ACCEPTED;
     }
     let preferences = server.dashboard.lock().await.preferences.clone();
-    let event_name = event.to_owned();
     let mapped = if event == "issue_comment" {
         mentions::event(&payload, &app.slug, &preferences)
             .map(|request| request.map_or(events::Event::Ignore, events::Event::Mention))
@@ -710,14 +819,6 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
             "webhook work failed: {}",
             crate::redact::diagnostic(&format!("{e:#}"))
         );
-    }
-    if matches!(
-        event_name.as_str(),
-        "installation" | "installation_repositories"
-    ) {
-        tokio::spawn(async move {
-            let _ = reconcile::once(&server).await;
-        });
     }
     StatusCode::ACCEPTED
 }
