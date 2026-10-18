@@ -63,10 +63,21 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/overview", get(overview))
         .route("/api/jobs", get(jobs))
         .route("/api/jobs/{id}", get(job))
+        .route("/api/jobs/{id}/instructions.md", get(instructions))
         .route("/api/jobs/{id}/log", get(log))
         .route("/api/jobs/{id}/rerun", post(rerun))
         .route("/api/jobs/{id}/cancel", post(cancel))
         .route("/api/repos", get(repos).patch(bulk_repo_settings))
+        // Connected accounts (separate from repository preferences).
+        .route("/api/installations", get(installations))
+        .route(
+            "/api/installations/reconcile",
+            post(reconcile_installations),
+        )
+        .route(
+            "/api/owners/{login}",
+            put(approve_owner).delete(revoke_owner),
+        )
         .route(
             "/api/repos/{owner}/{repo}",
             axum::routing::patch(repo_settings),
@@ -165,6 +176,10 @@ struct ManifestQuery {
     name: String,
     #[serde(default)]
     org: String,
+    #[serde(default)]
+    public: bool,
+    #[serde(default)]
+    publish_fixes: bool,
 }
 async fn manifest(
     State(server): State<Arc<Server>>,
@@ -213,7 +228,85 @@ async fn manifest(
     }
     url.query_pairs_mut().append_pair("state", token);
     Ok(output(json!({"post_url": url.as_str(),
-        "manifest": app::manifest(&server.settings.public_url, &name)})))
+        "manifest": app::manifest(&server.settings.public_url, &name, query.public, query.publish_fixes)})))
+}
+
+// Connected-account endpoints. All routes use the existing admin + CSRF guard.
+async fn installations(State(server): State<Arc<Server>>) -> ApiResult {
+    let _guard = server.reconcile_lock.lock().await;
+    let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
+    Ok(output(json!(
+        super::reconcile::discover(&server, &app).await?
+    )))
+}
+
+async fn reconcile_installations(State(server): State<Arc<Server>>) -> ApiResult {
+    super::reconcile::once(&server).await?;
+    Ok(output(json!(*server.installations.lock().await)))
+}
+
+async fn change_owner(server: &Server, login: String, approve: bool) -> ApiResult {
+    if login.is_empty()
+        || !login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(invalid(anyhow::anyhow!("invalid GitHub account login")));
+    }
+    let _guard = server.reconcile_lock.lock().await;
+    let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
+    // Approval must refer to a real installation, not caller-supplied identity.
+    // Revocation remains available during a GitHub outage using pinned identity.
+    let discovered = super::reconcile::discover(server, &app).await;
+    let accounts = match discovered {
+        Ok(accounts) => accounts,
+        Err(error) if approve => return Err(error.into()),
+        Err(_) => server.installations.lock().await.clone(),
+    };
+    let account = accounts
+        .installations
+        .iter()
+        .find(|i| i.account.login.eq_ignore_ascii_case(&login));
+    if approve && account.is_none_or(|i| i.id.is_none()) {
+        return Err(missing());
+    }
+    let id = account.and_then(|i| i.account.id);
+    {
+        let mut dashboard = server.dashboard.lock().await;
+        let mut preferences = dashboard.preferences.clone();
+        let id = id.or_else(|| {
+            preferences
+                .owner_accounts
+                .get(&login.to_ascii_lowercase())
+                .copied()
+        });
+        if approve {
+            preferences.approve_owner(&login, id);
+        } else {
+            preferences.revoke_owner(&login, id);
+        }
+        dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
+        dashboard.preferences = preferences;
+    }
+    if !approve {
+        super::reconcile::evict_unapproved(server, &app).await?;
+    }
+    // Policy is already durable and revocation already applied even if GitHub
+    // fails. Report that separately so a retry never silently re-authorizes it.
+    let warning = super::reconcile::once_locked(server)
+        .await
+        .err()
+        .map(|error| {
+            crate::redact::diagnostic(&format!("Owner policy saved; refresh failed: {error:#}"))
+        });
+    Ok(output(json!({"ok": true, "warning": warning})))
+}
+
+async fn approve_owner(State(server): State<Arc<Server>>, Path(login): Path<String>) -> ApiResult {
+    change_owner(&server, login, true).await
+}
+async fn revoke_owner(State(server): State<Arc<Server>>, Path(login): Path<String>) -> ApiResult {
+    change_owner(&server, login, false).await
 }
 
 fn ordered(dashboard: &Dashboard) -> Vec<JobSummary> {
@@ -426,44 +519,336 @@ async fn summary(server: &Server, id: &str) -> std::result::Result<JobSummary, E
         .cloned()
         .ok_or_else(missing)
 }
-async fn job(State(server): State<Arc<Server>>, Path(id): Path<String>) -> ApiResult {
-    let summary = summary(&server, &id).await?;
-    let dir = dashboard::job_dir(&server.settings.data_dir, &id)?;
+#[derive(Default, Deserialize)]
+struct DetailQuery {
+    diagnostics: Option<String>,
+    finding: Option<String>,
+}
+
+async fn job(
+    State(server): State<Arc<Server>>,
+    Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
+) -> ApiResult {
+    Ok(output(
+        review_detail(&server, &id, query.diagnostics.as_deref() == Some("1")).await?,
+    ))
+}
+
+// Lane B extends this hook for external/private jobs; no installation lookup
+// belongs in callers or in the cache.
+pub(super) async fn current_review_head(
+    server: &Server,
+    summary: &JobSummary,
+) -> Result<Option<String>> {
+    if summary.source == super::events::Source::External {
+        return Ok(None); // External freshness is owned by external::stale.
+    }
+    let Some(number) = summary.pr else {
+        return Ok(None);
+    };
+    let repo = match repo(server, &summary.repo).await {
+        Ok(repo) => repo,
+        Err(_) => return Ok(None),
+    };
+    let pull = fetch_pr(server, &repo, number).await?;
+    Ok(pull["head"]["sha"].as_str().map(str::to_owned))
+}
+
+type HeadCache =
+    std::collections::HashMap<(std::path::PathBuf, String, u64), (Instant, Option<String>)>;
+async fn review_stale(server: &Server, summary: &JobSummary, head: &str) -> Option<bool> {
+    static CACHE: std::sync::OnceLock<tokio::sync::Mutex<HeadCache>> = std::sync::OnceLock::new();
+    if head.is_empty() {
+        return None;
+    }
+    if summary.source == super::events::Source::External {
+        let mut reviewed = summary.clone();
+        reviewed.head_sha = Some(head.to_owned());
+        return tokio::time::timeout(
+            Duration::from_secs(5),
+            super::external::stale(server, &reviewed),
+        )
+        .await
+        .ok()
+        .flatten();
+    }
+    let key = (
+        server.settings.data_dir.clone(),
+        summary.repo.clone(),
+        summary.pr?,
+    );
+    let cache = CACHE.get_or_init(Default::default);
+    {
+        let cache = cache.lock().await;
+        if let Some((at, live)) = cache.get(&key)
+            && at.elapsed() < Duration::from_secs(30)
+        {
+            return live.as_ref().map(|live| live != head);
+        }
+    }
+    let live = tokio::time::timeout(Duration::from_secs(5), current_review_head(server, summary))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    let stale = live.as_ref().map(|live| live != head);
+    let mut cache = cache.lock().await;
+    if cache.len() >= 256 {
+        cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(30));
+    }
+    if cache.len() < 256 {
+        cache.insert(key, (Instant::now(), live));
+    }
+    stale
+}
+
+fn report_findings(report: &Value) -> Vec<crate::findings::Finding> {
+    crate::findings::accepted_values(report)
+        .filter_map(|raw| {
+            let mut value = json!({
+                "defect_key": "",
+                "severity": "low",
+                "file": "",
+                "start_line": 0,
+                "title": "",
+                "claim": "",
+            });
+            value.as_object_mut()?.extend(raw.as_object()?.clone());
+            // Investigator proposals are never part of the handoff.
+            value.as_object_mut()?.remove("suggested_fix");
+            serde_json::from_value(value).ok()
+        })
+        .collect()
+}
+
+fn line_link(repo: &str, head: &str, file: &str, start: u32, end: u32) -> Option<String> {
+    if file.len() > 1000
+        || repo.len() > 300
+        || repo.split('/').count() != 2
+        || repo.split('/').any(|part| {
+            part.is_empty()
+                || matches!(part, "." | "..")
+                || !part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+        })
+        || !crate::git::is_oid(head)
+    {
+        return None;
+    }
+    let mut url = url::Url::parse("https://github.com").ok()?;
+    {
+        let mut path = url.path_segments_mut().ok()?;
+        for segment in repo.split('/') {
+            path.push(segment);
+        }
+        path.push("blob").push(head);
+        for segment in file.split('/') {
+            if matches!(segment, "." | "..") {
+                return None;
+            }
+            path.push(segment);
+        }
+    }
+    if start > 0 {
+        url.set_fragment(Some(&if end > start {
+            format!("L{start}-L{end}")
+        } else {
+            format!("L{start}")
+        }));
+    }
+    Some(url.to_string())
+}
+
+fn evidence_detail(evidence: &crate::findings::Evidence) -> Value {
+    json!({
+        "path": crate::handoff::text(&evidence.path, 1000),
+        "start_line": evidence.start_line,
+        "end_line": evidence.end_line,
+        "note": crate::handoff::text(&evidence.note, 2000),
+    })
+}
+
+fn finding_detail(
+    finding: &crate::findings::Finding,
+    context: &crate::handoff::Context<'_>,
+) -> Value {
+    let id = finding.id();
+    let end = finding.end_line.unwrap_or(finding.start_line);
+    let evidence: Vec<_> = finding
+        .supporting_evidence
+        .iter()
+        .take(10)
+        .map(evidence_detail)
+        .collect();
+    let suggestion = finding
+        .suggestion
+        .as_ref()
+        .filter(|s| s.replacement.len() <= 2000 && s.original.len() <= 40000);
+    let prompt = crate::handoff::build(context, std::slice::from_ref(finding), Some(&id));
+    json!({
+        "id": id,
+        "defect_key": crate::handoff::text(&finding.defect_key, 500),
+        "severity": finding.severity,
+        "title": crate::handoff::text(&finding.title, 500),
+        "claim": crate::handoff::text(&finding.claim, 4000),
+        "file": crate::handoff::text(&finding.file, 1000),
+        "start_line": finding.start_line,
+        "end_line": end,
+        "trigger": crate::handoff::text(&finding.trigger, 2000),
+        "impact": crate::handoff::text(&finding.impact, 2000),
+        "supporting_evidence": evidence,
+        "validation_status": "accepted",
+        "validated_fix": finding.validated_fix.as_ref().map(|fix| crate::handoff::text(fix, 4000)),
+        "validated_fix_label": "Validator's suggested remedy — not a tested patch",
+        "suggestion": suggestion,
+        "reviewed_head_sha": crate::handoff::text(context.head, 80),
+        "reviewed_base_sha": crate::handoff::text(context.base, 80),
+        "html_url": line_link(context.repo, context.head, &finding.file, finding.start_line, end),
+        "prompt": prompt,
+    })
+}
+
+fn diagnostic_detail(finding: &Value) -> Value {
+    let file = finding["file"].as_str().unwrap_or("");
+    let defect_key = finding["defect_key"].as_str().unwrap_or("");
+    let status = match finding["validation_status"].as_str() {
+        Some("rejected") => "rejected",
+        Some("uncertain") => "uncertain",
+        _ => "unvalidated",
+    };
+    json!({
+        "id": crate::findings::finding_id(file, defect_key),
+        "status": status,
+        "severity": crate::handoff::text(finding["severity"].as_str().unwrap_or(""), 32),
+        "title": crate::handoff::text(finding["title"].as_str().unwrap_or(""), 500),
+        "file": crate::handoff::text(file, 1000),
+        "start_line": finding["start_line"],
+        "rationale": crate::handoff::text(finding["rationale"].as_str().unwrap_or(""), 2000),
+    })
+}
+
+async fn review_detail(
+    server: &Server,
+    id: &str,
+    diagnostics: bool,
+) -> std::result::Result<Value, Error> {
+    let summary = summary(server, id).await?;
+    let dir = dashboard::job_dir(&server.settings.data_dir, id)?;
     let path = dir.join("report.json");
     crate::fsutil::check_regular_target(&path)?;
     let report: Option<Value> = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let mut value = json!({"job": summary, "findings": []});
+    let mut value = json!({
+        "job": summary,
+        "findings": [],
+        "counts": crate::findings::AcceptedCounts::default(),
+        "stale": null,
+        "instructions": "",
+    });
     if let Some(report) = report {
+        let head = report["head"].as_str().unwrap_or("");
+        let base = report["base"].as_str().unwrap_or("");
+        let stale = review_stale(server, &summary, head).await;
+        let review_url = format!(
+            "{}/reviews/{}",
+            server.settings.public_url.trim_end_matches('/'),
+            summary.id
+        );
+        let pr_url = summary
+            .pr
+            .map(|number| format!("https://github.com/{}/pull/{number}", summary.repo))
+            .unwrap_or_default();
+        let context = crate::handoff::Context {
+            repo: &summary.repo,
+            pr_url: &pr_url,
+            base,
+            head,
+            review_url: Some(&review_url),
+            stale,
+        };
+        let accepted = report_findings(&report);
+        value["counts"] = json!(crate::findings::accepted_counts_json(&report));
+        value["job"]["findings"] = value["counts"].clone();
+        value["stale"] = json!(stale);
+        value["reviewed_head_sha"] = json!(crate::handoff::text(head, 80));
+        value["reviewed_base_sha"] = json!(crate::handoff::text(base, 80));
+        value["instructions"] = json!(crate::handoff::build(&context, &accepted, None));
         if let Some(markdown) = report["plan"]["summary_markdown"].as_str() {
-            value["summary_markdown"] = json!(runner::strip_state(markdown));
+            value["summary_markdown"] = json!(crate::handoff::text(
+                &runner::strip_state(markdown),
+                64 * 1024
+            ));
         }
         value["findings"] = json!(
-            report["findings"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|f| {
-                    let mut finding = json!({"severity": f["severity"], "file": f["file"],
-                "title": f["title"], "status": f["validation_status"]});
-                    if !f["start_line"].is_null() {
-                        finding["line"] = f["start_line"].clone();
-                    }
-                    if !f["claim"].is_null() {
-                        finding["body"] = f["claim"].clone();
-                    }
-                    finding
-                })
+            accepted
+                .iter()
+                .map(|f| finding_detail(f, &context))
                 .collect::<Vec<_>>()
         );
+        if diagnostics {
+            value["diagnostics"] = json!(
+                report["findings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|f| f["validation_status"].as_str() != Some("accepted"))
+                    .map(diagnostic_detail)
+                    .collect::<Vec<_>>()
+            );
+        }
         for field in ["timing", "ledger", "stats", "strategy"] {
             if !report[field].is_null() {
                 value[field] = report[field].clone();
             }
         }
     }
-    Ok(output(value))
+    Ok(value)
+}
+
+async fn instructions(
+    State(server): State<Arc<Server>>,
+    Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
+) -> std::result::Result<Response, Error> {
+    let detail = review_detail(&server, &id, false).await?;
+    let markdown = if let Some(id) = query.finding {
+        if id.len() < 6 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "finding must be a unique hexadecimal ID prefix of at least 6 characters".into(),
+            ));
+        }
+        let matches: Vec<_> = detail["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| {
+                f["id"]
+                    .as_str()
+                    .is_some_and(|full| full.starts_with(&id.to_ascii_lowercase()))
+            })
+            .collect();
+        if matches.len() != 1 {
+            return Err(missing());
+        }
+        matches[0]["prompt"].as_str().unwrap_or("").to_owned()
+    } else {
+        detail["instructions"].as_str().unwrap_or("").to_owned()
+    };
+    Ok((
+        [
+            ("content-type", "text/markdown; charset=utf-8"),
+            (
+                "content-disposition",
+                "attachment; filename=\"revera-instructions.md\"",
+            ),
+        ],
+        crate::redact::text(&markdown).into_owned(),
+    )
+        .into_response())
 }
 async fn log(
     State(server): State<Arc<Server>>,
@@ -904,7 +1289,7 @@ async fn config(State(server): State<Arc<Server>>, Json(input): Json<Yaml>) -> A
 }
 async fn server_settings(
     State(server): State<Arc<Server>>,
-    Json(input): Json<Preferences>,
+    Json(mut input): Json<Preferences>,
 ) -> ApiResult {
     input.external.validate().map_err(invalid)?;
     if input.admins.iter().any(|name| name.trim().is_empty()) {
@@ -917,9 +1302,64 @@ async fn server_settings(
         let value = json!({"id": 1, "full_name": name});
         Repo::parse(&value, 1).map_err(invalid)?;
     }
+    let _guard = server.reconcile_lock.lock().await;
     let mut dashboard = server.dashboard.lock().await;
+    // Older dashboard clients do not know identity/revocation fields. A normal
+    // settings save must not erase them and implicitly re-authorize an owner.
+    let previous = dashboard.preferences.clone();
+    input.owner_accounts = previous.owner_accounts.clone();
+    input.revoked_owners = previous.revoked_owners.clone();
+    input.revoked_owner_ids = previous.revoked_owner_ids.clone();
+    let removed: Vec<_> = previous
+        .allowed_owners
+        .iter()
+        .filter(|owner| {
+            !input
+                .allowed_owners
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(owner))
+        })
+        .cloned()
+        .collect();
+    let added: Vec<_> = input
+        .allowed_owners
+        .iter()
+        .filter(|owner| {
+            !previous
+                .allowed_owners
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(owner))
+        })
+        .cloned()
+        .collect();
+    for owner in &removed {
+        input.revoke_owner(
+            owner,
+            previous
+                .owner_accounts
+                .get(&owner.to_ascii_lowercase())
+                .copied(),
+        );
+    }
+    for owner in &added {
+        input.approve_owner(
+            owner,
+            previous
+                .owner_accounts
+                .get(&owner.to_ascii_lowercase())
+                .copied(),
+        );
+    }
     dashboard::write_preferences(&server.settings.data_dir, &input)?;
     dashboard.preferences = input;
+    drop(dashboard);
+    if !removed.is_empty() || !added.is_empty() {
+        let app = server.setup.lock().await.app.clone();
+        if let Some(app) = app {
+            super::reconcile::evict_unapproved(&server, &app).await?;
+        }
+        server.request_reconcile();
+    }
     let _ = server.events.send(("repos", json!({})));
     Ok(output(json!({"ok": true})))
 }

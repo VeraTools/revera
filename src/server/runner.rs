@@ -243,11 +243,7 @@ struct Execution {
 }
 
 pub fn accepted_findings(report: &Value) -> impl Iterator<Item = &Value> {
-    report["findings"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|finding| finding["validation_status"].as_str() == Some("accepted"))
+    crate::findings::accepted_values(report)
 }
 
 pub const CLEAN_ARGS: &[&str] = &[
@@ -481,6 +477,12 @@ async fn execute_external(
         .arg("--publish")
         .arg("dry-run")
         .arg("--private")
+        .arg("--review-url")
+        .arg(format!(
+            "{}/reviews/{}",
+            server.settings.public_url.trim_end_matches('/'),
+            job.id
+        ))
         .arg("--config")
         .arg(&server.config)
         .arg("--out")
@@ -674,7 +676,13 @@ async fn execute(
                 .arg("--out")
                 .arg(&execution.report)
                 .arg("--bot-login")
-                .arg(format!("{}[bot]", app.slug));
+                .arg(format!("{}[bot]", app.slug))
+                .arg("--review-url")
+                .arg(format!(
+                    "{}/reviews/{}",
+                    server.settings.public_url.trim_end_matches('/'),
+                    job.id
+                ));
             if *force {
                 command.arg("--force");
             }
@@ -933,16 +941,13 @@ async fn finish_summary(
         .context("job summary missing")?;
     summary.set_state(if skipped { "skipped" } else { status }, reason);
     if let Some(report) = report {
-        summary.findings = super::dashboard::FindingCounts::default();
-        for finding in accepted_findings(&report) {
-            summary.findings.total += 1;
-            match finding["severity"].as_str() {
-                Some("high") => summary.findings.high += 1,
-                Some("medium") => summary.findings.medium += 1,
-                Some("low") => summary.findings.low += 1,
-                _ => {}
-            }
-        }
+        let counts = crate::findings::accepted_counts_json(&report);
+        summary.findings = super::dashboard::FindingCounts {
+            total: counts.total,
+            high: counts.high,
+            medium: counts.medium,
+            low: counts.low,
+        };
         if !report["ledger"].is_null() {
             summary.tokens = Some(json!({
                 "prompt": report["ledger"]["prompt_tokens"].as_u64().unwrap_or(0),

@@ -18,6 +18,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(hide = true)]
+    Fix {
+        #[command(subcommand)]
+        command: crate::fix::FixCommand,
+    },
     /// Run a self-hosted GitHub App backend.
     Serve(crate::server::Settings),
     Review {
@@ -53,6 +58,12 @@ enum Cmd {
         /// Private external review: operator config only, no GitHub API, no repo guidance.
         #[arg(long)]
         private: bool,
+        /// Dashboard deep link for this review.
+        #[arg(long)]
+        review_url: Option<String>,
+        /// Offer link only; does not authorize fix execution.
+        #[arg(long)]
+        fix_url: Option<String>,
     },
     /// Build or refresh the Vera index without reviewing.
     Index {
@@ -110,6 +121,7 @@ enum PublishArg {
 pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Fix { command } => crate::fix::cli(command).await,
         Cmd::Serve(settings) => match crate::server::serve(settings).await {
             Ok(()) => 0,
             Err(e) => {
@@ -150,6 +162,8 @@ pub async fn run() -> i32 {
             force,
             bot_login,
             private,
+            review_url,
+            fix_url,
         } => {
             review(ReviewArgs {
                 repo,
@@ -166,6 +180,8 @@ pub async fn run() -> i32 {
                 force,
                 bot_login,
                 private,
+                review_url,
+                fix_url,
             })
             .await
         }
@@ -187,6 +203,8 @@ struct ReviewArgs {
     force: bool,
     bot_login: Option<String>,
     private: bool,
+    review_url: Option<String>,
+    fix_url: Option<String>,
 }
 
 fn load_cfg_unvalidated(
@@ -629,6 +647,24 @@ async fn review(a: ReviewArgs) -> i32 {
             if a.private {
                 report.publication.mode = "private".into();
             }
+            if let Some(e) = &ev {
+                let pr_url = format!("https://github.com/{}/pull/{}", e.repo_full_name, e.number);
+                let base = report.base.clone();
+                let head = report.head.clone();
+                crate::report::append_handoff(
+                    &mut report,
+                    &crate::handoff::Context {
+                        repo: &e.repo_full_name,
+                        pr_url: &pr_url,
+                        base: &base,
+                        head: &head,
+                        review_url: a.review_url.as_deref(),
+                        stale: Some(false),
+                    },
+                    a.fix_url.as_deref().filter(|_| !a.private),
+                    &cfg.github.bot_login,
+                );
+            }
             let mut publish_failed = false;
             if let (Some((e, api)), PublishMode::Comment) = (&api, publish) {
                 let publish_start = std::time::Instant::now();
@@ -672,6 +708,7 @@ async fn review(a: ReviewArgs) -> i32 {
                         );
                         eprintln!("error: publish failed: {err:#}");
                         report.status = RunStatus::Partial;
+                        crate::report::mark_incomplete_summary(&mut report);
                         report.reason = Some(match report.reason.take() {
                             Some(r) => format!("{r}; publish failed: {err:#}"),
                             None => format!("publish failed: {err:#}"),

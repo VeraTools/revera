@@ -14,6 +14,7 @@ import type {
   ExternalPolicy,
   ExternalPR,
   TrackedPR,
+  Installations,
 } from './types';
 
 export const mockMode = import.meta.env.VITE_MOCK === '1';
@@ -61,9 +62,9 @@ export const api = {
     return session;
   },
   logout: () => request<void>('/api/logout', 'POST'),
-  manifest: (token: string, name: string, org: string) =>
+  manifest: (token: string, name: string, org: string, publicApp = false, publishFixes = false) =>
     request<{ post_url: string; manifest: unknown }>(
-      `/api/setup/manifest?${new URLSearchParams({ token, name, org })}`,
+      `/api/setup/manifest?${new URLSearchParams({ token, name, org, public: String(publicApp), publish_fixes: String(publishFixes) })}`,
     ),
   overview: () => request<Overview>('/api/overview'),
   // Public metadata reads and private reviews never use an installed publication path.
@@ -87,12 +88,21 @@ export const api = {
         ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
       })}`,
     ),
-  job: (id: string) => request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}`),
+  job: (id: string, diagnostics = false) =>
+    request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}${diagnostics ? '?diagnostics=1' : ''}`),
   log: (id: string) => request<string>(`/api/jobs/${encodeURIComponent(id)}/log`),
   rerun: (id: string, mode: ReviewMode | null = null) =>
     request<{ id: string }>(`/api/jobs/${encodeURIComponent(id)}/rerun`, 'POST', { mode }),
   cancel: (id: string) => request<void>(`/api/jobs/${encodeURIComponent(id)}/cancel`, 'POST'),
   repos: () => request<Repository[]>('/api/repos'),
+  // Connected accounts.
+  installations: () => request<Installations>('/api/installations'),
+  reconcileInstallations: () => request<Installations>('/api/installations/reconcile', 'POST'),
+  owner: (login: string, approve: boolean) =>
+    request<{ ok: boolean; warning: string | null }>(
+      `/api/owners/${encodeURIComponent(login)}`,
+      approve ? 'PUT' : 'DELETE',
+    ),
   bulkRepoSettings: (
     repos: string[],
     settings: { trigger?: Trigger | null; mode?: ReviewMode | null },

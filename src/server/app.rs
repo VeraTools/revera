@@ -90,15 +90,17 @@ pub fn token_matches(expected: &str, actual: &str) -> bool {
     other.verify_slice(&signature).is_ok()
 }
 
-pub fn manifest(public_url: &str, name: &str) -> Value {
+pub fn manifest(public_url: &str, name: &str, public: bool, publish_fixes: bool) -> Value {
     json!({
-        "name": name, "public": false, "url": "https://github.com/VeraTools/revera",
+        "name": name, "public": public, "url": "https://github.com/VeraTools/revera",
         "hook_attributes": {"url": format!("{public_url}/webhook")},
         "redirect_url": format!("{public_url}/setup/callback"),
-        "setup_url": format!("{public_url}/"),
+        "setup_url": format!("{public_url}/repositories"),
+        "setup_on_update": true,
         "callback_urls": [format!("{public_url}/auth/callback")],
         "default_permissions": {
-            "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read",
+            "contents": if publish_fixes { "write" } else { "read" },
+            "pull_requests": "write", "checks": "write", "metadata": "read",
             "issues": "read"
         },
         "default_events": ["pull_request", "push", "check_run", "issue_comment"]
@@ -119,6 +121,16 @@ pub enum Permissions {
     ReadPulls,
     Comments,
 }
+
+#[derive(Debug)]
+pub struct ApiStatus(pub reqwest::StatusCode);
+
+impl std::fmt::Display for ApiStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GitHub API returned HTTP {}", self.0.as_u16())
+    }
+}
+impl std::error::Error for ApiStatus {}
 
 impl Api {
     /// Anonymous, read-only external metadata path. It cannot mint tokens or write.
@@ -194,7 +206,7 @@ impl Api {
         let response = request.send().await?;
         if !response.status().is_success() {
             // Conversion and token responses may contain credentials; do not echo bodies.
-            bail!("GitHub API returned HTTP {}", response.status().as_u16());
+            return Err(ApiStatus(response.status()).into());
         }
         Ok(response.json().await?)
     }

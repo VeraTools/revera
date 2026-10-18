@@ -825,6 +825,8 @@ args = sys.argv[1:]
 assert args[0] == 'review'
 get = lambda flag: args[args.index(flag) + 1]
 assert '--private' in args and '--force' in args
+assert '--fix-url' not in args
+assert get('--review-url').startswith('https://revera.example.com/reviews/')
 assert get('--publish') == 'dry-run' and get('--profile') == 'quick'
 cwd = pathlib.Path.cwd()
 assert cwd == pathlib.Path(get('--repo')) and cwd.parts[-3:] == ('external', '701', 'pull-7')
@@ -978,4 +980,213 @@ fn external_legacy_jobs_repo_check_recovery_and_seen_load() {
     assert_eq!(preferences.external.poll_minutes, 60);
     let external_repo = events::Repo::parse(&public_repo(), None).unwrap();
     assert!(external_repo.installation_id().is_err());
+}
+
+#[tokio::test]
+async fn external_admission_and_recovery_ignore_installations_and_survive_owner_eviction() {
+    let mock = MockServer::start().await;
+    no_writes(&mock).await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    server.installations.lock().await.install_url =
+        "https://github.com/apps/test/installations/new".into();
+    let mut external = events::Job::new(
+        events::Repo::parse(&public_repo(), None).unwrap(),
+        events::Kind::Review {
+            number: 7,
+            pr: public_pr(&"a".repeat(40)),
+            force: true,
+        },
+        "manual",
+    );
+    server.enqueue(external.clone()).await;
+    assert!(
+        server
+            .queue
+            .lock()
+            .await
+            .pending
+            .contains_key(&external.key())
+    );
+    let mut installed = external.clone();
+    installed.id = "installed-admission".into();
+    installed.repo.installation = Some(9);
+    server.enqueue(installed.clone()).await;
+    assert!(
+        !server
+            .queue
+            .lock()
+            .await
+            .pending
+            .contains_key(&installed.key())
+    );
+    // A persisted recovery record must never mint a credential for an external job,
+    // even when that record has not yet been cleared after a restart.
+    external.id = "external-recovery".into();
+    let mut summary = dashboard::JobSummary::queued(&external);
+    summary.check = Some(dashboard::CheckRecovery {
+        id: 99,
+        repo: external.repo.clone(),
+        pending: true,
+    });
+    server.update_job(summary).await.unwrap();
+    server.recover_checks().await.unwrap();
+    let app = server.setup.lock().await.app.clone().unwrap();
+    reconcile::evict_unapproved(&server, &app).await.unwrap();
+    assert!(
+        server
+            .queue
+            .lock()
+            .await
+            .pending
+            .values()
+            .any(|j| j.repo.source() == events::Source::External)
+    );
+    assert!(
+        server
+            .queue
+            .lock()
+            .await
+            .pending
+            .values()
+            .all(|j| !matches!(j.kind, events::Kind::Remove))
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"permissions": {}})))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/app/installations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&mock)
+        .await;
+    reconcile::once(&server).await.unwrap();
+    let queue = server.queue.lock().await;
+    assert_eq!(queue.pending.len(), 1);
+    assert!(
+        queue
+            .pending
+            .values()
+            .all(|j| j.repo.source() == events::Source::External)
+    );
+    assert_eq!(
+        server.dashboard.lock().await.jobs["external-recovery"].source,
+        events::Source::External
+    );
+}
+
+#[tokio::test]
+async fn external_detail_handoff_uses_public_freshness_and_reviewed_blob_links_without_tokens() {
+    for current in [Some("a".repeat(40)), Some("c".repeat(40)), None] {
+        let mock = MockServer::start().await;
+        no_writes(&mock).await;
+        let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        let (cookie, _) = administrator(&server).await;
+        let reviewed = "a".repeat(40);
+        let review = events::Job::new(
+            events::Repo::parse(&public_repo(), None).unwrap(),
+            events::Kind::Review {
+                number: 7,
+                pr: public_pr(&reviewed),
+                force: true,
+            },
+            "manual",
+        );
+        let mut summary = dashboard::JobSummary::queued(&review);
+        summary.head_sha = Some("d".repeat(40)); // compare report's SHA, not stale metadata
+        summary.set_state("complete", None);
+        server.update_job(summary.clone()).await.unwrap();
+        assert!(
+            api::current_review_head(&server, &summary)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        if let Some(head) = &current {
+            metadata(&mock, public_repo(), public_pr(head)).await;
+        } else {
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&mock)
+                .await;
+        }
+        let report = json!({"head": reviewed, "base": "b".repeat(40), "status": "complete", "findings": [
+            {"defect_key": "guard", "severity": "high", "file": "src/a b.rs", "start_line": 2,
+             "title": "External accepted defect", "claim": "Missing guard", "trigger": "Empty input",
+             "impact": "Panic", "validation_status": "accepted", "validated_fix": "Add a guard"},
+            {"defect_key": "rejected", "severity": "high", "file": "x", "start_line": 1,
+             "title": "External rejected candidate", "validation_status": "rejected"}
+        ]});
+        let dir = dashboard::job_dir(data.path(), &review.id).unwrap();
+        crate::fsutil::write_atomic_in(&dir, "report.json", &serde_json::to_vec(&report).unwrap())
+            .unwrap();
+        let (url, task) = http(server.clone()).await;
+        let client = reqwest::Client::new();
+        let endpoint = format!("{url}/api/jobs/{}", review.id);
+        let detail: Value = client
+            .get(&endpoint)
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(detail["job"]["source"], "external");
+        assert_eq!(detail["job"]["publication"], "private");
+        assert_eq!(
+            detail["job"]["pr_url"],
+            "https://github.com/community/project/pull/7"
+        );
+        assert!(detail["job"]["check_run_url"].is_null());
+        assert_eq!(
+            detail["stale"],
+            current
+                .as_ref()
+                .map(|head| head != &reviewed)
+                .map_or(Value::Null, |v| json!(v))
+        );
+        assert_eq!(detail["findings"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            detail["findings"][0]["html_url"],
+            format!("https://github.com/community/project/blob/{reviewed}/src/a%20b.rs#L2")
+        );
+        assert!(!detail.to_string().contains("External rejected candidate"));
+        let instructions = detail["instructions"].as_str().unwrap();
+        assert!(instructions.contains("https://github.com/community/project/pull/7"));
+        assert!(instructions.contains(&reviewed));
+        assert!(instructions.contains(crate::handoff::WORKING_RULES));
+        for (query, expected) in [
+            (String::new(), instructions),
+            (
+                format!(
+                    "?finding={}",
+                    &detail["findings"][0]["id"].as_str().unwrap()[..6]
+                ),
+                detail["findings"][0]["prompt"].as_str().unwrap(),
+            ),
+        ] {
+            let response = client
+                .get(format!("{endpoint}/instructions.md{query}"))
+                .header("Cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(
+                response.headers()["content-type"],
+                "text/markdown; charset=utf-8"
+            );
+            assert_eq!(response.text().await.unwrap(), expected);
+        }
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| !r.headers.contains_key("authorization"))
+        );
+        task.abort();
+    }
 }

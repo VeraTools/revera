@@ -487,6 +487,7 @@ async fn failed_index_preserves_pushed_at_and_next_reconcile_retries() {
             Some((chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
         server.update_job(failed).await.unwrap();
         mock.reset().await;
+        mock_registration(&mock).await;
         Mock::given(method("GET"))
             .and(path("/app/installations"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
-const output = join(homedir(), '.local/tmp/revera-server/shots');
+const output = process.env.REVERA_WEB_OUTPUT || join(homedir(), '.local/tmp/revera-server/shots');
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   executablePath:
@@ -526,6 +526,100 @@ async function checkMentionsAndReviewDetail() {
   await context.close();
 }
 
+// Lane C: actionable accepted findings and explicit, opt-in diagnostics.
+async function checkAgentHandoff() {
+  const { context, page } = await open('/reviews/review-105');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('heading', { name: /^Accepted findings/ }).waitFor();
+  assert.equal(await page.locator('details.finding').count(), 2);
+  assert.equal(await page.getByText('Rejected candidate fixture', { exact: true }).count(), 0);
+  const expected = await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return api.job('review-105');
+  });
+  assert.equal('diagnostics' in expected, false);
+  assert.equal(expected.counts.total, expected.findings.length);
+  await page
+    .getByText("Validator's suggested remedy — not a tested patch", { exact: true })
+    .first()
+    .waitFor();
+  await page.getByRole('button', { name: 'Copy prompt', exact: true }).first().click();
+  assert.equal(
+    await page.evaluate(() => navigator.clipboard.readText()),
+    expected.findings[0].prompt,
+  );
+  assert.equal(
+    (await page.evaluate(() => navigator.clipboard.readText())).includes(expected.findings[1].id),
+    false,
+  );
+  await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected.instructions);
+  assert.equal(expected.instructions.includes('Rejected candidate fixture'), false);
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download .md', exact: true }).click();
+  const download = await downloadPromise;
+  assert.equal(download.suggestedFilename(), 'revera-instructions.md');
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  assert.equal(Buffer.concat(chunks).toString(), expected.instructions);
+  await page.getByRole('button', { name: 'Show diagnostics', exact: true }).click();
+  await page
+    .getByRole('heading', { name: 'Not validated — not reported as defects', exact: true })
+    .waitFor();
+  await page.getByText('Rejected candidate fixture', { exact: false }).waitFor();
+  await page.getByText('Uncertain candidate fixture', { exact: false }).waitFor();
+  assert.equal(await page.locator('details.finding').count(), 2);
+  await page.locator('details.finding').nth(1).locator('summary').click();
+  assert.equal(await page.getByRole('button', { name: 'Copy prompt', exact: true }).count(), 2);
+  await page.getByRole('button', { name: 'Hide diagnostics', exact: true }).click();
+  await page.getByRole('button', { name: 'Show diagnostics', exact: true }).waitFor();
+  assert.equal(await page.locator('.diagnostic').count(), 0);
+  await page.evaluate(async () => {
+    const { setMockReviewStale } = await window.importDashboard('/src/lib/mock.ts');
+    setMockReviewStale('review-105', true);
+  });
+  await page.getByText('Potentially stale', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).click();
+  assert.ok(
+    (await page.evaluate(() => navigator.clipboard.readText())).includes('Potentially stale'),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await context.close();
+
+  for (const [id, status] of [
+    ['review-103', 'partial'],
+    ['review-102', 'failed'],
+    ['review-101', 'skipped'],
+  ]) {
+    const { context, page } = await open(`/reviews/${id}`);
+    if (status === 'skipped') {
+      await page.evaluate(async () => {
+        const { setMockReviewStatus } = await window.importDashboard('/src/lib/mock.ts');
+        setMockReviewStatus('review-101', 'skipped');
+      });
+    }
+    await page
+      .getByRole('note')
+      .filter({ hasText: `Review ${status}. This is not a clean result.` })
+      .waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).count(),
+      0,
+    );
+    await context.close();
+  }
+  const clean = await open('/reviews/review-101');
+  await clean.page.getByText('No accepted findings in this review.', { exact: true }).waitFor();
+  assert.equal(await clean.page.getByRole('note').count(), 0);
+  assert.equal(
+    await clean.page.getByRole('button', { name: 'Copy fix instructions', exact: true }).count(),
+    0,
+  );
+  await clean.context.close();
+}
+
 async function checkThemeAndRetrievalLink() {
   const { context, page } = await open('/', 'light');
   await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
@@ -899,6 +993,51 @@ async function checkExternalReviews() {
   assert.equal(job.publication, 'private');
   assert.equal(job.mode, 'quick');
   assert.equal(job.check_run_url, undefined);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(async (id) => {
+    const { setMockReviewStatus } = await window.importDashboard('/src/lib/mock.ts');
+    setMockReviewStatus(id, 'complete', { total: 1, high: 1, medium: 0, low: 0 });
+  }, job.id);
+  await page.getByRole('link', { name: 'Open review', exact: true }).click();
+  await page.getByText('External · private', { exact: true }).waitFor();
+  await page.getByRole('heading', { name: /^Accepted findings/ }).waitFor();
+  assert.equal(
+    await page.getByRole('link', { name: 'Pull request', exact: true }).getAttribute('href'),
+    job.pr_url,
+  );
+  assert.equal(await page.getByRole('link', { name: 'GitHub check', exact: true }).count(), 0);
+  const detail = await page.evaluate(async (id) => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return api.job(id);
+  }, job.id);
+  await page.getByRole('button', { name: 'Copy prompt', exact: true }).click();
+  assert.equal(
+    await page.evaluate(() => navigator.clipboard.readText()),
+    detail.findings[0].prompt,
+  );
+  await page.getByRole('button', { name: 'Copy fix instructions', exact: true }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), detail.instructions);
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download .md', exact: true }).click();
+  const download = await downloadPromise;
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  assert.equal(Buffer.concat(chunks).toString(), detail.instructions);
+  assert.equal(
+    await page.getByRole('button', { name: 'Re-run review', exact: true }).isEnabled(),
+    true,
+  );
+  await page.getByRole('button', { name: 'Re-run review', exact: true }).click();
+  await page.getByText('A new review has been queued.', { exact: true }).waitFor();
+  const rerun = await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return (await api.jobs()).jobs[0];
+  });
+  assert.equal(rerun.source, 'external');
+  assert.equal(rerun.publication, 'private');
+  assert.equal(rerun.mode, 'quick');
+  await page.getByRole('link', { name: 'All reviews', exact: true }).click();
   await page.locator('summary').filter({ hasText: 'Track my external PRs' }).click();
   await page.getByRole('button', { name: 'Find my open PRs', exact: true }).click();
   const actions = page.locator('[aria-label="Choose action for community/small-project #1"]');
@@ -933,8 +1072,118 @@ async function checkExternalReviews() {
   await context.close();
 }
 
+// Connected accounts and explicit setup capability choices.
+async function checkConnectedAccounts() {
+  const { context, page } = await open('/repositories');
+  const panel = page.getByRole('region', { name: 'Connected accounts', exact: true });
+  await panel.getByRole('heading', { name: 'Connected accounts', exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole('link', { name: 'Add repositories or organization' }).getAttribute('href'),
+    'https://github.com/apps/revera-northstar/installations/new',
+  );
+  const second = panel.locator('[data-account="second-org"]');
+  await second.getByText('Awaiting Revera approval', { exact: true }).waitFor();
+  assert(
+    !/\d+ repositories/.test(await second.innerText()),
+    'Unapproved accounts have no repository count',
+  );
+  await panel
+    .locator('[data-account="upgrade-org"]')
+    .getByText('Permission update required', { exact: true })
+    .waitFor();
+  await panel
+    .locator('[data-account="paused-org"]')
+    .getByText('Suspended', { exact: true })
+    .waitFor();
+  await panel
+    .locator('[data-account="offline-org"]')
+    .getByText('Not installed', { exact: true })
+    .waitFor();
+  await panel
+    .locator('[data-account="denied-org"]')
+    .getByText('Access unavailable', { exact: true })
+    .waitFor();
+  await second.getByRole('button', { name: 'Approve second-org', exact: true }).click();
+  await second.getByText('Allowed', { exact: true }).waitFor();
+  await second
+    .getByText('Organization · 0 repositories · Selected repositories', { exact: true })
+    .waitFor();
+  page.once('dialog', (dialog) => dialog.accept());
+  await second.getByRole('button', { name: 'Revoke second-org', exact: true }).click();
+  await second.getByText('Awaiting Revera approval', { exact: true }).waitFor();
+  await panel
+    .getByText('Connecting another organization or enabling write permissions', { exact: true })
+    .click();
+  assert.equal(
+    await panel
+      .getByRole('link', { name: 'GitHub app settings → Advanced → Make public' })
+      .getAttribute('href'),
+    'https://github.com/organizations/northstar/settings/apps/revera-northstar/advanced',
+  );
+  await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    const reconcile = api.reconcileInstallations;
+    window.accountReconciles = 0;
+    api.reconcileInstallations = () => {
+      window.accountReconciles++;
+      return reconcile();
+    };
+  });
+  await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+  await page.getByRole('heading', { name: 'Reviews', exact: true }).waitFor();
+  await page.getByRole('link', { name: 'Repositories', exact: true }).evaluate((link) => {
+    link.href += '?installation_id=2&setup_action=install';
+  });
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
+  await page.waitForFunction(() => window.accountReconciles === 1);
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.waitForFunction(() => window.accountReconciles === 2);
+  await context.close();
+}
+
+async function checkManifestChoices() {
+  for (const publicApp of [false, true]) {
+    const { context, page } = await open('/setup?stage=create_app&token=fixture');
+    await page.getByRole('heading', { name: 'Create your GitHub App', exact: true }).waitFor();
+    assert.equal(
+      await page.getByLabel('Allow Revera to publish approved fixes', { exact: true }).isChecked(),
+      false,
+    );
+    assert.equal(
+      await page.getByLabel('Who can install this app?', { exact: true }).innerText(),
+      'Only this account',
+    );
+    if (publicApp) {
+      await choose(page, 'Who can install this app?', 'Any account or organization');
+      await page.getByLabel('Allow Revera to publish approved fixes', { exact: true }).check();
+    }
+    await page.evaluate(async () => {
+      const { api } = await window.importDashboard('/src/lib/api.ts');
+      const manifest = api.manifest;
+      api.manifest = async (...args) => {
+        const result = await manifest(...args);
+        window.createdManifest = result.manifest;
+        return result;
+      };
+    });
+    await page.getByRole('button', { name: 'Create GitHub App', exact: true }).click();
+    await page.getByRole('heading', { name: 'Sign in with GitHub', exact: true }).waitFor();
+    const manifest = await page.evaluate(() => window.createdManifest);
+    assert.equal(manifest.public, publicApp);
+    assert.equal(manifest.default_permissions.contents, publicApp ? 'write' : 'read');
+    assert.equal(manifest.setup_url, 'https://revera.northstar.example.com/repositories');
+    assert.equal(manifest.setup_on_update, true);
+    await context.close();
+  }
+}
+
 try {
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkExternalReviews();
+  if (!process.argv.includes('--screenshots-only')) {
+    await checkConnectedAccounts();
+    await checkManifestChoices();
+  }
+  if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAgentHandoff();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkDashboardQol();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAuditSettings();
   if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();

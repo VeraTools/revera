@@ -218,6 +218,7 @@ pub fn parse_findings_checked(args: &serde_json::Value) -> ParsedFindings {
                 f.rationale = None;
                 f.counterevidence_checked.clear();
                 f.validated_fix = None;
+                f.suggestion = None;
                 out.findings.push(f)
             }
             Err(e) => {

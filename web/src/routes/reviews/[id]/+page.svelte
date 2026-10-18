@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { live } from '#lib/events';
   import { ArrowLeft, ArrowUpRight, RotateCcw, Square, ChevronDown, Copy } from '@lucide/svelte';
@@ -10,11 +11,13 @@
   import ReviewModeField from '#lib/components/ReviewModeField.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
+  import ExternalBadge from '#lib/components/ExternalBadge.svelte';
   let detail = $state<JobDetail>();
   let log = $state('');
   const notice = createNotices();
   let busy = $state(false);
   let showLog = $state(false);
+  let showDiagnostics = $state(false);
   let generation = 0;
   let repository = $state<Repository>();
   let reviewMode = $state<ReviewMode | ''>('');
@@ -24,13 +27,7 @@
       ? Math.max(0, now - Date.parse(detail.job.started_at))
       : detail?.job.duration_ms,
   );
-  const split = $derived(
-    severitySplit({
-      high: detail?.findings.filter((finding) => finding.severity === 'high').length ?? 0,
-      medium: detail?.findings.filter((finding) => finding.severity === 'medium').length ?? 0,
-      low: detail?.findings.filter((finding) => finding.severity === 'low').length ?? 0,
-    }),
-  );
+  const split = $derived(severitySplit(detail?.counts ?? { high: 0, medium: 0, low: 0 }));
   const timingRows = $derived(
     [
       { label: 'Total', value: detail?.timing?.total_ms },
@@ -49,17 +46,6 @@
     ].filter((row) => row.value !== undefined && row.value !== null),
   );
   const integer = (value?: number) => (value ?? 0).toLocaleString('en');
-  function fileLink(file: string, line?: number) {
-    if (!detail?.job.pr_url || !detail.job.head_sha) return undefined;
-    try {
-      const url = new URL(detail.job.pr_url);
-      if (!['https:', 'http:'].includes(url.protocol)) return undefined;
-      const path = (value: string) => value.split('/').map(encodeURIComponent).join('/');
-      return `${url.origin}/${path(detail.job.repo)}/blob/${encodeURIComponent(detail.job.head_sha)}/${path(file)}${line ? `#L${line}` : ''}`;
-    } catch {
-      return undefined;
-    }
-  }
   $effect(() => {
     if (detail?.job.status !== 'running') return;
     now = Date.now();
@@ -87,12 +73,12 @@
   async function load(id: string) {
     const current = ++generation;
     try {
-      const result = await api.job(id);
+      const result = await api.job(id, showDiagnostics);
       if (current === generation) {
         if (detail?.job.id !== result.job.id) {
           repository = undefined;
           reviewMode = '';
-          void loadRepository(result.job.repo);
+          if (result.job.source !== 'external') void loadRepository(result.job.repo);
         }
         detail = result;
         notice.state.error = '';
@@ -105,8 +91,9 @@
     const id = page.params.id;
     if (id) {
       showLog = false;
+      showDiagnostics = false;
       log = '';
-      void load(id);
+      untrack(() => void load(id));
     }
   });
   $effect(() => {
@@ -145,6 +132,29 @@
       notice.failure('Could not copy the log. Select the text and copy it manually.');
     }
   }
+  async function copyInstructions(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      notice.success('Fix instructions copied.');
+    } catch {
+      notice.failure('Could not copy instructions. Download the .md file instead.');
+    }
+  }
+  function downloadInstructions() {
+    if (!detail) return;
+    const url = URL.createObjectURL(
+      new Blob([detail.instructions], { type: 'text/markdown;charset=utf-8' }),
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'revera-instructions.md';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function toggleDiagnostics() {
+    showDiagnostics = !showDiagnostics;
+    if (detail) await load(detail.job.id);
+  }
 </script>
 
 <svelte:head><title>Review details · Revera</title></svelte:head>
@@ -159,13 +169,27 @@
     <Status status={detail.job.status} />
     <h1>{detail.job.title || 'Repository index'}</h1>
     <div class="row-meta">
+      <ExternalBadge source={detail.job.source} />
       <span>{detail.job.repo}</span>{#if detail.job.pr}<span>·</span><span>#{detail.job.pr}</span
         >{/if}{#if detail.job.author}<span>·</span><span>Opened by {detail.job.author}</span>{/if}
     </div>
+    {#if detail.reviewed_head_sha}<p class="helper">
+        Reviewed SHA <code class="mono" title={detail.reviewed_head_sha}
+          >{detail.reviewed_head_sha.slice(0, 12)}</code
+        >
+        {#if detail.stale === true}<span class="stale-badge">Potentially stale</span>
+        {:else if detail.stale === null}<span> · Freshness unknown</span>{/if}
+      </p>{/if}
   </div>
   <div class="detail-layout">
     <div>
       <h2>Summary</h2>
+      {#if ['partial', 'failed', 'skipped', 'cancelled'].includes(detail.job.status)}
+        <p class="route-notes" role="note">
+          Review {detail.job.status}. This is not a clean result. {detail.job.reason ||
+            'The review did not complete.'}
+        </p>
+      {/if}
       {#if detail.summary_markdown}<div class="summary">
           {@html renderSummary(detail.summary_markdown)}
         </div>
@@ -192,33 +216,83 @@
       {/if}
       <div class="section-heading">
         <h2>
-          Findings <span class="muted" style="font-weight: 400; margin-left: 8px; font-size: 12px"
+          Accepted findings <span
+            class="muted"
+            style="font-weight: 400; margin-left: 8px; font-size: 12px"
             >{detail.findings.length}{#if split}{' · '}{split}{/if}</span
           >
         </h2>
         <span class="helper">Checked independently</span>
       </div>
+      {#if detail.job.status === 'complete' && detail.findings.length}
+        <div class="actions handoff-actions">
+          <button class="button small" onclick={() => copyInstructions(detail!.instructions)}
+            ><Copy size={13} />Copy fix instructions</button
+          >
+          <button class="button small" onclick={downloadInstructions}>Download .md</button>
+        </div>
+      {/if}
       {#each detail.findings as finding, index}<details class="finding" open={index === 0}>
           <summary
             ><div class="finding-top">
               <Status status={finding.severity} />
-              {#if fileLink(finding.file, finding.line)}<a
+              {#if finding.html_url}<a
                   class="mono text-link"
-                  href={fileLink(finding.file, finding.line)}
+                  href={finding.html_url}
                   target="_blank"
-                  rel="noreferrer">{finding.file}{finding.line ? `:${finding.line}` : ''}</a
+                  rel="noreferrer"
+                  >{finding.file}{finding.start_line
+                    ? `:${finding.start_line}${finding.end_line > finding.start_line ? `-${finding.end_line}` : ''}`
+                    : ''}</a
                 >
-              {:else}<span class="mono">{finding.file}{finding.line ? `:${finding.line}` : ''}</span
+              {:else}<span class="mono"
+                  >{finding.file}{finding.start_line ? `:${finding.start_line}` : ''}</span
                 >{/if}
             </div>
             <div class="finding-title">{finding.title}<ChevronDown size={15} /></div></summary
           >
-          <p class="finding-body">{finding.body || 'No additional detail.'}</p>
+          <p class="helper">Finding <code>{finding.id}</code></p>
+          <p class="finding-body">{finding.claim || 'No additional detail.'}</p>
+          {#if finding.trigger}<p class="finding-body">
+              <strong>Trigger:</strong>
+              {finding.trigger}
+            </p>{/if}
+          {#if finding.impact}<p class="finding-body">
+              <strong>Impact:</strong>
+              {finding.impact}
+            </p>{/if}
+          {#if finding.supporting_evidence.length}<h3 class="helper">Supporting evidence</h3>
+            <ul class="finding-evidence">
+              {#each finding.supporting_evidence as evidence}<li>
+                  <code>{evidence.path}:{evidence.start_line}-{evidence.end_line}</code> — {evidence.note}
+                </li>{/each}
+            </ul>
+          {/if}
+          {#if finding.validated_fix}<p class="helper">{finding.validated_fix_label}</p>
+            <p class="finding-body">{finding.validated_fix}</p>{/if}
+          {#if finding.suggestion}<p class="helper">Exact suggested change — not a tested patch</p>
+            <pre class="finding-replacement">{finding.suggestion.replacement}</pre>{/if}
+          <button class="button small" onclick={() => copyInstructions(finding.prompt)}
+            ><Copy size={13} />Copy prompt</button
+          >
         </details>{:else}<p class="muted" style="font-size: 13px; padding: 20px 0">
           {['queued', 'running'].includes(detail.job.status)
             ? 'Findings will appear after validation.'
-            : 'No findings were reported.'}
+            : detail.job.status === 'complete'
+              ? 'No accepted findings in this review.'
+              : 'No accepted findings. The review did not complete; this is not a clean result.'}
         </p>{/each}
+      <section class="section" aria-label="Diagnostics">
+        <button class="button small" aria-expanded={showDiagnostics} onclick={toggleDiagnostics}
+          >{showDiagnostics ? 'Hide diagnostics' : 'Show diagnostics'}</button
+        >
+        {#if showDiagnostics}<h3 class="helper">Not validated — not reported as defects</h3>
+          {#each detail.diagnostics || [] as finding}<article class="diagnostic">
+              <p><strong>{finding.status}</strong> · {finding.title}</p>
+              <p class="helper">{finding.file}:{finding.start_line || '—'} — {finding.rationale}</p>
+            </article>{:else}<p class="helper">No diagnostics.</p>{/each}
+        {/if}
+      </section>
       {#if detail.ledger?.by_route?.length}<section class="section" aria-labelledby="usage-title">
           <div class="section-heading"><h2 id="usage-title">Model usage</h2></div>
           <div class="table-scroll">
@@ -360,7 +434,9 @@
           <ReviewModeField
             id="rerun-mode"
             bind:value={reviewMode}
-            defaultMode={repository?.mode || 'standard'}
+            defaultMode={detail.job.source === 'external'
+              ? detail.job.mode
+              : repository?.mode || 'standard'}
           />
           {#if repository?.trigger === 'off'}<p class="helper">
               Reviews are off for this repository.
@@ -384,7 +460,8 @@
             onclick={() => void action('cancel')}>Cancel job<Square size={13} /></button
           >{:else if detail.job.kind === 'review'}<button
             class="button"
-            disabled={busy || !repository || repository.trigger === 'off'}
+            disabled={busy ||
+              (detail.job.source !== 'external' && (!repository || repository.trigger === 'off'))}
             onclick={() => void action('rerun')}>Re-run review<RotateCcw size={14} /></button
           >{/if}
       </div>
@@ -393,6 +470,34 @@
 {:else if !notice.state.error}<div class="loading" role="status">Loading review…</div>{/if}
 
 <style>
+  .detail-layout > div {
+    min-width: 0;
+  }
+  .handoff-actions {
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .stale-badge {
+    margin-left: 8px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+  }
+  .finding-evidence,
+  .diagnostic {
+    font-size: 12px;
+    line-height: 1.8;
+    margin: 12px 0;
+    overflow-wrap: anywhere;
+  }
+  .finding-replacement {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+  }
   .summary {
     margin: 16px 0 28px;
     font-size: 13px;

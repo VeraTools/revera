@@ -176,6 +176,7 @@ async fn first_config_save_reconciles_setup_skips_without_backfilling_other_prs(
     for initial_inventory in [false, true] {
         let mock = MockServer::start().await;
         let (data, server) = without_models(&mock).await;
+        mock_registration(&mock).await;
         server.setup.lock().await.app = Some(test_app());
         let (cookie, csrf) = administrator(&server).await;
         let current = job("new-head");

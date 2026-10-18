@@ -36,17 +36,50 @@ export interface JobSummary {
   pr_url?: string;
 }
 export interface Finding {
+  id: string;
+  defect_key: string;
   severity: 'high' | 'medium' | 'low';
   file: string;
-  line?: number;
+  start_line: number;
+  end_line: number;
   title: string;
-  body?: string;
-  status: string;
+  claim: string;
+  trigger: string;
+  impact: string;
+  supporting_evidence: { path: string; start_line: number; end_line: number; note: string }[];
+  validation_status: 'accepted';
+  validated_fix?: string | null;
+  validated_fix_label: string;
+  suggestion?: {
+    start_line: number;
+    end_line: number;
+    original: string;
+    replacement: string;
+  } | null;
+  reviewed_head_sha: string;
+  reviewed_base_sha: string;
+  html_url?: string | null;
+  prompt: string;
+}
+export interface Diagnostic {
+  id: string;
+  status: 'rejected' | 'uncertain' | 'unvalidated';
+  severity: string;
+  title: string;
+  file: string;
+  start_line?: number;
+  rationale: string;
 }
 export interface JobDetail {
   job: JobSummary;
   summary_markdown?: string;
   findings: Finding[];
+  counts: JobSummary['findings'];
+  instructions: string;
+  reviewed_head_sha?: string;
+  reviewed_base_sha?: string;
+  stale: boolean | null;
+  diagnostics?: Diagnostic[];
   strategy?: string;
   stats?: {
     candidates?: number;
@@ -194,4 +227,25 @@ export interface TestResult {
 export interface JobsPage {
   jobs: JobSummary[];
   next?: string;
+}
+
+// Connected GitHub accounts (installation does not imply deployment approval).
+export interface Installation {
+  id: number | null;
+  account: { login: string; id: number | null; type: string };
+  repository_selection: string | null;
+  suspended: boolean;
+  permissions: Record<string, string>;
+  html_url: string;
+  status: 'allowed' | 'awaiting_approval' | 'permission_update' | 'suspended' | 'not_installed';
+  allowed: boolean;
+  repo_count?: number;
+  error?: string;
+}
+export interface Installations {
+  installations: Installation[];
+  install_url: string;
+  settings_url: string;
+  advanced_url: string;
+  requested_permissions: Record<string, string>;
 }

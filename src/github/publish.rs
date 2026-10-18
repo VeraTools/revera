@@ -111,10 +111,10 @@ fn open_section(state: &ReviewState) -> String {
         s.push_str("\n### Open findings\n\n");
         for f in &open {
             s.push_str(&format!(
-                "- `{}`:{} — {}{}\n",
-                f.file,
+                "- {}:{} — {}{}\n",
+                crate::report::public_code_span(&f.file),
                 f.start_line,
-                f.title,
+                crate::report::public_line(&f.title),
                 if f.posted { " (posted)" } else { "" }
             ));
         }
@@ -149,6 +149,7 @@ pub async fn publish(
         let reason = format!("head moved {} -> {}", report.head, live_head);
         pubn.skipped_reason = Some(reason.clone());
         report.status = crate::report::RunStatus::Partial;
+        crate::report::mark_incomplete_summary(report);
         state.mark_publication_incomplete();
         report.reason = Some(match report.reason.take() {
             Some(r) => format!("{r}; {reason}"),
@@ -271,8 +272,13 @@ pub async fn publish(
     let mut body = format!("{summary_marker}\n{}", report.plan.summary_markdown);
     body.push_str(&open_section(&staged));
     let comments = api.list_issue_comments(owner, repo, ev.number).await?;
-    let managed =
-        find_managed(&comments, summary_marker, state.summary_comment_id, &me).map(|c| c.id);
+    let managed_comment = find_managed(&comments, summary_marker, state.summary_comment_id, &me);
+    if let Some(block) = managed_comment.and_then(|c| fix_status_block(&c.body)) {
+        body.push('\n');
+        body.push_str(block);
+        body.push('\n');
+    }
+    let managed = managed_comment.map(|c| c.id);
     // the state blob records which comment is ours so the next run can
     // find it even if someone copies the marker
     let comment = match managed {
@@ -305,6 +311,10 @@ pub async fn publish(
                 staged.summary_comment_id = Some(created.id);
                 let mut b2 = format!("{summary_marker}\n{}", report.plan.summary_markdown);
                 b2.push_str(&open_section(&staged));
+                if let Some(block) = fix_status_block(&created.body) {
+                    b2.push('\n');
+                    b2.push_str(block);
+                }
                 b2.push('\n');
                 b2.push_str(&encode_state(&staged.public_projection(publish_uncertain)));
                 // best effort: the id is a convenience, ownership is also
@@ -321,6 +331,15 @@ pub async fn publish(
 
     report.publication = pubn.clone();
     Ok(pubn)
+}
+
+/// Server-owned block: preserve verbatim immediately before the state blob.
+pub fn fix_status_block(body: &str) -> Option<&str> {
+    const START: &str = "<!-- revera:fix-status -->";
+    const END: &str = "<!-- /revera:fix-status -->";
+    let start = body.find(START)?;
+    let end = start + START.len() + body[start + START.len()..].find(END)? + END.len();
+    Some(&body[start..end])
 }
 
 /// After an ambiguous review POST: true when every comment we tried to post

@@ -653,6 +653,7 @@ fn old_settings_migrate_to_mentions_and_explicit_off_without_legacy_output_field
             serde_json::from_str::<Value>(&saved).unwrap(),
             json!({
                 "admins": [], "allowed_owners": [], "default_trigger": expected,
+                "owner_accounts": {}, "revoked_owners": [], "revoked_owner_ids": [],
                 "default_mode": "standard", "review_drafts": false,
                 "skip_authors": ["dependabot[bot]", "renovate[bot]"],
                 "repos": {"owner/off": {"trigger": "off", "mode": null},
@@ -913,6 +914,7 @@ async fn overview_exposes_subscription_and_organization_app_settings_url() {
                 "events": if subscribed { vec!["issue_comment"] } else { vec!["pull_request"] },
                 "owner": {"type": "Organization"}
             })))
+            .with_priority(1)
             .expect(1)
             .mount(&mock)
             .await;
