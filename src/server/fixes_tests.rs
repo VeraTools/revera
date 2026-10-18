@@ -1404,14 +1404,48 @@ async fn incomplete_followups_never_claim_verified_or_resolved() {
         }
         let r = entry(&s, &id).await.unwrap().record;
         assert_eq!(r.state, "published", "{case}");
-        assert_eq!(
-            r.reason.as_deref(),
-            Some("follow-up review incomplete"),
-            "{case}"
-        );
+        let expected = if matches!(case, "partial" | "failed") {
+            "follow-up review did not complete"
+        } else {
+            "follow-up review incomplete"
+        };
+        assert_eq!(r.reason.as_deref(), Some(expected), "{case}");
         let v = r.verify_review.unwrap();
-        assert_eq!(v["note"], "follow-up review incomplete", "{case}");
+        assert_eq!(v["note"], expected, "{case}");
         assert_eq!(v["resolved"], json!([]), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn queued_followup_terminal_transitions_notify_controller_without_a_runner() {
+    for case in ["cancel", "supersede", "remove", "failed", "skipped"] {
+        let (_data, s, _mock, job) = fixture().await;
+        let (id, follow) = linked_followup(&s, &job, Delivery::SameBranch).await;
+        s.enqueue(follow.clone()).await;
+        match case {
+            "cancel" => s.close(follow.key()).await.unwrap(),
+            "supersede" => {
+                let mut replacement = Job::new(follow.repo.clone(), follow.kind.clone(), "manual");
+                replacement.id = "replacement".into();
+                s.enqueue(replacement).await;
+            }
+            "remove" => s.remove_repo(follow.repo.clone()).await.unwrap(),
+            state => s
+                .transition(&follow, state, Some("fixture termination".into()))
+                .await
+                .unwrap(),
+        }
+        let r = entry(&s, &id).await.unwrap().record;
+        assert_eq!(r.state, "published", "{case}");
+        let v = r.verify_review.unwrap();
+        assert_eq!(v["note"], "follow-up review did not complete", "{case}");
+        assert_eq!(v["resolved"], json!([]));
+        assert_eq!(
+            Store::load(&s.settings.data_dir).unwrap().entries[&id]
+                .record
+                .state,
+            "published"
+        );
     }
 }
 

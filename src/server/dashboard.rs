@@ -820,7 +820,13 @@ impl Server {
         }
         persist_job(&self.settings.data_dir, &summary)?;
         dashboard.jobs.insert(summary.id.clone(), summary.clone());
-        let _ = self.events.send(("job", serde_json::to_value(summary)?));
+        let _ = self.events.send(("job", serde_json::to_value(&summary)?));
+        drop(dashboard);
+        // Queue-only terminal paths never reach the runner. This callback is
+        // local persistence only: callers may still hold the queue lock.
+        if summary.kind == "review" && summary.terminal() && summary.status != "complete" {
+            super::fixes::review_terminated(self, &summary).await?;
+        }
         Ok(())
     }
     pub async fn transition(&self, job: &Job, status: &str, reason: Option<String>) -> Result<()> {

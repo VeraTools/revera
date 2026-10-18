@@ -2299,6 +2299,37 @@ async fn followup(s: &Server, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn review_terminated(s: &Server, summary: &dashboard::JobSummary) -> Result<()> {
+    let mut store = s.fixes.lock().await;
+    let ids: Vec<_> = store
+        .entries
+        .values()
+        .filter(|e| {
+            e.record.state == "verifying"
+                && e.record
+                    .verify_review
+                    .as_ref()
+                    .is_some_and(|v| v["job"] == summary.id)
+        })
+        .map(|e| e.record.id.clone())
+        .collect();
+    for id in ids {
+        let mut e = store.entries[&id].clone();
+        e.record.transition(
+            "published",
+            Some("follow-up review did not complete"),
+            "revera",
+            "failed",
+        );
+        if let Some(v) = e.record.verify_review.as_mut() {
+            v["state"] = json!(summary.status);
+            v["note"] = json!("follow-up review did not complete");
+            v["resolved"] = json!([]);
+        }
+        save(s, &mut store, e).await?;
+    }
+    Ok(())
+}
 pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
     let summary = s
         .dashboard
@@ -2323,6 +2354,11 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
         .cloned()
         .collect();
     for e in linked {
+        let incomplete = if summary.status == "complete" {
+            "follow-up review incomplete"
+        } else {
+            "follow-up review did not complete"
+        };
         let report = (|| -> Result<Value> {
             let root = dashboard::job_dir(&s.settings.data_dir, &job.id)?;
             let path = root.join("report.json");
@@ -2342,15 +2378,11 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
             completed_followup(s, &e, job, &report).await?
         } else {
             change(s, &e.record.id, |e| {
-                e.record.transition(
-                    "published",
-                    Some("follow-up review incomplete"),
-                    "revera",
-                    "failed",
-                );
+                e.record
+                    .transition("published", Some(incomplete), "revera", "failed");
                 if let Some(v) = e.record.verify_review.as_mut() {
                     v["state"] = json!(summary.status);
-                    v["note"] = json!("follow-up review incomplete");
+                    v["note"] = json!(incomplete);
                 }
             })
             .await?
