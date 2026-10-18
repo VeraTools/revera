@@ -497,13 +497,22 @@ async fn review_stale(server: &Server, summary: &JobSummary, head: &str) -> Opti
 }
 
 fn report_findings(report: &Value) -> Vec<crate::findings::Finding> {
-    crate::findings::accepted_values(report).filter_map(|raw| {
-        let mut value = json!({"defect_key": "", "severity": "low", "file": "", "start_line": 0, "title": "", "claim": ""});
-        value.as_object_mut()?.extend(raw.as_object()?.clone());
-        // Investigator proposals are never part of the handoff.
-        value.as_object_mut()?.remove("suggested_fix");
-        serde_json::from_value(value).ok()
-    }).collect()
+    crate::findings::accepted_values(report)
+        .filter_map(|raw| {
+            let mut value = json!({
+                "defect_key": "",
+                "severity": "low",
+                "file": "",
+                "start_line": 0,
+                "title": "",
+                "claim": "",
+            });
+            value.as_object_mut()?.extend(raw.as_object()?.clone());
+            // Investigator proposals are never part of the handoff.
+            value.as_object_mut()?.remove("suggested_fix");
+            serde_json::from_value(value).ok()
+        })
+        .collect()
 }
 
 fn line_link(repo: &str, head: &str, file: &str, start: u32, end: u32) -> Option<String> {
@@ -545,6 +554,74 @@ fn line_link(repo: &str, head: &str, file: &str, start: u32, end: u32) -> Option
     Some(url.to_string())
 }
 
+fn evidence_detail(evidence: &crate::findings::Evidence) -> Value {
+    json!({
+        "path": crate::handoff::text(&evidence.path, 1000),
+        "start_line": evidence.start_line,
+        "end_line": evidence.end_line,
+        "note": crate::handoff::text(&evidence.note, 2000),
+    })
+}
+
+fn finding_detail(
+    finding: &crate::findings::Finding,
+    context: &crate::handoff::Context<'_>,
+) -> Value {
+    let id = finding.id();
+    let end = finding.end_line.unwrap_or(finding.start_line);
+    let evidence: Vec<_> = finding
+        .supporting_evidence
+        .iter()
+        .take(10)
+        .map(evidence_detail)
+        .collect();
+    let suggestion = finding
+        .suggestion
+        .as_ref()
+        .filter(|s| s.replacement.len() <= 2000 && s.original.len() <= 40000);
+    let prompt = crate::handoff::build(context, std::slice::from_ref(finding), Some(&id));
+    json!({
+        "id": id,
+        "defect_key": crate::handoff::text(&finding.defect_key, 500),
+        "severity": finding.severity,
+        "title": crate::handoff::text(&finding.title, 500),
+        "claim": crate::handoff::text(&finding.claim, 4000),
+        "file": crate::handoff::text(&finding.file, 1000),
+        "start_line": finding.start_line,
+        "end_line": end,
+        "trigger": crate::handoff::text(&finding.trigger, 2000),
+        "impact": crate::handoff::text(&finding.impact, 2000),
+        "supporting_evidence": evidence,
+        "validation_status": "accepted",
+        "validated_fix": finding.validated_fix.as_ref().map(|fix| crate::handoff::text(fix, 4000)),
+        "validated_fix_label": "Validator's suggested remedy — not a tested patch",
+        "suggestion": suggestion,
+        "reviewed_head_sha": crate::handoff::text(context.head, 80),
+        "reviewed_base_sha": crate::handoff::text(context.base, 80),
+        "html_url": line_link(context.repo, context.head, &finding.file, finding.start_line, end),
+        "prompt": prompt,
+    })
+}
+
+fn diagnostic_detail(finding: &Value) -> Value {
+    let file = finding["file"].as_str().unwrap_or("");
+    let defect_key = finding["defect_key"].as_str().unwrap_or("");
+    let status = match finding["validation_status"].as_str() {
+        Some("rejected") => "rejected",
+        Some("uncertain") => "uncertain",
+        _ => "unvalidated",
+    };
+    json!({
+        "id": crate::findings::finding_id(file, defect_key),
+        "status": status,
+        "severity": crate::handoff::text(finding["severity"].as_str().unwrap_or(""), 32),
+        "title": crate::handoff::text(finding["title"].as_str().unwrap_or(""), 500),
+        "file": crate::handoff::text(file, 1000),
+        "start_line": finding["start_line"],
+        "rationale": crate::handoff::text(finding["rationale"].as_str().unwrap_or(""), 2000),
+    })
+}
+
 async fn review_detail(
     server: &Server,
     id: &str,
@@ -557,7 +634,13 @@ async fn review_detail(
     let report: Option<Value> = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let mut value = json!({"job": summary, "findings": [], "counts": crate::findings::AcceptedCounts::default(), "stale": null, "instructions": ""});
+    let mut value = json!({
+        "job": summary,
+        "findings": [],
+        "counts": crate::findings::AcceptedCounts::default(),
+        "stale": null,
+        "instructions": "",
+    });
     if let Some(report) = report {
         let head = report["head"].as_str().unwrap_or("");
         let base = report["base"].as_str().unwrap_or("");
@@ -592,27 +675,22 @@ async fn review_detail(
                 64 * 1024
             ));
         }
-        value["findings"] = json!(accepted.iter().map(|f| {
-            let end = f.end_line.unwrap_or(f.start_line);
-            json!({"id": f.id(), "defect_key": crate::handoff::text(&f.defect_key, 500), "severity": f.severity,
-                "title": crate::handoff::text(&f.title, 500), "claim": crate::handoff::text(&f.claim, 4000),
-                "file": crate::handoff::text(&f.file, 1000), "start_line": f.start_line, "end_line": end,
-                "trigger": crate::handoff::text(&f.trigger, 2000), "impact": crate::handoff::text(&f.impact, 2000),
-                "supporting_evidence": f.supporting_evidence.iter().take(10).map(|e| json!({"path": crate::handoff::text(&e.path, 1000), "start_line": e.start_line, "end_line": e.end_line, "note": crate::handoff::text(&e.note, 2000)})).collect::<Vec<_>>(),
-                "validation_status": "accepted", "validated_fix": f.validated_fix.as_ref().map(|fix| crate::handoff::text(fix, 4000)),
-                "validated_fix_label": "Validator's suggested remedy — not a tested patch", "suggestion": f.suggestion.as_ref().filter(|s| s.replacement.len() <= 2000 && s.original.len() <= 40000),
-                "reviewed_head_sha": crate::handoff::text(head, 80), "reviewed_base_sha": crate::handoff::text(base, 80),
-                "html_url": line_link(&summary.repo, head, &f.file, f.start_line, end),
-                "prompt": crate::handoff::build(&context, std::slice::from_ref(f), Some(&f.id()))})
-        }).collect::<Vec<_>>());
+        value["findings"] = json!(
+            accepted
+                .iter()
+                .map(|f| finding_detail(f, &context))
+                .collect::<Vec<_>>()
+        );
         if diagnostics {
-            value["diagnostics"] = json!(report["findings"].as_array().into_iter().flatten()
-                .filter(|f| f["validation_status"].as_str() != Some("accepted"))
-                .map(|f| json!({"id": crate::findings::finding_id(f["file"].as_str().unwrap_or(""), f["defect_key"].as_str().unwrap_or("")),
-                    "status": match f["validation_status"].as_str() { Some("rejected") => "rejected", Some("uncertain") => "uncertain", _ => "unvalidated" },
-                    "severity": crate::handoff::text(f["severity"].as_str().unwrap_or(""), 32), "title": crate::handoff::text(f["title"].as_str().unwrap_or(""), 500),
-                    "file": crate::handoff::text(f["file"].as_str().unwrap_or(""), 1000), "start_line": f["start_line"],
-                    "rationale": crate::handoff::text(f["rationale"].as_str().unwrap_or(""), 2000)})).collect::<Vec<_>>());
+            value["diagnostics"] = json!(
+                report["findings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|f| f["validation_status"].as_str() != Some("accepted"))
+                    .map(diagnostic_detail)
+                    .collect::<Vec<_>>()
+            );
         }
         for field in ["timing", "ledger", "stats", "strategy"] {
             if !report[field].is_null() {

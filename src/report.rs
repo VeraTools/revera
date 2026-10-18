@@ -167,29 +167,81 @@ pub fn surfaced_ids(report: &RunReport) -> Vec<String> {
         .collect()
 }
 
-/// Strip `<!--` so model text cannot forge our HTML markers.
-fn sanitize(t: &str) -> String {
-    let t = crate::redact::text(t);
+/// Neutralize active links, mentions and HTML without damaging inline code or
+/// multiline prose. Markers are neutralized even inside code: Rust reads them
+/// without a Markdown parser when recovering publication state.
+pub fn public_text(t: &str) -> String {
+    let t = crate::redact::text(t).replace("<!--", "<!\u{200b}--");
     let mut out = String::new();
-    for c in t.chars() {
+    let mut rest = t.as_str();
+    while !rest.is_empty() {
+        // Preserve Markdown escapes, but do not let them undo neutralization.
+        if rest.starts_with('\\') && rest.as_bytes().get(1).is_some_and(u8::is_ascii_punctuation) {
+            match rest.as_bytes()[1] {
+                b'@' => out.push_str("@\u{200b}"),
+                b'<' => out.push_str("&lt;"),
+                _ => out.push_str(&rest[..2]),
+            }
+            rest = &rest[2..];
+            continue;
+        }
+        if rest.starts_with('`') {
+            let run = rest.bytes().take_while(|&c| c == b'`').count();
+            let line = rest.split('\n').next().unwrap();
+            let mut end = run;
+            let mut matched = false;
+            while let Some(next) = line[end..].find('`') {
+                let start = end + next;
+                end = start + line[start..].bytes().take_while(|&c| c == b'`').count();
+                if end - start == run {
+                    out.push_str(&rest[..end]);
+                    rest = &rest[end..];
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                // Unmatched delimiters are literal text, not a safe code span.
+                out.push_str(&rest[..run]);
+                rest = &rest[run..];
+            }
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
         match c {
             '@' => out.push_str("@\u{200b}"),
             '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '`' => out.push_str("&#96;"),
-            '\\' | '[' | ']' | '(' | ')' | '*' | '_' | '!' | '#' => {
+            '[' | ']' => {
                 out.push('\\');
                 out.push(c);
             }
-            '\n' | '\r' => out.push(' '),
             _ => out.push(c),
         }
+        rest = &rest[c.len_utf8()..];
     }
     out
 }
 
-pub fn public_text(t: &str) -> String {
-    sanitize(t)
+pub fn public_line(t: &str) -> String {
+    public_text(&t.replace(['\r', '\n'], " "))
+}
+
+/// A file path is literal code, not prose. A longer delimiter (and padding
+/// when backticks touch its edges) keeps arbitrary paths inside the span.
+pub fn public_code_span(t: &str) -> String {
+    let t = crate::redact::text(t)
+        .replace(['\r', '\n'], " ")
+        .replace("<!--", "<!\u{200b}--");
+    let fence = "`".repeat(backtick_run(&t) + 1);
+    let padding = if t.starts_with('`')
+        || t.ends_with('`')
+        || (t.starts_with(' ') && t.ends_with(' ') && !t.trim().is_empty())
+    {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{padding}{t}{padding}{fence}")
 }
 
 /// Longest run of backticks in `s`.
@@ -201,20 +253,20 @@ pub fn finding_body(f: &Finding) -> String {
     let mut b = format!(
         "**[{}] {}**\n\n{}\n",
         f.severity,
-        sanitize(&f.title),
-        sanitize(&f.claim)
+        public_line(&f.title),
+        public_text(&f.claim)
     );
     if !f.trigger.is_empty() {
-        b.push_str(&format!("\nTrigger: {}\n", sanitize(&f.trigger)));
+        b.push_str(&format!("\nTrigger: {}\n", public_text(&f.trigger)));
     }
     if !f.impact.is_empty() {
-        b.push_str(&format!("Impact: {}\n", sanitize(&f.impact)));
+        b.push_str(&format!("Impact: {}\n", public_text(&f.impact)));
     }
     if !f.supporting_evidence.is_empty() {
         let ev: Vec<String> = f
             .supporting_evidence
             .iter()
-            .map(|e| format!("{}:{}", sanitize(&e.path), e.start_line))
+            .map(|e| format!("{}:{}", public_code_span(&e.path), e.start_line))
             .collect();
         b.push_str(&format!("Evidence: {}\n", ev.join(", ")));
     }
@@ -292,56 +344,48 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
     // headline: status first, so a partial run with zero findings can never
     // read like a clean pass
     let status_word = format!("{status:?}").to_lowercase();
-    let count = if inp.reused {
-        format!(
-            "reused completed review of identical content; {} carried forward",
-            plural(inp.carried_open, "open finding")
-        )
+    let mut count = if counts.total == 0 {
+        "no accepted findings".to_string()
     } else {
-        let mut c = if accepted.is_empty() {
-            "no new findings".to_string()
-        } else {
-            let high = counts.high;
-            let med = counts.medium;
-            let low = counts.low;
-            let mut parts = vec![];
-            if high > 0 {
-                parts.push(format!("{high} high"));
-            }
-            if med > 0 {
-                parts.push(format!("{med} medium"));
-            }
-            if low > 0 {
-                parts.push(format!("{low} low"));
-            }
-            format!(
-                "{} ({})",
-                plural(accepted.len(), "new finding"),
-                parts.join(", ")
-            )
-        };
+        let mut parts = vec![];
+        if counts.high > 0 {
+            parts.push(format!("{} high", counts.high));
+        }
+        if counts.medium > 0 {
+            parts.push(format!("{} medium", counts.medium));
+        }
+        if counts.low > 0 {
+            parts.push(format!("{} low", counts.low));
+        }
+        format!(
+            "{} ({})",
+            plural(counts.total as usize, "accepted finding"),
+            parts.join(", ")
+        )
+    };
+    if inp.reused {
+        count.push_str(&format!(
+            "; reused completed review of identical content; {} carried forward",
+            plural(inp.carried_open, "open finding")
+        ));
+    } else {
         if uncertain > 0 {
-            c.push_str(&format!(", {} unconfirmed", uncertain));
+            count.push_str(&format!(", {} unconfirmed", uncertain));
         }
         if inp.carried_open > 0 {
-            c.push_str(&format!(
+            count.push_str(&format!(
                 ", {} still open from earlier runs",
                 inp.carried_open
             ));
         }
-        c
-    };
+    }
     s.push_str(&format!("**Status: {status_word}** \u{2014} {count}\n"));
-    s.push_str(&format!(
-        "\nAccepted findings in this review: **{}**.\n",
-        counts.total
-    ));
     if status != RunStatus::Complete {
         s.push_str(&format!(
             "\n> Review incomplete{}. Absence of findings is not evidence the change is clean; rerun or inspect the parts listed as not checked.\n",
             inp.reason
                 .filter(|r| !r.is_empty())
-                .map(|r| format!(": {}", sanitize(r)))
+                .map(|r| format!(": {}", public_line(r)))
                 .unwrap_or_default()
         ));
     }
@@ -360,11 +404,11 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
     if !accepted.is_empty() {
         for f in &accepted {
             s.push_str(&format!(
-                "- **[{}]** `{}`:{} — {}\n",
+                "- **[{}]** {}:{} — {}\n",
                 f.severity,
-                sanitize(&f.file),
+                public_code_span(&f.file),
                 f.start_line,
-                sanitize(&f.title)
+                public_line(&f.title)
             ));
         }
     }
@@ -375,11 +419,11 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
             .filter(|f| f.validation_status == Some(ValidationStatus::Uncertain))
         {
             s.push_str(&format!(
-                "- _(unconfirmed)_ **[{}]** `{}`:{} — {}\n",
+                "- _(unconfirmed)_ **[{}]** {}:{} — {}\n",
                 f.severity,
-                sanitize(&f.file),
+                public_code_span(&f.file),
                 f.start_line,
-                sanitize(&f.title)
+                public_line(&f.title)
             ));
         }
     }
@@ -387,34 +431,34 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         s.push_str("\n### Findings outside the diff\n\n");
         for f in inp.outside_diff {
             s.push_str(&format!(
-                "- **[{}]** `{}`:{} — {}\n",
+                "- **[{}]** {}:{} — {}\n",
                 f.severity,
-                sanitize(&f.file),
+                public_code_span(&f.file),
                 f.start_line,
-                sanitize(&f.title)
+                public_line(&f.title)
             ));
         }
     }
     if !inp.reopened.is_empty() {
         s.push_str("\n### Reopened (previously resolved, reintroduced)\n\n");
         for t in inp.reopened {
-            s.push_str(&format!("- {}\n", sanitize(t)));
+            s.push_str(&format!("- {}\n", public_line(t)));
         }
     }
     if !inp.resolved.is_empty() {
         s.push_str("\n### Resolved since last review\n\n");
         for t in inp.resolved {
-            s.push_str(&format!("- {}\n", sanitize(t)));
+            s.push_str(&format!("- {}\n", public_line(t)));
         }
     }
     if !inp.reused {
-        s.push_str(&format!("\nChecked: {}\n", sanitize(inp.coverage)));
+        s.push_str(&format!("\nChecked: {}\n", public_text(inp.coverage)));
         for g in inp.coverage_gaps {
-            s.push_str(&format!("- not checked: {}\n", sanitize(g)));
+            s.push_str(&format!("- not checked: {}\n", public_line(g)));
         }
     }
     if let Some(n) = inp.note {
-        s.push_str(&format!("\n_{}_\n", sanitize(n)));
+        s.push_str(&format!("\n_{}_\n", public_text(n)));
     }
     if let Some(t) = inp.timing {
         s.push('\n');

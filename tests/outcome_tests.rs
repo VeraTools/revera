@@ -669,7 +669,10 @@ fn summary_presentation_complete_clean() {
         ..Default::default()
     });
     assert!(s.starts_with("## Revera review\n\n**Status: complete**"));
-    assert!(s.contains("no new findings"));
+    assert_eq!(
+        s.lines().nth(2),
+        Some("**Status: complete** — no accepted findings")
+    );
     assert!(!s.contains("incomplete"));
 }
 

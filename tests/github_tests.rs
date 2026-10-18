@@ -120,6 +120,15 @@ fn handoff_and_fix_offer_require_completed_accepted_findings() {
             eligible
         );
         if eligible {
+            let opening = concat!(
+                "<details>",
+                "<",
+                "summary>",
+                "Fix with your coding agent",
+                "<",
+                "/summary>"
+            );
+            assert!(report.plan.summary_markdown.contains(opening));
             assert!(report.plan.summary_markdown.contains("```text"));
             assert!(
                 report
@@ -127,6 +136,16 @@ fn handoff_and_fix_offer_require_completed_accepted_findings() {
                     .summary_markdown
                     .contains("https://review.example/reviews/1")
             );
+            revera::report::mark_incomplete_summary(&mut report);
+            assert!(!report.plan.summary_markdown.contains(opening));
+            assert!(
+                !report
+                    .plan
+                    .summary_markdown
+                    .contains("Fix with your coding agent")
+            );
+            assert!(!report.plan.summary_markdown.contains("Fix with Revera"));
+            assert!(report.plan.summary_markdown.contains("Review incomplete"));
         }
     }
     let mut report = report_with_findings(vec![], vec![finding("src/x.rs")]);
@@ -150,7 +169,13 @@ async fn managed_summary_preserves_server_fix_status_verbatim_before_state() {
     let server = MockServer::start().await;
     mount_no_review_comments(&server).await;
     let block = "<!-- revera:fix-status -->\n**Fix ready** [Preview](https://review.example/fixes/1)\n<!-- /revera:fix-status -->";
-    let state = ReviewState::default();
+    let mut state = ReviewState::default();
+    let mut open = finding("src/my_*file.rs");
+    open.title = "Use `checked_add`\nnot [x](https://evil) <a href=evil> @someone".into();
+    state.upsert(&open, FindingState::Open);
+    let mut ticks = finding("src/a`b``c.rs");
+    ticks.title = "Preserve the literal path".into();
+    state.upsert(&ticks, FindingState::Open);
     let old = format!(
         "<!-- revera-summary -->\nOld summary\n{block}\n{}",
         encode_state(&state)
@@ -198,6 +223,8 @@ async fn managed_summary_preserves_server_fix_status_verbatim_before_state() {
     assert_eq!(revera::github::publish::fix_status_block(body), Some(block));
     assert_eq!(body.matches("<!-- revera:fix-status -->").count(), 1);
     assert!(body.find(block).unwrap() < body.find("<!-- revera-state:").unwrap());
+    assert!(body.contains("- `src/my_*file.rs`:3 — Use `checked_add` not \\[x\\](https://evil) &lt;a href=evil> @\u{200b}someone\n"));
+    assert!(body.contains("- ```src/a`b``c.rs```:3 — Preserve the literal path\n"));
 }
 
 async fn mount_no_review_comments(server: &MockServer) {

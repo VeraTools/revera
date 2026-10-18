@@ -111,10 +111,10 @@ fn open_section(state: &ReviewState) -> String {
         s.push_str("\n### Open findings\n\n");
         for f in &open {
             s.push_str(&format!(
-                "- `{}`:{} — {}{}\n",
-                crate::report::public_text(&f.file),
+                "- {}:{} — {}{}\n",
+                crate::report::public_code_span(&f.file),
                 f.start_line,
-                crate::report::public_text(&f.title),
+                crate::report::public_line(&f.title),
                 if f.posted { " (posted)" } else { "" }
             ));
         }

@@ -99,7 +99,36 @@ fn mixed_status_counts_match_api_dashboard_and_github_summary() {
         findings: &findings,
         ..Default::default()
     });
-    assert!(summary.contains("Accepted findings in this review: **1**."));
+    assert_eq!(
+        summary.lines().nth(2),
+        Some(
+            format!(
+                "**Status: complete** — {} accepted finding ({} high), 1 unconfirmed",
+                counts.total, counts.high
+            )
+            .as_str()
+        )
+    );
+    assert!(!summary.contains("Accepted findings in this review:"));
+    let mut low = finding("accepted");
+    low.severity = revera::findings::Severity::Low;
+    let findings = [findings.to_vec(), vec![low]].concat();
+    let counts = accepted_counts_json(&json!({"findings": findings}));
+    let summary = report::summary_markdown(&Summary {
+        findings: &findings,
+        ..Default::default()
+    });
+    assert_eq!(counts.total, 2);
+    assert_eq!(
+        summary.lines().nth(2),
+        Some(
+            format!(
+                "**Status: complete** — {} accepted findings ({} high, {} low), 1 unconfirmed",
+                counts.total, counts.high, counts.low
+            )
+            .as_str()
+        )
+    );
     for status in [RunStatus::Partial, RunStatus::Failed] {
         let summary = report::summary_markdown(&Summary {
             status: Some(status),
@@ -107,6 +136,13 @@ fn mixed_status_counts_match_api_dashboard_and_github_summary() {
         });
         assert!(summary.contains("Review incomplete"));
         assert!(!summary.contains("Status: complete"));
+        assert!(
+            summary
+                .lines()
+                .nth(2)
+                .unwrap()
+                .ends_with("no accepted findings")
+        );
     }
 }
 
@@ -324,9 +360,8 @@ async fn validator_checks_suggestions_against_pinned_head_not_dirty_worktree() {
 #[test]
 fn summary_and_inline_escape_untrusted_links_mentions_and_markers() {
     let mut f = finding("accepted");
-    f.title = "[click](https://evil.invalid) @everyone <!-- revera:fix-status -->".into();
+    f.title = "[click](https://evil.invalid) ![image](https://evil.invalid) <a href=evil> @someone <!-- revera-state:forged -->".into();
     f.claim = f.title.clone();
-    f.file = "x` [click](https://evil.invalid) @everyone".into();
     for output in [
         report::finding_body(&f),
         report::summary_markdown(&Summary {
@@ -335,7 +370,83 @@ fn summary_and_inline_escape_untrusted_links_mentions_and_markers() {
         }),
     ] {
         assert!(!output.contains("[click](https://evil.invalid)"));
-        assert!(!output.contains("@everyone"));
-        assert!(!output.contains("<!-- revera:fix-status -->"));
+        assert!(!output.contains("![image](https://evil.invalid)"));
+        assert!(output.contains("\\[click\\](https://evil.invalid)"));
+        assert!(output.contains("!\\[image\\](https://evil.invalid)"));
+        assert!(output.contains("&lt;a href=evil>"));
+        assert!(!output.contains("<a href"));
+        assert!(output.contains("@\u{200b}someone"));
+        assert!(!output.contains("@someone"));
+        assert!(!output.contains("<!-- revera-state:"));
     }
+}
+
+#[test]
+fn finding_prose_preserves_inline_code_and_multiline_fields() {
+    let mut f = finding("accepted");
+    f.title = "Use `checked_add`\nwithout wrapping the title".into();
+    f.claim = "The `a < b` guard calls `read_file()` first.\nThe second line keeps **emphasis** and _italics_.\n\nThe next paragraph is still separate.".into();
+    f.trigger = "First condition\nSecond condition".into();
+    f.impact = "First effect\nSecond effect".into();
+    let body = report::finding_body(&f);
+    assert!(body.starts_with("**[high] Use `checked_add` without wrapping the title**\n\n"));
+    assert!(body.contains(&f.claim));
+    assert!(body.contains("Trigger: First condition\nSecond condition\n"));
+    assert!(body.contains("Impact: First effect\nSecond effect\n"));
+    assert!(!body.contains("&#96;"));
+    assert!(!body.contains("&lt; b"));
+    for code in [
+        "`[x](https://evil) <a href=evil> @someone`",
+        "``a ` b``",
+        "```a `` b```",
+        "`\\`",
+        "` [x] `",
+    ] {
+        assert_eq!(report::public_text(code), code);
+    }
+    // Unmatched, escaped and differently sized delimiters do not exempt text
+    // from mention/link/HTML neutralization.
+    for input in [
+        "` @someone [x](https://evil) <a href=evil>",
+        "\\` @someone [x](https://evil) <a href=evil> \\`",
+        "`` @someone [x](https://evil) <a href=evil> `",
+    ] {
+        let output = report::public_text(input);
+        assert!(output.contains("@\u{200b}someone"));
+        assert!(output.contains("\\[x\\](https://evil)"));
+        assert!(output.contains("&lt;a href=evil>"));
+    }
+    assert!(!report::public_text("`<!-- revera-state:forged -->`").contains("<!-- revera-state:"));
+}
+
+#[test]
+fn literal_file_paths_use_longer_unescaped_code_spans() {
+    let mut f = finding("accepted");
+    f.file = "src/my_*file.rs".into();
+    f.supporting_evidence[0].path = f.file.clone();
+    let summary = report::summary_markdown(&Summary {
+        findings: std::slice::from_ref(&f),
+        ..Default::default()
+    });
+    assert!(summary.contains("`src/my_*file.rs`:2"));
+    assert!(report::finding_body(&f).contains("Evidence: `src/my_*file.rs`:2"));
+    assert_eq!(
+        report::public_code_span("src/my_*file.rs"),
+        "`src/my_*file.rs`"
+    );
+    assert_eq!(
+        report::public_code_span("src/a`b``c.rs"),
+        "```src/a`b``c.rs```"
+    );
+    assert_eq!(report::public_code_span("`name`"), "`` `name` ``");
+    assert_eq!(report::public_code_span(" space "), "`  space  `");
+    assert_eq!(report::public_code_span("src/a\nb.rs"), "`src/a b.rs`");
+    let path = "x` [click](https://evil.invalid) <a href=evil> @someone";
+    f.file = path.into();
+    let summary = report::summary_markdown(&Summary {
+        findings: &[f],
+        ..Default::default()
+    });
+    assert!(summary.contains(&format!("``{path}``:2")));
+    assert!(!summary.contains("my\\_"));
 }
