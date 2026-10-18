@@ -165,7 +165,7 @@ impl Policy {
     fn effective(&self, o: Option<&Override>) -> Self {
         let mut p = self.clone();
         if let Some(o) = o {
-            p.execution &= o.execution.unwrap_or(true);
+            p.execution = o.execution.unwrap_or(p.execution);
             p.trigger = o.trigger.unwrap_or(p.trigger);
             p.delivery = o.delivery.unwrap_or(p.delivery);
             if o.delivery.is_some_and(|d| d != Delivery::SameBranch) {

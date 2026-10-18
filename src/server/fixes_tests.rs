@@ -336,6 +336,90 @@ async fn settings_persist_and_repo_yaml_cannot_enable_execution() {
     bad.limits.concurrent = 0;
     assert!(bad.validate().is_err());
 }
+
+#[tokio::test]
+async fn repo_execution_override_precedes_global_for_plan_request_and_confirmation() {
+    for global in [false, true] {
+        for execution in [None, Some(false), Some(true)] {
+            let (_data, s, _mock, job) = fixture().await;
+            s.dashboard.lock().await.preferences.fixes.execution = global;
+            let (status, _) = call(
+                s.clone(),
+                reqwest::Method::PUT,
+                "/api/repos/owner/repo/fixes",
+                Some(json!({"execution":execution})),
+                true,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let enabled = execution.unwrap_or(global);
+            assert_eq!(policy(&s, "owner/repo").await.execution, enabled);
+            let (_, plan) = call(
+                s.clone(),
+                reqwest::Method::GET,
+                &format!("/api/fixes/plan?job={job}"),
+                None,
+                false,
+            )
+            .await;
+            assert_eq!(plan["execution_enabled"], enabled);
+            assert_eq!(plan["consent_required"], !enabled);
+            let r = request(&s, "dashboard", "admin", &job, None, false)
+                .await
+                .unwrap();
+            assert_eq!(r.state, "awaiting_confirmation");
+            assert_eq!(r.consent.as_deref(), enabled.then_some("persistent"));
+            let (status, body) = call(
+                s.clone(),
+                reqwest::Method::POST,
+                &format!("/api/fixes/{}/confirm", r.id),
+                Some(json!({"once":false})),
+                true,
+            )
+            .await;
+            assert_eq!(
+                status,
+                if enabled {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CONFLICT
+                },
+                "global={global}, repo={execution:?}: {body}"
+            );
+            if enabled {
+                assert_eq!(body["fix"]["consent"], "persistent");
+                assert_eq!(body["fix"]["state"], "queued");
+            } else {
+                assert_eq!(
+                    entry(&s, &r.id).await.unwrap().record.state,
+                    "awaiting_confirmation"
+                );
+                let (status, body) = call(
+                    s.clone(),
+                    reqwest::Method::POST,
+                    &format!("/api/fixes/{}/confirm", r.id),
+                    Some(json!({"once":true})),
+                    true,
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(body["fix"]["consent"], "once");
+            }
+            let loaded =
+                dashboard::Dashboard::load(&s.settings.data_dir, &reconcile::Seen::default())
+                    .unwrap();
+            assert_eq!(loaded.preferences.fixes.execution, global);
+            assert_eq!(
+                loaded.preferences.repos["owner/repo"]
+                    .fixes
+                    .as_ref()
+                    .unwrap()
+                    .execution,
+                execution
+            );
+        }
+    }
+}
 #[tokio::test]
 async fn incomplete_reviews_and_unknown_findings_never_create_requests() {
     let (_data, s, _mock, id) = fixture().await;
