@@ -898,6 +898,7 @@ async fn overview_exposes_subscription_and_organization_app_settings_url() {
                 "events": if subscribed { vec!["issue_comment"] } else { vec!["pull_request"] },
                 "owner": {"type": "Organization"}
             })))
+            .with_priority(1)
             .expect(1)
             .mount(&mock)
             .await;

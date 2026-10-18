@@ -67,6 +67,16 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/jobs/{id}/rerun", post(rerun))
         .route("/api/jobs/{id}/cancel", post(cancel))
         .route("/api/repos", get(repos).patch(bulk_repo_settings))
+        // Connected accounts (separate from repository preferences).
+        .route("/api/installations", get(installations))
+        .route(
+            "/api/installations/reconcile",
+            post(reconcile_installations),
+        )
+        .route(
+            "/api/owners/{login}",
+            put(approve_owner).delete(revoke_owner),
+        )
         .route(
             "/api/repos/{owner}/{repo}",
             axum::routing::patch(repo_settings),
@@ -164,6 +174,10 @@ struct ManifestQuery {
     name: String,
     #[serde(default)]
     org: String,
+    #[serde(default)]
+    public: bool,
+    #[serde(default)]
+    publish_fixes: bool,
 }
 async fn manifest(
     State(server): State<Arc<Server>>,
@@ -212,7 +226,85 @@ async fn manifest(
     }
     url.query_pairs_mut().append_pair("state", token);
     Ok(output(json!({"post_url": url.as_str(),
-        "manifest": app::manifest(&server.settings.public_url, &name)})))
+        "manifest": app::manifest(&server.settings.public_url, &name, query.public, query.publish_fixes)})))
+}
+
+// Connected-account endpoints. All routes use the existing admin + CSRF guard.
+async fn installations(State(server): State<Arc<Server>>) -> ApiResult {
+    let _guard = server.reconcile_lock.lock().await;
+    let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
+    Ok(output(json!(
+        super::reconcile::discover(&server, &app).await?
+    )))
+}
+
+async fn reconcile_installations(State(server): State<Arc<Server>>) -> ApiResult {
+    super::reconcile::once(&server).await?;
+    Ok(output(json!(*server.installations.lock().await)))
+}
+
+async fn change_owner(server: &Server, login: String, approve: bool) -> ApiResult {
+    if login.is_empty()
+        || !login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(invalid(anyhow::anyhow!("invalid GitHub account login")));
+    }
+    let _guard = server.reconcile_lock.lock().await;
+    let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
+    // Approval must refer to a real installation, not caller-supplied identity.
+    // Revocation remains available during a GitHub outage using pinned identity.
+    let discovered = super::reconcile::discover(server, &app).await;
+    let accounts = match discovered {
+        Ok(accounts) => accounts,
+        Err(error) if approve => return Err(error.into()),
+        Err(_) => server.installations.lock().await.clone(),
+    };
+    let account = accounts
+        .installations
+        .iter()
+        .find(|i| i.account.login.eq_ignore_ascii_case(&login));
+    if approve && account.is_none_or(|i| i.id.is_none()) {
+        return Err(missing());
+    }
+    let id = account.and_then(|i| i.account.id);
+    {
+        let mut dashboard = server.dashboard.lock().await;
+        let mut preferences = dashboard.preferences.clone();
+        let id = id.or_else(|| {
+            preferences
+                .owner_accounts
+                .get(&login.to_ascii_lowercase())
+                .copied()
+        });
+        if approve {
+            preferences.approve_owner(&login, id);
+        } else {
+            preferences.revoke_owner(&login, id);
+        }
+        dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
+        dashboard.preferences = preferences;
+    }
+    if !approve {
+        super::reconcile::evict_unapproved(server, &app).await?;
+    }
+    // Policy is already durable and revocation already applied even if GitHub
+    // fails. Report that separately so a retry never silently re-authorizes it.
+    let warning = super::reconcile::once_locked(server)
+        .await
+        .err()
+        .map(|error| {
+            crate::redact::diagnostic(&format!("Owner policy saved; refresh failed: {error:#}"))
+        });
+    Ok(output(json!({"ok": true, "warning": warning})))
+}
+
+async fn approve_owner(State(server): State<Arc<Server>>, Path(login): Path<String>) -> ApiResult {
+    change_owner(&server, login, true).await
+}
+async fn revoke_owner(State(server): State<Arc<Server>>, Path(login): Path<String>) -> ApiResult {
+    change_owner(&server, login, false).await
 }
 
 fn ordered(dashboard: &Dashboard) -> Vec<JobSummary> {
@@ -894,7 +986,7 @@ async fn config(State(server): State<Arc<Server>>, Json(input): Json<Yaml>) -> A
 }
 async fn server_settings(
     State(server): State<Arc<Server>>,
-    Json(input): Json<Preferences>,
+    Json(mut input): Json<Preferences>,
 ) -> ApiResult {
     if input.admins.iter().any(|name| name.trim().is_empty()) {
         return Err(Error(
@@ -906,9 +998,64 @@ async fn server_settings(
         let value = json!({"id": 1, "full_name": name});
         Repo::parse(&value, 1).map_err(invalid)?;
     }
+    let _guard = server.reconcile_lock.lock().await;
     let mut dashboard = server.dashboard.lock().await;
+    // Older dashboard clients do not know identity/revocation fields. A normal
+    // settings save must not erase them and implicitly re-authorize an owner.
+    let previous = dashboard.preferences.clone();
+    input.owner_accounts = previous.owner_accounts.clone();
+    input.revoked_owners = previous.revoked_owners.clone();
+    input.revoked_owner_ids = previous.revoked_owner_ids.clone();
+    let removed: Vec<_> = previous
+        .allowed_owners
+        .iter()
+        .filter(|owner| {
+            !input
+                .allowed_owners
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(owner))
+        })
+        .cloned()
+        .collect();
+    let added: Vec<_> = input
+        .allowed_owners
+        .iter()
+        .filter(|owner| {
+            !previous
+                .allowed_owners
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(owner))
+        })
+        .cloned()
+        .collect();
+    for owner in &removed {
+        input.revoke_owner(
+            owner,
+            previous
+                .owner_accounts
+                .get(&owner.to_ascii_lowercase())
+                .copied(),
+        );
+    }
+    for owner in &added {
+        input.approve_owner(
+            owner,
+            previous
+                .owner_accounts
+                .get(&owner.to_ascii_lowercase())
+                .copied(),
+        );
+    }
     dashboard::write_preferences(&server.settings.data_dir, &input)?;
     dashboard.preferences = input;
+    drop(dashboard);
+    if !removed.is_empty() || !added.is_empty() {
+        let app = server.setup.lock().await.app.clone();
+        if let Some(app) = app {
+            super::reconcile::evict_unapproved(&server, &app).await?;
+        }
+        server.request_reconcile();
+    }
     let _ = server.events.send(("repos", json!({})));
     Ok(output(json!({"ok": true})))
 }

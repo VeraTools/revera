@@ -276,7 +276,7 @@ fn jwt_signs_and_verifies_generated_key() {
 
 #[test]
 fn manifest_fields() {
-    let v = app::manifest("https://review.example.com", "revera-example");
+    let v = app::manifest("https://review.example.com", "revera-example", false, false);
     assert_eq!(v["name"], "revera-example");
     assert_eq!(v["public"], false);
     assert_eq!(v["url"], "https://github.com/VeraTools/revera");
@@ -288,7 +288,8 @@ fn manifest_fields() {
         v["redirect_url"],
         "https://review.example.com/setup/callback"
     );
-    assert_eq!(v["setup_url"], "https://review.example.com/");
+    assert_eq!(v["setup_url"], "https://review.example.com/repositories");
+    assert_eq!(v["setup_on_update"], true);
     assert_eq!(
         v["default_permissions"],
         json!({"contents": "read", "pull_requests": "write", "checks": "write",
@@ -345,6 +346,7 @@ async fn server(
     configured: bool,
 ) -> (tempfile::TempDir, Arc<Server>) {
     let data = tempfile::tempdir().unwrap();
+    mock_registration(mock).await;
     // These pre-mention fixtures exercise automatic-review behavior explicitly.
     dashboard::write_preferences(
         data.path(),
@@ -373,6 +375,15 @@ async fn server(
     .await
     .unwrap();
     (data, server)
+}
+
+async fn mock_registration(mock: &MockServer) {
+    Mock::given(method("GET")).and(path("/app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "owner": {"login": "owner", "type": "User"},
+            "permissions": {"contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read", "issues": "read"},
+            "events": ["pull_request", "push", "check_run", "issue_comment"]
+        }))).mount(mock).await;
 }
 
 async fn http(server: Arc<Server>) -> (String, tokio::task::JoinHandle<()>) {
@@ -405,7 +416,7 @@ async fn operator_paths_and_proxy_url_prefix_are_supported() {
         "https://review.example.com/revera"
     );
     assert_eq!(
-        app::manifest(&server.settings.public_url, "revera")["hook_attributes"]["url"],
+        app::manifest(&server.settings.public_url, "revera", false, false)["hook_attributes"]["url"],
         "https://review.example.com/revera/webhook"
     );
 }
@@ -1974,3 +1985,6 @@ mod mention_tests;
 
 #[path = "dashboard_qol_tests.rs"]
 mod dashboard_qol_tests;
+
+#[path = "installation_tests.rs"]
+mod installation_tests;
