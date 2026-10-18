@@ -1299,6 +1299,77 @@ async fn sandbox_retry_rechecks_live_requester_permission_before_more_paid_work(
     assert!(r.reason.unwrap().contains("not authorized"));
 }
 
+fn completion(name: &str, args: Value) -> Value {
+    json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"fixture-call","type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":10}})
+}
+
+#[tokio::test]
+async fn sandbox_overall_deadline_cancels_generation_tests_and_cumulative_retries() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    assert!(seconds_left(tokio::time::Instant::now() - Duration::from_millis(1)).is_err());
+    for stage in ["generation", "tests", "retries"] {
+        let (_data, s, mock, job) = fixture().await;
+        let (_, head) = worker_checkout(&s, &job).await;
+        {
+            let mut d = s.dashboard.lock().await;
+            d.preferences.fixes.limits.seconds = 1;
+            d.preferences.fixes.limits.attempts = 3;
+            d.preferences.fixes.test_command = vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                "import time; time.sleep(30)".into(),
+            ];
+        }
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+            .mount(&mock)
+            .await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(move|request:&wiremock::Request|{
+                let body:Value=serde_json::from_slice(&request.body).unwrap();
+                assert!(!body["tools"].as_array().unwrap().iter().any(|t|t["function"]["name"]=="submit_fix_verdicts"),"verifier started after deadline in {stage}");
+                let n=count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                let (name,args)=if stage!="retries" && n==0 { ("write_file",json!({"path":"bug.py","content":"def add(a,b):\n    return a+b\n"})) }
+                    else { ("submit_fix",json!({"summary":"Fixture","per_finding":[{"id":finding().id(),"disposition":if stage=="retries" {"not_fixed"} else {"fixed"},"note":"fixture"}]})) };
+                let response=ResponseTemplate::new(200).set_body_json(completion(name,args));
+                if stage=="generation" { response.set_delay(Duration::from_secs(3)) }
+                else if stage=="retries" { response.set_delay(Duration::from_millis(600)) }
+                else {response}
+            }).mount(&mock).await;
+        let r = request(&s, "dashboard", "admin", &job, None, true)
+            .await
+            .unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let started = std::time::Instant::now();
+        run(s.clone(), &r.id, rx).await;
+        assert!(started.elapsed() < Duration::from_secs(2), "{stage}");
+        let r = entry(&s, &r.id).await.unwrap().record;
+        assert_eq!(r.state, "failed", "{stage}: {}", json!(r));
+        assert_eq!(r.reason.as_deref(), Some("time limit reached"), "{stage}");
+        assert!(
+            r.verification.is_none() && r.tests.is_none() && r.delivery.is_none(),
+            "{stage}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            if stage == "generation" { 1 } else { 2 },
+            "{stage}"
+        );
+        assert_eq!(r.attempt, if stage == "retries" { 2 } else { 1 });
+        assert!(
+            !dir(&s.settings.data_dir, &r.id)
+                .unwrap()
+                .join("workspace")
+                .exists()
+        );
+    }
+}
+
 #[tokio::test]
 async fn after_review_requires_persistent_execution_and_never_loops_from_followups() {
     let (_data, s, _mock, id) = fixture().await;

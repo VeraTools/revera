@@ -1800,10 +1800,39 @@ async fn authorize_execution(s: &Server, id: &str, pr: &Value) -> Result<()> {
     }
 }
 async fn generate(s: &Server, id: &str) -> Result<()> {
+    let started = tokio::time::Instant::now();
     let e = entry(s, id).await?;
     if e.record.state != "queued" {
         return Ok(());
     }
+    let current = policy(s, &e.record.repo).await;
+    let seconds = e.context.policy.limits.seconds.min(current.limits.seconds);
+    let deadline = started + Duration::from_secs(seconds);
+    tokio::time::timeout_at(deadline, generate_until(s, id, e, current, deadline))
+        .await
+        .map_err(|_| anyhow::anyhow!("time limit reached"))?
+}
+fn time_left(deadline: tokio::time::Instant) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        bail!("time limit reached");
+    }
+    Ok(remaining)
+}
+fn seconds_left(deadline: tokio::time::Instant) -> Result<u64> {
+    let remaining = time_left(deadline)?;
+    // Model budgets use whole seconds; the enclosing deadline still cancels
+    // them at the exact remaining duration, including fractional seconds.
+    Ok(remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0))
+}
+async fn generate_until(
+    s: &Server,
+    id: &str,
+    e: Entry,
+    current: Policy,
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    time_left(deadline)?;
     let (job, _) = review(s, &e.record.review_job)
         .await
         .map_err(|e| anyhow::anyhow!(e.1))?;
@@ -1827,7 +1856,6 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         .await?;
         return Ok(());
     }
-    let current = policy(s, &e.record.repo).await;
     authorize_execution(s, id, &pr).await?;
     if e.record.consent.is_none()
         || (e.record.consent.as_deref() == Some("persistent") && !current.execution)
@@ -1886,10 +1914,10 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         .parent()
         .context("target directory")?
         .join("revera");
+    time_left(deadline)?;
     let git = checkout(s, &e).await?;
     let root = dir(&s.settings.data_dir, id)?;
     let work = crate::fsutil::ensure_dir(&root, FsPath::new("workspace"))?;
-    let started = std::time::Instant::now();
     let used = e
         .record
         .usage
@@ -1902,7 +1930,8 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         .saturating_sub(used.min(u32::MAX as u64) as u32);
     let mut feedback = e.context.note.clone();
     for attempt in (e.record.attempt + 1)..=p.limits.attempts {
-        if remaining < 2 || started.elapsed().as_secs() >= p.limits.seconds {
+        time_left(deadline)?;
+        if remaining < 2 {
             break;
         }
         let (_, pr) = live(s, &job).await?;
@@ -1921,17 +1950,14 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         if r.state != "generating" {
             return Ok(());
         }
+        time_left(deadline)?;
         let ws = fix::workspace::prepare(
             &git,
             &e.record.head_sha,
             &work.join(format!("attempt-{attempt}")),
         )
         .await?;
-        let seconds = p
-            .limits
-            .seconds
-            .saturating_sub(started.elapsed().as_secs())
-            .max(1);
+        let seconds = seconds_left(deadline)?;
         let mut req = fix::Request {
             head: e.record.head_sha.clone(),
             findings: e.context.findings.clone(),
@@ -1966,8 +1992,11 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         };
         remaining = remaining.saturating_sub(generated.ledger.requests.min(u32::MAX as u64) as u32);
         change(s,id,|e|{let submission=generated.submission.as_ref();e.record.generation=Some(json!({"stopped":generated.stopped,"summary":submission.map(|s|s.summary.as_str()).unwrap_or(""),"per_finding":submission.map(|s|s.per_finding.clone()).unwrap_or_default()}));add_usage(&mut e.record.usage,&generated.ledger);e.record.transition("validating",None,"revera","generated");}).await?;
+        time_left(deadline)?;
         let patch = ws.diff().await?;
+        time_left(deadline)?;
         let policy_report = fix::policy::check(&patch, &patch_policy(&p));
+        time_left(deadline)?;
         let mut errors = messages(&policy_report.errors);
         if patch.files.is_empty() {
             errors.push("no changes".into());
@@ -1987,6 +2016,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         }
         let meta = json!({"files":patch.files.iter().map(|f|json!({"path":f.path,"status":f.status,"additions":f.additions,"deletions":f.deletions})).collect::<Vec<_>>(),"bytes":patch.unified.len(),"warnings":messages(&policy_report.warnings),"errors":errors});
         change(s, id, |e| e.record.patch = Some(meta)).await?;
+        time_left(deadline)?;
         if safe && policy_report.allowed() && !patch.files.is_empty() {
             crate::fsutil::write_atomic_in(&root, "patch.diff", patch.unified.as_bytes())?;
             crate::fsutil::write_atomic_in(&root, "patch.json", &serde_json::to_vec(&patch)?)?;
@@ -2001,11 +2031,8 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
         }
         if errors.is_empty() {
             let mut profile = fix::sandbox::Profile::default();
-            profile.limits.wall = Duration::from_secs(
-                p.test_timeout_seconds
-                    .min(p.limits.seconds.saturating_sub(started.elapsed().as_secs()))
-                    .max(1),
-            );
+            profile.limits.wall =
+                Duration::from_secs(p.test_timeout_seconds).min(time_left(deadline)?);
             let tests = fix::tests::run_copy(
                 &profile,
                 &p.test_command,
@@ -2013,6 +2040,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
                 &work.join(format!("tests-{attempt}")),
             )
             .await?;
+            time_left(deadline)?;
             let text = tests
                 .output
                 .as_ref()
@@ -2030,11 +2058,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
             req.patch = Some(patch);
             req.tests = Some(tests.clone());
             req.budget.model_requests = remaining;
-            req.budget.seconds = p
-                .limits
-                .seconds
-                .saturating_sub(started.elapsed().as_secs())
-                .max(1);
+            req.budget.seconds = seconds_left(deadline)?;
             if remaining == 0 {
                 errors.push("model request limit reached before independent verification".into());
             } else {
@@ -2052,6 +2076,7 @@ async fn generate(s: &Server, id: &str) -> Result<()> {
                 else {
                     bail!("incorrect verification stage");
                 };
+                time_left(deadline)?;
                 remaining =
                     remaining.saturating_sub(verified.ledger.requests.min(u32::MAX as u64) as u32);
                 let ready = verified.stopped == fix::Stop::Terminal
