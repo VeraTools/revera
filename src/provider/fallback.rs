@@ -44,10 +44,14 @@ impl FallbackClient {
                     });
                 }
             }
-            run.fallback_positions
-                .entry(role.to_string())
-                .or_default()
-                .clone()
+            // Roles such as delegated workers can hold different chains, so the
+            // sticky position belongs to the role and its exact route list.
+            let mut key = role.to_string();
+            for (model, client) in &routes {
+                let label = client.as_ref().map(|c| c.route_label());
+                key.push_str(&format!("\0{model}\0{}", label.unwrap_or_default()));
+            }
+            run.fallback_positions.entry(key).or_default().clone()
         };
         Self {
             routes,

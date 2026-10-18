@@ -877,6 +877,86 @@ async fn fallback_cross_protocol_mid_conversation_replays_full_transcript_and_sc
 }
 
 #[tokio::test]
+async fn fallback_position_is_per_chain_for_roles_with_several_routes() {
+    let a_primary = MockServer::start().await;
+    let a_backup = MockServer::start().await;
+    let b_primary = MockServer::start().await;
+    let b_backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&a_primary)
+        .await;
+    for (server, calls) in [(&a_backup, 1), (&b_primary, 1), (&b_backup, 0)] {
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+            .expect(calls)
+            .mount(server)
+            .await;
+    }
+    let ledger = LedgerHandle::new();
+    for route in [
+        fallback_route(&a_primary, &a_backup),
+        fallback_route(&b_primary, &b_backup),
+    ] {
+        routed_client(&route, &ledger, "workers", 10, 0)
+            .complete(&[ChatMessage::user("question")], &[])
+            .await
+            .unwrap();
+    }
+    for server in [&a_primary, &a_backup, &b_primary, &b_backup] {
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn fallback_to_gemini_signs_tool_calls_from_other_models() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices":[{"message":{"content":"Reading", "tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"src/lib.rs\"}"}}]}}]})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .with_priority(2)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"candidates":[{"content":{"parts":[{"text":"Continue"}]}}]})),
+        )
+        .expect(1)
+        .mount(&backup)
+        .await;
+    let mut route = fallback_route(&primary, &backup);
+    route.fallback[0].protocol = Protocol::Gemini;
+    route.fallback[0].model = "gemini-3-pro".into();
+    let ledger = LedgerHandle::new();
+    let c = routed_client(&route, &ledger, "investigator", 10, 0);
+    let mut transcript = vec![ChatMessage::user("Review user")];
+    transcript.push(c.complete(&transcript, &[]).await.unwrap().message);
+    transcript.push(ChatMessage::tool("call-1", "read_file", "FILE CONTENT"));
+    c.complete(&transcript, &[]).await.unwrap();
+    backup.verify().await;
+    let body: serde_json::Value = backup.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    let call = body["contents"][1]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part.get("functionCall").is_some())
+        .cloned()
+        .unwrap();
+    assert_eq!(call["functionCall"]["name"], "read_file");
+    assert_eq!(call["thoughtSignature"], "skip_thought_signature_validator");
+}
+
+#[tokio::test]
 async fn fallback_to_responses_sends_full_input_not_previous_response_id() {
     let primary = MockServer::start().await;
     let backup = MockServer::start().await;

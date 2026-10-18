@@ -137,9 +137,13 @@ fn contents(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
                     if let Some(c) = &m.content {
                         parts.push(json!({"text": c}));
                     }
+                    // Calls replayed from another model carry no signature. Gemini 3
+                    // rejects unsigned calls in the current turn; Google documents
+                    // this sentinel for history transferred from other models.
                     for t in &m.tool_calls {
                         parts.push(json!({
-                            "functionCall": {"name": t.name, "args": t.arguments}
+                            "functionCall": {"name": t.name, "args": t.arguments},
+                            "thoughtSignature": "skip_thought_signature_validator"
                         }));
                     }
                 }
