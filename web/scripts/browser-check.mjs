@@ -876,7 +876,57 @@ async function checkDashboardQol() {
   await settings.context.close();
 }
 
+// Lane B: URL review, private-source badge and explicit tracking chooser.
+async function checkExternalReviews() {
+  const { context, page } = await open('/reviews');
+  await page.getByRole('button', { name: 'Review PR URL', exact: true }).click();
+  await page.getByRole('dialog').getByRole('heading', { name: 'Review a public PR' }).waitFor();
+  await page.getByLabel('GitHub PR URL', { exact: true }).fill('https://evil.example/o/r/pull/1');
+  await page.getByRole('button', { name: 'Queue private review', exact: true }).click();
+  await page.getByText('Use https://github.com/OWNER/REPO/pull/NUMBER', { exact: true }).waitFor();
+  await page.getByLabel('GitHub PR URL', { exact: true }).fill('https://github.com/community/project/pull/7');
+  await choose(page, 'External review mode', 'Quick');
+  await page.getByRole('button', { name: 'Queue private review', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await page.getByText('External · private', { exact: true }).waitFor();
+  const job = await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return (await api.jobs()).jobs[0];
+  });
+  assert.equal(job.source, 'external');
+  assert.equal(job.publication, 'private');
+  assert.equal(job.mode, 'quick');
+  assert.equal(job.check_run_url, undefined);
+  await page.locator('summary').filter({ hasText: 'Track my external PRs' }).click();
+  await page.getByRole('button', { name: 'Find my open PRs', exact: true }).click();
+  const actions = page.locator('[aria-label="Choose action for community/small-project #1"]');
+  assert.equal(await actions.getByRole('button', { name: 'Track', exact: true }).isEnabled(), false);
+  await page.getByRole('link', { name: 'External PR settings', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Track my external PRs', exact: true }).check();
+  await page.getByLabel('Check tracked PRs every (minutes)', { exact: true }).fill('30');
+  await page.getByRole('button', { name: 'Save external settings', exact: true }).click();
+  await page.getByText('External settings saved.', { exact: true }).waitFor();
+  await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+  await page.locator('summary').filter({ hasText: 'Track my external PRs' }).click();
+  await page.getByRole('button', { name: 'Find my open PRs', exact: true }).click();
+  await actions.getByRole('button', { name: 'Track', exact: true }).click();
+  await page.getByRole('button', { name: 'Untrack', exact: true }).waitFor();
+  const ignored = page.locator('[aria-label="Choose action for community/small-project #2"]');
+  await ignored.getByRole('button', { name: 'Ignore', exact: true }).click();
+  await page.getByText('PR ignored in discovery.', { exact: true }).waitFor();
+  await page.locator('[aria-label="Choose action for community/small-project #3"]').getByRole('button', { name: 'Review once', exact: true }).click();
+  await page.getByText('Private review queued.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Untrack', exact: true }).click();
+  await page.getByText('stopped · untracked manually', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Find my open PRs', exact: true }).click();
+  assert.equal(await ignored.count(), 0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await context.close();
+}
+
 try {
+  if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkExternalReviews();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkDashboardQol();
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkAuditSettings();
   if (!process.argv.includes('--screenshots-only')) await checkThemeAndRetrievalLink();

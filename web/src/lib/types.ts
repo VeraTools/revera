@@ -11,6 +11,10 @@ export interface Session {
   setup: { stage: SetupStage; public_url: string; authorized: boolean };
 }
 export interface JobSummary {
+  source: 'installed' | 'external';
+  publication: 'github' | 'private';
+  repo_id?: number;
+  base_sha?: string;
   id: string;
   kind: 'review' | 'index';
   repo: string;
@@ -18,7 +22,7 @@ export interface JobSummary {
   title?: string;
   author?: string;
   head_sha?: string;
-  trigger: 'mention' | 'auto' | 'manual' | 'rerun' | 'webhook' | 'reconcile';
+  trigger: 'mention' | 'auto' | 'manual' | 'rerun' | 'webhook' | 'reconcile' | 'tracking';
   mode: ReviewMode;
   status: JobStatus;
   reason?: string;
@@ -135,6 +139,7 @@ export interface PullRequest {
   last_job?: JobSummary;
 }
 export interface ServerSettings {
+  external: ExternalPolicy;
   admins: string[];
   allowed_owners: string[];
   default_trigger: Trigger;
@@ -142,6 +147,33 @@ export interface ServerSettings {
   repos: Record<string, { trigger?: Trigger | null; mode?: ReviewMode | null }>;
   review_drafts: boolean;
   skip_authors: string[];
+}
+
+// External public PR reviews are always private; tracking is affirmative opt-in.
+export interface ExternalPolicy {
+  tracking_enabled: boolean;
+  poll_minutes: number;
+  max_tracked: number;
+  max_repo_size_kb: number;
+  reviews_per_hour: number;
+  concurrency: number;
+  retention_days: number;
+  max_checkouts: number;
+}
+export interface ExternalPR {
+  url: string;
+  repo: string;
+  number: number;
+  title: string;
+}
+export interface TrackedPR extends ExternalPR {
+  repo_id: number;
+  actor: string;
+  head_sha: string;
+  mode: ReviewMode;
+  status: 'tracking' | 'stopped';
+  reason: string | null;
+  next_poll: number;
 }
 export interface Secret {
   name: string;

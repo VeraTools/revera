@@ -1,5 +1,6 @@
 <script lang="ts">
   import SettingsEditor from '#lib/components/SettingsEditor.svelte';
+  import ExternalSettings from '#lib/components/ExternalSettings.svelte';
 </script>
 
 <svelte:head><title>Settings · Revera</title></svelte:head>
@@ -10,3 +11,4 @@
   </div>
 </div>
 <SettingsEditor />
+<ExternalSettings />

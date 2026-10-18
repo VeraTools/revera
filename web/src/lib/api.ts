@@ -11,6 +11,9 @@ import type {
   TestResult,
   Trigger,
   ReviewMode,
+  ExternalPolicy,
+  ExternalPR,
+  TrackedPR,
 } from './types';
 
 export const mockMode = import.meta.env.VITE_MOCK === '1';
@@ -63,6 +66,20 @@ export const api = {
       `/api/setup/manifest?${new URLSearchParams({ token, name, org })}`,
     ),
   overview: () => request<Overview>('/api/overview'),
+  // Public metadata reads and private reviews never use an installed publication path.
+  externalReview: (url: string, mode: ReviewMode) =>
+    request<{ id: string }>('/api/external/reviews', 'POST', { url, mode }),
+  externalDiscover: () =>
+    request<{ prs: ExternalPR[]; incomplete: boolean }>('/api/external/discover'),
+  externalTracking: () => request<{ tracked: TrackedPR[] }>('/api/external/tracking'),
+  externalTrack: (url: string, mode: ReviewMode) =>
+    request<void>('/api/external/tracking', 'POST', { url, mode }),
+  externalUntrack: (repoId: number, number: number) =>
+    request<void>(`/api/external/tracking/${repoId}/${number}`, 'DELETE'),
+  externalIgnore: (url: string) => request<void>('/api/external/ignore', 'POST', { url }),
+  externalPolicy: () => request<ExternalPolicy>('/api/settings/external'),
+  saveExternalPolicy: (policy: ExternalPolicy) =>
+    request<void>('/api/settings/external', 'PUT', policy),
   jobs: (filters: Record<string, string> = {}) =>
     request<JobsPage>(
       `/api/jobs?${new URLSearchParams({

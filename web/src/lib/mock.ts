@@ -9,6 +9,9 @@ import type {
   Role,
   ReviewMode,
   Trigger,
+  ExternalPolicy,
+  ExternalPR,
+  TrackedPR,
 } from './types';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
@@ -23,6 +26,8 @@ const titles = [
   'Add request tracing to the API',
 ];
 let jobs: JobSummary[] = titles.map((title, i) => ({
+  source: 'installed',
+  publication: 'github',
   id: `review-${107 - i}`,
   kind: 'review',
   repo: `northstar/${repoNames[i % 3]}`,
@@ -216,6 +221,16 @@ web_search:
 let settings: Settings = {
   yaml: import.meta.env.VITE_MOCK_EMPTY_YAML === '1' ? '' : initialYaml,
   server: {
+    external: {
+      tracking_enabled: false,
+      poll_minutes: 60,
+      max_tracked: 25,
+      max_repo_size_kb: 1048576,
+      reviews_per_hour: 20,
+      concurrency: 1,
+      retention_days: 7,
+      max_checkouts: 50,
+    },
     admins: ['alex'],
     allowed_owners: ['northstar'],
     default_trigger: 'mention',
@@ -286,6 +301,8 @@ function enqueue(
   const repository = repos.find((item) => item.full_name === repo);
   if (repository?.trigger === 'off') throw new Error('Reviews are off for this repository.');
   const job: JobSummary = {
+    source: 'installed',
+    publication: 'github',
     id: `job-${Date.now()}-${++jobSequence}`,
     repo,
     pr,
@@ -302,9 +319,105 @@ function enqueue(
   return job;
 }
 
+// Lane B: public discovery/selection and private jobs, isolated from installed mocks.
+const externalChoices: ExternalPR[] = [1, 2, 3].map((number) => ({
+  url: `https://github.com/community/small-project/pull/${number}`,
+  repo: 'community/small-project',
+  number,
+  title: `Public contribution ${number}`,
+}));
+let externalTracked: TrackedPR[] = [];
+const externalIgnored = new Set<string>();
+function externalTarget(url: string) {
+  const match =
+    /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(url);
+  if (!match || match[1].split('/').some((part) => part === '.' || part === '..'))
+    throw new Error('Use https://github.com/OWNER/REPO/pull/NUMBER');
+  return { repo: match[1], number: Number(match[2]) };
+}
+function externalEnqueue(url: string, mode: ReviewMode, trigger: JobSummary['trigger'] = 'manual') {
+  const target = externalTarget(url);
+  const job: JobSummary = {
+    id: `external-${++jobSequence}`,
+    source: 'external',
+    publication: 'private',
+    repo_id: 700,
+    ...target,
+    pr: target.number,
+    title: `Private review of ${target.repo} #${target.number}`,
+    kind: 'review',
+    trigger,
+    mode,
+    status: 'queued',
+    pr_url: url,
+    head_sha: 'a'.repeat(40),
+    base_sha: 'b'.repeat(40),
+    findings: { total: 0, high: 0, medium: 0, low: 0 },
+    queued_at: ago(0),
+  };
+  jobs = [job, ...jobs];
+  emit('job', job);
+  return job;
+}
+async function externalRequest(
+  path: string,
+  method: string,
+  data?: Record<string, unknown>,
+): Promise<{ handled: boolean; value?: unknown }> {
+  let value: unknown;
+  if (path === '/api/settings/external') {
+    if (method === 'PUT')
+      settings.server.external = structuredClone(data) as unknown as ExternalPolicy;
+    value = structuredClone(settings.server.external);
+  } else if (path === '/api/external/discover') {
+    value = {
+      prs: externalChoices.filter((pr) => !externalIgnored.has(pr.url)),
+      incomplete: false,
+    };
+  } else if (path === '/api/external/reviews') {
+    value = { id: externalEnqueue(String(data?.url), data?.mode as ReviewMode).id };
+  } else if (path === '/api/external/tracking') {
+    if (method === 'POST') {
+      if (!settings.server.external.tracking_enabled)
+        throw new Error('Enable Track my external PRs first.');
+      const url = String(data?.url);
+      const target = externalTarget(url);
+      externalTracked = externalTracked.filter((pr) => pr.url !== url);
+      externalTracked.push({
+        url,
+        ...target,
+        repo_id: 700,
+        actor: 'alex',
+        title: `Public contribution ${target.number}`,
+        mode: data?.mode as ReviewMode,
+        status: 'tracking',
+        reason: null,
+        head_sha: '',
+        next_poll: 0,
+      });
+    }
+    value = { tracked: structuredClone(externalTracked) };
+  } else if (path.startsWith('/api/external/tracking/')) {
+    const [, number] = path.slice('/api/external/tracking/'.length).split('/');
+    externalTracked = externalTracked.map((pr) =>
+      pr.number === Number(number)
+        ? { ...pr, status: 'stopped', reason: 'untracked manually' }
+        : pr,
+    );
+    value = { ok: true };
+  } else if (path === '/api/external/ignore') {
+    externalTarget(String(data?.url));
+    externalIgnored.add(String(data?.url));
+    value = { ok: true };
+  } else return { handled: false };
+  return { handled: true, value };
+}
+
 export async function mockRequest(path: string, method: string, body?: unknown): Promise<unknown> {
   const url = new URL(path, 'https://revera.example.com');
   const data = body as Record<string, unknown> | undefined;
+  const external = await externalRequest(url.pathname, method, data);
+  if (external.handled) return external.value;
   if (url.pathname === '/api/session')
     return {
       authenticated: signedIn,
@@ -410,6 +523,10 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         '',
       ].join('\n');
     if (jobMatch[2] === 'rerun') {
+      if (job.source === 'external')
+        return {
+          id: externalEnqueue(job.pr_url!, (data?.mode as ReviewMode) || job.mode, 'rerun').id,
+        };
       return { id: enqueue(job.repo, job.pr, data?.mode as ReviewMode | null, 'rerun').id };
     }
     if (jobMatch[2] === 'cancel') {
