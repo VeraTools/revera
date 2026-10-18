@@ -194,6 +194,16 @@ pub struct Audit {
     actor: String,
     action: String,
     detail: String,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_at: Option<String>,
+}
+fn one() -> u64 {
+    1
+}
+fn is_one(n: &u64) -> bool {
+    *n == 1
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
@@ -229,12 +239,37 @@ pub struct Record {
 impl Record {
     fn audit(&mut self, actor: &str, action: &str, detail: &str) {
         self.updated_at = chrono::Utc::now().to_rfc3339();
+        let detail = crate::handoff::text(detail, 4000);
+        if let Some(event) = self
+            .events
+            .iter_mut()
+            .rev()
+            .find(|e| e.actor == actor && e.action == action && e.detail == detail)
+        {
+            event.count = event.count.saturating_add(1);
+            event.last_at = Some(self.updated_at.clone());
+            return;
+        }
         self.events.push(Audit {
             at: self.updated_at.clone(),
             actor: actor.into(),
             action: action.into(),
-            detail: crate::handoff::text(detail, 4000),
+            detail,
+            count: 1,
+            last_at: None,
         });
+        self.bound_events();
+    }
+    fn bound_events(&mut self) {
+        while self.events.len() > 200 {
+            let requested = self.events.iter().position(|e| e.action == "requested");
+            let approved = self.events.iter().rposition(|e| e.action == "approved");
+            let published = self.events.iter().rposition(|e| e.action == "published");
+            let oldest = (0..self.events.len())
+                .find(|i| ![requested, approved, published].contains(&Some(*i)))
+                .unwrap();
+            self.events.remove(oldest);
+        }
     }
     fn transition(&mut self, state: &str, reason: Option<&str>, actor: &str, action: &str) {
         self.state = state.into();
@@ -316,6 +351,7 @@ pub struct Store {
     running: BTreeMap<String, watch::Sender<bool>>,
     admissions: Vec<Admission>,
     denials: Vec<Admission>,
+    attempts: Vec<Admission>,
 }
 fn dir(data: &FsPath, id: &str) -> Result<PathBuf> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -349,6 +385,7 @@ impl Store {
         let mut store = Self {
             admissions: dashboard::read_json(data, "fix-admissions.json")?,
             denials: dashboard::read_json(data, "fix-denials.json")?,
+            attempts: dashboard::read_json(data, "fix-attempts.json")?,
             ..Default::default()
         };
         store
@@ -379,6 +416,7 @@ impl Store {
             if entry.record.id != id {
                 bail!("fix record identity mismatch");
             }
+            entry.record.bound_events();
             match entry.record.state.as_str() {
                 "generating" | "validating" => entry.record.transition(
                     "failed",
@@ -715,6 +753,40 @@ async fn authorize(
 }
 
 /// All entry points converge here. Consent is attached to this durable record only.
+fn admit_attempt(
+    s: &Server,
+    store: &mut Store,
+    actor: &str,
+    repo: &str,
+    p: &Policy,
+) -> Outcome<()> {
+    let now = chrono::Utc::now().timestamp();
+    let mut attempts = store.attempts.clone();
+    attempts.retain(|a| a.at > now - 3600);
+    if attempts
+        .iter()
+        .filter(|a| a.actor.eq_ignore_ascii_case(actor))
+        .count()
+        >= p.limits.per_user_hour
+    {
+        return Err(Failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "fix command attempt rate limit reached; try later".into(),
+        ));
+    }
+    attempts.push(Admission {
+        at: now,
+        actor: actor.into(),
+        repo: repo.into(),
+    });
+    crate::fsutil::write_atomic_in(
+        &s.settings.data_dir,
+        "fix-attempts.json",
+        &serde_json::to_vec(&attempts)?,
+    )?;
+    store.attempts = attempts;
+    Ok(())
+}
 pub async fn request(
     server: &Server,
     origin: &str,
@@ -762,6 +834,8 @@ pub async fn request(
             &serde_json::to_vec(&denials)?,
         )?;
         store.denials = denials;
+    } else {
+        admit_attempt(server, &mut store, actor, &job.repo, &p)?;
     }
     if let Some(mut e) = store
         .entries
@@ -2638,6 +2712,15 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
             match auth {
                 Err(e) => Err(forbidden(&e.to_string())),
                 Ok(preview) => {
+                    let mut store = s.fixes.lock().await;
+                    if let Err(error) = admit_attempt(s, &mut store, &command.actor, &job.repo, &p)
+                    {
+                        if error.0 == StatusCode::TOO_MANY_REQUESTS {
+                            return Ok(());
+                        }
+                        bail!("{}", error.1);
+                    }
+                    drop(store);
                     let e = s
                         .fixes
                         .lock()

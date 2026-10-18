@@ -790,6 +790,13 @@ async fn invoke_fix(s: &Server, payload: &Value) {
 #[tokio::test]
 async fn fix_mentions_reply_or_react_once_with_durable_claims_and_live_authorization() {
     let (_data, s, mock, job) = fixture().await;
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_user_hour = 4;
     Mock::given(method("POST"))
         .and(path("/repos/owner/repo/issues/7/comments"))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
@@ -957,6 +964,76 @@ async fn denied_commands_do_not_charge_repo_quota_and_reply_only_once_per_user_h
     assert_eq!(r.state, "queued");
     assert_eq!(s.fixes.lock().await.admissions.len(), 1);
     assert_eq!(s.fixes.lock().await.denials.len(), 2);
+}
+
+#[tokio::test]
+async fn duplicate_attempts_are_limited_before_dedup_and_audit_is_bounded_and_coalesced() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_user_hour = 2;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    for comment in 50..55 {
+        invoke_fix(&s, &fix_comment("@revera-test fix", comment, "maintainer")).await;
+    }
+    let mut r = s
+        .fixes
+        .lock()
+        .await
+        .entries
+        .values()
+        .next()
+        .unwrap()
+        .record
+        .clone();
+    assert_eq!(s.fixes.lock().await.entries.len(), 1);
+    let requested = r
+        .events
+        .iter()
+        .filter(|e| e.action == "requested")
+        .collect::<Vec<_>>();
+    assert_eq!(requested.len(), 1);
+    assert_eq!(requested[0].count, 2);
+    assert!(requested[0].last_at.is_some());
+    *s.fixes.lock().await = Store::load(&s.settings.data_dir).unwrap();
+    assert_eq!(
+        request(&s, "mention", "maintainer", &job, None, false)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    r.audit("admin", "approved", "draft_pr");
+    r.audit("revera", "published", "published");
+    for i in 0..500 {
+        r.audit("revera", "generated", &format!("progress {i}"));
+    }
+    assert_eq!(r.events.len(), 200);
+    for action in ["requested", "approved", "published"] {
+        assert!(r.events.iter().any(|e| e.action == action));
+    }
+    let mut e = entry(&s, &r.id).await.unwrap();
+    e.record = r;
+    e.record
+        .events
+        .extend(vec![e.record.events.last().unwrap().clone(); 300]);
+    persist(&s.settings.data_dir, &e).unwrap();
+    assert_eq!(
+        Store::load(&s.settings.data_dir).unwrap().entries[&e.record.id]
+            .record
+            .events
+            .len(),
+        200
+    );
 }
 
 #[tokio::test]
