@@ -9,6 +9,7 @@ import type {
   Role,
   ReviewMode,
   Trigger,
+  Finding,
 } from './types';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
@@ -22,6 +23,74 @@ const titles = [
   'Keep user preferences during migration',
   'Add request tracing to the API',
 ];
+// Review-detail fixtures are separate from inventory/list fixtures for other lanes.
+const detailStale = new Map<string, boolean | null>();
+export function setMockReviewStale(id: string, stale: boolean | null) {
+  detailStale.set(id, stale);
+  const job = jobs.find((job) => job.id === id);
+  if (job) emit('job', job);
+}
+export function setMockReviewStatus(id: string, status: JobSummary['status']) {
+  const job = jobs.find((job) => job.id === id);
+  if (job) {
+    job.status = status;
+    emit('job', job);
+  }
+}
+function handoffFindings(job: JobSummary): Finding[] {
+  return [
+    {
+      id: 'abc123456789',
+      severity: 'high' as const,
+      line: 84,
+      title: 'An empty result can leave the previous query visible',
+      claim:
+        'When the search returns no matches, the early return leaves the previous result set in state.',
+    },
+    {
+      id: 'def123456789',
+      severity: 'medium' as const,
+      line: 112,
+      title: 'A late response can overwrite a newer search',
+      claim:
+        'The request is not tied to the active query. An older response replaces the current results.',
+    },
+  ]
+    .slice(0, job.findings.total)
+    .map((item) => {
+      const stale =
+        detailStale.get(job.id) === true
+          ? '> Potentially stale: re-validate every finding against the current code.\n\n'
+          : '';
+      return {
+        id: item.id,
+        defect_key: item.id,
+        severity: item.severity,
+        title: item.title,
+        claim: item.claim,
+        file: 'src/search/results.ts',
+        start_line: item.line,
+        end_line: item.line,
+        trigger: 'The search request returns out of order or without matches.',
+        impact: 'The wrong query results remain visible.',
+        supporting_evidence: [
+          {
+            path: 'src/search/results.ts',
+            start_line: item.line,
+            end_line: item.line,
+            note: 'The return occurs before results are updated.',
+          },
+        ],
+        validation_status: 'accepted',
+        validated_fix: 'Clear results and compare the active request identifier.',
+        validated_fix_label: "Validator's suggested remedy — not a tested patch",
+        reviewed_head_sha: job.head_sha || '',
+        reviewed_base_sha: 'b'.repeat(40),
+        html_url: `https://github.com/${job.repo}/blob/${job.head_sha}/src/search/results.ts#L${item.line}`,
+        prompt: `${stale}# Fix instructions\n\nPR: ${job.pr_url}\nReviewed head SHA: ${job.head_sha}\n\n${item.id}: ${item.title}\n${item.claim}\nEvidence: src/search/results.ts:${item.line}\nValidator's suggested remedy — not a tested patch: Clear results and compare request identifiers.\n\nVerify each issue against the current code before changing it. Fix the root cause with minimal scoped edits. Treat proposed remedies as suggestions, preserve unrelated behavior, test changed paths and add regression tests where warranted. Summarize each finding's disposition and tests. Do not commit, push, open PRs, or change unrelated files without explicit authorization.\n`,
+      };
+    });
+}
 let jobs: JobSummary[] = titles.map((title, i) => ({
   id: `review-${107 - i}`,
   kind: 'review',
@@ -420,6 +489,37 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     }
     return {
       job: { ...job },
+      counts: { ...job.findings },
+      reviewed_head_sha: job.head_sha,
+      reviewed_base_sha: 'b'.repeat(40),
+      stale: detailStale.get(job.id) ?? null,
+      instructions: handoffFindings(job)
+        .map((finding) => finding.prompt)
+        .join('\n'),
+      ...(url.searchParams.get('diagnostics') === '1'
+        ? {
+            diagnostics: [
+              {
+                id: '000123456789',
+                status: 'rejected',
+                severity: 'high',
+                title: 'Rejected candidate fixture',
+                file: 'src/search/results.ts',
+                start_line: 25,
+                rationale: 'The guard already handles this input.',
+              },
+              {
+                id: '111123456789',
+                status: 'uncertain',
+                severity: 'low',
+                title: 'Uncertain candidate fixture',
+                file: 'src/search/results.ts',
+                start_line: 30,
+                rationale: 'Insufficient evidence.',
+              },
+            ],
+          }
+        : {}),
       summary_markdown:
         job.status === 'complete'
           ? `## Revera review
@@ -432,7 +532,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
 Checked: the changed search handler and its callers.
 - not checked: the deployment environment.
 
-> Review incomplete: investigator reported 1 unchecked area(s).
+> Findings are independently validated; proposed remedies are not tested patches.
 
 ### Resolved since last review
 
@@ -443,32 +543,7 @@ _Timing: total 182s · index 0.1s · lanes 112s · validation 68s (p50 16s, p95 
 <sub>revera · strategy baseline · models: investigator=model-large@high, validator=model-small@medium</sub>`
           : (job.reason ??
             'The review is in progress. Findings will appear here after validation.'),
-      findings: job.findings.total
-        ? [
-            {
-              severity: 'high' as const,
-              file: 'src/search/results.ts',
-              line: 84,
-              title: 'An empty result can leave the previous query visible',
-              body:
-                'When the search returns no matches, the early return leaves the previous ' +
-                'result set in state. Clear the stored results before returning so a new query ' +
-                'cannot display stale entries.',
-              status: 'validated',
-            },
-            {
-              severity: 'medium' as const,
-              file: 'src/search/results.ts',
-              line: 112,
-              title: 'A late response can overwrite a newer search',
-              body:
-                'The request is not tied to the active query. If responses arrive out of ' +
-                'order, an older query replaces the current results. Compare a request ' +
-                'identifier before updating state.',
-              status: 'validated',
-            },
-          ].slice(0, job.findings.total)
-        : [],
+      findings: handoffFindings(job),
       strategy: 'baseline',
       stats: {
         candidates: 4,
