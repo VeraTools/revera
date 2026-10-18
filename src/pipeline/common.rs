@@ -27,6 +27,8 @@ pub struct ReviewRequest {
     pub body: String,
     pub strategy_override: Option<Strategy>,
     pub force: bool,
+    /// Only trusted event metadata can establish public visibility. CLI is unknown.
+    pub repository_public: bool,
 }
 
 /// Shared pre-review state: resolved refs, diff, index, prior-state rechecks.
@@ -268,7 +270,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         &base_sha,
         &head_tree,
         &patch_id,
-        &cfg.review_fingerprint(strategy_name),
+        &json!({"config": cfg.review_fingerprint(strategy_name), "repository_public": req.repository_public}),
     );
     let ledger = LedgerHandle::new();
 
@@ -332,6 +334,13 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     }
 
     let mut partial_reasons: Vec<String> = Vec::new();
+    cfg.check_trust(false)?;
+    let web = crate::web::WebResearch::from_config(
+        &cfg.web_search,
+        req.repository_public,
+        cfg.review.validate,
+        deadline,
+    )?;
     let vera = Arc::new(VeraClient::from_config(&cfg.vera, &repo)?.with_deadline(deadline));
     let mut rerank = crate::vera::RerankState::Off;
     let vera_err = if !cfg.vera.enabled {
@@ -384,7 +393,8 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         vera.clone(),
         cfg.review.max_tool_output_bytes,
     )
-    .with_head(&head_sha);
+    .with_head(&head_sha)
+    .with_web(web);
     // a failed index leaves no usable vera_* tools; hiding them keeps the
     // tool note honest about lexical-only coverage
     if !cfg.vera.enabled || vera_err.is_some() {
@@ -700,15 +710,7 @@ pub async fn finish(
     if !fallbacks.is_empty() {
         stats.retrieval = format!("{} ({})", stats.retrieval, fallbacks.join("; "));
     }
-    let routes: Vec<String> = prep
-        .ledger
-        .0
-        .lock()
-        .unwrap()
-        .entries
-        .iter()
-        .map(crate::report::footer_route_label)
-        .collect();
+    let routes = crate::report::footer_routes(&prep.ledger.0.lock().unwrap());
     let coverage = if prep.coverage.is_empty() {
         "(none reported)".to_string()
     } else {

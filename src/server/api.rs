@@ -1,6 +1,6 @@
 use super::{
     Server, app, auth,
-    dashboard::{self, Dashboard, JobSummary, Preferences},
+    dashboard::{self, Dashboard, JobSummary, Mode, Preferences, Trigger},
     events::{Job, Kind, Repo},
     runner,
 };
@@ -79,7 +79,10 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         )
         .route("/api/settings", get(settings))
         .route("/api/settings/config", put(config))
-        .route("/api/settings/server", put(server_settings))
+        .route(
+            "/api/settings/server",
+            get(get_server_settings).put(server_settings),
+        )
         .route("/api/secrets/{name}", put(secret).delete(delete_secret))
         .route("/api/settings/test", post(test))
         .route("/api/settings/models", post(models))
@@ -220,6 +223,26 @@ fn ordered(dashboard: &Dashboard) -> Vec<JobSummary> {
 
 async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
     let app = server.setup.lock().await.app.clone().ok_or_else(missing)?;
+    let registration = server
+        .api
+        .request(reqwest::Method::GET, "/app", &app.jwt()?, None)
+        .await
+        .ok();
+    let issue_comment = registration
+        .as_ref()
+        .and_then(|value| value["events"].as_array())
+        .map(|events| events.iter().any(|event| event == "issue_comment"));
+    let settings_url = if registration
+        .as_ref()
+        .is_some_and(|v| v["owner"]["type"] == "Organization")
+    {
+        format!(
+            "https://github.com/organizations/{}/settings/apps/{}/permissions",
+            app.owner, app.slug
+        )
+    } else {
+        format!("https://github.com/settings/apps/{}/permissions", app.slug)
+    };
     let mut dashboard = server.dashboard.lock().await;
     let jobs = ordered(&dashboard);
     let yaml = server.config_yaml()?;
@@ -284,7 +307,8 @@ async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
     Ok(output(json!({
         "app": {"name": if app.name.is_empty() { &app.slug } else { &app.name },
             "slug": app.slug, "html_url": app.html_url, "owner": app.owner,
-            "install_url": format!("https://github.com/apps/{}/installations/new", app.slug)},
+            "install_url": format!("https://github.com/apps/{}/installations/new", app.slug),
+            "issue_comment_subscribed": issue_comment, "settings_url": settings_url},
         "health": {"github": github, "models": models,
             "vera": {"enabled": enabled, "version": version}},
         "queue": {"running": running, "queued": queued}, "last_24h": last, "recent": recent
@@ -427,12 +451,48 @@ async fn fetch_pr(server: &Server, repo: &Repo, number: u64) -> Result<Value> {
         )
         .await
 }
-async fn submit_review(server: &Server, repo: Repo, number: u64, trigger: &str) -> ApiResult {
+async fn active(server: &Server, repo: &Repo) -> Result<(), Error> {
+    if server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .trigger(&repo.full_name)
+        == Trigger::Off
+    {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "repository trigger is off".into(),
+        ));
+    }
+    Ok(())
+}
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewRequest {
+    mode: Option<Mode>,
+}
+async fn submit_review(
+    server: &Server,
+    repo: Repo,
+    number: u64,
+    trigger: &str,
+    mode: Option<Mode>,
+) -> ApiResult {
+    active(server, &repo).await?;
+    let mode = mode.unwrap_or(
+        server
+            .dashboard
+            .lock()
+            .await
+            .preferences
+            .mode(&repo.full_name),
+    );
     let pr = fetch_pr(server, &repo, number).await?;
     if pr["state"].as_str() == Some("closed") {
         return Err(Error(StatusCode::CONFLICT, "PR is closed".into()));
     }
-    let job = Job::new(
+    let mut job = Job::new(
         repo,
         Kind::Review {
             number,
@@ -441,17 +501,22 @@ async fn submit_review(server: &Server, repo: Repo, number: u64, trigger: &str) 
         },
         trigger,
     );
+    job.mode = mode;
     let id = job.id.clone();
     server.enqueue(job).await;
     Ok(output(json!({"id": id})))
 }
-async fn rerun(State(server): State<Arc<Server>>, Path(id): Path<String>) -> ApiResult {
+async fn rerun(
+    State(server): State<Arc<Server>>,
+    Path(id): Path<String>,
+    input: Option<Json<ReviewRequest>>,
+) -> ApiResult {
     let job = summary(&server, &id).await?;
     let number = job
         .pr
         .ok_or_else(|| Error(StatusCode::CONFLICT, "not a review job".into()))?;
     let repo = repo(&server, &job.repo).await?;
-    submit_review(&server, repo, number, "rerun").await
+    submit_review(&server, repo, number, "rerun", input.and_then(|v| v.0.mode)).await
 }
 async fn cancel(State(server): State<Arc<Server>>, Path(id): Path<String>) -> ApiResult {
     let job = summary(&server, &id).await?;
@@ -523,7 +588,12 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 }
                 let mut value = json!({"full_name": info.repo.full_name, "private": info.private,
             "default_branch": info.repo.default_branch,
-            "enabled": dashboard.preferences.enabled(&info.repo.full_name),
+            "trigger": dashboard.preferences.trigger(&info.repo.full_name),
+            "mode": dashboard.preferences.mode(&info.repo.full_name),
+            "trigger_override": dashboard.preferences.repos.get(&info.repo.full_name)
+                .and_then(|r| r.trigger),
+            "mode_override": dashboard.preferences.repos.get(&info.repo.full_name)
+                .and_then(|r| r.mode),
             "has_override": info.has_override, "index": index, "html_url": info.html_url});
                 if let Some(last) = last {
                     value["last_job"] = json!(last);
@@ -533,25 +603,40 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
             .collect::<Vec<_>>()
     ))
 }
-#[derive(Deserialize)]
-struct Enabled {
-    enabled: bool,
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RepoSettings {
+    #[serde(deserialize_with = "nullable")]
+    trigger: Option<Option<Trigger>>,
+    #[serde(deserialize_with = "nullable")]
+    mode: Option<Option<Mode>>,
+    enabled: Option<bool>,
+}
+fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 async fn repo_settings(
     State(server): State<Arc<Server>>,
     Path((owner, name)): Path<(String, String)>,
-    Json(input): Json<Enabled>,
+    Json(input): Json<RepoSettings>,
 ) -> ApiResult {
     let full_name = format!("{owner}/{name}");
     repo(&server, &full_name).await?;
     let mut dashboard = server.dashboard.lock().await;
     let mut preferences = dashboard.preferences.clone();
-    preferences.repos.insert(
-        full_name,
-        dashboard::RepoPreference {
-            enabled: input.enabled,
-        },
-    );
+    let settings = preferences.repos.entry(full_name).or_default();
+    if let Some(trigger) = input.trigger {
+        settings.trigger = trigger;
+    } else if let Some(enabled) = input.enabled {
+        settings.trigger = (!enabled).then_some(Trigger::Off);
+    }
+    if let Some(mode) = input.mode {
+        settings.mode = mode;
+    }
     dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
     dashboard.preferences = preferences;
     let _ = server.events.send(("repos", json!({})));
@@ -562,6 +647,7 @@ async fn index(
     Path((owner, name)): Path<(String, String)>,
 ) -> ApiResult {
     let repo = repo(&server, &format!("{owner}/{name}")).await?;
+    active(&server, &repo).await?;
     let job = Job::new(repo, Kind::Index, "manual");
     let id = job.id.clone();
     server.enqueue(job).await;
@@ -612,9 +698,17 @@ async fn pulls(
 async fn review(
     State(server): State<Arc<Server>>,
     Path((owner, name, number)): Path<(String, String, u64)>,
+    input: Option<Json<ReviewRequest>>,
 ) -> ApiResult {
     let repo = repo(&server, &format!("{owner}/{name}")).await?;
-    submit_review(&server, repo, number, "manual").await
+    submit_review(
+        &server,
+        repo,
+        number,
+        "manual",
+        input.and_then(|v| v.0.mode),
+    )
+    .await
 }
 
 async fn settings(State(server): State<Arc<Server>>) -> ApiResult {
@@ -685,6 +779,9 @@ async fn server_settings(
     let _ = server.events.send(("repos", json!({})));
     Ok(output(json!({"ok": true})))
 }
+async fn get_server_settings(State(server): State<Arc<Server>>) -> Json<Value> {
+    output(json!(server.dashboard.lock().await.preferences))
+}
 #[derive(Deserialize)]
 struct Secret {
     value: String,
@@ -750,6 +847,7 @@ async fn delete_secret(State(server): State<Arc<Server>>, Path(name): Path<Strin
 #[derive(Deserialize)]
 struct Role {
     role: String,
+    fallback: Option<usize>,
 }
 enum Probe {
     Model(crate::config::ModelRoute, String),
@@ -843,7 +941,10 @@ pub(super) async fn test_untested(server: &Server) {
         if server.dashboard.lock().await.health.contains_key(role) {
             continue;
         }
-        let role = Role { role: role.into() };
+        let role = Role {
+            role: role.into(),
+            fallback: None,
+        };
         if let Err(Error(_, error)) = run_test(server, role).await {
             tracing::warn!("automatic model test: {error}");
         }
@@ -871,6 +972,12 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
             "invalid role".into(),
         ));
     }
+    if input.fallback.is_some() && input.role == "embedding" {
+        return Err(Error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "embedding does not support fallback model tests".into(),
+        ));
+    }
     let start = Instant::now();
     let (generation, model, started, prepared) = {
         let mut dashboard = server.dashboard.lock().await;
@@ -883,6 +990,24 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         let config = yaml
             .context("models are not configured yet")
             .and_then(|yaml| dashboard.parse(&yaml));
+        let config = if let Some(index) = input.fallback {
+            let mut config = config.map_err(invalid)?;
+            config.check_trust(true).map_err(invalid)?;
+            let route = if input.role == "validator" {
+                config.effective_validator()
+            } else {
+                &config.models.investigator
+            };
+            config.models.investigator = route.fallback.get(index).cloned().ok_or_else(|| {
+                Error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "fallback model index is out of range".into(),
+                )
+            })?;
+            Ok(config)
+        } else {
+            config
+        };
         let model = config
             .as_ref()
             .ok()
@@ -898,10 +1023,18 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         let inherited = config
             .as_ref()
             .is_ok_and(|config| config.validator_inherited());
-        let prepared = config.and_then(|config| probe(&config, &dashboard, &input.role));
-        let mut roles = vec![input.role.clone()];
-        if input.role == "investigator" && inherited {
-            roles.push("validator".into());
+        let probe_role = if input.fallback.is_some() {
+            "investigator"
+        } else {
+            &input.role
+        };
+        let prepared = config.and_then(|config| probe(&config, &dashboard, probe_role));
+        let mut roles = Vec::new();
+        if input.fallback.is_none() {
+            roles.push(input.role.clone());
+            if input.role == "investigator" && inherited {
+                roles.push("validator".into());
+            }
         }
         let started: Vec<(String, u64)> = roles
             .into_iter()
@@ -932,6 +1065,10 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
             value["error"] = json!(crate::redact::diagnostic(&error));
         }
     };
+    // Optional fallback probes never replace primary health or complete setup.
+    if input.fallback.is_some() {
+        return Ok(value);
+    }
     let mut health = value.clone();
     health["role"] = json!(input.role);
     health["model"] = json!(model.unwrap_or_default());

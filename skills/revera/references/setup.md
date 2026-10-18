@@ -1,5 +1,9 @@
 # Action setup
 
+The [Action guide](../../../docs/action.md) has a runnable quickstart, all
+inputs and output meanings. The [App guide](../../../docs/server.md) covers
+self-hosting, mention commands and trigger defaults.
+
 ```yaml
 name: revera
 on:

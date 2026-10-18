@@ -5,6 +5,7 @@ mod assets;
 mod auth;
 mod dashboard;
 mod events;
+mod mentions;
 mod queue;
 mod reconcile;
 mod runner;
@@ -62,6 +63,7 @@ pub(super) struct Server {
     queue: Mutex<queue::Queue>,
     notify: Notify,
     seen: Mutex<reconcile::Seen>,
+    mentions: Mutex<mentions::Recent>,
     runner: runner::Runner,
     dashboard: Mutex<dashboard::Dashboard>,
     session_key: [u8; 32],
@@ -80,16 +82,34 @@ impl Server {
     }
 
     async fn enqueue(&self, job: events::Job) {
+        self.enqueue_inner(job, None).await;
+    }
+
+    async fn enqueue_inner(
+        &self,
+        mut job: events::Job,
+        admission: Option<&queue::ReviewAdmission>,
+    ) {
         let preferences = self.dashboard.lock().await.preferences.clone();
-        if matches!(job.trigger.as_str(), "webhook" | "reconcile")
-            && (!preferences.enabled(&job.repo.full_name)
-                || matches!(&job.kind, events::Kind::Review { pr, .. }
-                    if !preferences.reviewable(pr)))
+        if !matches!(job.kind, events::Kind::Remove)
+            && preferences.trigger(&job.repo.full_name) == dashboard::Trigger::Off
         {
             return;
         }
+        if matches!(job.trigger.as_str(), "webhook" | "reconcile" | "auto")
+            && let events::Kind::Review { pr, .. } = &job.kind
+        {
+            if preferences.trigger(&job.repo.full_name) != dashboard::Trigger::Auto
+                || !preferences.reviewable(pr)
+            {
+                return;
+            }
+            job.trigger = "auto".into();
+            job.mode = preferences.mode(&job.repo.full_name);
+        }
         let mut queue = self.queue.lock().await;
-        if *self.stopping.borrow() {
+        if *self.stopping.borrow() || admission.is_some_and(|token| !queue.admits(job.key(), token))
+        {
             return;
         }
         let previous = queue.pending.get(&job.key()).cloned();
@@ -192,6 +212,16 @@ impl Server {
             events::Event::Job(job) => self.enqueue(job).await,
             events::Event::Close(repo, number) => self.close((repo, number)).await?,
             events::Event::Rerequest(repo, number) => {
+                if self
+                    .dashboard
+                    .lock()
+                    .await
+                    .preferences
+                    .trigger(&repo.full_name)
+                    == dashboard::Trigger::Off
+                {
+                    return Ok(());
+                }
                 let token = self
                     .api
                     .installation_token(
@@ -210,10 +240,17 @@ impl Server {
                         None,
                     )
                     .await?;
-                if self.dashboard.lock().await.preferences.reviewable(&pr) {
+                if pr["state"].as_str() != Some("closed") {
+                    let mode = self
+                        .dashboard
+                        .lock()
+                        .await
+                        .preferences
+                        .mode(&repo.full_name);
                     self.enqueue(events::Job {
                         id: uuid::Uuid::new_v4().simple().to_string(),
                         trigger: "rerun".into(),
+                        mode,
                         repo,
                         kind: events::Kind::Review {
                             number,
@@ -224,6 +261,7 @@ impl Server {
                     .await;
                 }
             }
+            events::Event::Mention(request) => mentions::handle(self, app, request).await?,
             events::Event::RemoveRepos(repos) => {
                 for repo in repos {
                     self.remove_repo(repo).await?;
@@ -319,6 +357,7 @@ async fn initialize(
         .map(|p| cwd.join(p))
         .unwrap_or_else(|| settings.data_dir.join("revera.yaml"));
     let seen = dashboard::read_json::<reconcile::Seen>(&settings.data_dir, "seen.json")?;
+    let mentions = mentions::Recent::load(&settings.data_dir)?;
     let mut dashboard = dashboard::Dashboard::load(&settings.data_dir, &seen)?;
     let session_key = auth::key(&settings.data_dir)?;
     let yaml = read_config(&settings, &config).with_context(|| {
@@ -389,6 +428,7 @@ async fn initialize(
         queue: Mutex::new(queue::Queue::default()),
         notify: Notify::new(),
         seen: Mutex::new(seen),
+        mentions: Mutex::new(mentions),
         runner,
         dashboard: Mutex::new(dashboard),
         session_key,
@@ -642,11 +682,20 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
     }
     let preferences = server.dashboard.lock().await.preferences.clone();
     let event_name = event.to_owned();
-    let Ok(event) = events::map_with_preferences(event, &payload, app.id, &preferences) else {
+    let mapped = if event == "issue_comment" {
+        mentions::event(&payload, &app.slug, &preferences)
+            .map(|request| request.map_or(events::Event::Ignore, events::Event::Mention))
+    } else {
+        events::map_with_preferences(event, &payload, app.id, &preferences)
+    };
+    let Ok(event) = mapped else {
         return StatusCode::BAD_REQUEST;
     };
     // Apply ordinary queue mutations in delivery order; only API work is detached.
-    if matches!(event, events::Event::Rerequest(_, _)) {
+    if matches!(
+        event,
+        events::Event::Rerequest(_, _) | events::Event::Mention(_)
+    ) {
         let server = server.clone();
         tokio::spawn(async move {
             if let Err(e) = server.handle(&app, event).await {

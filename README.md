@@ -1,32 +1,85 @@
 # Revera
 
-Revera reviews GitHub pull requests with the models you choose and posts
-only the findings that survive an independent second check.
+Revera reviews GitHub pull requests with the AI models you choose. Before a
+finding is posted, a second model checks it again from scratch, so what reaches
+your pull request has been confirmed against the code.
 
 [![ci](https://github.com/VeraTools/revera/actions/workflows/ci.yml/badge.svg)](https://github.com/VeraTools/revera/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-It runs as a GitHub Action, as a self-hosted GitHub App with a dashboard, or
-as a local CLI. The models do the reasoning; plain Rust code computes the
-diff, tracks findings across pushes and talks to GitHub.
+![Revera dashboard](docs/images/overview.png)
 
-- **Bring your own model.** Any OpenAI-compatible chat endpoint, plus native
-  Anthropic, Google Gemini and OpenAI Responses protocols. One route is
-  enough to start.
-- **Nothing is published unvalidated.** An *investigator* proposes candidate
-  findings; a *fresh-context validator* re-derives each one from the code
-  before it can appear on the PR.
-- **Repository-aware.** Built-in lexical search over the exact PR head, and
-  optional semantic search and reference lookup through
-  [Vera](https://github.com/VeraTools/Vera).
-- **Truthful status.** A run is `complete`, `partial` or `failed`; budget
-  breaches and provider errors are reported, never presented as a clean
-  review. Findings are tracked across pushes (resolved, reopened) without
-  duplicate comments.
+## Why Revera
 
-## Quickstart (GitHub Action)
+An investigator reads the change and proposes defects. A validator starts a
+new conversation for each finding and must establish it from the code before
+it can post. In our evaluation, the default setup posted no false positives
+across 13 small test repositories, using the same model for both roles. That
+is a small sample, not a guarantee. [Results and caveats](docs/evaluation.md).
 
-1. Create `revera.yaml` in your repository root with one model route:
+Hosted AI reviewers usually pick the model for you and charge per seat. With
+Revera you use your own models and keys. It supports OpenAI-compatible endpoints,
+OpenAI Responses, Anthropic and Google Gemini. You choose the provider and
+model for each role, control the review budget and pay the provider directly.
+Code goes only to the providers you configure;
+external web search is a separate opt-in.
+
+Ordered fallback models can keep a review running when a provider is
+unavailable. The report records which models served the review. A run says
+`complete`, `partial` or `failed`: a budget stop or provider failure is not
+presented as a clean review.
+
+Findings are tracked across pushes, resolved when fixed and reopened if they
+return, without duplicate comments for still-open defects. Built-in text search
+works without an index; optional [Vera](https://github.com/VeraTools/Vera)
+adds semantic search and reference lookup across the repository.
+
+The self-hosted GitHub App supports on-demand `@mention` reviews with quick
+and deep modes. Revera is open source under MIT, and you can run the App,
+Action or CLI on infrastructure you control.
+
+## Good fit / not a fit
+
+Revera is for teams that want defect reports with a trigger, impact and code
+evidence, rather than style nits. It fits projects that already have model
+API access and want to choose where reviews run.
+
+GitHub is the only publication target. There is no hosted Revera service.
+You run it and pay your model providers. Validation can reject false claims,
+but it can still miss bugs or accept a wrong finding; keep human review.
+
+## Choose how to run it
+
+| Run it as | Choose this when | Guide |
+|---|---|---|
+| Self-hosted GitHub App | You want a dashboard, mentions and reviews across installed repositories, without per-repository workflows | [GitHub App](docs/server.md) |
+| GitHub Action | You want reviews in one repository without running a server | [Action](docs/action.md) |
+| Local CLI | You want to review a committed branch before opening a PR | [CLI](docs/cli.md) |
+
+### GitHub App
+
+1. Start the container on your server with a persistent data directory:
+
+   ```sh
+   mkdir -p data
+   sudo chown -R 10001:10001 data
+   podman run -d --name revera --restart unless-stopped \
+     -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
+     -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
+   ```
+
+2. Put it behind HTTPS. Open the setup link from `podman logs revera`, create
+   and install your GitHub App, then connect your models in the dashboard.
+3. Comment `@<app-slug> review` on a PR. The default trigger is **mention**;
+   select **auto** to review new and updated PRs automatically.
+
+Docker works too. [The App guide](docs/server.md#quickstart) includes proxy
+examples and setup instructions. No YAML file is needed for dashboard setup.
+
+### GitHub Action
+
+1. Add `revera.yaml` to your repository's default branch, replacing the
+   endpoint and model ID with your provider's values:
 
    ```yaml
    models:
@@ -37,12 +90,8 @@ diff, tracks findings across pushes and talks to GitHub.
        model: your-model-id
    ```
 
-   That is a full configuration: baseline strategy, fresh validation using
-   the same route, Vera off. [`revera.example.yaml`](revera.example.yaml)
-   shows the optional validator and Vera blocks.
-
-2. Add the API key as a repository secret (`REVIEW_API_KEY` here) and a
-   workflow:
+2. Add `REVIEW_API_KEY` under **Settings → Secrets and variables → Actions**.
+   Save this as `.github/workflows/revera.yml`:
 
    ```yaml
    name: revera
@@ -54,8 +103,9 @@ diff, tracks findings across pushes and talks to GitHub.
      review:
        runs-on: ubuntu-latest
        steps:
-         - uses: actions/checkout@v7
+         - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
            with:
+             persist-credentials: false
              fetch-depth: 0
              ref: ${{ github.event.pull_request.head.sha }}
          - uses: VeraTools/revera@v0
@@ -63,13 +113,49 @@ diff, tracks findings across pushes and talks to GitHub.
              REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY }}
    ```
 
-3. Open a pull request. Accepted findings are posted as inline comments plus
-   one managed summary comment; later pushes update them instead of
-   re-posting.
+3. Merge the configuration and workflow, then open a PR from a branch in
+   that repository. Reviews read configuration from the PR's base commit.
+
+One route is enough: validation reuses it in a fresh conversation. Vera is
+off by default. [The Action guide](docs/action.md) covers inputs, forks,
+version pinning and keeping the index warm.
+
+### Local CLI
+
+1. Install a binary from [releases](https://github.com/VeraTools/revera/releases),
+   or run `cargo install --git https://github.com/VeraTools/revera`.
+2. Create `revera.yaml` as above and set `REVIEW_API_KEY` in your shell.
+3. Commit your changes, then run:
+
+   ```sh
+   revera doctor --config revera.yaml
+   revera review --repo . --base origin/main --config revera.yaml --publish dry-run
+   ```
+
+This calls your models but posts nothing. [The CLI guide](docs/cli.md) covers
+installation, profiles, reports and local state.
+
+## Using it on a pull request
+
+With the GitHub App, mention it by its slug (the app name GitHub shows, such as
+`@revera-acme`) in a PR conversation comment:
+
+```text
+@<app-slug> review          # use the repository's review mode
+@<app-slug> quick           # smaller review budget
+@<app-slug> deep            # larger review budget
+@<app-slug> review standard # use the configured review without a profile
+@<app-slug> help
+```
+
+Commands are available to repository owners, members and collaborators.
+Both quick and deep keep validation on. The Action uses workflow triggers,
+not mentions; set the Action's `profile` input to `quick` or `deep` for the
+same modes. [Trigger and mode details](docs/server.md#triggers-review-modes-and-mentions).
 
 A posted finding names the defect, how to trigger it, its impact and the
-lines it rests on. This one, shortened, came from a release test where a
-single line of ownership checking was flipped:
+evidence. This shortened example came from a release test that flipped an
+ownership check:
 
 > **[high] owns() returns true for comments with missing author, allowing
 > finding suppression via forged revera-id markers**
@@ -84,161 +170,25 @@ single line of ownership checking was flipped:
 > Evidence: src/github/publish.rs:87, src/github/publish.rs:184,
 > src/github/api.rs:102, tests/outcome_tests.rs:530
 
-The summary comment states whether the review is `complete` or `partial`
-and lists open, resolved and reopened findings.
-
-`@v0` follows the latest 0.x release; pin `@vX.Y.Z` for an exact version.
-Check a configuration before the first run with
-`revera doctor --config revera.yaml`; it validates only what the effective
-configuration uses and prints a `next:` hint for every failure.
-
-## Self-hosted GitHub App
-
-To review every repository on an account, including new ones, without adding
-a workflow or secrets to each, run Revera on your own server:
-
-```sh
-podman run -d --name revera -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
-  -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
-```
-
-Put it behind HTTPS, open the setup link it prints, and the dashboard walks
-you through creating the GitHub App, installing it on your repositories and
-connecting your models. Reviews run on your server and appear on pull
-requests as a check plus the same comments the Action posts. Setup, reverse
-proxy examples and the security model: [docs/server.md](docs/server.md).
+Accepted findings appear inline when they can be anchored to the diff;
+others appear in the managed summary. The summary reports completion and
+tracks open, resolved and reopened findings across pushes.
 
 ## How it works
 
-```text
-diff (base…head)  →  investigator  →  candidates  →  fresh validator  →  anchor / dedupe / publish
-                        │ tools                          │ tools
-                  lexical search (+ Vera)          lexical search (+ Vera)
-```
-
-1. Revera diffs base and head (the checked-out tree must be exactly the PR
-   head) and, if Vera is enabled, refreshes the repository index.
-2. The investigator explores the change with read-only tools and submits
-   structured candidate findings.
-3. Each candidate is handed to a validator that starts from an empty context
-   and must re-establish the claim from the code. This is why one model is
-   enough to start: the validator reuses the investigator's route but never
-   its conversation.
-4. Rust anchors accepted findings to diff lines, reconciles them with the
-   previous review (resolved / reopened / still open) and publishes.
-
-Models never post to GitHub directly, run shell commands, or write files.
-Details: [docs/how-it-works.md](docs/how-it-works.md).
-
-## Configuration at a glance
-
-| key | default | notes |
-|---|---|---|
-| `models.investigator` | required | protocol, `base_url`, `api_key_env`, `model`, optional `reasoning` |
-| `models.validator` | investigator route | set to validate with a different (e.g. stronger) model |
-| `review.strategy` | `baseline` | `delegated` / `panel` are advanced multi-lane strategies |
-| `review.publish` | `dry-run` (the Action passes `comment`) | |
-| `review.min_severity` | `low` | |
-| `vera` | off | add a `vera:` block with an embedding endpoint to enable |
-| `budget.*` | 25 tool calls / 300 s per agent, 120 requests / 900 s per run | hard limits; breaches make the run `partial` |
-
-`${VAR}` in string values expands from the environment. Full reference:
-[docs/configuration.md](docs/configuration.md).
-
-### Providers
-
-| protocol | endpoint | examples |
-|---|---|---|
-| `openai-chat` | `{base_url}/chat/completions` | OpenAI, Z.ai, DeepSeek, most OpenAI-compatible servers |
-| `openai-responses` | `{base_url}/responses` | OpenAI Responses API and compatible hosts |
-| `anthropic` | `{base_url}/v1/messages` | Anthropic Claude |
-| `gemini` | `{base_url}/v1beta/models/{model}:generateContent` | Google Gemini |
-
-Routes can mix protocols and providers. Reasoning/thinking is on (`medium`)
-by default for every route and degrades automatically on providers that
-reject the field.
-
-## Strategies
-
-`baseline` (one investigator, one validator) is the default and the
-recommended setting. `delegated` (lead plans questions, workers answer,
-lead synthesises) and `panel` (independent scouts, findings unioned) are
-available through `review.strategy` or the Action's `strategy` input. In
-our evaluation they cost 1.5–2× more and did not improve recall; panels
-produced more false positives. See [docs/strategies.md](docs/strategies.md).
-
-## Evidence
-
-Measured on synthetic corpora with hand-written truth files, 1–2 runs per
-cell (small samples; treat as provisional):
-
-- Baseline with validation produced **zero false positives** across 13
-  small corpora (four clean-control PRs included) with the same model on
-  both routes.
-- On a ~50k LOC repository (ripgrep) with cross-crate defects, Vera
-  retrieval found 5/6 defects vs 4/6 lexical-only at ~17 % more time.
-- Across eight investigator models (Meta Muse Spark, Z.ai GLM, OpenAI GPT,
-  Google Gemini, DeepSeek, xAI Grok and others), recall did not separate
-  single-model configurations on small repositories; false positives and
-  cost did.
-
-Method, tables and caveats: [docs/evaluation.md](docs/evaluation.md).
-
-## Supported environment and limitations
-
-- Action: Linux x86_64 runners (`ubuntu-22.04`, `ubuntu-24.04`/`latest`).
-  The binary is a static `x86_64-unknown-linux-musl` build.
-- Server: the container image is published for `linux/amd64` and
-  `linux/arm64`; release binaries cover x86_64 and aarch64 Linux.
-- Fork PRs are skipped by default (secrets are unavailable to them) and
-  reported as `partial`, not clean.
-- Inline comments require the finding to sit on a diff line; other accepted
-  findings appear in the summary under "Findings outside the diff".
-- With Vera enabled, a PR's first review builds the index from scratch
-  unless `main` has a cached one; later pushes to the PR reuse it. Add
-  `push: branches: [main]` to the workflow's `on:` and the Action refreshes
-  `main`'s index after each merge instead of reviewing, so new PRs start from
-  it. Details: [docs/configuration.md](docs/configuration.md#warm-index-for-new-pull-requests).
-
-### Action outputs and exit codes
-
-| revera exit | Action `status` | meaning |
-|---|---|---|
-| 0 | `complete` | every stage finished; `findings: 0` means "reviewed, nothing found" |
-| 2 | `partial` | something was not checked (budget, provider, retrieval, malformed model output); zero findings is not a clean verdict |
-| other | `failed` | config/setup error or crash; no trustworthy report |
-
-`fail-on: failed | partial | never` (default `failed`) decides which of
-these fail the step. Index runs (push, schedule, manual) report `complete`
-or `failed` with no report.
-
-## CLI
-
-```sh
-revera review --repo . --base origin/main --config revera.yaml      # local dry-run
-revera review --event "$GITHUB_EVENT_PATH" --publish comment        # inside Actions
-revera doctor [--config revera.yaml] [--profile deep] [--strategy panel]
-revera index [--config revera.yaml]                                 # build or refresh the Vera index only
-revera cache-key [--config revera.yaml]                              # Vera index identity, or "disabled"
-revera serve --public-url https://review.example.com                # self-hosted GitHub App and dashboard
-```
-
-Local runs keep their state in `.revera/` and, with Vera enabled, the index
-in `.vera/` (Vera 2 also creates `.vera.build/`, `.vera.old/` and, after an
-interrupted API index, `.vera.resume/`); add `.revera/` and `.vera*/` to
-`.gitignore`. With Vera enabled, local runs need Vera 2.0 or later.
-
-Prebuilt binaries are attached to
-[releases](https://github.com/VeraTools/revera/releases); or
-`cargo install --git https://github.com/VeraTools/revera`.
+1. Rust computes the base-to-head diff over the exact committed head.
+2. Optional Vera retrieval refreshes the repository index.
+3. The investigator explores with read-only tools and submits candidates.
+4. A fresh-context validator re-derives each candidate independently.
+5. Rust anchors and deduplicates accepted findings, then reconciles prior state.
+6. It posts comments or prints a dry-run plan. Models cannot run shell commands or write files.
 
 ## Documentation
 
-- [How it works](docs/how-it-works.md): architecture, boundaries, state and re-review
-- [Configuration](docs/configuration.md): every key with defaults
-- [Self-hosted GitHub App](docs/server.md): server, dashboard and setup
-- [Strategies](docs/strategies.md): baseline, delegated, panel
-- [Evaluation](docs/evaluation.md): what was measured and how to reproduce it
+- [GitHub App](docs/server.md) · [GitHub Action](docs/action.md) · [Local CLI](docs/cli.md)
+- [Configuration](docs/configuration.md), including [fallback models](docs/configuration.md#fallback-models), [profiles](docs/configuration.md#profiles) and [web search](docs/configuration.md#web_search)
+- [How it works](docs/how-it-works.md), including review strategies and trust boundaries
+- [Evaluation](docs/evaluation.md): measurements, limitations and reproduction
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 ## License

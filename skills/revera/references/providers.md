@@ -16,5 +16,9 @@ models:
   different model.
 - `reasoning` defaults to `medium` and degrades automatically when a provider
   rejects it.
-- `revera doctor` checks only that the variable is set. To check a key works,
-  run a live review (after the user agrees to the cost).
+- Routes can have ordered `fallback` alternatives. A missing key makes that
+  route unavailable; at least one route in each active chain must have a key.
+  An omitted validator inherits the investigator's alternatives too. See
+  [fallback models](../../../docs/configuration.md#fallback-models).
+- `revera doctor` reports key presence without calling the provider. To check
+  a key works, run a live review after the user agrees to the cost.

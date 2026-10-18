@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.6.0
+
+- The GitHub App accepts PR conversation commands: `@<app-slug> review`,
+  `quick`, `deep`, `review standard` and `help`. Owners, members and collaborators
+  can request a fresh review of the current head, including drafts.
+- Repository triggers are now `mention`, `auto` and `off`, with independent
+  `quick`, `standard` and `deep` review modes. The default trigger is **mention**,
+  including upgrades without a trigger field. Select auto to keep automatic
+  PR reviews. Legacy disabled repositories stay off; enabled ones inherit the
+  default. Built-in quick and deep profiles also work in the CLI and Action,
+  keep validation on and leave the configured strategy unchanged.
+- Existing GitHub Apps need Issues read/write, the Issue comment event and
+  installation-owner approval before mentions work. New apps request them
+  during setup. See the [upgrade steps](docs/server.md#enable-mentions-on-an-existing-github-app).
+- Model routes support ordered fallback models across providers and protocols.
+  Eligible provider failures try the next available route; the last successful
+  route stays selected for that role during the run. Reports record switches
+  and per-route usage without changing the Vera index identity.
+- Optional `web_search` and `web_read` tools can check external technical
+  facts through Exa. Web search stays off by default. Private or unknown
+  repositories require a separate trusted opt-in; queries leave the server.
+  The [paired evaluation](docs/evaluation.md#opt-in-web-search) reports the
+  small sample, completion gaps and source-verification limitation.
+- Setup includes an optional reranker. Dashboard settings expose model
+  fallbacks, default triggers and modes, a mention-command reference and web
+  search. Repositories have independent Trigger and Mode controls; reviews
+  show both. Overview points existing App owners to the mention-permission change.
+- Release notes now come from the matching section of `CHANGELOG.md`.
+  The Action has a shorter Marketplace description. Setup documentation is
+  split into [GitHub App](docs/server.md), [Action](docs/action.md) and
+  [CLI](docs/cli.md) guides.
+
 ## v0.5.1
 
 - Failed or partial server indexes now wait before automatic retries: 10 minutes,
@@ -193,7 +225,7 @@
 - `doctor` gained `--profile`, `--strategy` and `--publish` and validates
   panel scout/focus cardinality; the fork guard now runs before credential
   checks so forked PRs get a partial "review skipped" report.
-- Full documentation rewrite (`docs/configuration.md`, `docs/strategies.md`,
+- Full documentation rewrite (`docs/configuration.md`, review strategies,
   `docs/evaluation.md`, `docs/how-it-works.md`), CONTRIBUTING and SECURITY
   pages, and release hardening (tag/commit validation, verified artifact
   packaging, composite Action pinned at 0.3.0).

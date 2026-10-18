@@ -1,42 +1,185 @@
 # Self-hosted GitHub App
 
-`revera serve` runs a private GitHub App with a browser dashboard on your server. Install it once
-to review PRs across your repositories, including new repositories, without
-workflow files or repository secrets. The GitHub Actions path remains available
-if you prefer reviews to run in Actions rather than on your own machine.
+Run Revera on your server, install your GitHub App and manage reviews in a
+browser. Choose all repositories to include new ones without adding workflows
+or repository secrets. For reviews hosted by GitHub instead, use the [Action](action.md).
 
-## Requirements
+## Quickstart
 
-- A server with a public HTTPS URL that GitHub can reach.
-- GitHub permission to create and install an app on your account or organization.
-- A review API endpoint, model ID and key, configured as for the CLI.
-- Persistent storage for `/data`, with enough room for repository checkouts.
+1. Start the container on a server with a public HTTPS address and persistent
+   storage. The data directory must be writable by container user 10001:
 
-For a native installation, install `revera`, `git` and `vera`, and make them
-available on `PATH`. The container includes these tools.
+   ```sh
+   mkdir -p data
+   sudo chown -R 10001:10001 data
+   podman run -d --name revera --restart unless-stopped \
+     -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
+     -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
+   ```
 
-## Run it
+   Replace the example URL with yours. For Docker, use `docker` in place of
+   `podman`; omit `:Z` on hosts without SELinux. No YAML file is needed yet.
+2. Put an HTTPS reverse proxy in front of `127.0.0.1:8080`. Keep that port
+   private. [Caddy and nginx examples](#https-reverse-proxy) are below. GitHub
+   must be able to reach `/webhook` without an interactive login.
+3. Run `podman logs revera` and open the setup link. Treat it as a secret.
+   Keep using that browser until setup finishes.
+4. Create and install the GitHub App. Change its name if taken, and enter your
+   organization if needed. Click **Create GitHub App**, confirm on GitHub,
+   then sign in with GitHub in the same browser. That browser becomes the
+   first administrator. Follow the installation redirect and choose **All
+   repositories** or selected repositories. You need permission to create
+   and install an app on that account.
+5. Return to the dashboard and connect a model endpoint, model ID and key.
+   Test the connection and finish setup. One model route is enough: validation
+   reuses it in a fresh conversation. Retrieval is optional; if enabled,
+   configure and test its embedding endpoint. You can also configure a reranker.
 
-Create a data directory owned by container user 10001, then start the server.
-You do not need a YAML file: the dashboard writes it when you configure models.
+Comment `@<app-slug> review` on a PR to start a review. The default trigger
+is **mention**. Choose **auto** in the dashboard if you want reviews on PR
+events instead. Existing open PRs are not reviewed in bulk after installation.
 
-```sh
-mkdir -p data
-sudo chown -R 10001:10001 data
-podman run -d --name revera --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 -v "$PWD/data:/data:Z" \
-  -e REVERA_PUBLIC_URL=https://review.example.com ghcr.io/veratools/revera:0
-podman logs revera
+The server saves app credentials in `/data/app.json`; setup-token endpoints
+then disappear. Until model configuration is saved, jobs are skipped without
+creating PR checks. The dashboard writes `/data/revera.yaml` when you save models.
+
+## Triggers, review modes and mentions
+
+Set defaults in **Settings → Review** and overrides in **Repositories**.
+Trigger and mode are independent; a repository can inherit either default.
+
+| Trigger | Behavior |
+|---|---|
+| `mention` (default) | Review on command or manual request; keep the index warm on default-branch pushes |
+| `auto` | Also review opened, reopened, updated and ready-for-review PRs, and recover missed head changes |
+| `off` | Stop new reviews and indexing, including mentions and manual requests |
+
+Changing a setting does not cancel work already queued or running. Removal
+and cancellation still work when a repository is off.
+
+| Mode | Behavior |
+|---|---|
+| `standard` (default) | Configured review without a profile |
+| `quick` | Apply the `quick` profile for a smaller budget |
+| `deep` | Apply the `deep` profile for a larger budget |
+
+Built-in quick and deep modes keep the configured strategy and validation.
+Custom profiles with those names replace the built-ins. See
+[profile defaults](configuration.md#profiles).
+
+Use the app's slug in a new PR conversation comment:
+
+```text
+@<app-slug> review
+@<app-slug> quick
+@<app-slug> deep
+@<app-slug> review quick
+@<app-slug> review standard
+@<app-slug> review deep
+@<app-slug> help
 ```
 
-Put it behind HTTPS as described below, then open the setup link from the logs.
-The wizard creates the app and lets you configure models and keys. Until a
-configuration is saved, jobs are skipped with “models are not configured yet”
-and no PR check is created. Saving the first configuration triggers reconciliation
-so skipped PRs can be picked up.
+`review` uses the repository's effective mode. The slug is case-insensitive.
+Only OWNER, MEMBER and COLLABORATOR commenters can run commands. Bots,
+comment edits, ordinary issues, quoted lines and code are ignored. Unknown
+commands receive help. A valid command gets an eyes reaction and forces a
+review of the current head, including drafts and otherwise skipped authors.
+A closed PR gets a reply instead. Allowed-owner and off settings still apply.
 
-For Docker, use `docker` instead of `podman`; omit `:Z` on hosts without SELinux.
-A Compose example:
+When upgrading settings without a trigger field, the default becomes
+**mention**, not auto. Select auto to retain automatic reviews. Legacy
+`enabled: false` repository settings become off; `enabled: true` inherits.
+Legacy `default_enabled: false` becomes a global off default.
+
+### Enable mentions on an existing GitHub App
+
+New apps request the permission and event during setup. Existing apps need
+this change on GitHub before mentions work:
+
+1. Open **GitHub Settings → Developer settings → GitHub Apps → Edit** for the
+   app. For an organization app, start from **Organization Settings**.
+2. In **Permissions & events → Repository permissions**, set **Issues** to
+   **Read and write**. Keep the existing Pull requests, Contents and Checks
+   permissions. Under **Subscribe to events**, select **Issue comment** and save.
+3. Each installation owner must approve the added permission. Open **Settings →
+   Applications → Installed GitHub Apps**, then the app's **Review request →
+   Accept new permissions**. Organization owners use **Organization Settings →
+   Third-party Access → GitHub Apps**. The link in GitHub's permission-change
+   email also works.
+
+[Issue comment delivery](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment)
+requires Issues read; the
+[eyes reaction](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-an-issue-comment)
+requires Issues write. Existing Pull requests write permits conversation
+replies. Subscribing to the event alone is not enough for reactions.
+
+## Dashboard
+
+**Overview** shows connection health, jobs and recent results. The notice
+“Mentions need one change on your GitHub App” links to the permission change
+for existing apps. **Repositories** has independent Trigger and Mode controls;
+choose Default in either to inherit the server setting.
+
+![Repository settings](images/repositories.png)
+
+**Reviews** shows mode, trigger, findings, timing, token use and redacted logs.
+You can re-run or cancel a review.
+
+![Review detail](images/review.png)
+
+In **Settings**, configure model routes and fallbacks, review defaults,
+budgets, retrieval and access. **Settings → Review** also lists mention
+commands; **Settings → Retrieval** includes optional web-search settings.
+The form and raw YAML edit the same configuration. Invalid YAML leaves the
+previous file unchanged.
+
+Keys use the configuration's `api_key_env` names. Dashboard values live in
+private `secrets.json`; the API returns names and sources, never values.
+A saved value overrides the server environment for probes, expansion and
+jobs. Deleting it falls back to the environment or reports the key as missing.
+GitHub token names are reserved and cannot be model keys.
+
+Configuration or referenced-key changes clear the affected health results.
+The server tests unchecked roles at startup and each reconciliation tick;
+**Test** runs a probe immediately. Setup waits for required model checks and
+active retrieval keys. Results survive restarts; unchanged saves and unrelated
+keys do not clear them.
+
+## Review lifecycle
+
+Auto reviews skip drafts, `dependabot[bot]` and `renovate[bot]` by default;
+edit those preferences in Settings. Fork PRs use the CLI's fork guard and
+are skipped by default. Closing a PR cancels its work. A newer head replaces
+pending work and cancels an older running review.
+
+Default-branch pushes warm the Vera index in mention and auto modes. Work
+runs one job at a time per repository, up to the global concurrency limit.
+Each job runs the CLI in a separate process with a 55-minute hard limit.
+
+The **Revera** check is successful for a complete review with no findings,
+neutral for accepted findings or partial work, and failed for execution
+failure. Cancelled work gets a cancelled check. Only validator-accepted
+findings count toward check and dashboard totals. Re-running the App's check
+forces a fresh review even when the patch is unchanged.
+
+Reconciliation runs at startup and every ten minutes by default. The first
+sighting records existing PR heads without reviewing them. Later head changes
+are recovered in auto mode if not already queued or running.
+
+Failed or partial indexes keep the previous push checkpoint. Automatic
+retries wait 10 minutes, then double up to 24 hours after the latest failure.
+A complete index resets the wait. Push webhooks and **Index now** bypass it.
+
+## Deployment reference
+
+The container includes `revera`, `git` and `vera`. For a native installation,
+put those binaries on `PATH` and run `revera serve --public-url <https-url>`.
+Release images include the dashboard. A native build needs `npm ci && npm run
+build` in `web/` before building Rust to include it.
+
+### Docker Compose
+
+Create `data` with the ownership used in the quickstart, then save:
 
 ```yaml
 services:
@@ -49,36 +192,15 @@ services:
       - ./data:/data
     environment:
       REVERA_PUBLIC_URL: https://review.example.com
-      REVERA_CONCURRENCY: "2"
-      REVERA_RECONCILE_MINUTES: "10"
 ```
 
-Run `docker compose up -d`, then read `docker compose logs revera` for the setup
-link. Keep keys out of the Compose file and repository.
+Run `docker compose up -d`, then read `docker compose logs revera` for the
+setup link. Keep keys out of the Compose file and repository.
 
-As a file-based alternative, save this minimal configuration as
-`data/revera.yaml` before starting:
-
-```yaml
-models:
-  investigator:
-    protocol: openai-chat
-    base_url: https://api.example.com/v1
-    api_key_env: REVIEW_API_KEY
-    model: your-model-id
-```
-
-Enter the key in the dashboard, or export `REVIEW_API_KEY` and add
-`-e REVIEW_API_KEY` to the container command (for Compose, add
-`REVIEW_API_KEY: ${REVIEW_API_KEY}` under `environment`). A present but invalid
-configuration is still a startup error; an explicit `--config` file must exist.
-Validation is on by default. Vera retrieval is off unless configured;
-see [configuration.md](configuration.md).
-
-Other settings, each also available as a flag:
+### Server options
 
 | Environment variable | Default | Flag |
-| --- | --- | --- |
+|---|---|---|
 | `REVERA_PUBLIC_URL` | required HTTPS URL | `--public-url` |
 | `REVERA_LISTEN` | `0.0.0.0:8080` | `--listen` |
 | `REVERA_DATA_DIR` | `/data` | `--data-dir` |
@@ -86,15 +208,27 @@ Other settings, each also available as a flag:
 | `REVERA_CONCURRENCY` | `2` | `--concurrency` |
 | `REVERA_RECONCILE_MINUTES` | `10` | `--reconcile-minutes` |
 
-`REVERA_ALLOWED_OWNERS` adds comma-separated account or organization logins to
-the app owner's allowed installations, merged with the dashboard's allowed
-owners. Credentials use the environment names in the configuration. `${VAR}`
-substitutions in endpoint URLs work as they do in Actions.
+`REVERA_ALLOWED_OWNERS` adds comma-separated account or organization logins
+to the app owner's allowed installations, merged with dashboard preferences.
 
-## Put it behind HTTPS
+For file-based setup, write a [model configuration](configuration.md) to
+`data/revera.yaml`. Enter its keys in the dashboard, or export the named
+variables and pass them to the container with `-e REVIEW_API_KEY` (Compose:
+`REVIEW_API_KEY: ${REVIEW_API_KEY}` under `environment`). `${VAR}` expansion
+works as it does in the CLI. A present but invalid configuration prevents
+startup; a file named explicitly with `--config` must exist.
 
-Keep port 8080 private and terminate HTTPS at your reverse proxy. With existing
-certificates, nginx can forward requests as follows:
+### HTTPS reverse proxy
+
+Caddy can obtain and renew certificates:
+
+```caddyfile
+review.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+With existing certificates, nginx can forward requests:
 
 ```nginx
 server {
@@ -113,196 +247,130 @@ server {
 }
 ```
 
-Caddy can obtain and renew certificates automatically:
+A tunnel also works if it provides a stable HTTPS URL and forwards webhook
+bodies and signature headers unchanged.
 
-```caddyfile
-review.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
+### Per-repository configuration
 
-A tunnel also works if it provides a stable HTTPS URL and forwards webhook bodies
-and signature headers unchanged. Do not put an interactive login in front of
-`/webhook`.
+A `revera.yaml` on the repository's default branch replaces the server
+configuration in full, rather than merging. For a PR targeting another branch,
+configuration comes from that PR's base commit. A PR cannot change its own
+review configuration. Without that file, the server default is used.
 
-## Browser setup
+Web search is separately opt-in through trusted [`web_search`](configuration.md#web_search)
+settings. Queries go to Exa; private or unknown repositories also need
+`allow_private: true`. Free hosted Exa needs no key. An optional `EXA_API_KEY`
+selects keyed REST. Store keys in the dashboard or server environment, never YAML.
 
-1. Read `podman logs revera` or `docker compose logs revera`.
-2. Open the setup link printed in the log. Treat that link as a secret.
-3. Edit the app name if it is already taken. Optionally enter your organization.
-4. Click **Create GitHub App**, then **Create GitHub App** on GitHub's page.
-5. Sign in with GitHub in that same browser. The browser holding the setup
-   cookie becomes the first administrator; later sign-ins must be listed in
-   **Settings → Access**.
-6. Follow the installation redirect and choose **All repositories**, or select
-   individual repositories.
-7. Return to the dashboard, configure your models and keys, then click **Test**.
-   If you enable remote retrieval, configure its keys and test the embedding
-   endpoint too. Finish once the checks pass.
-
-The server saves the app credentials in `/data/app.json`. The setup-token
-endpoints then disappear. `/` serves the dashboard; repository and review data
-require a signed-in administrator. `/healthz` returns `ok`.
-
-Sessions last 14 days and use a signed, HttpOnly, Secure, SameSite=Lax cookie.
-Sign out from the avatar menu. Dashboard writes also require a CSRF token;
-signing in alone is not enough for an API mutation.
-
-## Dashboard settings and keys
-
-- **Overview** shows connection health, active jobs and recent results.
-- **Reviews** shows findings, timing, token use and redacted logs, with
-  **Re-run** and **Cancel** actions.
-- **Repositories** controls automatic reviews and indexing per repository.
-  Manual **Index now** and **Review a PR** actions remain available when
-  automatic work is disabled.
-- **Settings** edits the default review YAML, models, budgets, retrieval and
-  access. Saving YAML runs the same parse, trust and credential checks as a
-  review. Invalid input leaves the previous file unchanged.
-
-Set or replace keys in the dashboard using the config's `api_key_env` names.
-Values are stored privately in `secrets.json`; the API returns only each name
-and its source, never the value. A dashboard value overrides the server process
-environment for probes, `${VAR}` expansion and child jobs. Deleting that value
-falls back to the environment, or reports the key as missing. GitHub token names
-are reserved and cannot be used for model keys.
-
-Config or referenced-key changes clear cached probe results. The server tests
-roles without a current result at startup and on every reconciliation tick;
-you can also run **Test** immediately. Setup
-stays at configuration until the required model checks pass and active retrieval
-keys are present. Probe results and installation presence survive restarts, so
-completed setup stays complete without waiting for the first inventory. Health is
-keyed to the saved YAML and its referenced environment values; secret values are
-never stored in the health file. Unrelated keys and unchanged saves do not clear it.
-
-## What happens on PRs, pushes and re-runs
-
-Opened, reopened, updated and ready-for-review PRs enqueue a review. Drafts and
-PRs by `dependabot[bot]` or `renovate[bot]` are skipped by default; draft and
-author preferences are editable in Settings. Closing a PR cancels its
-pending and running work. A newer head replaces pending work and cancels an
-older running review. Fork PRs use the same fork guard as Actions; they are
-skipped by default.
-
-Pushes to the default branch warm the Vera index. Work runs one job at a time
-per repository, up to the global concurrency limit. Each job has a 55-minute
-hard limit. Reviews use the existing CLI in a separate process.
-
-The **Revera** check is successful when a complete review finds nothing, neutral
-when it finds issues or finishes partially, and failed when execution fails.
-Only validator-accepted findings count toward the check and dashboard totals;
-rejected or unconfirmed candidates do not.
-Cancelled work gets a cancelled check. Re-running the app's check forces a fresh
-review, even if the patch is unchanged.
-Failed jobs show the final error line from the redacted log, or their exit status
-when no error line is available. A failed index keeps its previous push checkpoint
-so reconciliation can retry it.
-After consecutive failed or partial indexes, automatic retries wait 10 minutes,
-then 20, 40, and so on, capped at 24 hours after the latest failure finished.
-A complete index resets the count. Push webhooks and manual **Index now** requests
-bypass this wait. `GET /api/repos` includes `index.retry_at` while a retry is waiting.
-
-Reconciliation runs at startup and every ten minutes by default to recover
-missed events. The first sighting records existing PR heads without reviewing
-them: installing the app does not backfill every open PR. Later head changes
-are reviewed if they are not already queued or running.
-
-## Per-repository override
-
-A `revera.yaml` on the repository's default branch replaces the server default
-in full; it is not merged. For PRs targeting another branch, configuration comes
-from that PR's base commit. A PR cannot change its own review configuration.
-Without that file, the operator-trusted server config is used. Keep API keys in
-the dashboard or server environment, not in configuration files.
-
-## Data directory layout
+### Data directory
 
 ```text
-/data/revera.yaml             operator's default configuration
-/data/app.json                app credentials, including OAuth client secret (0600)
-/data/settings.json           administrators, allowed owners and repo preferences
+/data/revera.yaml             default review configuration
+/data/app.json                app credentials and OAuth client secret (0600)
+/data/settings.json           admins, allowed owners and repo preferences
 /data/secrets.json            dashboard-managed environment values (0600)
-/data/health.json             keyed, redacted model probe results
+/data/health.json             redacted model probe results
 /data/inventory.json          last successful installation/repository inventory
-/data/session-key             32-byte cookie signing key (0600)
+/data/session-key             cookie signing key (0600)
 /data/bootstrap-admin         first-admin bootstrap marker (0600)
-/data/setup-token             bootstrap token (0600; deleted after setup)
+/data/setup-token             setup token (0600; deleted after setup)
 /data/seen.json               reconciliation checkpoints
-/data/repos/<owner>/<repo>/   reusable checkouts, including the warm .vera index
-/data/cache/<owner>/<repo>/   repository-isolated Vera configuration and cache
-/data/jobs/<id>/meta.json     job status, timestamps, findings and token counts
+/data/repos/<owner>/<repo>/   reusable checkouts and warm Vera index
+/data/cache/<owner>/<repo>/   repository-isolated Vera home and cache
+/data/jobs/<id>/meta.json     status, timestamps, findings and token counts
 /data/jobs/<id>/report.json   redacted CLI report, when available
-/data/jobs/<id>/log.txt       redacted child stdout/stderr
+/data/jobs/<id>/log.txt       redacted child output
 ```
 
-Removing an installation or its repositories deletes the corresponding
-workspaces and marks their active jobs cancelled. Shutdown and restart also mark
-unfinished jobs cancelled. The newest 500 jobs are retained; active work is not
-pruned. Check IDs and repository/installation identity are stored in job metadata
-so startup can cancel abandoned checks using fresh repository-scoped tokens.
-HTTP draining is limited to ten seconds after jobs and event streams are stopped.
-Event payloads exist only while a review runs. Review state is re-seeded
-from the managed summary comment, not trusted from a previous checkout. Back up
-the credentials, settings, keys and default config; treat the entire data
-directory as private.
+Removing an installation or repository deletes its workspace and cancels its
+active jobs. Shutdown and restart mark unfinished jobs cancelled. Stored
+check identity lets startup cancel abandoned checks with fresh scoped tokens.
+The newest 500 jobs are retained; active work is not pruned.
+
+Event payloads last only while a review runs. Review state is seeded from
+the managed PR summary, not a previous checkout. Back up credentials,
+settings, keys and default config. Treat the entire data directory as private.
 
 ## Upgrading
 
-Back up the credentials and config, pull the new image, then restart with the
-same `/data` volume. For Compose: `docker compose pull && docker compose up -d`.
-Reconciliation recovers changed PR heads after restart. Configuration can pin a
-Vera version in its cache identity, but the CLI does not enforce that installed
-version; keep your configuration and image's Vera release aligned.
+Back up the data directory, pull the image and restart with the same volume.
+For Compose: `docker compose pull && docker compose up -d`. Check the
+[trigger migration](#triggers-review-modes-and-mentions) and
+[existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
-When upgrading from the server without a dashboard, older `app.json` files may
-lack `client_secret`. In the GitHub App's settings, add
-`https://<your-host>/auth/callback` as an authorization callback URL and generate
-an OAuth client secret. Stop the server, add that `client_secret` field to
-`app.json` without changing its other credentials or 0600 permissions, and
-create `settings.json` containing `{"admins":["your-github-login"]}` if it does
-not yet exist. Restart and sign in. Do not delete an existing bootstrap marker
-to reopen administrator enrollment. Old flat job logs are not imported into the
-dashboard; archive them separately if needed.
+Configuration can name an expected Vera version, but the CLI does not enforce
+it during review. Keep that setting aligned with the image's Vera release.
+
+Older servers without a dashboard may have no `client_secret` in `app.json`.
+Add `https://<your-host>/auth/callback` in the App's authorization callback
+URLs and generate an OAuth client secret. Stop the server and add the
+`client_secret` field without changing other credentials or file permissions.
+If absent, create `settings.json` with `{"admins":["your-github-login"]}`.
+Restart and sign in. Do not delete a bootstrap marker to reopen enrollment.
+Old flat job logs are not imported; archive them separately if needed.
 
 ## Security model
 
-The app is private. Installations are accepted only for its owner and the merged
-allowed-owner list. Dashboard access is limited to the administrator list.
-Webhook signatures are checked before payloads are parsed. Bootstrap setup is
-token-gated and its callback checks state; both endpoints return 404 once the
-app is configured.
+The App is private. Installations are accepted only for its owner and allowed
+owners; dashboard access is limited to administrators. Webhook signatures are
+checked before parsing. Setup is token-gated, checks callback state and closes
+when the App is configured.
 
-The app private key, webhook secret and OAuth client secret stay in `app.json`, never in child
-arguments or environment. Each job receives a short-lived installation token
-scoped to its repository and permissions. Git authentication uses environment
-configuration, not command arguments or `.git/config`. Model keys come from the
-dashboard or server environment, subject to the CLI's existing configuration trust
-checks. Base-branch configuration is trusted administrative input: review
-changes to it carefully. This is process isolation, not a sandbox for arbitrary
-untrusted executables; use the same configuration precautions as in Actions.
+Sessions use signed, HttpOnly, Secure, SameSite=Lax cookies and last 14 days.
+Dashboard writes also need a CSRF token. Sign out from the avatar menu.
+`/healthz` returns `ok`; repository and review data require an administrator.
+
+The App private key, webhook secret and OAuth client secret stay in
+`app.json`, never child arguments or environment. Jobs get short-lived
+installation tokens scoped to one repository and its required permissions.
+Git authentication uses environment configuration, not command arguments or
+`.git/config`. Model keys come from the dashboard or server environment after
+configuration trust checks.
+
+Base-branch configuration is trusted administrative input. Review changes
+to it carefully. Jobs have process isolation, not a sandbox for arbitrary
+untrusted executables. Use the same precautions as in Actions.
+
+## Server API
+
+Dashboard API writes require an administrator session and CSRF token.
+
+- `GET /api/settings/server` returns preferences, also under `server` in
+  `GET /api/settings`. `PUT /api/settings/server` replaces
+  `{admins, allowed_owners, default_trigger, default_mode, repos, review_drafts,
+  skip_authors}`. Triggers are `mention|auto|off`; modes are `quick|standard|deep`.
+  `repos` maps full repository names to `{trigger: value|null, mode: value|null}`.
+- `GET /api/repos` includes effective `trigger` and `mode`, nullable
+  `trigger_override` and `mode_override`, and index/job metadata. A waiting
+  index retry has `index.retry_at`.
+- `PATCH /api/repos/:owner/:repo` accepts `{trigger?: value|null, mode?: value|null}`.
+  Omitted fields are unchanged; null inherits. Legacy `{enabled: false}` maps
+  to off and `{enabled: true}` clears the trigger override for one release.
+- `POST /api/repos/:owner/:repo/pulls/:number/review` and
+  `POST /api/jobs/:id/rerun` accept optional `{mode?: value}`. Absent or null
+  mode uses the repository mode. Success returns `{id}`. Off repositories
+  return HTTP 409, including for manual indexing.
+- `GET /api/overview` includes `app.issue_comment_subscribed` (boolean, or
+  null when registration metadata is unavailable) and `app.settings_url`.
+  Review summaries include `mode` and trigger `mention|auto|manual|rerun`.
 
 ## Troubleshooting
 
-- **Server will not start:** ensure the default config exists and parses, the
-  data volume is writable by uid 10001, and the public URL uses HTTPS.
-- **Setup returns 401:** use the exact logged token link. A callback with a
-  different state is rejected. After setup, a 404 is expected.
-- **Sign-in is rejected:** confirm your login is an administrator. First-time
-  setup must finish in the browser that opened the setup link. For an older
-  app without OAuth credentials, follow the upgrade steps above.
-- **Dashboard not built:** native `cargo build` works without Node and serves
-  this placeholder. To include the dashboard, run `npm ci && npm run build` in
-  `web/` before building the Rust binary. Release images include it.
-- **Webhook returns 401:** check the delivery's signature and that the proxy
-  leaves the body unchanged. Ensure `/data/app.json` belongs to this app.
-- **No reviews after installation:** existing PRs are deliberately not
-  backfilled. Update a PR or re-run its Revera check. Check allowed owners,
-  installation repository access, draft status and bot authorship.
-- **Partial or failed check:** open the job log in Reviews, check API key
-  names and endpoint configuration, and inspect the report. A fork
-  skip is partial rather than a failed review.
-- **Vera problems:** confirm `vera` is on `PATH`, embedding credentials are set
-  and the image version matches your intended cache configuration. Explicit
-  `vera.home` or `REVERA_VERA_HOME` overrides the normal repository-isolated cache
-  location; do not point concurrent repositories at the same Vera home.
+- If the server will not start, check the data directory's ownership, HTTPS
+  public URL and any existing YAML file. A missing default config is allowed
+  for first setup; an invalid one is not.
+- If setup returns 401, use the exact logged link. After setup, 404 is expected.
+  A rejected sign-in usually means the login is not an administrator or first
+  setup finished in a different browser.
+- If mentions do nothing, check the App's Issues permission, Issue comment
+  subscription and installation approval. Confirm the repository is not off
+  and the commenter is an owner, member or collaborator.
+- If auto reviews do not start, check the trigger, allowed owners, installation
+  access, drafts and skipped authors. Installing does not backfill open PRs.
+- For partial or failed reviews, open the redacted job log in Reviews and
+  check key names, endpoints and the report's stop reason. Fork skips are partial.
+- For Vera failures, confirm the binary is on `PATH` and embedding keys are
+  present. Do not share an explicit `vera.home` or `REVERA_VERA_HOME` between
+  concurrent repositories.
+- For webhook 401 responses, check signatures, proxy body handling and that
+  `/data/app.json` belongs to this App.

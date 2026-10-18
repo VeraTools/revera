@@ -1,5 +1,8 @@
 use super::events::{Job, Kind};
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::{Arc, Weak},
+};
 use tokio::sync::watch;
 
 type Key = (u64, u64);
@@ -9,13 +12,66 @@ pub struct Running {
     pub cancel: watch::Sender<bool>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::Queue;
+
+    #[test]
+    fn review_admissions_expire_and_close_invalidates_only_its_pr() {
+        let mut queue = Queue::default();
+        let first = queue.review_admission((1, 7));
+        let concurrent = queue.review_admission((1, 7));
+        let other = queue.review_admission((1, 8));
+        queue.close((1, 7));
+        assert!(!queue.admits((1, 7), &first));
+        assert!(!queue.admits((1, 7), &concurrent));
+        assert!(queue.admits((1, 8), &other));
+        let reopened = queue.review_admission((1, 7));
+        assert!(queue.admits((1, 7), &reopened));
+        assert!(!queue.admits((1, 7), &first));
+        drop(reopened);
+        drop(other);
+        for number in 9..1000 {
+            let admission = queue.review_admission((1, number));
+            assert!(queue.admits((1, number), &admission));
+            assert_eq!(
+                queue.admissions.len(),
+                1,
+                "expired lookups retained in memory"
+            );
+        }
+    }
+}
+
+pub struct ReviewAdmission(Arc<()>);
+
 #[derive(Default)]
 pub struct Queue {
     pub pending: BTreeMap<Key, Job>,
     pub running: BTreeMap<Key, Running>,
+    // Only in-flight lookups keep tokens alive. Expired entries are pruned when
+    // admitting the next lookup, rather than retaining every PR ever closed.
+    admissions: BTreeMap<Key, Weak<()>>,
 }
 
 impl Queue {
+    pub fn review_admission(&mut self, key: Key) -> ReviewAdmission {
+        self.admissions.retain(|_, token| token.strong_count() > 0);
+        let token = self.admissions.entry(key).or_default();
+        let current = token.upgrade().unwrap_or_else(|| {
+            let current = Arc::new(());
+            *token = Arc::downgrade(&current);
+            current
+        });
+        ReviewAdmission(current)
+    }
+
+    pub fn admits(&self, key: Key, admission: &ReviewAdmission) -> bool {
+        self.admissions
+            .get(&key)
+            .is_some_and(|current| current.ptr_eq(&Arc::downgrade(&admission.0)))
+    }
+
     pub fn enqueue(&mut self, job: Job) {
         let key = job.key();
         if let Some(running) = self.running.get(&key) {
@@ -40,6 +96,7 @@ impl Queue {
     }
 
     pub fn close(&mut self, key: Key) {
+        self.admissions.remove(&key);
         self.pending.remove(&key);
         if let Some(running) = self.running.get(&key) {
             let _ = running.cancel.send(true);
@@ -47,6 +104,7 @@ impl Queue {
     }
 
     pub fn remove_repo(&mut self, repo: super::events::Repo) -> Vec<Job> {
+        self.admissions.retain(|key, _| key.0 != repo.id);
         let cancelled = self
             .pending
             .values()
@@ -63,6 +121,7 @@ impl Queue {
         self.enqueue(Job {
             id: uuid::Uuid::new_v4().simple().to_string(),
             trigger: "webhook".into(),
+            mode: super::dashboard::Mode::Standard,
             repo,
             kind: Kind::Remove,
         });

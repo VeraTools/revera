@@ -264,6 +264,7 @@ mod tests {
             session_header: None,
             script: None,
             reasoning: crate::config::Reasoning::default(),
+            fallback: vec![],
         }
     }
 

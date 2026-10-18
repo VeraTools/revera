@@ -64,7 +64,7 @@ pub async fn validate_candidates(
         let sem = sem.clone();
         let cfg_models = cfg.effective_validator().clone();
         let ledger = ledger.clone();
-        let tb = toolbox.clone();
+        let tb = Arc::new(toolbox.for_validation());
         let diff = diff.clone();
         let budget = cfg.budget.clone();
         let retries = cfg.budget.retries;

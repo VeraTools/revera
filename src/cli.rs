@@ -382,6 +382,8 @@ fn fork_skip(
             cache_write_tokens: 0,
             reasoning_tokens: 0,
             by_route: vec![],
+            fallback_events: vec![],
+            unavailable_routes: vec![],
             wall_ms: 0,
         },
         publication: crate::report::Publication {
@@ -581,6 +583,7 @@ async fn review(a: ReviewArgs) -> i32 {
         body: pr_body,
         strategy_override: strategy,
         force: a.force,
+        repository_public: ev.as_ref().is_some_and(|e| e.repository_public),
     };
     match pipeline_run(&cfg, &req).await {
         Ok((mut report, mut state)) => {
@@ -782,48 +785,92 @@ async fn doctor(
             }
         }
     }
-    for (name, r) in routes {
-        if r.protocol.is_http() {
-            let env = r.api_key_env.clone().unwrap_or_default();
-            if env.is_empty() {
-                println!("{name}: FAIL — api_key_env not set for an HTTP route");
-                println!("  next: set api_key_env = \"YOUR_PROVIDER_KEY\" on the route");
-                ok = false;
-            } else if crate::config::env_is_set(&env) {
-                println!(
-                    "{name}: {} via {} (key env {env} set)",
-                    r.model,
-                    crate::config::identity_url(
-                        r.base_url.as_deref().unwrap_or("(default base url)")
-                    )
-                );
+    for (name, primary) in routes {
+        let usable = primary
+            .routes()
+            .any(|r| r.credentials_available(&crate::config::env_is_set));
+        for (index, r) in primary.routes().enumerate() {
+            let name = if index == 0 {
+                name.clone()
             } else {
-                println!("{name}: FAIL — key env {env} missing or empty");
-                println!(
-                    "  next: export {env}=<your key> (or add it as a repository secret in CI)"
-                );
-                ok = false;
-            }
-            if r.reasoning.enabled() {
-                println!(
-                    "{name}: reasoning effort={} (budget {})",
-                    r.reasoning.effort().as_str(),
-                    r.reasoning.effective_budget()
-                );
-            }
-        } else {
-            match &r.script {
-                Some(p) if p.exists() => println!("{name}: scripted route {}", p.display()),
-                Some(p) => {
-                    println!("{name}: FAIL — script {} not found", p.display());
+                format!("{name}.fallback[{}]", index - 1)
+            };
+            if r.protocol.is_http() {
+                let env = r.api_key_env.clone().unwrap_or_default();
+                if env.is_empty() {
+                    println!("{name}: FAIL — api_key_env not set for an HTTP route");
+                    println!("  next: set api_key_env = \"YOUR_PROVIDER_KEY\" on the route");
                     ok = false;
+                } else if crate::config::env_is_set(&env) {
+                    println!(
+                        "{name}: {} via {} (key env {env} set)",
+                        r.model,
+                        crate::config::identity_url(
+                            r.base_url.as_deref().unwrap_or("(default base url)")
+                        )
+                    );
+                } else {
+                    let status = if usable {
+                        "UNAVAILABLE (skipped; another route has a key)"
+                    } else {
+                        "FAIL"
+                    };
+                    println!("{name}: {status} — key env {env} missing or empty");
+                    println!(
+                        "  next: export {env}=<your key> (or add it as a repository secret in CI)"
+                    );
+                    ok &= usable;
                 }
-                None => {
-                    println!("{name}: FAIL — scripted route without `script` path");
-                    ok = false;
+                if r.reasoning.enabled() {
+                    println!(
+                        "{name}: reasoning effort={} (budget {})",
+                        r.reasoning.effort().as_str(),
+                        r.reasoning.effective_budget()
+                    );
+                }
+            } else {
+                match &r.script {
+                    Some(p) if p.exists() => println!("{name}: scripted route {}", p.display()),
+                    Some(p) => {
+                        println!("{name}: FAIL — script {} not found", p.display());
+                        ok = false;
+                    }
+                    None => {
+                        println!("{name}: FAIL — scripted route without `script` path");
+                        ok = false;
+                    }
                 }
             }
         }
+    }
+
+    if !cfg.web_search.enabled {
+        println!("web_search: disabled (no external queries)");
+    } else if let Err(e) = cfg.check_trust(false) {
+        println!("web_search: FAIL — {e}");
+        println!("  next: use a dedicated optional Exa api_key_env, not a GitHub credential");
+        ok = false;
+    } else {
+        let key_set = !cfg.web_search.api_key_env.is_empty()
+            && crate::config::env_is_set(&cfg.web_search.api_key_env);
+        println!(
+            "web_search: {} (queries go to Exa; private/unknown repos {})",
+            if key_set && cfg.web_search.free_first {
+                "free Exa first, keyed REST on transient/format failure"
+            } else if key_set {
+                "keyed Exa REST (key env set)"
+            } else {
+                "free hosted Exa (no key needed)"
+            },
+            if cfg.web_search.allow_private {
+                "explicitly opted in"
+            } else {
+                "disabled"
+            }
+        );
+        println!(
+            "  next: optional EXA_API_KEY enables keyed REST; local CLI needs trusted web_search.allow_private=true because visibility is unknown"
+        );
     }
 
     if !cfg.vera.enabled {

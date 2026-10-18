@@ -18,8 +18,8 @@ pub type GeminiClient = HttpClient<GeminiAdapter>;
 impl GeminiAdapter {
     pub fn from_route(route: ModelRoute) -> Result<Self, ProviderError> {
         let env_name = route.api_key_env.clone().unwrap_or_default();
-        let api_key = crate::redact::secret_env(&env_name)
-            .ok_or_else(|| ProviderError::Other(format!("api_key_env {env_name} is not set")))?;
+        let api_key =
+            crate::redact::secret_env(&env_name).ok_or(ProviderError::MissingKey(env_name))?;
         Ok(Self::with_api_key(route, api_key))
     }
 
@@ -137,9 +137,13 @@ fn contents(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
                     if let Some(c) = &m.content {
                         parts.push(json!({"text": c}));
                     }
+                    // Calls replayed from another model carry no signature. Gemini 3
+                    // rejects unsigned calls in the current turn; Google documents
+                    // this sentinel for history transferred from other models.
                     for t in &m.tool_calls {
                         parts.push(json!({
-                            "functionCall": {"name": t.name, "args": t.arguments}
+                            "functionCall": {"name": t.name, "args": t.arguments},
+                            "thoughtSignature": "skip_thought_signature_validator"
                         }));
                     }
                 }

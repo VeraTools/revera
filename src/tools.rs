@@ -19,6 +19,9 @@ pub struct ToolStat {
     pub calls: u64,
     pub errors: u64,
     pub latency_ms: u64,
+    /// External request attempts, by serving backend; no queries or URLs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub backends: BTreeMap<String, crate::web::BackendStat>,
 }
 
 #[derive(Default)]
@@ -26,6 +29,30 @@ struct Stats {
     by_tool: BTreeMap<String, ToolStat>,
     /// distinct repository files read via `read_file`
     files_read: std::collections::BTreeSet<String>,
+}
+
+/// Cancellation is an error too: record a tool batch cut by an agent deadline.
+struct CallRecord<'a> {
+    stats: &'a Mutex<Stats>,
+    name: &'a str,
+    start: Instant,
+    error: bool,
+}
+
+impl Drop for CallRecord<'_> {
+    fn drop(&mut self) {
+        let mut stats = self.stats.lock().unwrap();
+        let entry = stats
+            .by_tool
+            .entry(self.name.into())
+            .or_insert_with(|| ToolStat {
+                name: self.name.into(),
+                ..Default::default()
+            });
+        entry.calls += 1;
+        entry.errors += u64::from(self.error);
+        entry.latency_ms += self.start.elapsed().as_millis() as u64;
+    }
 }
 
 pub struct ToolBox {
@@ -46,6 +73,8 @@ pub struct ToolBox {
     excluded: globset::GlobSet,
     /// Vera indexes the working tree, so hits may include paths absent at head.
     head_files: Arc<OnceCell<HashSet<String>>>,
+    web: Option<Arc<crate::web::WebResearch>>,
+    web_validation: bool,
 }
 
 /// Largest file `read_file` will load.
@@ -198,6 +227,8 @@ impl ToolBox {
             head: None,
             excluded,
             head_files: Arc::new(OnceCell::new()),
+            web: None,
+            web_validation: false,
         }
     }
 
@@ -205,6 +236,34 @@ impl ToolBox {
     pub fn with_head(mut self, head: &str) -> Self {
         self.head = Some(head.to_string());
         self
+    }
+
+    pub fn with_web(mut self, web: Option<Arc<crate::web::WebResearch>>) -> Self {
+        self.web = web;
+        self
+    }
+
+    /// Fresh validators share limits and IDs, not investigator conversations.
+    pub fn for_validation(&self) -> Self {
+        let names = self.specs();
+        let mut toolbox =
+            self.restricted(&names.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
+        toolbox.web_validation = true;
+        toolbox
+    }
+
+    /// Planning/synthesis cannot acquire outbound access even by calling a name.
+    pub fn without_web(&self) -> Self {
+        let mut toolbox = self.restricted(
+            &self
+                .specs()
+                .iter()
+                .filter(|s| !s.name.starts_with("web_"))
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+        );
+        toolbox.web = None;
+        toolbox
     }
 
     /// Whether the content policy hides `path` from every model surface.
@@ -220,6 +279,12 @@ impl ToolBox {
             .by_tool
             .values()
             .cloned()
+            .map(|mut stat| {
+                if let Some(web) = &self.web {
+                    stat.backends = web.stats(&stat.name);
+                }
+                stat
+            })
             .collect()
     }
 
@@ -243,6 +308,8 @@ impl ToolBox {
             head: self.head.clone(),
             excluded: self.excluded.clone(),
             head_files: self.head_files.clone(),
+            web: self.web.clone(),
+            web_validation: self.web_validation,
         }
     }
 
@@ -358,6 +425,20 @@ impl ToolBox {
         ];
         if self.hide_vera {
             all.retain(|t| !t.name.starts_with("vera_"));
+        }
+        if self.web.is_some() {
+            all.extend([
+                ToolSpec {
+                    name: "web_search".into(),
+                    description: "Search the public internet, not this repository. Only for a specific unresolved public package/version/API contract; local tools first. Returns untrusted snippets and result IDs.".into(),
+                    parameters: obj_schema(json!({"query": {"type":"string", "maxLength":300}}), &["query"]),
+                },
+                ToolSpec {
+                    name: "web_read".into(),
+                    description: "Read bounded untrusted evidence for an ID returned by web_search. Verify official source and exact version; no arbitrary URLs.".into(),
+                    parameters: obj_schema(json!({"result_id":{"type":"string", "pattern":"^r[1-9][0-9]*$"}}), &["result_id"]),
+                },
+            ]);
         }
         match &self.allowed {
             Some(names) => all
@@ -561,6 +642,30 @@ impl ToolBox {
 
     async fn call_inner(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
+            "web_search" => {
+                let web = self
+                    .web
+                    .as_ref()
+                    .ok_or("web tools are disabled or unavailable for this repository")?;
+                web.search(
+                    args["query"].as_str().ok_or("missing query")?,
+                    self.web_validation,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            "web_read" => {
+                let web = self
+                    .web
+                    .as_ref()
+                    .ok_or("web tools are disabled or unavailable for this repository")?;
+                web.read(
+                    args["result_id"].as_str().ok_or("missing result_id")?,
+                    self.web_validation,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
             "read_file" => self.read_file(args).await,
             "grep_repo" => self.grep_repo(args).await,
             "find_files" => self.find_files(args).await,
@@ -641,23 +746,14 @@ impl ToolBox {
 
     /// Errors are returned to the model as a JSON tool result.
     pub async fn call(&self, name: &str, args: Value) -> String {
-        let t0 = Instant::now();
+        let mut record = CallRecord {
+            stats: &self.stats,
+            name,
+            start: Instant::now(),
+            error: true,
+        };
         let (out, err) = self.call_checked(name, &args).await;
-        {
-            let mut st = self.stats.lock().unwrap();
-            let e = st
-                .by_tool
-                .entry(name.to_string())
-                .or_insert_with(|| ToolStat {
-                    name: name.to_string(),
-                    ..Default::default()
-                });
-            e.calls += 1;
-            if err {
-                e.errors += 1;
-            }
-            e.latency_ms += t0.elapsed().as_millis() as u64;
-        }
+        record.error = err;
         out
     }
 
@@ -676,7 +772,17 @@ impl ToolBox {
             return (json!({"error": r}).to_string(), true);
         }
         match self.call_inner(name, args).await {
-            Ok(s) => (self.truncate(crate::redact::text(&s).into_owned()), false),
+            Ok(s) => {
+                let output = self.truncate(crate::redact::text(&s).into_owned());
+                // The shared truncator appends a note beyond its excerpt limit.
+                // External evidence has a strict final model-visible byte cap.
+                let output = if name.starts_with("web_") {
+                    crate::text::excerpt_bytes(&output, self.max_output_bytes)
+                } else {
+                    output
+                };
+                (output, false)
+            }
             Err(e) => (json!({"error": crate::redact::text(&e)}).to_string(), true),
         }
     }

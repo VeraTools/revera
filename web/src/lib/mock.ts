@@ -7,6 +7,8 @@ import type {
   Session,
   SetupStage,
   Role,
+  ReviewMode,
+  Trigger,
 } from './types';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
@@ -28,7 +30,8 @@ let jobs: JobSummary[] = titles.map((title, i) => ({
   title,
   author: ['alex', 'sam', 'morgan'][i % 3],
   head_sha: '8c74a1e9bf062d4a18f60c32',
-  trigger: 'webhook',
+  trigger: (['mention', 'auto', 'mention', 'manual', 'auto', 'rerun', 'auto'] as const)[i],
+  mode: (['standard', 'quick', 'deep', 'standard', 'deep', 'standard', 'quick'] as const)[i],
   status: (['running', 'queued', 'complete', 'complete', 'partial', 'failed', 'complete'] as const)[
     i
   ],
@@ -57,7 +60,10 @@ let repos: Repository[] = [
     full_name: 'northstar/api',
     private: true,
     default_branch: 'main',
-    enabled: true,
+    trigger: 'mention',
+    mode: 'standard',
+    trigger_override: null,
+    mode_override: null,
     has_override: false,
     index: { state: 'ready', updated_at: ago(34) },
     last_job: jobs[0],
@@ -67,7 +73,10 @@ let repos: Repository[] = [
     full_name: 'northstar/web',
     private: false,
     default_branch: 'main',
-    enabled: true,
+    trigger: 'auto',
+    mode: 'quick',
+    trigger_override: 'auto',
+    mode_override: 'quick',
     has_override: true,
     index: { state: 'ready', updated_at: ago(68) },
     last_job: jobs[3],
@@ -77,7 +86,10 @@ let repos: Repository[] = [
     full_name: 'northstar/worker',
     private: true,
     default_branch: 'main',
-    enabled: true,
+    trigger: 'mention',
+    mode: 'deep',
+    trigger_override: null,
+    mode_override: 'deep',
     has_override: false,
     index: { state: 'building' },
     last_job: jobs[2],
@@ -87,7 +99,10 @@ let repos: Repository[] = [
     full_name: 'northstar/docs',
     private: false,
     default_branch: 'main',
-    enabled: false,
+    trigger: 'off',
+    mode: 'standard',
+    trigger_override: 'off',
+    mode_override: null,
     has_override: false,
     index: { state: 'none' },
     html_url: 'https://github.com/northstar/docs',
@@ -96,7 +111,10 @@ let repos: Repository[] = [
     full_name: 'northstar/internal-tools',
     private: true,
     default_branch: 'main',
-    enabled: true,
+    trigger: 'auto',
+    mode: 'standard',
+    trigger_override: 'auto',
+    mode_override: null,
     has_override: false,
     index: { state: 'none' },
     html_url: 'https://github.com/northstar/internal-tools',
@@ -107,21 +125,24 @@ const initialYaml = `# Default review configuration
 models:
   # Reads the diff and proposes findings.
   investigator:
-    protocol: openai-chat
-    base_url: https://api.example.com/v1
-    api_key_env: REVERA_MODEL_API_KEY
-    model: model-name
-    max_output_tokens: 4000
-    temperature: 0.2
+    protocol: openai-responses
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-5.2
+    max_output_tokens: 16000
     reasoning: medium
+    fallback:
+      - protocol: anthropic
+        base_url: https://api.anthropic.com
+        api_key_env: ANTHROPIC_API_KEY
+        model: claude-sonnet-4-5
   # Re-checks each finding in a fresh context.
   validator:
-    protocol: openai-chat
-    base_url: https://api.example.com/v1
-    api_key_env: REVERA_MODEL_API_KEY
-    model: model-name
-    max_output_tokens: 4000
-    temperature: 0.2
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    model: claude-sonnet-4-5
+    max_output_tokens: 8000
     reasoning: medium
 
 review:
@@ -140,21 +161,38 @@ budget:
 vera:
   enabled: true
   backend: local
+
+web_search:
+  enabled: true
+  allow_private: false
+  max_searches_per_review: 4
+  max_reads_per_review: 4
 `;
 let settings: Settings = {
   yaml: import.meta.env.VITE_MOCK_EMPTY_YAML === '1' ? '' : initialYaml,
   server: {
     admins: ['alex'],
     allowed_owners: ['northstar'],
-    default_enabled: true,
-    repos: {},
+    default_trigger: 'mention',
+    default_mode: 'standard',
+    repos: Object.fromEntries(
+      repos
+        .filter((repo) => repo.trigger_override || repo.mode_override)
+        .map((repo) => [
+          repo.full_name,
+          { trigger: repo.trigger_override, mode: repo.mode_override },
+        ]),
+    ),
     review_drafts: false,
     skip_authors: ['dependabot[bot]', 'renovate[bot]'],
   },
   secrets:
     import.meta.env.VITE_MOCK_EMPTY_YAML === '1'
       ? []
-      : [{ name: 'REVERA_MODEL_API_KEY', source: 'environment' }],
+      : [
+          { name: 'OPENAI_API_KEY', source: 'environment' },
+          { name: 'ANTHROPIC_API_KEY', source: 'environment' },
+        ],
   referenced_env: [],
 };
 let stage: SetupStage = 'done';
@@ -191,14 +229,22 @@ function references() {
     if (!settings.secrets.some((secret) => secret.name === name))
       settings.secrets.push({ name, source: 'missing' });
 }
-function enqueue(repo: string, pr?: number) {
+function enqueue(
+  repo: string,
+  pr?: number,
+  mode?: ReviewMode | null,
+  trigger: JobSummary['trigger'] = 'manual',
+) {
+  const repository = repos.find((item) => item.full_name === repo);
+  if (repository?.trigger === 'off') throw new Error('Reviews are off for this repository.');
   const job: JobSummary = {
     id: `job-${Date.now()}`,
     repo,
     pr,
     title: pr ? 'Manual review' : 'Repository index',
     kind: pr ? 'review' : 'index',
-    trigger: 'manual',
+    trigger,
+    mode: mode || repository?.mode || settings.server.default_mode,
     status: 'queued',
     findings: { total: 0, high: 0, medium: 0, low: 0 },
     queued_at: ago(0),
@@ -238,17 +284,20 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         slug: 'revera-northstar',
         html_url: 'https://github.com/apps/revera-northstar',
         install_url: 'https://github.com/apps/revera-northstar/installations/new',
+        settings_url:
+          'https://github.com/organizations/northstar/settings/apps/revera-northstar/permissions',
+        issue_comment_subscribed: false,
         owner: 'northstar',
       },
       health: {
         github: { ok: true },
         models: ['investigator', 'validator'].map((role) => ({
           role,
-          model: 'model-name',
+          model: role === 'investigator' ? 'gpt-5.2' : 'claude-sonnet-4-5',
           ok: true,
           checked_at: ago(12),
         })),
-        vera: { enabled: true, version: '2.1.3' },
+        vera: { enabled: true, version: '2.1.4' },
       },
       queue: {
         running: jobs.filter((job) => job.status === 'running'),
@@ -288,8 +337,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         '',
       ].join('\n');
     if (jobMatch[2] === 'rerun') {
-      enqueue(job.repo, job.pr);
-      return;
+      return { id: enqueue(job.repo, job.pr, data?.mode as ReviewMode | null, 'rerun').id };
     }
     if (jobMatch[2] === 'cancel') {
       job.status = 'cancelled';
@@ -332,7 +380,25 @@ export async function mockRequest(path: string, method: string, body?: unknown):
           ].slice(0, job.findings.total)
         : [],
       timing: { investigator_ms: 112000, validation_ms: 68000 },
-      ledger: { requests: 14, retries: 0 },
+      ledger: {
+        requests: 14,
+        retries: 0,
+        ...(job.id === 'review-105'
+          ? {
+              fallback_events: [
+                {
+                  role: 'investigator',
+                  from_model: 'gpt-5.2',
+                  to_model: 'claude-sonnet-4-5',
+                  reason: 'rate_limit_or_server',
+                },
+              ],
+              unavailable_routes: [
+                { role: 'validator', model: 'gemini-3-pro', reason: 'missing_key' },
+              ],
+            }
+          : {}),
+      },
     } satisfies JobDetail;
   }
   if (url.pathname === '/api/repos') return structuredClone(repos);
@@ -344,7 +410,11 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     const repo = repos.find((item) => item.full_name === name);
     if (!repo) throw new Error('Repository not found.');
     if (method === 'PATCH') {
-      repo.enabled = Boolean(data?.enabled);
+      const override = { ...settings.server.repos[name] };
+      if (data && 'trigger' in data) override.trigger = data.trigger as Trigger | null;
+      if (data && 'mode' in data) override.mode = data.mode as ReviewMode | null;
+      settings.server.repos[name] = override;
+      syncRepos();
       emit('repos');
       return;
     }
@@ -355,8 +425,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
       return;
     }
     if (repoMatch[4]) {
-      enqueue(name, Number(repoMatch[4]));
-      return;
+      return { id: enqueue(name, Number(repoMatch[4]), data?.mode as ReviewMode | null).id };
     }
     if (repoMatch[3] === 'pulls')
       return [
@@ -390,7 +459,10 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     return;
   }
   if (url.pathname === '/api/settings/server') {
+    if (method === 'GET') return structuredClone(settings.server);
     settings.server = structuredClone(body) as Settings['server'];
+    syncRepos();
+    emit('repos');
     return;
   }
   if (url.pathname.startsWith('/api/secrets/')) {
@@ -400,10 +472,28 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     return;
   }
   if (url.pathname === '/api/settings/test') {
-    if (data?.role === 'investigator' || data?.role === 'validator') stage = 'done';
+    if (data?.fallback !== undefined) {
+      const doc = parseDocument(settings.yaml);
+      const role =
+        data.role === 'validator' && !doc.hasIn(['models', 'validator'])
+          ? 'investigator'
+          : String(data.role);
+      if (!doc.hasIn(['models', role, 'fallback', Number(data.fallback)]))
+        throw new Error('Fallback model index is out of range.');
+    } else if (data?.role === 'investigator' || data?.role === 'validator') stage = 'done';
     return { ok: true, latency_ms: 342 };
   }
   if (url.pathname === '/api/settings/models')
-    return { models: ['model-name', 'model-name-large', 'model-name-small'] };
+    return { models: ['gpt-5.2', 'gpt-5.2-mini', 'gpt-5.1'] };
   throw new Error(`Mock endpoint not found: ${method} ${path}`);
+}
+
+function syncRepos() {
+  for (const repo of repos) {
+    const override = settings.server.repos[repo.full_name];
+    repo.trigger_override = override?.trigger ?? null;
+    repo.mode_override = override?.mode ?? null;
+    repo.trigger = repo.trigger_override ?? settings.server.default_trigger;
+    repo.mode = repo.mode_override ?? settings.server.default_mode;
+  }
 }

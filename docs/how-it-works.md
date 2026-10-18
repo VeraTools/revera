@@ -38,6 +38,12 @@ note to each system prompt listing the tools actually available in that run.
 If Vera is disabled or index setup fails, its tools are hidden and the note
 describes lexical-only retrieval.
 
+Optional `web_search`/`web_read` supply untrusted public technical evidence only
+when enabled in trusted config; private/unknown repositories need a separate
+opt-in. Investigation and fresh validation share bounded requests with validator
+capacity reserved; planning and synthesis have no web access. See
+[configuration](configuration.md#web_search) for the third-party data boundary.
+
 **Validate.** Candidates are first collapsed (same file, overlapping lines,
 same `defect_key`), then each one is given to a validator agent that starts
 from an empty conversation: it sees the claim and the diff, has the same
@@ -46,7 +52,10 @@ tools, and must re-establish the defect from the code before returning
 single configured model still gets an independent second look; configure
 `models.validator` to use a different model. Only `accepted` findings are
 published. `uncertain` findings stay in the report and are listed in the
-summary only when `review.publish_uncertain` is on.
+summary only when `review.publish_uncertain` is on. Optional per-role
+[fallback models](configuration.md#fallback-models) inherit with the route;
+switching providers replays the full conversation and keeps the last
+successful alternative for that role for the remainder of the run.
 
 **Reconcile and publish.** Inline comments require the finding to sit on a
 head-side line of a diff hunk; other accepted findings go into the summary
@@ -61,7 +70,8 @@ the PR head SHA and refuses to publish if it moved.
 1. Models return findings and verdicts through tools (`submit_findings`,
    `submit_verdict`). They never post comments, run shell commands or write
    files.
-2. All model tools are read-only and scoped to the exact head tree.
+2. Repository tools are read-only and scoped to the exact head tree; opt-in web
+   evidence is a separate, bounded external data source, never instructions.
 3. Providers, models and credential *names* come from trusted configuration;
    credential values are read from the environment and never logged or
    fingerprinted.
@@ -136,9 +146,31 @@ against prior ids.
 
 ## Strategies
 
-`baseline` is the pipeline above. `delegated` and `panel` replace the
-investigate step with multiple lanes and share everything else (tools,
-schema, validator, anchoring, publication). See [strategies.md](strategies.md).
+Select `review.strategy`, `--strategy` in the CLI or the Action's `strategy`
+input. Every strategy uses the same fresh validator, anchoring, state and
+publication. They change how candidates are produced, not what can post.
+
+| Strategy | Candidate production |
+|---|---|
+| `baseline` (default) | One investigator explores the change and submits candidates |
+| `delegated` | A lead plans bounded questions; workers investigate in parallel; the lead synthesises candidates |
+| `panel` | Independent scouts investigate with focus labels; their candidates are combined and collapsed |
+
+Baseline is the recommended starting point. The validator can use the same
+model in a new conversation or a separate `models.validator` route.
+
+Delegated review uses `models.lead` and `models.workers`, both inheriting the
+investigator when omitted. Planning has no tools; synthesis has `read_file`.
+A failed worker creates a coverage gap and makes the run partial. Panel uses
+named `models.scouts` with labels from `panel.focuses`, in order; a single
+scout runs once per label. There is no voting: a claim from one scout still
+goes to validation.
+
+In the [strategy evaluation](evaluation.md#strategy-and-retrieval-comparison-meta-muse-spark-on-every-route),
+multiple lanes did not improve recall and cost more. Panels also produced
+more false positives. Measure a benefit on your own repositories before
+choosing them. Route and budget keys are in the
+[configuration reference](configuration.md#delegated-and-panel).
 
 ## Vera integration
 
@@ -147,7 +179,7 @@ sets `VERA_BACKEND=api` plus `EMBEDDING_*`/`RERANKER_*` from the configured
 env names). `.revera/vera-cache.json` records Vera version, backend,
 embedding model and vector dimension and is rewritten only after a
 successful, health-checked index or update; a restored cache that does not
-match is discarded. `revera cache-key` hashes just the index-shaping
+match is discarded. `revera cache-key` hashes only the index-shaping
 configuration (backend, embedding origin and model, excludes, Vera
 version) so the Action's cache survives investigator, validator, reranker,
 prompt, budget and credential-name changes; it prints

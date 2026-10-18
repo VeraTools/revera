@@ -1,6 +1,6 @@
 # Revera starter configuration. Copy to revera.yaml in your repository root
 # (or point the Action's `config` input at it). Everything not listed here has
-# a default: baseline strategy, fresh validation on, Vera retrieval off.
+# a default: baseline strategy, fresh validation on, Vera and web search off.
 # Full reference: docs/configuration.md
 
 models:
@@ -14,6 +14,12 @@ models:
     model: your-model-id
     # cache: true                  # explicit prompt-cache hints where supported (default true)
     # reasoning: medium           # none | minimal | low | medium | high | xhigh | max
+    # Optional alternatives, tried in order after eligible provider failures.
+    # Each route uses its own key; nested fallback lists are not allowed.
+    # fallback:
+    #   - protocol: anthropic
+    #     api_key_env: ANTHROPIC_API_KEY
+    #     model: your-fallback-model
 
   # Re-derives every candidate in a fresh context before anything is
   # published. When omitted it uses the investigator route; set it to use a
@@ -31,12 +37,26 @@ models:
 
 # Optional: semantic repository retrieval through Vera, on top of the
 # built-in lexical search. Needs the `vera` binary (the Action installs it)
-# and an embedding endpoint. In the evaluation it made no difference on small
-# repositories and found one more defect than lexical search on a ~50k-line
-# one (a small sample), so it is aimed at larger codebases.
+# and an embedding endpoint for this API-backend example. The larger-repository
+# comparison found one more defect than lexical search on a ~50k-line repository;
+# the evidence is limited (docs/evaluation.md).
 # vera:
 #   backend: api
 #   embedding:
 #     base_url: https://api.example.com/v1
 #     model: your-embedding-model
 #     api_key_env: EMBEDDING_API_KEY
+
+# Optional external evidence. Off by default. Queries go to Exa, a third party.
+# Private or unknown repositories (including local CLI runs) also need
+# allow_private: true. Enable only if outbound queries are acceptable.
+# web_search:
+#   enabled: true
+#   allow_private: false
+#   api_key_env: EXA_API_KEY       # optional; unset uses free hosted Exa
+#   max_searches_per_review: 4
+#   max_reads_per_review: 4
+
+# Built-in quick/deep profiles need no YAML. Use --profile quick or --profile deep
+# in the CLI, the Action's profile input, or the GitHub App's review mode.
+# They keep validation on and do not change the configured strategy.

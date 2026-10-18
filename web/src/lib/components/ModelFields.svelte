@@ -1,6 +1,7 @@
 <script lang="ts">
   import { List, KeyRound } from '@lucide/svelte';
   import { ConfigDocument, protocols, efforts } from '#lib/config.svelte';
+  import type { ConfigPath } from '#lib/config.svelte';
   import type { Secret } from '#lib/types';
   import Status from './Status.svelte';
   import SelectField from './SelectField.svelte';
@@ -15,6 +16,9 @@
     listDisabled = false,
     retrieval = false,
     compact = false,
+    showConnection = true,
+    routePath,
+    fieldId,
   }: {
     config: ConfigDocument;
     role: string;
@@ -25,10 +29,13 @@
     listDisabled?: boolean;
     retrieval?: boolean;
     compact?: boolean;
+    showConnection?: boolean;
+    routePath?: ConfigPath;
+    fieldId?: string;
   } = $props();
 
-  const path = $derived(retrieval ? ['vera', role] : ['models', role]);
-  const id = $derived(`model-${role}`);
+  const path = $derived(routePath || (retrieval ? ['vera', role] : ['models', role]));
+  const id = $derived(fieldId || `model-${role}`);
   const keyName = $derived(
     config.get(
       [...path, 'api_key_env'],
@@ -71,7 +78,7 @@
       </div>
     {/if}
   {/if}
-  {#if protocol === 'scripted' && !retrieval}
+  {#if showConnection && protocol === 'scripted' && !retrieval}
     <div class="field full">
       <label for={`${id}-script`}>Transcript path</label>
       <input
@@ -82,7 +89,7 @@
       />
       <small>A file on the server, for offline testing.</small>
     </div>
-  {:else}
+  {:else if showConnection}
     <div class="field full">
       <label for={`${id}-endpoint`}>Endpoint</label>
       <input
@@ -142,7 +149,7 @@
       />
     </div>
   {/if}
-  {#if retrieval || protocol !== 'scripted'}
+  {#if showConnection && (retrieval || protocol !== 'scripted')}
     <div class="field full">
       {#if compact}
         <span class="field-label">API key</span>

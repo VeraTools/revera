@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod fallback;
 pub mod gemini;
 pub mod http;
 pub mod openai_chat;
@@ -127,6 +128,58 @@ pub enum ProviderError {
     ScriptExpectationFailed(String),
     #[error("provider error: {0}")]
     Other(String),
+    #[error("api_key_env {0} is not set (or empty)")]
+    MissingKey(String),
+    #[error("model request failed ({reason}): {message}")]
+    Failure {
+        reason: FallbackReason,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackReason {
+    RateLimitOrServer,
+    Authentication,
+    NotFound,
+    Timeout,
+    Transport,
+    MalformedResponse,
+    MissingKey,
+}
+
+impl std::fmt::Display for FallbackReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
+        f.write_str(value.as_str().ok_or(std::fmt::Error)?)
+    }
+}
+
+impl ProviderError {
+    pub fn fallback_reason(&self) -> Option<FallbackReason> {
+        match self {
+            Self::RetryExhausted(_) => Some(FallbackReason::RateLimitOrServer),
+            Self::MissingKey(_) => Some(FallbackReason::MissingKey),
+            Self::Failure { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackEvent {
+    pub role: String,
+    pub from_model: String,
+    pub to_model: String,
+    pub reason: FallbackReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnavailableRoute {
+    pub role: String,
+    pub model: String,
+    pub reason: FallbackReason,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,6 +209,10 @@ pub struct RunLedger {
     pub entries: Vec<LedgerEntry>,
     /// In-flight reservations (requests sent but not yet recorded).
     pub reserved: u32,
+    pub fallback_events: Vec<FallbackEvent>,
+    pub unavailable_routes: Vec<UnavailableRoute>,
+    /// Shared by clients recreated for the same role (e.g. each validator candidate).
+    pub fallback_positions: std::collections::HashMap<String, Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 #[derive(Debug, Clone, Default)]
