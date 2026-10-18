@@ -63,6 +63,7 @@ pub(super) struct Server {
     queue: Mutex<queue::Queue>,
     notify: Notify,
     seen: Mutex<reconcile::Seen>,
+    mentions: Mutex<mentions::Recent>,
     runner: runner::Runner,
     dashboard: Mutex<dashboard::Dashboard>,
     session_key: [u8; 32],
@@ -80,7 +81,15 @@ impl Server {
         app.owner.eq_ignore_ascii_case(owner) || self.allowed.contains(&owner.to_ascii_lowercase())
     }
 
-    async fn enqueue(&self, mut job: events::Job) {
+    async fn enqueue(&self, job: events::Job) {
+        self.enqueue_inner(job, None).await;
+    }
+
+    async fn enqueue_inner(
+        &self,
+        mut job: events::Job,
+        admission: Option<&queue::ReviewAdmission>,
+    ) {
         let preferences = self.dashboard.lock().await.preferences.clone();
         if !matches!(job.kind, events::Kind::Remove)
             && preferences.trigger(&job.repo.full_name) == dashboard::Trigger::Off
@@ -99,7 +108,8 @@ impl Server {
             job.mode = preferences.mode(&job.repo.full_name);
         }
         let mut queue = self.queue.lock().await;
-        if *self.stopping.borrow() {
+        if *self.stopping.borrow() || admission.is_some_and(|token| !queue.admits(job.key(), token))
+        {
             return;
         }
         let previous = queue.pending.get(&job.key()).cloned();
@@ -347,6 +357,7 @@ async fn initialize(
         .map(|p| cwd.join(p))
         .unwrap_or_else(|| settings.data_dir.join("revera.yaml"));
     let seen = dashboard::read_json::<reconcile::Seen>(&settings.data_dir, "seen.json")?;
+    let mentions = mentions::Recent::load(&settings.data_dir)?;
     let mut dashboard = dashboard::Dashboard::load(&settings.data_dir, &seen)?;
     let session_key = auth::key(&settings.data_dir)?;
     let yaml = read_config(&settings, &config).with_context(|| {
@@ -417,6 +428,7 @@ async fn initialize(
         queue: Mutex::new(queue::Queue::default()),
         notify: Notify::new(),
         seen: Mutex::new(seen),
+        mentions: Mutex::new(mentions),
         runner,
         dashboard: Mutex::new(dashboard),
         session_key,

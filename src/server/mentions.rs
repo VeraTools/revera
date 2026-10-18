@@ -4,7 +4,43 @@ use super::{
     events::{Job, Kind, Repo},
 };
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::{collections::VecDeque, path::Path};
+
+pub const RECENT_LIMIT: usize = 4096;
+
+/// Persist claims before side effects: even ambiguous API failures must not cause
+/// another review or reply on redelivery. A new comment can request another attempt.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Recent(VecDeque<(u64, u64)>);
+
+impl Recent {
+    pub fn load(data: &Path) -> Result<Self> {
+        let mut recent: Self = super::dashboard::read_json(data, "mentions.json")?;
+        while recent.0.len() > RECENT_LIMIT {
+            recent.0.pop_front();
+        }
+        Ok(recent)
+    }
+
+    /// Called with the server's mention lock held across check, persist and insert.
+    pub fn claim(&mut self, data: &Path, repo: u64, comment: u64) -> Result<bool> {
+        let key = (repo, comment);
+        if self.0.contains(&key) {
+            return Ok(false);
+        }
+        let mut next = self.0.clone();
+        if next.len() == RECENT_LIMIT {
+            next.pop_front();
+        }
+        next.push_back(key);
+        crate::fsutil::write_atomic_in(data, "mentions.json", &serde_json::to_vec(&next)?)?;
+        self.0 = next;
+        Ok(true)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
@@ -148,6 +184,20 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
     {
         return Ok(());
     }
+    if !server.mentions.lock().await.claim(
+        &server.settings.data_dir,
+        request.repo.id,
+        request.comment,
+    )? {
+        return Ok(());
+    }
+    // Capture before any network wait. Closing the PR invalidates this token;
+    // the queue rechecks it under the same lock that applies the close.
+    let admission = server
+        .queue
+        .lock()
+        .await
+        .review_admission((request.repo.id, request.number));
     let token = server
         .api
         .installation_token(
@@ -213,7 +263,7 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
         "mention",
     );
     job.mode = override_mode.unwrap_or(mode);
-    server.enqueue(job).await;
+    server.enqueue_inner(job, Some(&admission)).await;
     Ok(())
 }
 

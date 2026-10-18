@@ -167,6 +167,242 @@ async fn invoke(server: &Server, payload: Value) {
 }
 
 #[tokio::test]
+async fn redelivered_mentions_do_not_repeat_reviews_or_replies_even_after_restart() {
+    for command in ["review", "help"] {
+        let mock = MockServer::start().await;
+        let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        mention_token(&mock).await;
+        if command == "review" {
+            Mock::given(method("POST"))
+                .and(path("/repos/owner/repo/issues/comments/33/reactions"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+                .expect(1)
+                .mount(&mock)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/pulls/7"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(pr("current")))
+                .expect(1)
+                .mount(&mock)
+                .await;
+        } else {
+            Mock::given(method("POST"))
+                .and(path("/repos/owner/repo/issues/7/comments"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+                .expect(1)
+                .mount(&mock)
+                .await;
+        }
+        let payload = comment(&format!("@revera-test {command}"));
+        invoke(&server, payload.clone()).await;
+        if command == "review" {
+            let (job, _) = server.queue.lock().await.take().unwrap();
+            server.transition(&job, "complete", None).await.unwrap();
+            server.queue.lock().await.running.remove(&job.key());
+        }
+        let requests = mock.received_requests().await.unwrap().len();
+        invoke(&server, payload.clone()).await;
+        assert_eq!(mock.received_requests().await.unwrap().len(), requests);
+        assert!(server.queue.lock().await.pending.is_empty());
+        let restarted = initialize(
+            settings(data.path()),
+            runner::Runner::current().unwrap(),
+            app::Api::new(mock.uri()).unwrap(),
+        )
+        .await
+        .unwrap();
+        invoke(&restarted, payload).await;
+        assert_eq!(mock.received_requests().await.unwrap().len(), requests);
+        assert!(restarted.queue.lock().await.pending.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn concurrent_duplicate_mentions_admit_one_review_or_help_reply() {
+    for command in ["review", "help"] {
+        let mock = MockServer::start().await;
+        let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        mention_token(&mock).await;
+        if command == "review" {
+            Mock::given(method("POST"))
+                .and(path("/repos/owner/repo/issues/comments/33/reactions"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+                .expect(1)
+                .mount(&mock)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/pulls/7"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_delay(std::time::Duration::from_millis(100))
+                        .set_body_json(pr("current")),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+        } else {
+            Mock::given(method("POST"))
+                .and(path("/repos/owner/repo/issues/7/comments"))
+                .respond_with(
+                    ResponseTemplate::new(201)
+                        .set_delay(std::time::Duration::from_millis(100))
+                        .set_body_json(json!({"id": 44})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+        }
+        let payload = comment(&format!("@revera-test {command}"));
+        futures::future::join_all((0..8).map(|_| invoke(&server, payload.clone()))).await;
+        assert_eq!(
+            mock.received_requests().await.unwrap().len(),
+            if command == "review" { 3 } else { 2 }
+        );
+        let dashboard = server.dashboard.lock().await;
+        assert_eq!(dashboard.jobs.len(), usize::from(command == "review"));
+    }
+}
+
+#[tokio::test]
+async fn closed_webhook_during_delayed_mention_lookup_cannot_resurrect_review() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    mention_token(&mock).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/comments/33/reactions"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(300))
+                .set_body_json(pr("head-from-before-close")),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut existing = job("previous");
+    existing.trigger = "manual".into();
+    server.enqueue(existing.clone()).await;
+    let (running, cancel) = server.queue.lock().await.take().unwrap();
+    let mut pending = job("queued");
+    pending.trigger = "manual".into();
+    server.enqueue(pending.clone()).await;
+    let work = server.clone();
+    let lookup = tokio::spawn(async move { invoke(&work, comment("@revera-test review")).await });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !mock
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.url.path() == "/repos/owner/repo/pulls/7")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let payload = json!({"action": "closed", "installation": {"id": 9},
+        "repository": repository(), "number": 7, "pull_request": pr("previous")});
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-GitHub-Event", "pull_request".parse().unwrap());
+    headers.insert(
+        "X-Hub-Signature-256",
+        signature(&test_app().webhook_secret, &bytes)
+            .parse()
+            .unwrap(),
+    );
+    assert_eq!(
+        webhook(axum::extract::State(server.clone()), headers, bytes.into()).await,
+        axum::http::StatusCode::ACCEPTED
+    );
+    assert!(*cancel.borrow());
+    assert!(server.queue.lock().await.pending.is_empty());
+    lookup.await.unwrap();
+    assert!(
+        server.queue.lock().await.pending.is_empty(),
+        "stale lookup re-enqueued a review"
+    );
+    let dashboard = server.dashboard.lock().await;
+    assert_eq!(dashboard.jobs.len(), 2);
+    for job in [running, pending] {
+        assert_eq!(dashboard.jobs[&job.id].status, "cancelled");
+    }
+    drop(dashboard);
+    // A later comment after reopening gets a fresh lifecycle token, not a
+    // permanent closed tombstone for this PR.
+    mock.reset().await;
+    mention_token(&mock).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/comments/34/reactions"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 45})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pr("reopened-head")))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut reopened = comment("@revera-test review");
+    reopened["comment"]["id"] = json!(34);
+    invoke(&server, reopened).await;
+    assert_eq!(
+        server.queue.lock().await.pending[&(1, 7)].head(),
+        "reopened-head"
+    );
+}
+
+#[test]
+fn recent_mention_claims_are_bounded_persistent_and_repository_scoped() {
+    let data = tempfile::tempdir().unwrap();
+    let previous: Vec<_> = (0..mentions::RECENT_LIMIT as u64 + 3)
+        .map(|comment| (1, comment))
+        .collect();
+    crate::fsutil::write_atomic_in(
+        data.path(),
+        "mentions.json",
+        &serde_json::to_vec(&previous).unwrap(),
+    )
+    .unwrap();
+    let mut recent = mentions::Recent::load(data.path()).unwrap();
+    let latest = previous.last().unwrap().1;
+    assert!(!recent.claim(data.path(), 1, latest).unwrap());
+    assert!(
+        recent.claim(data.path(), 1, 0).unwrap(),
+        "oldest claim was not evicted"
+    );
+    assert!(
+        recent.claim(data.path(), 2, latest).unwrap(),
+        "another repository was deduplicated"
+    );
+    let saved: Vec<(u64, u64)> = dashboard::read_json(data.path(), "mentions.json").unwrap();
+    assert_eq!(saved.len(), mentions::RECENT_LIMIT);
+    assert_eq!(saved[0], (1, 5));
+    assert_eq!(saved.last(), Some(&(2, latest)));
+    let mut loaded = mentions::Recent::load(data.path()).unwrap();
+    assert!(!loaded.claim(data.path(), 1, 0).unwrap());
+    assert!(!loaded.claim(data.path(), 2, latest).unwrap());
+}
+
+#[test]
+fn failed_mention_claim_persistence_does_not_admit_or_remember_command() {
+    let data = tempfile::tempdir().unwrap();
+    let mut recent = mentions::Recent::load(data.path()).unwrap();
+    std::fs::create_dir(data.path().join("mentions.json")).unwrap();
+    assert!(recent.claim(data.path(), 1, 33).is_err());
+    std::fs::remove_dir(data.path().join("mentions.json")).unwrap();
+    assert!(recent.claim(data.path(), 1, 33).unwrap());
+    assert!(!recent.claim(data.path(), 1, 33).unwrap());
+}
+
+#[tokio::test]
 async fn mentions_acknowledge_then_force_current_head_and_ignore_auto_filters() {
     for (text, expected) in [
         ("review", Mode::Deep),
