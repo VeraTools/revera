@@ -56,6 +56,7 @@ pub struct Preferences {
     pub review_drafts: bool,
     pub skip_authors: Vec<String>,
     pub external: super::external::Policy,
+    pub fixes: super::fixes::Policy,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -63,6 +64,7 @@ pub struct Preferences {
 pub struct RepoPreference {
     pub trigger: Option<Trigger>,
     pub mode: Option<Mode>,
+    pub fixes: Option<super::fixes::Override>,
 }
 
 #[derive(Default, Deserialize)]
@@ -71,6 +73,7 @@ struct RepoPreferenceFile {
     trigger: Option<Trigger>,
     mode: Option<Mode>,
     enabled: Option<bool>,
+    fixes: Option<super::fixes::Override>,
 }
 
 impl From<RepoPreferenceFile> for RepoPreference {
@@ -80,6 +83,7 @@ impl From<RepoPreferenceFile> for RepoPreference {
                 .trigger
                 .or_else(|| (file.enabled == Some(false)).then_some(Trigger::Off)),
             mode: file.mode,
+            fixes: file.fixes,
         }
     }
 }
@@ -99,6 +103,7 @@ struct PreferencesFile {
     review_drafts: bool,
     skip_authors: Option<Vec<String>>,
     external: super::external::Policy,
+    fixes: super::fixes::Policy,
 }
 
 impl From<PreferencesFile> for Preferences {
@@ -120,6 +125,7 @@ impl From<PreferencesFile> for Preferences {
             repos: file.repos,
             review_drafts: file.review_drafts,
             external: file.external,
+            fixes: file.fixes,
             skip_authors: file
                 .skip_authors
                 .unwrap_or_else(|| Self::default().skip_authors),
@@ -140,6 +146,7 @@ impl Default for Preferences {
             repos: BTreeMap::new(),
             review_drafts: false,
             external: super::external::Policy::default(),
+            fixes: super::fixes::Policy::default(),
             skip_authors: vec!["dependabot[bot]".into(), "renovate[bot]".into()],
         }
     }

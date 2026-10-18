@@ -6,6 +6,7 @@ mod auth;
 mod dashboard;
 mod events;
 mod external;
+mod fixes;
 mod mentions;
 mod queue;
 mod reconcile;
@@ -80,6 +81,8 @@ pub(super) struct Server {
     reconcile_lock: Mutex<()>,
     reconcile_request: watch::Sender<u64>,
     installations: Mutex<reconcile::Installations>,
+    fixes: Mutex<fixes::Store>,
+    fix_notify: Notify,
 }
 
 impl Server {
@@ -405,7 +408,7 @@ async fn initialize(
         .context("data directory must be absolute")?;
     crate::fsutil::ensure_dir(std::path::Path::new("/"), relative)?;
     settings.data_dir = settings.data_dir.canonicalize()?;
-    for dir in ["repos", "jobs", "cache", "external"] {
+    for dir in ["repos", "jobs", "cache", "external", "fixes"] {
         crate::fsutil::ensure_dir(&settings.data_dir, std::path::Path::new(dir))?;
     }
     let config = settings
@@ -480,6 +483,8 @@ async fn initialize(
         .collect();
     let external = external::Store::load(&settings.data_dir)?;
     dashboard.preferences.external.validate()?;
+    dashboard.preferences.fixes.validate()?;
+    let fixes = fixes::Store::load(&settings.data_dir)?;
     let server = Arc::new(Server {
         settings,
         config,
@@ -502,6 +507,8 @@ async fn initialize(
         reconcile_lock: Mutex::new(()),
         reconcile_request: watch::channel(0).0,
         installations: Mutex::new(reconcile::Installations::default()),
+        fixes: Mutex::new(fixes),
+        fix_notify: Notify::new(),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(
@@ -534,6 +541,7 @@ async fn serve_until(
     deadline: std::time::Duration,
 ) -> Result<()> {
     let scheduler = tokio::spawn(dispatch(server.clone()));
+    let fix_scheduler = tokio::spawn(fixes::dispatch(server.clone()));
     let reconcile = tokio::spawn(reconcile::loop_forever(server.clone()));
     let (drain, mut draining) = watch::channel(false);
     let http = axum::serve(listener, router(server.clone())).with_graceful_shutdown(async move {
@@ -547,8 +555,10 @@ async fn serve_until(
     };
     server.stopping.send_replace(true);
     scheduler.abort();
+    fix_scheduler.abort();
     reconcile.abort();
-    let _ = tokio::join!(scheduler, reconcile);
+    let _ = tokio::join!(scheduler, fix_scheduler, reconcile);
+    fixes::shutdown(&server).await?;
     let cancelled = server.cancel_jobs().await;
     drain.send_replace(true);
     let finished = tokio::time::timeout(deadline, async {
@@ -813,6 +823,17 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
         return StatusCode::ACCEPTED;
     }
     let preferences = server.dashboard.lock().await.preferences.clone();
+    if event == "check_run" && payload["action"] == "requested_action" {
+        tokio::spawn(async move {
+            if let Err(error) = fixes::check_action(&server, &app, &payload).await {
+                tracing::warn!(
+                    "fix check action: {}",
+                    crate::redact::diagnostic(&error.to_string())
+                );
+            }
+        });
+        return StatusCode::ACCEPTED;
+    }
     let mapped = if event == "issue_comment" {
         mentions::event(&payload, &app.slug, &preferences)
             .map(|request| request.map_or(events::Event::Ignore, events::Event::Mention))

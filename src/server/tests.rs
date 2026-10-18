@@ -11,7 +11,7 @@ use wiremock::{
     matchers::{body_json, header, method, path},
 };
 
-fn test_app() -> app::App {
+pub(super) fn test_app() -> app::App {
     static APP: OnceLock<app::App> = OnceLock::new();
     APP.get_or_init(|| {
         let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
@@ -1298,6 +1298,7 @@ async fn disabled_repository_suppresses_webhook_and_reconcile_jobs() {
         dashboard::RepoPreference {
             trigger: Some(dashboard::Trigger::Off),
             mode: None,
+            fixes: None,
         },
     );
     let (url, task) = http(server.clone()).await;

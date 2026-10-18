@@ -98,6 +98,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/settings/test", post(test))
         .route("/api/settings/models", post(models))
         .merge(super::external::router())
+        .merge(super::fixes::router())
         .route("/api/events", get(events))
         .route("/api", any(|| async { StatusCode::NOT_FOUND }))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
@@ -603,7 +604,7 @@ async fn review_stale(server: &Server, summary: &JobSummary, head: &str) -> Opti
     stale
 }
 
-fn report_findings(report: &Value) -> Vec<crate::findings::Finding> {
+pub(super) fn report_findings(report: &Value) -> Vec<crate::findings::Finding> {
     crate::findings::accepted_values(report)
         .filter_map(|raw| {
             let mut value = json!({
@@ -670,7 +671,7 @@ fn evidence_detail(evidence: &crate::findings::Evidence) -> Value {
     })
 }
 
-fn finding_detail(
+pub(super) fn finding_detail(
     finding: &crate::findings::Finding,
     context: &crate::handoff::Context<'_>,
 ) -> Value {
@@ -1292,6 +1293,7 @@ async fn server_settings(
     Json(mut input): Json<Preferences>,
 ) -> ApiResult {
     input.external.validate().map_err(invalid)?;
+    input.fixes.validate().map_err(invalid)?;
     if input.admins.iter().any(|name| name.trim().is_empty()) {
         return Err(Error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1458,6 +1460,8 @@ fn probe(config: &crate::config::Config, dashboard: &Dashboard, role: &str) -> R
     let route = match role {
         "investigator" => config.models.investigator.clone(),
         "validator" => config.effective_validator().clone(),
+        "fixer" => config.effective_fixer().clone(),
+        "fix_verifier" => config.effective_fix_verifier().clone(),
         _ => bail!("role must be investigator, validator or embedding"),
     };
     let key = if route.protocol == crate::config::Protocol::Scripted {
@@ -1552,7 +1556,7 @@ fn required_roles(config: &crate::config::Config) -> Vec<&'static str> {
 async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
     if !matches!(
         input.role.as_str(),
-        "investigator" | "validator" | "embedding"
+        "investigator" | "validator" | "embedding" | "fixer" | "fix_verifier"
     ) {
         return Err(Error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1580,10 +1584,11 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
         let config = if let Some(index) = input.fallback {
             let mut config = config.map_err(invalid)?;
             config.check_trust(true).map_err(invalid)?;
-            let route = if input.role == "validator" {
-                config.effective_validator()
-            } else {
-                &config.models.investigator
+            let route = match input.role.as_str() {
+                "validator" => config.effective_validator(),
+                "fixer" => config.effective_fixer(),
+                "fix_verifier" => config.effective_fix_verifier(),
+                _ => &config.models.investigator,
             };
             config.models.investigator = route.fallback.get(index).cloned().ok_or_else(|| {
                 Error(
@@ -1601,6 +1606,8 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
             .and_then(|config| match input.role.as_str() {
                 "investigator" => Some(config.models.investigator.model.clone()),
                 "validator" => Some(config.effective_validator().model.clone()),
+                "fixer" => Some(config.effective_fixer().model.clone()),
+                "fix_verifier" => Some(config.effective_fix_verifier().model.clone()),
                 _ => config
                     .vera
                     .embedding

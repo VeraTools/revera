@@ -1,0 +1,786 @@
+use super::super::{Settings, initialize, reconcile, runner};
+use super::*;
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{body_partial_json, method, path},
+};
+
+const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const BASE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const COMMIT: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+fn finding() -> Finding {
+    serde_json::from_value(json!({"defect_key":"arithmetic","severity":"high","file":"bug.py","start_line":1,"end_line":1,"title":"Wrong sum","claim":"add subtracts","trigger":"add(2, 1)","impact":"wrong result","validation_status":"accepted","validated_fix":"Use addition"})).unwrap()
+}
+fn pull(head: &str) -> Value {
+    json!({"number":7,"title":"PR","state":"open","merged":false,"user":{"login":"author"},"head":{"sha":head,"ref":"topic","repo":{"id":1,"full_name":"owner/repo"}},"base":{"sha":BASE,"ref":"main","repo":{"id":1,"full_name":"owner/repo","private":false}}})
+}
+async fn fixture() -> (tempfile::TempDir, Arc<Server>, MockServer, String) {
+    let mock = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    crate::fsutil::write_secret_atomic(
+        data.path(),
+        "app.json",
+        &serde_json::to_vec(&super::super::tests::test_app()).unwrap(),
+    )
+    .unwrap();
+    crate::fsutil::write_atomic_in(data.path(),"revera.yaml",format!("models:\n  investigator:\n    protocol: openai-chat\n    base_url: {}/v1\n    api_key_env: FIX_TEST_KEY\n    model: fixture\nvera:\n  enabled: false\n",mock.uri()).as_bytes()).unwrap();
+    let s = initialize(
+        Settings {
+            public_url: "https://revera.example.com".into(),
+            listen: "127.0.0.1:0".parse().unwrap(),
+            data_dir: data.path().into(),
+            config: None,
+            concurrency: 2,
+            reconcile_minutes: 10,
+        },
+        runner::Runner::current().unwrap(),
+        app::Api::new(mock.uri()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let repo = Repo::parse(
+        &json!({"id":1,"full_name":"owner/repo","default_branch":"main"}),
+        9,
+    )
+    .unwrap();
+    {
+        let mut d = s.dashboard.lock().await;
+        d.preferences.admins.push("admin".into());
+        d.secrets
+            .insert("FIX_TEST_KEY".into(), "fixture-model-credential".into());
+        d.repos.insert(
+            "owner/repo".into(),
+            dashboard::RepoInfo {
+                repo: repo.clone(),
+                private: false,
+                html_url: "https://github.com/owner/repo".into(),
+                has_override: false,
+                open_prs: None,
+            },
+        );
+    }
+    s.installations
+        .lock()
+        .await
+        .installations
+        .push(reconcile::Installation {
+            id: Some(9),
+            account: reconcile::Account {
+                login: "owner".into(),
+                id: Some(1),
+                kind: "User".into(),
+            },
+            repository_selection: Some("all".into()),
+            suspended: false,
+            permissions: BTreeMap::from([("contents".into(), "write".into())]),
+            html_url: String::new(),
+            status: "allowed".into(),
+            allowed: true,
+            repo_count: Some(1),
+            error: None,
+        });
+    Mock::given(method("POST"))
+        .and(path("/app/installations/9/access_tokens"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(json!({"token":"fixture-github-credential"})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(HEAD)))
+        .with_priority(10)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/repos/owner/repo/collaborators/maintainer/permission",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"permission":"write","role_name":"maintain"})),
+        )
+        .mount(&mock)
+        .await;
+    let job = Job::new(
+        repo,
+        Kind::Review {
+            number: 7,
+            pr: pull(HEAD),
+            force: false,
+        },
+        "manual",
+    );
+    let id = job.id.clone();
+    let mut summary = dashboard::JobSummary::queued(&job);
+    summary.status = "complete".into();
+    summary.findings.total = 1;
+    summary.check = Some(dashboard::CheckRecovery {
+        id: 17,
+        repo: job.repo.clone(),
+        pending: false,
+    });
+    s.update_job(summary).await.unwrap();
+    write_report(&s, &id, HEAD, "complete", json!([finding()]), json!([]));
+    (data, s, mock, id)
+}
+fn write_report(s: &Server, id: &str, head: &str, state: &str, findings: Value, tracked: Value) {
+    let root = dashboard::job_dir(&s.settings.data_dir, id).unwrap();
+    crate::fsutil::write_atomic_in(&root,"report.json",&serde_json::to_vec(&json!({"status":state,"head":head,"base":BASE,"findings":findings,"plan":{"state":{"findings":tracked}}})).unwrap()).unwrap();
+}
+async fn call(
+    s: Arc<Server>,
+    verb: reqwest::Method,
+    url: &str,
+    body: Option<Value>,
+    csrf: bool,
+) -> (StatusCode, Value) {
+    let session = auth::Session {
+        user: auth::User {
+            login: "admin".into(),
+            avatar_url: String::new(),
+        },
+        csrf: "csrf-fixture".into(),
+        exp: chrono::Utc::now().timestamp() + 3600,
+        kind: "session".into(),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let router = super::super::router(s.clone());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut req = reqwest::Client::new()
+        .request(verb, format!("{base}{url}"))
+        .header(
+            "cookie",
+            format!("{}={}", auth::SESSION, auth::sign(&s.session_key, &session)),
+        );
+    if csrf {
+        req = req.header("X-Revera-CSRF", "csrf-fixture");
+    }
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let response = req.send().await.unwrap();
+    let status = response.status();
+    let value = response.json().await.unwrap_or(Value::Null);
+    task.abort();
+    (status, value)
+}
+#[tokio::test]
+async fn default_requests_converge_without_model_runs_writes_or_settings_mutation() {
+    let (_data, s, mock, id) = fixture().await;
+    let a = request(&s, "dashboard", "admin", &id, None, false)
+        .await
+        .unwrap();
+    assert_eq!(a.state, "awaiting_confirmation");
+    assert!(a.consent.is_none());
+    let b = request(
+        &s,
+        "mention",
+        "maintainer",
+        &id,
+        Some(&[finding().id()[..6].into()]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(a.id, b.id);
+    let payload = json!({"action":"requested_action","requested_action":{"identifier":"revera_fix"},"installation":{"id":9},"repository":{"id":1,"full_name":"owner/repo"},"sender":{"login":"maintainer","type":"User"},"check_run":{"id":17,"name":"Revera","app":{"id":42},"external_id":"7","head_sha":HEAD}});
+    check_action(&s, &super::super::tests::test_app(), &payload)
+        .await
+        .unwrap();
+    check_action(&s, &super::super::tests::test_app(), &payload)
+        .await
+        .unwrap();
+    assert_eq!(s.fixes.lock().await.entries.len(), 1);
+    let (_, plan) = call(
+        s.clone(),
+        reqwest::Method::GET,
+        &format!("/api/fixes/plan?job={id}"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(plan["existing"]["id"], a.id);
+    assert_eq!(plan["consent_required"], true);
+    let (status, _) = call(
+        s.clone(),
+        reqwest::Method::POST,
+        &format!("/api/fixes/{}/confirm", a.id),
+        Some(json!({"once":true})),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = call(
+        s.clone(),
+        reqwest::Method::POST,
+        &format!("/api/fixes/{}/confirm", a.id),
+        Some(json!({"once":true})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["fix"]["consent"], "once");
+    assert_eq!(body["fix"]["state"], "queued");
+    assert!(!s.dashboard.lock().await.preferences.fixes.execution);
+    let persisted = Store::load(&s.settings.data_dir).unwrap();
+    assert_eq!(persisted.entries[&a.id].record.state, "queued");
+    for req in mock.received_requests().await.unwrap() {
+        assert!(!req.url.path().contains("/v1/"));
+        assert!(!req.url.path().contains("/git/"));
+    }
+}
+#[test]
+fn parser_selection_and_permission_roles_are_strict() {
+    use super::super::mentions::{Command, FixCommand, command};
+    for body in [
+        "`@app fix`",
+        "> @app fix",
+        "```\n@app fix\n```",
+        "    @app fix",
+        "~~~\n@app fix\n~~~",
+    ] {
+        assert!(command(body, "app").is_none(), "{body}");
+    }
+    assert_eq!(
+        command("@app fix all", "app"),
+        Some(Command::Fix(FixCommand::Request(None)))
+    );
+    assert_eq!(
+        command("@app fix abcdef 0123456789ab", "app"),
+        Some(Command::Fix(FixCommand::Request(Some(vec![
+            "abcdef".into(),
+            "0123456789ab".into()
+        ]))))
+    );
+    for body in ["@app fix abcde", "@app fix unknown", "@app fix status all"] {
+        assert_eq!(command(body, "app"), Some(Command::Help));
+    }
+    let p = Policy::default();
+    assert!(authorized(
+        &json!({"permission":"write","role_name":"maintain"}),
+        &p
+    ));
+    assert!(!authorized(
+        &json!({"permission":"write","role_name":"write"}),
+        &p
+    ));
+    let mut writers = p;
+    writers.requesters = Requesters::Writers;
+    assert!(authorized(
+        &json!({"permission":"write","role_name":"custom"}),
+        &writers
+    ));
+    assert!(select(&[finding()], Some(&["abcde".into()])).is_err());
+    assert!(select(&[finding()], Some(&["abcdef".into()])).is_err());
+}
+#[tokio::test]
+async fn settings_persist_and_repo_yaml_cannot_enable_execution() {
+    let (_data, s, _mock, id) = fixture().await;
+    let p = Policy {
+        execution: true,
+        allow_same_branch: true,
+        delivery: Delivery::SameBranch,
+        ..Default::default()
+    };
+    let (status, _) = call(
+        s.clone(),
+        reqwest::Method::PUT,
+        "/api/settings/fixes",
+        Some(json!({"fixes":p})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        s.clone(),
+        reqwest::Method::PUT,
+        "/api/repos/owner/repo/fixes",
+        Some(json!({"execution":false,"delivery":"patch"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let loaded =
+        dashboard::Dashboard::load(&s.settings.data_dir, &reconcile::Seen::default()).unwrap();
+    assert!(loaded.preferences.fixes.execution);
+    assert_eq!(
+        loaded.preferences.repos["owner/repo"]
+            .fixes
+            .as_ref()
+            .unwrap()
+            .execution,
+        Some(false)
+    );
+    let ws =
+        crate::fsutil::ensure_dir(&s.settings.data_dir, FsPath::new("repos/owner/repo")).unwrap();
+    std::fs::write(
+        ws.join("revera.yaml"),
+        "fixes:\n  execution: true\n  limits:\n    model_requests: 999999\n",
+    )
+    .unwrap();
+    let r = request(&s, "dashboard", "admin", &id, None, false)
+        .await
+        .unwrap();
+    assert_eq!(r.state, "awaiting_confirmation");
+    assert!(!policy(&s, "owner/repo").await.execution);
+    let mut bad = Policy::default();
+    bad.limits.concurrent = 0;
+    assert!(bad.validate().is_err());
+}
+#[tokio::test]
+async fn incomplete_reviews_and_unknown_findings_never_create_requests() {
+    let (_data, s, _mock, id) = fixture().await;
+    for state in ["partial", "failed", "skipped"] {
+        s.dashboard.lock().await.jobs.get_mut(&id).unwrap().status = state.into();
+        let error = request(&s, "dashboard", "admin", &id, None, true)
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert_eq!(error.1, "needs a complete review");
+    }
+    s.dashboard.lock().await.jobs.get_mut(&id).unwrap().status = "complete".into();
+    assert!(
+        request(
+            &s,
+            "dashboard",
+            "admin",
+            &id,
+            Some(&["ffffff".into()]),
+            true
+        )
+        .await
+        .is_err()
+    );
+    assert!(s.fixes.lock().await.entries.is_empty());
+}
+#[tokio::test]
+async fn capabilities_show_forks_grants_workflows_external_and_caps() {
+    let (_data, s, _mock, id) = fixture().await;
+    let r = request(&s, "dashboard", "admin", &id, None, false)
+        .await
+        .unwrap();
+    let mut e = entry(&s, &r.id).await.unwrap();
+    let caps = capabilities(&s, &e, Some(&pull(HEAD)), None).await;
+    assert!(caps[1].available);
+    assert!(!caps[2].available);
+    s.dashboard.lock().await.preferences.fixes.allow_same_branch = true;
+    assert!(capabilities(&s, &e, Some(&pull(HEAD)), None).await[2].available);
+    let mut fork = pull(HEAD);
+    fork["head"]["repo"]["full_name"] = json!("contributor/repo");
+    let caps = capabilities(&s, &e, Some(&fork), None).await;
+    assert!(!caps[1].available && !caps[2].available);
+    assert!(caps[2].reason.contains("forks"));
+    let grants = BTreeMap::from([("contents".into(), "read".into())]);
+    assert!(!capabilities(&s, &e, Some(&pull(HEAD)), Some(&grants)).await[1].available);
+    e.record.patch = Some(json!({"files":[{"path":".github/workflows/ci.yml"}]}));
+    assert!(!capabilities(&s, &e, Some(&pull(HEAD)), None).await[1].available);
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .allow_workflow_changes = true;
+    let grants = BTreeMap::from([
+        ("contents".into(), "write".into()),
+        ("workflows".into(), "write".into()),
+    ]);
+    assert!(capabilities(&s, &e, Some(&pull(HEAD)), Some(&grants)).await[1].available);
+    e.record.repo_source = Source::External;
+    let caps = capabilities(&s, &e, None, None).await;
+    assert!(caps[0].available && !caps[1].available && !caps[2].available);
+}
+#[tokio::test]
+async fn cancellation_rate_limits_restart_and_orphan_cleanup() {
+    let (_data, s, _mock, id) = fixture().await;
+    let r = request(&s, "dashboard", "admin", &id, None, false)
+        .await
+        .unwrap();
+    stop(&s, &r.id, "admin", false).await.unwrap();
+    change(&s, &r.id, |e| {
+        e.record.transition("ready", None, "revera", "ready")
+    })
+    .await
+    .unwrap();
+    assert_eq!(entry(&s, &r.id).await.unwrap().record.state, "cancelled");
+    s.dashboard
+        .lock()
+        .await
+        .preferences
+        .fixes
+        .limits
+        .per_user_hour = 1;
+    assert!(
+        request(&s, "dashboard", "admin", &id, None, false)
+            .await
+            .unwrap_err()
+            .1
+            .contains("rate limit")
+    );
+    for (state, expected) in [
+        ("generating", "failed"),
+        ("validating", "failed"),
+        ("publishing", "publish_failed"),
+        ("queued", "queued"),
+    ] {
+        let mut store = s.fixes.lock().await;
+        let mut e = store.entries[&r.id].clone();
+        e.record.state = state.into();
+        save(&s, &mut store, e).await.unwrap();
+        drop(store);
+        let workspace = dir(&s.settings.data_dir, &r.id).unwrap().join("workspace");
+        std::fs::create_dir_all(workspace.join("generate/out")).unwrap();
+        std::fs::write(workspace.join("generate/config.json"), "private").unwrap();
+        let loaded = Store::load(&s.settings.data_dir).unwrap();
+        assert_eq!(loaded.entries[&r.id].record.state, expected);
+        assert!(!workspace.exists());
+    }
+}
+async fn ready(s: &Server, id: &str) -> String {
+    let r = request(s, "dashboard", "admin", id, None, true)
+        .await
+        .unwrap();
+    let patch = fix::workspace::Patch {
+        files: vec![fix::workspace::FileChange {
+            path: "bug.py".into(),
+            status: fix::workspace::Status::Modified,
+            old_mode: Some(0o100644),
+            new_mode: Some(0o100644),
+            binary: false,
+            additions: 1,
+            deletions: 1,
+            size: 6,
+            old_content: Some("bug\n".into()),
+            new_content: Some("fixed\n".into()),
+        }],
+        unified: "diff fixture\n".into(),
+    };
+    let root = dir(&s.settings.data_dir, &r.id).unwrap();
+    crate::fsutil::write_atomic_in(&root, "patch.json", &serde_json::to_vec(&patch).unwrap())
+        .unwrap();
+    crate::fsutil::write_atomic_in(&root, "patch.diff", patch.unified.as_bytes()).unwrap();
+    change(s,&r.id,|e|{e.record.tests=Some(json!({"outcome":"passed","output":""}));e.record.verification=Some(json!({"per_finding":[{"id":finding().id(),"verdict":"resolved","rationale":"evidence"}],"new_problems":[]}));e.record.state="ready".into();}).await.unwrap();
+    r.id
+}
+async fn delivery_mocks(
+    mock: &MockServer,
+    parent: &str,
+    mode: Delivery,
+    fail: Option<(u16, &str)>,
+) {
+    Mock::given(method("GET"))
+        .and(path("/app/installations/9"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                json!({"id":9,"suspended_at":null,"permissions":{"contents":"write"}}),
+            ),
+        )
+        .mount(mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/commits/{parent}")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sha":parent,"tree":{"sha":BASE}})),
+        )
+        .mount(mock)
+        .await;
+    for (route, sha) in [
+        ("blobs", "cccccccccccccccccccccccccccccccccccccccc"),
+        ("trees", "dddddddddddddddddddddddddddddddddddddddd"),
+        ("commits", COMMIT),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(format!("/repos/owner/repo/git/{route}")))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"sha":sha})))
+            .expect(1)
+            .mount(mock)
+            .await;
+    }
+    let branch = if mode == Delivery::SameBranch {
+        "topic".into()
+    } else {
+        format!("revera/fix-{}", &COMMIT[..12])
+    };
+    let ref_body =
+        json!({"ref":format!("refs/heads/{branch}"),"object":{"type":"commit","sha":COMMIT}});
+    if mode == Delivery::SameBranch {
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/owner/repo/git/commits/{COMMIT}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"sha":COMMIT,"parents":[{"sha":parent}]})),
+            )
+            .mount(mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/git/ref/heads/topic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"ref":"refs/heads/topic","object":{"type":"commit","sha":parent}}),
+            ))
+            .mount(mock)
+            .await;
+        let response = if let Some((code, msg)) = fail {
+            ResponseTemplate::new(code).set_body_json(json!({"message":msg}))
+        } else {
+            ResponseTemplate::new(200).set_body_json(ref_body)
+        };
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/git/refs/heads/topic"))
+            .and(body_partial_json(json!({"sha":COMMIT,"force":false})))
+            .respond_with(response)
+            .expect(1)
+            .mount(mock)
+            .await;
+    } else {
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/git/refs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(ref_body))
+            .expect(1)
+            .mount(mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls"))
+            .and(body_partial_json(json!({"base":"topic","draft":true})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(
+                json!({"number":8,"draft":true,"html_url":"https://github.com/owner/repo/pull/8"}),
+            ))
+            .expect(1)
+            .mount(mock)
+            .await;
+    }
+}
+#[tokio::test]
+async fn approved_draft_and_same_branch_deliver_once_without_force() {
+    for mode in [Delivery::DraftPr, Delivery::SameBranch] {
+        let (_data, s, mock, job) = fixture().await;
+        {
+            let mut d = s.dashboard.lock().await;
+            d.preferences.fixes.allow_same_branch = true;
+            d.preferences.fixes.rereview = false;
+        }
+        let id = ready(&s, &job).await;
+        delivery_mocks(&mock, HEAD, mode, None).await;
+        let (a, b) = tokio::join!(
+            publish(&s, &id, "admin", mode),
+            publish(&s, &id, "admin", mode)
+        );
+        assert!(a.is_ok() ^ b.is_ok());
+        let record = entry(&s, &id).await.unwrap().record;
+        assert_eq!(record.state, "published");
+        assert_eq!(record.delivery.unwrap()["commit"], COMMIT);
+        assert!(publish(&s, &id, "admin", mode).await.is_err());
+    }
+}
+#[tokio::test]
+async fn stale_closed_revoked_and_live_permission_changes_block_publish() {
+    for case in ["head", "closed", "revoked", "permission"] {
+        let (_data, s, mock, job) = fixture().await;
+        let id = ready(&s, &job).await;
+        match case {
+            "head" => {
+                Mock::given(method("GET"))
+                    .and(path("/repos/owner/repo/pulls/7"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(pull(BASE)))
+                    .mount(&mock)
+                    .await;
+            }
+            "closed" => {
+                let mut p = pull(HEAD);
+                p["state"] = json!("closed");
+                Mock::given(method("GET"))
+                    .and(path("/repos/owner/repo/pulls/7"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(p))
+                    .mount(&mock)
+                    .await;
+            }
+            "revoked" => s.installations.lock().await.installations[0].allowed = false,
+            _ => {
+                Mock::given(method("GET"))
+                    .and(path("/app/installations/9"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(
+                        json!({"permissions":{"contents":"read"},"suspended_at":null}),
+                    ))
+                    .mount(&mock)
+                    .await;
+            }
+        }
+        let r = publish(&s, &id, "admin", Delivery::DraftPr).await.unwrap();
+        assert_eq!(r.state, "publish_failed", "{case}");
+        let reason = r.reason.as_deref().unwrap();
+        assert!(
+            reason.contains(match case {
+                "head" => "changed since",
+                "closed" => "PR closed",
+                "revoked" => "no longer allowed",
+                _ => "Contents: write",
+            }),
+            "{case}: {reason}"
+        );
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| !r.url.path().contains("/git/"))
+        );
+    }
+}
+#[tokio::test]
+async fn protected_branches_fail_honestly_without_retry() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard.lock().await.preferences.fixes.allow_same_branch = true;
+    let id = ready(&s, &job).await;
+    delivery_mocks(
+        &mock,
+        HEAD,
+        Delivery::SameBranch,
+        Some((403, "Protected branch update failed")),
+    )
+    .await;
+    let r = publish(&s, &id, "admin", Delivery::SameBranch)
+        .await
+        .unwrap();
+    assert_eq!(r.state, "publish_failed");
+    assert!(r.reason.unwrap().contains("protect"));
+}
+
+fn git(path: &FsPath, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(path)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+#[tokio::test]
+async fn sandbox_full_worker_generate_tests_verify_approve_deliver_followup() {
+    if std::env::var("REVERA_TEST_SANDBOX").as_deref() != Ok("1") {
+        return;
+    }
+    assert!(fix::sandbox::probe().await.available);
+    let (_data, s, mock, job_id) = fixture().await;
+    let checkout =
+        crate::fsutil::ensure_dir(&s.settings.data_dir, FsPath::new("repos/owner/repo")).unwrap();
+    git(&checkout, &["init", "-q"]);
+    std::fs::write(
+        checkout.join("bug.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    std::fs::write(
+        checkout.join("test_bug.py"),
+        "from bug import add\nassert add(2, 1) == 3\n",
+    )
+    .unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-qm", "fixture"]);
+    let head = git(&checkout, &["rev-parse", "HEAD"]);
+    {
+        let mut d = s.dashboard.lock().await;
+        d.jobs.get_mut(&job_id).unwrap().head_sha = Some(head.clone());
+        d.preferences.fixes.test_command = vec!["/usr/bin/python3".into(), "test_bug.py".into()];
+        d.preferences.fixes.allow_same_branch = true;
+    }
+    write_report(
+        &s,
+        &job_id,
+        &head,
+        "complete",
+        json!([finding()]),
+        json!([]),
+    );
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(&head)))
+        .mount(&mock)
+        .await;
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = count.clone();
+    let id = finding().id();
+    Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(move|r:&wiremock::Request|{
+        let body:Value=serde_json::from_slice(&r.body).unwrap();assert!(r.headers.get("authorization").unwrap().to_str().unwrap().contains("fixture-model-credential"));assert!(!String::from_utf8_lossy(&r.body).contains("fixture-github-credential"));
+        let verifier=body["tools"].as_array().unwrap().iter().any(|t|t["function"]["name"]=="submit_fix_verdicts");let n=calls.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        let (name,args)=if verifier{("submit_fix_verdicts",json!({"per_finding":[{"id":id,"verdict":"resolved","rationale":"bug.py now returns a+b; add(2,1) is 3"}],"new_problems":[]}))}else if n==0{("write_file",json!({"path":"bug.py","content":"def add(a, b):\n    return a + b\n"}))}else{("submit_fix",json!({"summary":"Repair addition","per_finding":[{"id":id,"disposition":"fixed","note":"Use addition"}]}))};
+        ResponseTemplate::new(200).set_body_json(json!({"id":"fixture","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":format!("call-{n}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":10}}))
+    }).mount(&mock).await;
+    let r = request(&s, "dashboard", "admin", &job_id, None, true)
+        .await
+        .unwrap();
+    let (_tx, rx) = watch::channel(false);
+    run(s.clone(), &r.id, rx).await;
+    let ready = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(ready.state, "ready", "{}", json!(ready));
+    assert_eq!(ready.tests.as_ref().unwrap()["outcome"], "passed");
+    assert!(count.load(std::sync::atomic::Ordering::SeqCst) >= 3);
+    assert!(
+        !dir(&s.settings.data_dir, &r.id)
+            .unwrap()
+            .join("workspace")
+            .exists()
+    );
+    delivery_mocks(&mock, &head, Delivery::DraftPr, None).await;
+    let mut fixed = pull(COMMIT);
+    fixed["number"] = json!(8);
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixed))
+        .mount(&mock)
+        .await;
+    let published = publish(&s, &r.id, "admin", Delivery::DraftPr)
+        .await
+        .unwrap();
+    assert_eq!(published.state, "verifying");
+    let follow = published.verify_review.as_ref().unwrap()["job"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let queued = s
+        .queue
+        .lock()
+        .await
+        .pending
+        .values()
+        .find(|j| j.id == follow)
+        .unwrap()
+        .clone();
+    assert_eq!(queued.head(), COMMIT);
+    assert_eq!(queued.trigger, "fix");
+    assert!(matches!(queued.kind, Kind::Review { force: true, .. }));
+    {
+        let mut d = s.dashboard.lock().await;
+        d.jobs.get_mut(&follow).unwrap().status = "complete".into();
+    }
+    write_report(&s, &follow, COMMIT, "complete", json!([]), json!([]));
+    review_finished(&s, &queued).await.unwrap();
+    let verified = entry(&s, &r.id).await.unwrap().record;
+    assert_eq!(verified.state, "verified");
+    assert_eq!(
+        verified.verify_review.unwrap()["resolved"],
+        json!([finding().id()])
+    );
+    assert_eq!(
+        git(&checkout, &["show", "HEAD:bug.py"]),
+        "def add(a, b):\n    return a - b"
+    );
+}

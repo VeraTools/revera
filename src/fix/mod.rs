@@ -453,6 +453,31 @@ pub async fn run_in_sandbox(
     stage: Stage,
     limits: sandbox::Limits,
 ) -> Result<StageResult, Error> {
+    run_in_sandbox_with_env(
+        executable,
+        cfg,
+        request,
+        tree,
+        io_dir,
+        stage,
+        limits,
+        &crate::redact::secret_env,
+    )
+    .await
+}
+
+/// Resolve only selected model credentials from trusted server secret storage.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_in_sandbox_with_env(
+    executable: &Path,
+    cfg: &Config,
+    request: &Request,
+    tree: &Path,
+    io_dir: &Path,
+    stage: Stage,
+    limits: sandbox::Limits,
+    credential: &(dyn Fn(&str) -> Option<String> + Sync),
+) -> Result<StageResult, Error> {
     validate_request(request, stage)?;
     let route = stage.route(cfg);
     check_route(route, &cfg.github.token_env)?;
@@ -478,8 +503,9 @@ pub async fn run_in_sandbox(
         }
         if let Some(name) = &r.api_key_env
             && !env.iter().any(|(k, _)| k == name)
-            && let Some(value) = crate::redact::secret_env(name)
+            && let Some(value) = credential(name)
         {
+            crate::redact::register(&value);
             env.push((name.clone(), value));
         }
         for value in r.extra_headers.values() {

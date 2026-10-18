@@ -683,6 +683,12 @@ async fn execute(
                     server.settings.public_url.trim_end_matches('/'),
                     job.id
                 ));
+            if server.dashboard.lock().await.preferences.fixes.offer {
+                command.arg("--fix-url").arg(format!(
+                    "{}/fixes/new?job={}",
+                    server.settings.public_url, job.id
+                ));
+            }
             if *force {
                 command.arg("--force");
             }
@@ -775,12 +781,21 @@ async fn complete_check(
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
     let (conclusion, title, summary) = conclusion(exit, report.as_ref(), cancelled);
-    let body = json!({
+    let mut body = json!({
         "status": "completed",
         "conclusion": conclusion,
         "completed_at": chrono::Utc::now().to_rfc3339(),
         "output": {"title": title, "summary": summary}
     });
+    if !cancelled
+        && exit == 0
+        && report
+            .as_ref()
+            .is_some_and(|r| r["status"] == "complete" && accepted_findings(r).next().is_some())
+        && server.dashboard.lock().await.preferences.fixes.offer
+    {
+        body["actions"] = json!([{"label":"Fix with Revera","description":"Open a fix request","identifier":"revera_fix"}]);
+    }
     let mut summary = server
         .dashboard
         .lock()
@@ -896,6 +911,7 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
         std::fs::remove_file(event)?;
     }
     server.prune_jobs().await?;
+    super::fixes::review_finished(server, job).await?;
     Ok(())
 }
 

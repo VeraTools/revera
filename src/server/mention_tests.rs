@@ -656,8 +656,9 @@ fn old_settings_migrate_to_mentions_and_explicit_off_without_legacy_output_field
                 "owner_accounts": {}, "revoked_owners": [], "revoked_owner_ids": [],
                 "default_mode": "standard", "review_drafts": false,
                 "skip_authors": ["dependabot[bot]", "renovate[bot]"],
-                "repos": {"owner/off": {"trigger": "off", "mode": null},
-                    "owner/inherit": {"trigger": null, "mode": null}},
+                "repos": {"owner/off": {"trigger": "off", "mode": null, "fixes": null},
+                    "owner/inherit": {"trigger": null, "mode": null, "fixes": null}},
+                "fixes": super::super::fixes::Policy::default(),
                 "external": {"tracking_enabled": false, "poll_minutes": 60,
                     "max_tracked": 25, "max_repo_size_kb": 1048576,
                     "reviews_per_hour": 20, "concurrency": 1,
@@ -826,6 +827,7 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
             RepoPreference {
                 trigger: Some(Trigger::Mention),
                 mode: Some(Mode::Quick),
+                fixes: None,
             },
         );
     }

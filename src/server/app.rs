@@ -120,6 +120,8 @@ pub enum Permissions {
     Index,
     ReadPulls,
     Comments,
+    Fix,
+    FixWorkflows,
 }
 
 #[derive(Debug)]
@@ -133,6 +135,9 @@ impl std::fmt::Display for ApiStatus {
 impl std::error::Error for ApiStatus {}
 
 impl Api {
+    pub fn base(&self) -> &str {
+        &self.base
+    }
     /// Anonymous, read-only external metadata path. It cannot mint tokens or write.
     pub async fn public_get(&self, path: &str, etag: Option<&str>) -> Result<reqwest::Response> {
         let mut request = self
@@ -258,6 +263,12 @@ impl Api {
             Permissions::Checks => json!({"checks": "write", "metadata": "read"}),
             Permissions::ReadPulls => {
                 json!({"contents": "read", "pull_requests": "read", "metadata": "read"})
+            }
+            Permissions::Fix => {
+                json!({"contents":"write","pull_requests":"write","metadata":"read"})
+            }
+            Permissions::FixWorkflows => {
+                json!({"contents":"write","pull_requests":"write","metadata":"read","workflows":"write"})
             }
         };
         let mut body = json!({"permissions": permissions});
