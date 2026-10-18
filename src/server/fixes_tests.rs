@@ -1574,6 +1574,135 @@ async fn queued_followup_terminal_transitions_notify_controller_without_a_runner
     }
 }
 
+fn managed_summary(s: &Server, head: &str) -> String {
+    let state = crate::state::ReviewState {
+        reviewed_head: head.into(),
+        ..Default::default()
+    };
+    let yaml = s.config_yaml().unwrap().unwrap();
+    let marker = crate::config::Config::parse(&yaml, "fixture")
+        .unwrap()
+        .github
+        .summary_marker;
+    format!(
+        "{marker}\nReview prose\n{}",
+        crate::github::publish::encode_state(&state)
+    )
+}
+#[tokio::test]
+async fn status_rereads_managed_state_and_preserves_concurrent_review_prose() {
+    for changed_state in [false, true] {
+        let (_data, s, mock, job) = fixture().await;
+        let id = ready(&s, &job).await;
+        let old = managed_summary(&s, HEAD);
+        let new = format!(
+            "{}\nNew CLI prose",
+            managed_summary(&s, if changed_state { BASE } else { HEAD })
+        );
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!([{"id":44,"user":{"login":"revera-test[bot]"},"body":old}]),
+                ),
+            )
+            .expect(1)
+            .with_priority(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/comments/44"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":44,"body":new})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/issues/comments/44"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(if changed_state { 0 } else { 1 })
+            .mount(&mock)
+            .await;
+        update_status(&s, &entry(&s, &id).await.unwrap().record)
+            .await
+            .unwrap();
+        for request in mock
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "PATCH")
+        {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert!(body["body"].as_str().unwrap().contains("New CLI prose"));
+            assert!(body["body"].as_str().unwrap().contains("Fix: **ready**"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn status_defers_for_queued_running_reviews_and_reapplies_latest_on_completion() {
+    let (_data, s, mock, job) = fixture().await;
+    let r = request(&s, "dashboard", "admin", &job, None, false)
+        .await
+        .unwrap();
+    let repo = s.dashboard.lock().await.repos["owner/repo"].repo.clone();
+    let review = Job::new(
+        repo,
+        Kind::Review {
+            number: 7,
+            pr: pull(HEAD),
+            force: true,
+        },
+        "manual",
+    );
+    s.enqueue(review.clone()).await;
+    let before = mock.received_requests().await.unwrap().len();
+    update_status(&s, &r).await.unwrap();
+    assert_eq!(mock.received_requests().await.unwrap().len(), before);
+    s.queue.lock().await.take().unwrap();
+    change(&s, &r.id, |e| e.record.state = "ready".into())
+        .await
+        .unwrap();
+    update_status(&s, &r).await.unwrap();
+    assert_eq!(mock.received_requests().await.unwrap().len(), before);
+    let body = managed_summary(&s, HEAD);
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"id":44,"user":{"login":"revera-test[bot]"},"body":body}])),
+        )
+        .expect(1)
+        .with_priority(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues/comments/44"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":44,"body":body})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/owner/repo/issues/comments/44"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    s.transition(&review, "complete", None).await.unwrap();
+    s.queue.lock().await.running.remove(&review.key());
+    refresh_review_status(&s, &review).await;
+    let requests = mock.received_requests().await.unwrap();
+    let patch = requests.iter().find(|r| r.method == "PATCH").unwrap();
+    let body: Value = serde_json::from_slice(&patch.body).unwrap();
+    assert!(body["body"].as_str().unwrap().contains("Fix: **ready**"));
+    assert!(
+        !body["body"]
+            .as_str()
+            .unwrap()
+            .contains("awaiting_confirmation")
+    );
+}
+
 #[tokio::test]
 async fn followup_resolution_requires_state_or_independent_verifier_evidence() {
     for case in [

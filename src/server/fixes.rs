@@ -2591,6 +2591,10 @@ async fn status(s: &Server, r: &Record) {
 }
 async fn update_status(s: &Server, r: &Record) -> Result<()> {
     let e = entry(s, &r.id).await?;
+    let r = &e.record;
+    if review_busy(s, &e).await {
+        return Ok(());
+    }
     check_installation(s, &e.context.repo).await?;
     let app = s.setup.lock().await.app.clone().context("app missing")?;
     let token = s
@@ -2617,36 +2621,88 @@ async fn update_status(s: &Server, r: &Record) -> Result<()> {
         c["user"]["login"]
             .as_str()
             .is_some_and(|v| v.eq_ignore_ascii_case(&login))
-            && c["body"].as_str().is_some_and(|v| v.contains(&marker))
+            && c["body"].as_str().is_some_and(|v| {
+                v.trim_start().starts_with(&marker)
+                    && crate::github::publish::decode_state(v).is_some()
+            })
     }) else {
         return Ok(());
     };
     let body = comment["body"].as_str().context("comment body missing")?;
+    let id = comment["id"].as_u64().context("comment id missing")?;
+    let route = format!("/repos/{}/issues/comments/{id}", r.repo);
+    let latest = s
+        .api
+        .request(reqwest::Method::GET, &route, &token, None)
+        .await?;
+    let latest_body = latest["body"].as_str().context("comment body missing")?;
+    // The CLI is a separate writer. Never patch an older state snapshot; use
+    // the fresh body even when only prose changed. GitHub has no comment CAS.
+    if summary_state(body) != summary_state(latest_body) || review_busy(s, &e).await {
+        return Ok(());
+    }
+    let current = entry(s, &r.id).await?;
+    let r = &current.record;
     let block = format!(
         "<!-- revera:fix-status -->\nFix: **{}** · [Dashboard]({}/fixes/{})\n<!-- /revera:fix-status -->",
         r.state, s.settings.public_url, r.id
     );
-    let body = if let Some(old) = crate::github::publish::fix_status_block(body) {
-        body.replacen(old, &block, 1)
+    let body = if let Some(old) = crate::github::publish::fix_status_block(latest_body) {
+        latest_body.replacen(old, &block, 1)
     } else {
-        format!("{body}\n{block}")
+        format!("{latest_body}\n{block}")
     };
-    if body == comment["body"].as_str().unwrap_or("") {
+    if body == latest_body {
         return Ok(());
     }
     s.api
         .request(
             reqwest::Method::PATCH,
-            &format!(
-                "/repos/{}/issues/comments/{}",
-                r.repo,
-                comment["id"].as_u64().context("comment id missing")?
-            ),
+            &route,
             &token,
             Some(json!({"body":body})),
         )
         .await?;
     Ok(())
+}
+fn summary_state(body: &str) -> Option<&str> {
+    let start = body.find("<!-- revera-state:")?;
+    let end = body[start..].find(" -->")? + start + 4;
+    Some(&body[start..end])
+}
+async fn review_busy(s: &Server, e: &Entry) -> bool {
+    let queue = s.queue.lock().await;
+    queue
+        .pending
+        .values()
+        .chain(queue.running.values().map(|r| &r.job))
+        .any(|j| {
+            matches!(j.kind, Kind::Review { .. })
+                && j.repo.source() == e.record.repo_source
+                && j.repo.id == e.context.repo.id
+                && j.key().1 == e.record.pr
+        })
+}
+pub async fn refresh_review_status(s: &Server, job: &Job) {
+    if !matches!(job.kind, Kind::Review { .. }) {
+        return;
+    }
+    let record = s
+        .fixes
+        .lock()
+        .await
+        .entries
+        .values()
+        .filter(|e| {
+            e.context.repo.id == job.repo.id
+                && e.record.repo_source == job.repo.source()
+                && e.record.pr == job.key().1
+        })
+        .max_by_key(|e| &e.record.updated_at)
+        .map(|e| e.record.clone());
+    if let Some(record) = record {
+        status(s, &record).await;
+    }
 }
 
 async fn latest(s: &Server, repo: &str, number: u64) -> Option<dashboard::JobSummary> {
