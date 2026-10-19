@@ -1126,7 +1126,12 @@ async fn plan(State(s): State<Arc<Server>>, Query(q): Query<Plan>) -> Outcome<Js
     let ids = q
         .findings
         .map(|v| v.split(',').map(str::to_owned).collect::<Vec<_>>());
-    let selected = select(&findings, ids.as_deref())?;
+    // The page needs every finding to choose a subset; the request handler
+    // still enforces the 100-finding limit.
+    let selected = match ids.as_deref() {
+        Some(ids) => select(&findings, Some(ids))?,
+        None => findings,
+    };
     let existing = s
         .fixes
         .lock()

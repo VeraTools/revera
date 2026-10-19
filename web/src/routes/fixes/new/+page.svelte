@@ -9,6 +9,7 @@
   import Status from '#lib/components/Status.svelte';
   let plan = $state<FixPlan>();
   let selected = $state<string[]>([]);
+  const maxFindings = 100;
   let existing = $state<FixPlan['existing']>(null);
   let error = $state('');
   let busy = $state(false);
@@ -37,7 +38,7 @@
     const current = ++revision;
     selectionBusy = true;
     try {
-      if (!selected.length) {
+      if (!selected.length || selected.length > maxFindings) {
         existing = null;
         error = '';
         return;
@@ -125,7 +126,11 @@
         </div>{:else}<div class="section actions">
           <button
             class="button primary"
-            disabled={busy || selectionBusy || !selected.length || !plan.sandbox.available}
+            disabled={busy ||
+              selectionBusy ||
+              !selected.length ||
+              selected.length > maxFindings ||
+              !plan.sandbox.available}
             onclick={generate}
             >{busy
               ? 'Requesting…'
@@ -138,6 +143,8 @@
         </div>
         {#if !selected.length}<p class="helper">
             Select at least one finding to fix.
+          </p>{:else if selected.length > maxFindings}<p class="helper">
+            Select up to {maxFindings} findings to fix.
           </p>{/if}{#if !plan.execution_enabled}<p class="helper consent-note">
             One-time consent applies only to this request. Persistent execution stays off.
           </p>{/if}{/if}

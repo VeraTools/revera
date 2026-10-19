@@ -179,6 +179,16 @@ async fn oversized_default_selection_fails_before_creating_a_request() {
         "This review has more than 100 actionable findings; select up to 100 to fix."
     );
     assert!(s.fixes.lock().await.entries.is_empty());
+    let (status, plan) = call(
+        s.clone(),
+        reqwest::Method::GET,
+        &format!("/api/fixes/plan?job={job}"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(plan["findings"].as_array().unwrap().len(), 101);
     assert_eq!(select(&findings[..100], None).unwrap().len(), 100);
     let ids: Vec<_> = findings[..100].iter().map(Finding::id).collect();
     assert_eq!(select(&findings, Some(&ids)).unwrap().len(), 100);
