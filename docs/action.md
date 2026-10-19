@@ -89,7 +89,8 @@ with:
 ```
 
 Built-in Quick and Deep scale from your configured budget without changing
-validation or strategy. Custom profiles replace the built-ins. See
+validation or strategy. A custom profile named `quick` or `deep` replaces that
+built-in; other custom names leave both built-ins available. See
 [profile settings](configuration.md#profiles) and
 [strategy behavior](how-it-works.md#strategies).
 
