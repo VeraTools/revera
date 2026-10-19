@@ -647,14 +647,26 @@ pub async fn finish(
         })
         .map(|f| (f.id(), f.clone()))
         .collect();
+    // Unposted ones re-entered `collapsed` and are counted by the retain below.
+    let rechecks_below = below_threshold_prior
+        .keys()
+        .filter(|id| !reenter_ids.contains(*id))
+        .count();
+    // Closed (resolved/rejected) findings stay closed; only still-open ones
+    // are moved out of the carried set.
+    let still_open = |id: &str| {
+        prep.state
+            .find(id)
+            .is_some_and(|f| matches!(f.status, FindingState::Open | FindingState::Uncertain))
+    };
     collapsed.retain(|f| {
         let keep = f.severity >= cfg.review.min_severity;
-        if !keep && prep.state.find(&f.id()).is_some() {
+        if !keep && still_open(&f.id()) {
             below_threshold_prior.insert(f.id(), f.clone());
         }
         keep
     });
-    prep.stats.below_threshold_after_validation = before - collapsed.len();
+    prep.stats.below_threshold_after_validation = before - collapsed.len() + rechecks_below;
 
     // ---- anchor + plan ----
     // only publishable findings compete for inline slots; everything else
@@ -1001,6 +1013,7 @@ mod tests {
             assert_eq!(tracked.posted, posted);
             assert_eq!(report.stats.accepted, 0);
             assert_eq!(report.stats.uncertain, 0);
+            assert_eq!(report.stats.below_threshold_after_validation, 1);
             assert!(
                 report
                     .plan
