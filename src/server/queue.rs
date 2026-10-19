@@ -40,6 +40,39 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn configured_external_concurrency_allows_two_and_holds_the_third() {
+        use crate::server::events::{Job, Kind, Repo, Source};
+        let mut queue = Queue::default();
+        for id in 1..=3 {
+            let repo = Repo::parse(
+                &serde_json::json!({"id":id,"full_name":format!("owner/repo{id}")}),
+                None,
+            )
+            .unwrap();
+            queue.enqueue(Job::new(
+                repo,
+                Kind::Review {
+                    number: 7,
+                    pr: serde_json::json!({"head":{"sha":"head"}}),
+                    force: true,
+                },
+                "manual",
+            ));
+        }
+        let (first, _) = queue.take_with_external_limit(2).unwrap();
+        let (second, _) = queue.take_with_external_limit(2).unwrap();
+        assert_ne!(first.repo.id, second.repo.id);
+        assert_eq!(queue.running.len(), 2);
+        assert_eq!(queue.pending.len(), 1);
+        assert!(queue.take_with_external_limit(2).is_none());
+        queue.running.remove(&first.key());
+        assert_eq!(
+            queue.take_with_external_limit(2).unwrap().0.repo.source(),
+            Source::External
+        );
+    }
 }
 
 pub struct ReviewAdmission(Arc<()>);
