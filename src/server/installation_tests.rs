@@ -658,6 +658,8 @@ async fn lifecycle_webhooks_are_verified_coalesced_and_do_not_enqueue_unapproved
         for action in actions {
             let payload = json!({"action": action, "installation": installation(12, "outside", 112), "account": {"id": 112, "login": "outside"}, "repositories_added": [repo_value(12, "outside", "never-disclose")]});
             assert_eq!(post_webhook(&url, event, &payload).await, 202);
+            // Spread the burst past a single 250 ms window; it must still coalesce.
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
     tokio::time::timeout(Duration::from_secs(5), async {

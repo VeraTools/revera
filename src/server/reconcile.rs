@@ -632,7 +632,18 @@ pub async fn loop_forever(server: Arc<Server>) {
             },
         };
         if webhook {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            // Coalesce a burst: refresh once no request has arrived for 250 ms, within 5 s.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                requests.borrow_and_update();
+                let quiet =
+                    (tokio::time::Instant::now() + Duration::from_millis(250)).min(deadline);
+                match tokio::time::timeout_at(quiet, requests.changed()).await {
+                    Ok(Err(_)) => return,
+                    Ok(Ok(())) if tokio::time::Instant::now() < deadline => {}
+                    _ => break,
+                }
+            }
             requests.borrow_and_update();
         }
         if let Err(e) = tick(&server).await {
