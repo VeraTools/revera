@@ -840,7 +840,9 @@ pub async fn request(
     if let Some(mut e) = store
         .entries
         .values()
-        .find(|e| e.context.key == key && e.record.active())
+        .find(|e| {
+            e.context.key == key && e.context.preview_only == preview_only && e.record.active()
+        })
         .cloned()
     {
         e.record.audit(actor, "requested", origin);
@@ -1127,7 +1129,11 @@ async fn plan(State(s): State<Arc<Server>>, Query(q): Query<Plan>) -> Outcome<Js
         .await
         .entries
         .values()
-        .find(|e| e.context.key == key(&summary, &selected) && e.record.active())
+        .find(|e| {
+            !e.context.preview_only
+                && e.context.key == key(&summary, &selected)
+                && e.record.active()
+        })
         .map(|e| e.record.summary());
     let mut delivery = vec![Capability {
         mode: Delivery::Patch,
@@ -2553,10 +2559,11 @@ pub async fn review_finished(s: &Server, job: &Job) -> Result<()> {
         .entries
         .values()
         .filter(|e| {
-            e.record
-                .verify_review
-                .as_ref()
-                .is_some_and(|v| v["job"] == job.id)
+            e.record.state == "verifying"
+                && e.record
+                    .verify_review
+                    .as_ref()
+                    .is_some_and(|v| v["job"] == job.id)
         })
         .cloned()
         .collect();

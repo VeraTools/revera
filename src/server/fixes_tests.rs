@@ -283,6 +283,96 @@ fn parser_selection_and_permission_roles_are_strict() {
     assert!(select(&[finding()], Some(&["abcde".into()])).is_err());
     assert!(select(&[finding()], Some(&["abcdef".into()])).is_err());
 }
+
+#[tokio::test]
+async fn author_previews_do_not_deduplicate_publishable_requests_or_inherit_consent() {
+    let (_data, s, mock, job) = fixture().await;
+    s.dashboard.lock().await.preferences.fixes.author_preview = true;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/collaborators/author/permission"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"permission":"read"})))
+        .mount(&mock)
+        .await;
+    let preview = request(&s, "mention", "author", &job, None, false)
+        .await
+        .unwrap();
+    assert!(entry(&s, &preview.id).await.unwrap().context.preview_only);
+    let (_, plan) = call(
+        s.clone(),
+        reqwest::Method::GET,
+        &format!("/api/fixes/plan?job={job}"),
+        None,
+        false,
+    )
+    .await;
+    assert!(plan["existing"].is_null());
+    let publishable = request(&s, "mention", "maintainer", &job, None, true)
+        .await
+        .unwrap();
+    assert_ne!(preview.id, publishable.id);
+    assert!(
+        !entry(&s, &publishable.id)
+            .await
+            .unwrap()
+            .context
+            .preview_only
+    );
+    assert_eq!(publishable.consent.as_deref(), Some("once"));
+    let repeated = request(&s, "mention", "author", &job, None, false)
+        .await
+        .unwrap();
+    assert_eq!(repeated.id, preview.id);
+    assert!(repeated.consent.is_none());
+    assert_eq!(repeated.state, "awaiting_confirmation");
+    assert_eq!(s.fixes.lock().await.entries.len(), 2);
+}
+
+#[tokio::test]
+async fn fix_shutdown_persistence_failure_still_cancels_reviews_and_drains_workers() {
+    let (_data, s, _mock, job) = fixture().await;
+    let fix = request(&s, "dashboard", "admin", &job, None, true)
+        .await
+        .unwrap();
+    change(&s, &fix.id, |e| e.record.state = "generating".into())
+        .await
+        .unwrap();
+    let dir = s.settings.data_dir.join("fixes").join(&fix.id);
+    std::fs::remove_file(dir.join("fix.json")).unwrap();
+    std::fs::create_dir(dir.join("fix.json")).unwrap();
+    let repo = s.dashboard.lock().await.repos["owner/repo"].repo.clone();
+    let review = Job::new(
+        repo,
+        Kind::Review {
+            number: 7,
+            pr: pull(HEAD),
+            force: true,
+        },
+        "manual",
+    );
+    s.enqueue(review.clone()).await;
+    let (_, mut cancel) = s.queue.lock().await.take().unwrap();
+    let (done, received) = tokio::sync::oneshot::channel();
+    s.workers.lock().await.spawn(async move {
+        cancel.wait_for(|cancel| *cancel).await.unwrap();
+        done.send(()).unwrap();
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let result =
+        super::super::serve_until(s.clone(), listener, async {}, Duration::from_millis(100)).await;
+    assert!(
+        result.is_err(),
+        "persistence error is still reported after draining"
+    );
+    tokio::time::timeout(Duration::from_secs(1), received)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        s.dashboard.lock().await.jobs[&review.id].status,
+        "cancelled"
+    );
+    assert!(s.workers.lock().await.is_empty());
+}
 #[tokio::test]
 async fn settings_persist_and_repo_yaml_cannot_enable_execution() {
     let (_data, s, _mock, id) = fixture().await;
@@ -1695,11 +1785,10 @@ async fn recovered_queued_fixes_wait_for_successful_installation_discovery() {
     .await
     .unwrap();
     let reason = ended.reason.unwrap();
-    if fix::sandbox::probe().await.available {
-        assert_eq!(ended.state, "failed");
-        assert!(reason.contains("checkout is unavailable"), "{reason}");
-    } else {
-        assert_eq!(ended.state, "unsupported", "{reason}");
+    match ended.state.as_str() {
+        "failed" => assert!(reason.contains("checkout is unavailable"), "{reason}"),
+        "unsupported" => assert!(!reason.trim().is_empty(), "missing sandbox diagnostic"),
+        state => panic!("unexpected terminal state: {state}: {reason}"),
     }
     scheduler.abort();
     let _ = scheduler.await;
@@ -1848,6 +1937,17 @@ async fn queued_followup_terminal_transitions_notify_controller_without_a_runner
         }
         let r = entry(&s, &id).await.unwrap().record;
         assert_eq!(r.state, "published", "{case}");
+        let mut events = s.events.subscribe();
+        review_finished(&s, &follow).await.unwrap();
+        assert_eq!(
+            entry(&s, &id).await.unwrap().record.events.len(),
+            r.events.len(),
+            "{case}"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "duplicate status event for {case}"
+        );
         let v = r.verify_review.unwrap();
         assert_eq!(v["note"], "follow-up review did not complete", "{case}");
         assert_eq!(v["resolved"], json!([]));

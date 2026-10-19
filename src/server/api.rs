@@ -1245,10 +1245,15 @@ async fn settings(State(server): State<Arc<Server>>) -> ApiResult {
     let dashboard = server.dashboard.lock().await;
     let mut preferences = dashboard.preferences.clone();
     for owner in &server.allowed {
-        if !preferences
-            .allowed_owners
-            .iter()
-            .any(|v| v.eq_ignore_ascii_case(owner))
+        let id = preferences
+            .owner_accounts
+            .get(&owner.to_ascii_lowercase())
+            .copied();
+        if preferences.owner_allowed(owner, id, true)
+            && !preferences
+                .allowed_owners
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(owner))
         {
             preferences.allowed_owners.push(owner.clone());
         }
@@ -1344,13 +1349,18 @@ async fn server_settings(
         );
     }
     for owner in &added {
-        input.approve_owner(
-            owner,
-            previous
-                .owner_accounts
-                .get(&owner.to_ascii_lowercase())
-                .copied(),
-        );
+        let id = previous
+            .owner_accounts
+            .get(&owner.to_ascii_lowercase())
+            .copied();
+        if !previous.owner_allowed(owner, id, true) {
+            // Only the explicit approval endpoint may clear a revocation.
+            input
+                .allowed_owners
+                .retain(|v| !v.eq_ignore_ascii_case(owner));
+            continue;
+        }
+        input.approve_owner(owner, id);
     }
     dashboard::write_preferences(&server.settings.data_dir, &input)?;
     dashboard.preferences = input;

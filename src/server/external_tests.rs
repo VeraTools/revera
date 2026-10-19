@@ -519,7 +519,9 @@ async fn external_hourly_and_tracking_caps_persist_and_retry_without_losing_head
             .header("X-Revera-CSRF", &csrf)
             .json(&json!({"url": selection.url, "mode": "quick"}))
     };
-    assert_eq!(request().send().await.unwrap().status(), 409);
+    let capped = request().send().await.unwrap();
+    assert_eq!(capped.status(), 409);
+    assert!(capped.text().await.unwrap().contains("maximum 1"));
     assert!(
         !server
             .external
@@ -784,6 +786,232 @@ async fn external_retention_bounds_idle_checkouts_but_preserves_active_and_track
     for id in [5, 6, 7] {
         assert!(!data.path().join(format!("external/{id}")).exists());
     }
+}
+
+#[tokio::test]
+async fn external_unconfigured_and_rejected_admissions_preserve_quota_and_retry_head() {
+    let mock = MockServer::start().await;
+    no_writes(&mock).await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    std::fs::remove_file(&server.config).unwrap();
+    metadata(&mock, public_repo(), public_pr(&"a".repeat(40))).await;
+    server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .external
+        .tracking_enabled = true;
+    let item = tracked(7);
+    server
+        .external
+        .lock()
+        .await
+        .tracked
+        .insert(item.url.clone(), item.clone());
+    external::poll(&server).await.unwrap();
+    let store = external::Store::load(data.path()).unwrap();
+    assert!(store.tracked[&item.url].head_sha.is_empty());
+    assert!(store.tracked[&item.url].etag.is_none());
+    assert!(store.admissions.is_empty());
+    assert!(store.tracked[&item.url].reason.is_some());
+    assert!(server.queue.lock().await.pending.is_empty());
+    crate::fsutil::write_output(data.path(), &server.config, CONFIG.as_bytes()).unwrap();
+    server
+        .external
+        .lock()
+        .await
+        .tracked
+        .get_mut(&item.url)
+        .unwrap()
+        .next_poll = 0;
+    external::poll(&server).await.unwrap();
+    let store = external::Store::load(data.path()).unwrap();
+    assert_eq!(store.tracked[&item.url].head_sha, "a".repeat(40));
+    assert_eq!(store.admissions.len(), 1);
+    server.stopping.send_replace(true);
+    let result = external::submit(&server, &item.url, dashboard::Mode::Quick, "manual").await;
+    assert!(result.is_err());
+    assert_eq!(
+        external::Store::load(data.path()).unwrap().admissions.len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn external_retention_prunes_inactive_prs_inside_an_active_repository() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let now = chrono::Utc::now();
+    server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .external
+        .max_checkouts = 1;
+    crate::fsutil::ensure_dir(
+        data.path(),
+        Path::new("external/.prune-0123456789abcdef0123456789abcdef"),
+    )
+    .unwrap();
+    for (number, days) in [(7, 9), (8, 9), (9, 1), (10, 9), (11, 9), (12, 2)] {
+        let workspace = crate::fsutil::ensure_dir(
+            data.path(),
+            &Path::new("external/701").join(format!("pull-{number}")),
+        )
+        .unwrap();
+        std::fs::write(workspace.join("checkout"), "retained contents").unwrap();
+        let review = events::Job::new(
+            events::Repo::parse(&public_repo(), None).unwrap(),
+            events::Kind::Review {
+                number,
+                pr: public_pr(&"a".repeat(40)),
+                force: true,
+            },
+            "manual",
+        );
+        let mut summary = dashboard::JobSummary::queued(&review);
+        summary.queued_at = (now - chrono::Duration::days(days)).to_rfc3339();
+        summary.set_state("complete", None);
+        server.update_job(summary).await.unwrap();
+        if matches!(number, 10 | 11) {
+            server.queue.lock().await.enqueue(review);
+        }
+    }
+    let _ = server.queue.lock().await.take().unwrap();
+    let item = tracked(7);
+    server
+        .external
+        .lock()
+        .await
+        .tracked
+        .insert(item.url.clone(), item);
+    external::poll(&server).await.unwrap();
+    for number in [7, 9, 10, 11] {
+        assert!(
+            data.path()
+                .join(format!("external/701/pull-{number}/checkout"))
+                .is_file(),
+            "{number}"
+        );
+    }
+    assert!(!data.path().join("external/701/pull-8").exists());
+    assert!(!data.path().join("external/701/pull-12").exists());
+    assert!(
+        std::fs::read_dir(data.path().join("external"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".prune-"))
+    );
+}
+
+#[tokio::test]
+async fn external_tracking_retries_malformed_metadata_without_stopping() {
+    for endpoint in [
+        "/repos/community/project",
+        "/repos/community/project/pulls/7",
+    ] {
+        let mock = MockServer::start().await;
+        no_writes(&mock).await;
+        let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        metadata(&mock, public_repo(), public_pr(&"a".repeat(40))).await;
+        Mock::given(method("GET"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not JSON"))
+            .with_priority(1)
+            .mount(&mock)
+            .await;
+        server
+            .dashboard
+            .lock()
+            .await
+            .preferences
+            .external
+            .tracking_enabled = true;
+        let item = tracked(7);
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .insert(item.url.clone(), item.clone());
+        external::poll(&server).await.unwrap();
+        let store = server.external.lock().await;
+        assert_eq!(store.tracked[&item.url].status, "tracking", "{endpoint}");
+        assert!(store.tracked[&item.url].next_poll > 0);
+        assert!(store.tracked[&item.url].reason.is_some());
+        assert!(store.admissions.is_empty());
+        drop(store);
+        mock.reset().await;
+        metadata(&mock, public_repo(), public_pr(&"a".repeat(40))).await;
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .get_mut(&item.url)
+            .unwrap()
+            .next_poll = 0;
+        external::poll(&server).await.unwrap();
+        assert_eq!(
+            server.external.lock().await.tracked[&item.url].head_sha,
+            "a".repeat(40)
+        );
+    }
+}
+
+#[tokio::test]
+async fn external_tracking_deduplicates_input_casing_by_resolved_identity() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    metadata(&mock, public_repo(), public_pr(&"a".repeat(40))).await;
+    for (route, value) in [
+        ("/repos/Community/Project", public_repo()),
+        (
+            "/repos/Community/Project/pulls/7",
+            public_pr(&"a".repeat(40)),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(value))
+            .mount(&mock)
+            .await;
+    }
+    server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .external
+        .tracking_enabled = true;
+    let (cookie, csrf) = administrator(&server).await;
+    let (url, task) = http(server.clone()).await;
+    for repo in ["Community/Project", "community/project"] {
+        let response = reqwest::Client::new()
+            .post(format!("{url}/api/external/tracking"))
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"url": format!("https://github.com/{repo}/pull/7")}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+    assert_eq!(server.external.lock().await.tracked.len(), 1);
+    assert!(
+        server
+            .external
+            .lock()
+            .await
+            .tracked
+            .contains_key(&tracked(7).url)
+    );
+    task.abort();
 }
 
 fn local_git(dir: &Path, args: &[&str]) -> String {

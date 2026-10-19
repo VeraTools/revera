@@ -439,6 +439,9 @@ async fn access_denial_removes_inventory_but_temporary_outage_preserves_it() {
 async fn revoking_implicit_owner_survives_legacy_settings_saves_and_github_outage() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let mut server = Arc::try_unwrap(server).ok().unwrap();
+    server.allowed.insert("owner".into());
+    let server = Arc::new(server);
     let fixture = InventoryFixture::mount(&mock, vec![installation(9, "owner", 109)]).await;
     fixture
         .repositories
@@ -468,10 +471,19 @@ async fn revoking_implicit_owner_survives_legacy_settings_saves_and_github_outag
     assert!(response["warning"].as_str().unwrap().contains("503"));
     assert!(!server.allowed_owner(&test_app(), "owner").await);
     assert!(server.dashboard.lock().await.repos.is_empty());
+    let settings = api_get(&url, "/api/settings", &cookie).await;
+    assert!(
+        !settings["server"]["allowed_owners"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("owner"))
+    );
     let mut legacy = serde_json::to_value(&server.dashboard.lock().await.preferences).unwrap();
     for field in ["owner_accounts", "revoked_owners", "revoked_owner_ids"] {
         legacy.as_object_mut().unwrap().remove(field);
     }
+    // A stale dashboard can still send an implicit owner from before revocation.
+    legacy["allowed_owners"] = json!(["owner"]);
     assert_eq!(
         reqwest::Client::new()
             .put(format!("{url}/api/settings/server"))
@@ -489,6 +501,105 @@ async fn revoking_implicit_owner_survives_legacy_settings_saves_and_github_outag
         serde_json::from_slice(&std::fs::read(data.path().join("settings.json")).unwrap()).unwrap();
     assert!(!loaded.owner_allowed("owner", Some(109), true));
     task.abort();
+}
+
+#[tokio::test]
+async fn implicit_owner_pins_do_not_survive_removal_of_the_env_approval() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let mut server = Arc::try_unwrap(server).ok().unwrap();
+    server.allowed.insert("second".into());
+    let fixture = InventoryFixture::mount(&mock, vec![installation(10, "second", 110)]).await;
+    reconcile::once(&server).await.unwrap();
+    let preferences = &server.dashboard.lock().await.preferences.clone();
+    assert_eq!(preferences.owner_accounts["second"], 110);
+    assert!(preferences.allowed_owners.is_empty());
+    let loaded: dashboard::Preferences =
+        serde_json::from_slice(&std::fs::read(data.path().join("settings.json")).unwrap()).unwrap();
+    assert!(loaded.allowed_owners.is_empty());
+    // A rename follows the pin only while the original implicit approval exists.
+    fixture.installations.lock().unwrap()[0]["account"]["login"] = json!("renamed");
+    reconcile::once(&server).await.unwrap();
+    assert!(
+        server
+            .allowed_account(&test_app(), "renamed", Some(110))
+            .await
+    );
+    assert!(
+        !server
+            .allowed_account(&test_app(), "second", Some(999))
+            .await
+    );
+    server.allowed.clear();
+    reconcile::once(&server).await.unwrap();
+    assert!(
+        !server
+            .allowed_account(&test_app(), "renamed", Some(110))
+            .await
+    );
+    assert_eq!(
+        server
+            .installations
+            .lock()
+            .await
+            .installations
+            .iter()
+            .find(|i| i.account.id == Some(110))
+            .unwrap()
+            .status,
+        "awaiting_approval"
+    );
+}
+
+#[tokio::test]
+async fn rate_limited_installation_access_preserves_inventory_and_checkouts() {
+    for stage in ["token", "repositories"] {
+        for signal in ["primary", "secondary", "message"] {
+            let mock = MockServer::start().await;
+            let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+            let fixture = InventoryFixture::mount(&mock, vec![installation(9, "owner", 109)]).await;
+            fixture
+                .repositories
+                .lock()
+                .unwrap()
+                .insert(9, vec![repository()]);
+            reconcile::once(&server).await.unwrap();
+            let checkout =
+                crate::fsutil::ensure_dir(data.path(), Path::new("repos/owner/repo")).unwrap();
+            let review = job("rate-limit");
+            server.enqueue(review.clone()).await;
+            let (_, cancelled) = server.queue.lock().await.take().unwrap();
+            let response = match signal {
+                "primary" => ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+                "secondary" => ResponseTemplate::new(403).insert_header("retry-after", "60"),
+                _ => ResponseTemplate::new(403)
+                    .set_body_json(json!({"message": "You have exceeded a secondary rate limit."})),
+            };
+            Mock::given(method(if stage == "token" { "POST" } else { "GET" }))
+                .and(path(if stage == "token" {
+                    "/app/installations/9/access_tokens"
+                } else {
+                    "/installation/repositories"
+                }))
+                .respond_with(response)
+                .with_priority(1)
+                .expect(1)
+                .mount(&mock)
+                .await;
+            reconcile::once(&server).await.unwrap();
+            assert!(
+                server
+                    .dashboard
+                    .lock()
+                    .await
+                    .repos
+                    .contains_key("owner/repo"),
+                "{stage}: {signal}"
+            );
+            assert!(!*cancelled.borrow(), "{stage}: {signal}");
+            assert!(checkout.is_dir());
+        }
+    }
 }
 
 #[tokio::test]
@@ -579,6 +690,29 @@ async fn lifecycle_webhooks_are_verified_coalesced_and_do_not_enqueue_unapproved
     assert!(server.dashboard.lock().await.repos.is_empty());
     worker.abort();
     task.abort();
+}
+
+#[tokio::test]
+async fn external_pruning_failure_does_not_skip_installed_reconciliation() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let fixture = InventoryFixture::mount(&mock, vec![installation(9, "owner", 109)]).await;
+    fixture
+        .repositories
+        .lock()
+        .unwrap()
+        .insert(9, vec![repository()]);
+    std::fs::remove_dir(data.path().join("external")).unwrap();
+    std::fs::write(data.path().join("external"), "not a directory").unwrap();
+    reconcile::tick(&server).await.unwrap();
+    assert!(
+        server
+            .dashboard
+            .lock()
+            .await
+            .repos
+            .contains_key("owner/repo")
+    );
 }
 
 #[tokio::test]

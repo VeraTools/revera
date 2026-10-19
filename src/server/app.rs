@@ -125,7 +125,14 @@ pub enum Permissions {
 }
 
 #[derive(Debug)]
-pub struct ApiStatus(pub reqwest::StatusCode);
+pub struct ApiStatus(pub reqwest::StatusCode, bool);
+
+impl ApiStatus {
+    pub fn denied(&self) -> bool {
+        self.0 == reqwest::StatusCode::NOT_FOUND
+            || (self.0 == reqwest::StatusCode::FORBIDDEN && !self.1)
+    }
+}
 
 impl std::fmt::Display for ApiStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -208,10 +215,29 @@ impl Api {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await?;
+        let mut response = request.send().await?;
         if !response.status().is_success() {
             // Conversion and token responses may contain credentials; do not echo bodies.
-            return Err(ApiStatus(response.status()).into());
+            let status = response.status();
+            let mut rate_limited = response.headers().contains_key("retry-after")
+                || response
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|v| v == "0");
+            if status == reqwest::StatusCode::FORBIDDEN && !rate_limited {
+                let mut body = Vec::new();
+                while let Some(chunk) = response.chunk().await? {
+                    let remaining = 64 * 1024 - body.len();
+                    body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                    if body.len() == 64 * 1024 {
+                        break;
+                    }
+                }
+                rate_limited = String::from_utf8_lossy(&body)
+                    .to_ascii_lowercase()
+                    .contains("rate limit");
+            }
+            return Err(ApiStatus(status, rate_limited).into());
         }
         Ok(response.json().await?)
     }

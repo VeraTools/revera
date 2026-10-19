@@ -901,6 +901,58 @@ async fn restart_recovers_orphan_checks_with_fresh_scoped_tokens() {
 }
 
 #[tokio::test]
+async fn failed_reconciliation_still_recovers_orphan_checks() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let mut orphan = dashboard::JobSummary::queued(&job("head"));
+    orphan.check = Some(dashboard::CheckRecovery {
+        id: 100,
+        repo: job("head").repo,
+        pending: true,
+    });
+    let id = orphan.id.clone();
+    server.update_job(orphan).await.unwrap();
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(ResponseTemplate::new(503))
+        .with_priority(1)
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/9/access_tokens"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(json!({"token":"recover-tick-token"})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/check-runs/100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"in_progress"})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/owner/repo/check-runs/100"))
+        .and(body_partial_json(
+            json!({"status":"completed","conclusion":"cancelled"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":100})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    assert!(reconcile::once(&server).await.is_err());
+    assert!(
+        !server.dashboard.lock().await.jobs[&id]
+            .check
+            .as_ref()
+            .unwrap()
+            .pending
+    );
+}
+
+#[tokio::test]
 async fn pruning_protects_queue_members_even_with_cancelled_metadata() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;

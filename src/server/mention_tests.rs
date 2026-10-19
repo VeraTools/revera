@@ -476,7 +476,13 @@ async fn mentions_acknowledge_then_force_current_head_and_ignore_auto_filters() 
 
 #[tokio::test]
 async fn help_and_unknown_commands_reply_once_without_reaction_or_review() {
-    for text in ["help", "unknown", "summarize this"] {
+    for text in [
+        "help",
+        "unknown",
+        "summarize this",
+        "fix abcde",
+        "fix status all",
+    ] {
         let mock = MockServer::start().await;
         let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
         mention_token(&mock).await;
@@ -495,7 +501,16 @@ async fn help_and_unknown_commands_reply_once_without_reaction_or_review() {
         let requests = mock.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
-        for command in ["review", "quick", "standard", "deep", "help"] {
+        for command in [
+            "review",
+            "quick",
+            "standard",
+            "deep",
+            "help",
+            "fix [all|<ids>]",
+            "fix status",
+            "fix cancel",
+        ] {
             assert!(body["body"].as_str().unwrap().contains(command));
         }
     }

@@ -92,6 +92,9 @@ async fn accepted_detail_diagnostics_download_and_cached_staleness() {
     ] {
         assert!(!f[field].is_null(), "{field}");
     }
+    assert_eq!(f["reviewed_head_sha"], reviewed);
+    assert_eq!(f["reviewed_base_sha"], "b".repeat(40));
+    assert_eq!(f["claim"], format!("Claim {}", crate::redact::text(secret)));
     assert!(f.get("suggested_fix").is_none());
     let text = detail.to_string();
     for forbidden in [
@@ -164,6 +167,28 @@ async fn accepted_detail_diagnostics_download_and_cached_staleness() {
         assert_eq!(response.status(), status);
     }
     task.abort();
+}
+
+#[test]
+fn finding_detail_exposes_exact_suggestion_shape() {
+    let suggestion =
+        json!({"start_line":2,"end_line":3,"original":"old\ntext\n","replacement":"new\ntext\n"});
+    let finding = serde_json::from_value(json!({"defect_key":"guard","severity":"high","file":"src/a.rs","start_line":2,"end_line":3,
+        "title":"Missing guard","claim":"Empty input panics","validation_status":"accepted","suggestion":suggestion})).unwrap();
+    let head = "a".repeat(40);
+    let base = "b".repeat(40);
+    let context = crate::handoff::Context {
+        repo: "owner/repo",
+        pr_url: "https://github.com/owner/repo/pull/7",
+        base: &base,
+        head: &head,
+        review_url: None,
+        stale: Some(false),
+    };
+    let detail = api::finding_detail(&finding, &context);
+    assert_eq!(detail["suggestion"], suggestion);
+    assert_eq!(detail["reviewed_head_sha"], head);
+    assert_eq!(detail["reviewed_base_sha"], base);
 }
 
 #[tokio::test]

@@ -102,13 +102,13 @@ impl Server {
         &self,
         mut job: events::Job,
         admission: Option<&queue::ReviewAdmission>,
-    ) {
+    ) -> bool {
         let preferences = self.dashboard.lock().await.preferences.clone();
         if job.repo.source() == events::Source::Installed
             && !matches!(job.kind, events::Kind::Remove)
             && preferences.trigger(&job.repo.full_name) == dashboard::Trigger::Off
         {
-            return;
+            return false;
         }
         if matches!(job.trigger.as_str(), "webhook" | "reconcile" | "auto")
             && let events::Kind::Review { pr, .. } = &job.kind
@@ -116,7 +116,7 @@ impl Server {
             if preferences.trigger(&job.repo.full_name) != dashboard::Trigger::Auto
                 || !preferences.reviewable(pr)
             {
-                return;
+                return false;
             }
             job.trigger = "auto".into();
             job.mode = preferences.mode(&job.repo.full_name);
@@ -132,23 +132,23 @@ impl Server {
                     i.id == job.repo.installation && i.allowed && !i.suspended && i.error.is_none()
                 })
             {
-                return;
+                return false;
             }
             drop(installations);
             let owner = job.repo.full_name.split('/').next().unwrap_or("");
             if let Some(app) = app.as_ref()
                 && !self.allowed_owner(app, owner).await
             {
-                return;
+                return false;
             }
         }
         if *self.stopping.borrow() || admission.is_some_and(|token| !queue.admits(job.key(), token))
         {
-            return;
+            return false;
         }
         let previous = queue.pending.get(&job.key()).cloned();
         queue.enqueue(job.clone());
-        let accepted = queue
+        let mut accepted = queue
             .pending
             .get(&job.key())
             .is_some_and(|j| j.id == job.id);
@@ -172,6 +172,7 @@ impl Server {
             }
             if let Err(e) = self.update_job(summary).await {
                 queue.pending.remove(&job.key());
+                accepted = false;
                 tracing::warn!(
                     "job metadata: {}",
                     crate::redact::diagnostic(&e.to_string())
@@ -186,6 +187,7 @@ impl Server {
             );
         }
         self.notify.notify_one();
+        accepted && !skipped
     }
 
     async fn allowed_owner(&self, app: &app::App, owner: &str) -> bool {
@@ -193,11 +195,33 @@ impl Server {
     }
 
     async fn allowed_account(&self, app: &app::App, owner: &str, id: Option<u64>) -> bool {
-        self.dashboard
-            .lock()
-            .await
-            .preferences
-            .owner_allowed(owner, id, self.allowed(app, owner))
+        let dashboard = self.dashboard.lock().await;
+        let preferences = &dashboard.preferences;
+        preferences.owner_allowed(owner, id, self.implicit_owner(preferences, app, owner, id))
+    }
+
+    fn implicit_owner(
+        &self,
+        preferences: &dashboard::Preferences,
+        app: &app::App,
+        owner: &str,
+        id: Option<u64>,
+    ) -> bool {
+        self.allowed(app, owner)
+            || id
+                .or_else(|| {
+                    preferences
+                        .owner_accounts
+                        .get(&owner.to_ascii_lowercase())
+                        .copied()
+                })
+                .is_some_and(|id| {
+                    std::iter::once(&app.owner)
+                        .chain(self.allowed.iter())
+                        .any(|login| {
+                            preferences.owner_accounts.get(&login.to_ascii_lowercase()) == Some(&id)
+                        })
+                })
     }
 
     fn request_reconcile(&self) {
@@ -574,7 +598,7 @@ async fn serve_until(
     fix_scheduler.abort();
     reconcile.abort();
     let _ = tokio::join!(scheduler, fix_scheduler, reconcile);
-    fixes::shutdown(&server).await?;
+    let fixes_stopped = fixes::shutdown(&server).await;
     let cancelled = server.cancel_jobs().await;
     drain.send_replace(true);
     let finished = tokio::time::timeout(deadline, async {
@@ -596,6 +620,7 @@ async fn serve_until(
         }
     }
     cancelled?;
+    fixes_stopped?;
     Ok(())
 }
 
