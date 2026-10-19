@@ -120,6 +120,12 @@ impl Failure {
             "Repository or PR is private, deleted or inaccessible; it requires suitable access/installation.",
         )
     }
+    fn upstream(error: impl std::fmt::Display) -> Self {
+        Self::new(
+            StatusCode::BAD_GATEWAY,
+            crate::redact::diagnostic(&error.to_string()),
+        )
+    }
 }
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -209,7 +215,11 @@ async fn read(server: &Server, path: &str, etag: Option<&str>) -> Outcome<Read> 
             retry_after: Some((retry_at - now) as u64),
         });
     }
-    let response = server.api.public_get(path, etag).await?;
+    let response = server
+        .api
+        .public_get(path, etag)
+        .await
+        .map_err(Failure::upstream)?;
     let status = response.status();
     if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
         let headers = response.headers();
@@ -237,7 +247,9 @@ async fn read(server: &Server, path: &str, etag: Option<&str>) -> Outcome<Read> 
             .clamp(1, 86400);
         let mut store = server.external.lock().await;
         store.retry_at = now + seconds as i64;
-        store.save(&server.settings.data_dir)?;
+        store
+            .save(&server.settings.data_dir)
+            .map_err(Failure::upstream)?;
         return Err(Failure {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: format!("GitHub rate limit/access restriction; retry in {seconds} seconds."),
@@ -263,7 +275,7 @@ async fn read(server: &Server, path: &str, etag: Option<&str>) -> Outcome<Read> 
     }
     let mut response = response;
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(anyhow::Error::from)? {
+    while let Some(chunk) = response.chunk().await.map_err(Failure::upstream)? {
         if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
             return Err(Failure::new(
                 StatusCode::BAD_GATEWAY,
@@ -273,7 +285,7 @@ async fn read(server: &Server, path: &str, etag: Option<&str>) -> Outcome<Read> 
         bytes.extend_from_slice(&chunk);
     }
     Ok(Read {
-        value: Some(serde_json::from_slice(&bytes).map_err(anyhow::Error::from)?),
+        value: Some(serde_json::from_slice(&bytes).map_err(Failure::upstream)?),
         etag,
     })
 }
@@ -360,10 +372,11 @@ async fn enqueue(
     admission: Option<&super::queue::ReviewAdmission>,
 ) -> Outcome<Value> {
     let policy = server.dashboard.lock().await.preferences.external.clone();
+    let admitted_at = chrono::Utc::now().timestamp();
     {
         let mut store = server.external.lock().await;
         let mut next = store.clone();
-        next.admit(&policy, chrono::Utc::now().timestamp())?;
+        next.admit(&policy, admitted_at)?;
         next.save(&server.settings.data_dir)?;
         *store = next;
     }
@@ -378,7 +391,21 @@ async fn enqueue(
     );
     job.mode = mode;
     let id = job.id.clone();
-    server.enqueue_inner(job, admission).await;
+    if !server.enqueue_inner(job, admission).await {
+        // Admissions are reserved before enqueue to serialize the hourly cap.
+        // A rejected/skipped job must not consume that reservation or its head.
+        let mut store = server.external.lock().await;
+        let mut next = store.clone();
+        if let Some(index) = next.admissions.iter().position(|at| *at == admitted_at) {
+            next.admissions.remove(index);
+        }
+        next.save(&server.settings.data_dir)?;
+        *store = next;
+        return Err(Failure::new(
+            StatusCode::CONFLICT,
+            "External review was not queued; check server configuration and retry.",
+        ));
+    }
     Ok(json!({"id": id}))
 }
 
@@ -557,7 +584,11 @@ async fn track(
         ));
     }
     let tracked = Tracked {
-        url: target.url(),
+        url: PrUrl {
+            repo: resolved.repo.full_name.clone(),
+            number: target.number,
+        }
+        .url(),
         repo: resolved.repo.full_name.clone(),
         repo_id: resolved.repo.id,
         number: target.number,
@@ -591,7 +622,10 @@ async fn track(
     {
         return Err(Failure::new(
             StatusCode::CONFLICT,
-            "Tracked PR limit reached (maximum 25); untrack a PR first.",
+            format!(
+                "Tracked PR limit reached (maximum {}); untrack a PR first.",
+                policy.max_tracked
+            ),
         ));
     }
     let mut next = store.clone();
