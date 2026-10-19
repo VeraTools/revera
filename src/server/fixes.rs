@@ -551,10 +551,13 @@ async fn review(server: &Server, id: &str) -> Outcome<(dashboard::JobSummary, Ve
 }
 fn select(findings: &[Finding], ids: Option<&[String]>) -> Result<Vec<Finding>> {
     let Some(ids) = ids else {
+        if findings.len() > 100 {
+            bail!("This review has more than 100 actionable findings; select up to 100 to fix.");
+        }
         return Ok(findings.to_vec());
     };
     if ids.is_empty() || ids.len() > 100 {
-        bail!("select at least one accepted finding (maximum 100)");
+        bail!("select at least one finding (maximum 100)");
     }
     let mut selected = BTreeMap::new();
     for prefix in ids {

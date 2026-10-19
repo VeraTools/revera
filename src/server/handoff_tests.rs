@@ -256,6 +256,11 @@ fn carried_api_rejects_duplicates_current_verdicts_and_mismatched_identities() {
         1
     );
     assert!(api::report_carried(&json!({"findings":[f],"carried":[carried]})).is_empty());
+    for verdict in ["rejected", "uncertain"] {
+        let mut current = serde_json::to_value(&f).unwrap();
+        current["validation_status"] = json!(verdict);
+        assert!(api::report_carried(&json!({"findings":[current],"carried":[carried]})).is_empty());
+    }
     let mut mismatch = carried;
     mismatch.id = "000000000000".into();
     assert!(api::report_carried(&json!({"findings":[],"carried":[mismatch]})).is_empty());

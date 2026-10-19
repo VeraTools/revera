@@ -75,6 +75,35 @@ fn state_roundtrip_drops_validated_fix() {
 }
 
 #[test]
+fn state_evidence_preserves_spaced_paths_notes_and_malformed_fallbacks() {
+    let mut state = ReviewState::default();
+    state.upsert(&finding("src/my file.rs", "spaced", 12), FindingState::Open);
+    state.findings[0].evidence = vec![
+        "src/my file.rs:12 note with spaces: and:colons".into(),
+        "src/my file.rs:12".into(),
+        "src/part:12suffix file.rs:34 note:45 remains the note".into(),
+        "src/file.rs:not-a-line old fallback note".into(),
+        "malformed".into(),
+    ];
+    let back = state.findings[0].to_finding();
+    let evidence: Vec<_> = back
+        .supporting_evidence
+        .iter()
+        .map(|e| (e.path.as_str(), e.start_line, e.note.as_str()))
+        .collect();
+    assert_eq!(
+        evidence,
+        vec![
+            ("src/my file.rs", 12, "note with spaces: and:colons"),
+            ("src/my file.rs", 12, ""),
+            ("src/part:12suffix file.rs", 34, "note:45 remains the note"),
+            ("src/file.rs", 0, "old fallback note"),
+            ("malformed", 0, ""),
+        ]
+    );
+}
+
+#[test]
 fn recheck_transitions() {
     assert_eq!(
         recheck_transition(ValidationStatus::Rejected),

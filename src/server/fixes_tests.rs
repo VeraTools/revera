@@ -162,6 +162,35 @@ fn carried_report(s: &Server, job: &str) -> crate::report::CarriedFinding {
 }
 
 #[tokio::test]
+async fn oversized_default_selection_fails_before_creating_a_request() {
+    let (_data, s, _mock, job) = fixture().await;
+    let findings: Vec<_> = (0..101)
+        .map(|i| Finding {
+            defect_key: format!("finding-{i}"),
+            ..finding()
+        })
+        .collect();
+    write_report(&s, &job, HEAD, "complete", json!(findings), json!([]));
+    let error = request(&s, "dashboard", "admin", &job, None, false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.1,
+        "This review has more than 100 actionable findings; select up to 100 to fix."
+    );
+    assert!(s.fixes.lock().await.entries.is_empty());
+    assert_eq!(select(&findings[..100], None).unwrap().len(), 100);
+    let ids: Vec<_> = findings[..100].iter().map(Finding::id).collect();
+    assert_eq!(select(&findings, Some(&ids)).unwrap().len(), 100);
+    for ids in [vec![], vec![findings[0].id(); 101]] {
+        assert_eq!(
+            select(&findings, Some(&ids)).unwrap_err().to_string(),
+            "select at least one finding (maximum 100)"
+        );
+    }
+}
+
+#[tokio::test]
 async fn carried_only_review_supports_mentions_dashboard_and_check_fix_requests() {
     let (_data, s, mock, job) = fixture().await;
     let carried = carried_report(&s, &job);

@@ -706,6 +706,10 @@ impl ModelClient for CarriedContextClient {
             assert!(user.contains(expected), "{expected}: {user}");
         }
         let verify = tools.iter().any(|t| t.name == "submit_fix_verdicts");
+        if !verify {
+            assert!(messages.iter().any(|m| m.content.as_deref().is_some_and(|text|
+                text.contains("Verify each selected finding in code; findings listed in carried_ids were accepted at an earlier commit and must be re-derived against the pinned code."))));
+        }
         let (name, arguments) = if verify {
             (
                 "submit_fix_verdicts",

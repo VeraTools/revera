@@ -161,7 +161,11 @@ export function setMockReviewCarried(id: string) {
 }
 function carriedFindings(job: JobSummary): Finding[] {
   if (!carriedReviews.has(job.id)) return [];
-  const finding = handoffFindings({ ...job, findings: { ...job.findings, total: 1 } })[0];
+  const currentIds = new Set(handoffFindings(job).map((finding) => finding.id));
+  const finding = handoffFindings({ ...job, findings: { ...job.findings, total: 2 } }).find(
+    (finding) => !currentIds.has(finding.id),
+  );
+  if (!finding) return [];
   return [
     {
       ...finding,

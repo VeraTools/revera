@@ -137,7 +137,7 @@
             >{/if}
         </div>
         {#if !selected.length}<p class="helper">
-            Select at least one accepted finding.
+            Select at least one finding to fix.
           </p>{/if}{#if !plan.execution_enabled}<p class="helper consent-note">
             One-time consent applies only to this request. Persistent execution stays off.
           </p>{/if}{/if}

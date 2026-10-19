@@ -161,9 +161,9 @@ unpublished findings are not included.
 For a complete review with accepted or carried findings, the dashboard offers **Copy fix
 instructions** and **Download .md** for all actionable findings. Each finding
 also has **Copy prompt**. Instructions include the PR URL, repository, base
-and head commit IDs (SHAs), findings, evidence and the validator's suggested
-remedies. They are built without another model call and ask the agent to
-verify each issue, make scoped edits, test them, and get permission before
+and head commit IDs (SHAs), findings, evidence and, for accepted findings,
+the validator's suggested remedies. They are built without another model call
+and ask the agent to verify each issue, make scoped edits, test them, and get permission before
 committing, pushing or opening a PR. Long instructions are capped and link
 back to the review.
 

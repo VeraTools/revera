@@ -745,6 +745,23 @@ async function checkAgentHandoff() {
   assert.equal(expectedCarried.counts.total, 0);
   assert.equal(expectedCarried.carried.length, 1);
   assert.equal(expectedCarried.carried[0].validation_status, null);
+  const mixedFixtures = await carried.page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    const { setMockReviewCarried } = await window.importDashboard('/src/lib/mock.ts');
+    setMockReviewCarried('review-104');
+    setMockReviewCarried('review-105');
+    return Promise.all([api.job('review-104'), api.job('review-105')]);
+  });
+  assert.equal(mixedFixtures[0].carried.length, 1);
+  assert.equal(mixedFixtures[1].carried.length, 0);
+  for (const fixture of mixedFixtures) {
+    assert.equal(
+      fixture.carried.some((carried) =>
+        fixture.findings.some((current) => current.id === carried.id),
+      ),
+      false,
+    );
+  }
   await group.getByRole('button', { name: 'Copy prompt', exact: true }).click();
   assert.equal(
     await carried.page.evaluate(() => navigator.clipboard.readText()),
@@ -766,6 +783,8 @@ async function checkAgentHandoff() {
     .getByRole('heading', { name: 'Generate a fix preview', exact: true })
     .waitFor();
   await carried.page.getByText(expectedCarried.carried[0].title, { exact: true }).waitFor();
+  await carried.page.getByRole('checkbox').uncheck();
+  await carried.page.getByText('Select at least one finding to fix.', { exact: true }).waitFor();
   await carried.context.close();
 }
 
