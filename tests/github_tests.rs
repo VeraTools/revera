@@ -223,7 +223,7 @@ async fn managed_summary_preserves_server_fix_status_verbatim_before_state() {
     assert_eq!(revera::github::publish::fix_status_block(body), Some(block));
     assert_eq!(body.matches("<!-- revera:fix-status -->").count(), 1);
     assert!(body.find(block).unwrap() < body.find("<!-- revera-state:").unwrap());
-    assert!(body.contains("- `src/my_*file.rs`:3 — Use `checked_add` not \\[x\\](https://evil) &lt;a href=evil> @\u{200b}someone\n"));
+    assert!(body.contains("- `src/my_*file.rs`:3 — Use `checked_add` not \\[x\\](h\u{200b}ttps://evil) &lt;a href=evil> @\u{200b}someone\n"));
     assert!(body.contains("- ```src/a`b``c.rs```:3 — Preserve the literal path\n"));
 }
 

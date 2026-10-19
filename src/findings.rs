@@ -202,6 +202,7 @@ pub fn checked_suggestion(
         || s.end_line - s.start_line >= 10
         || s.start_line != f.start_line
         || s.end_line != f.end_line.unwrap_or(f.start_line)
+        || s.replacement.is_empty()
         || s.replacement.len() > 2000
         || s.replacement.lines().count() > 20
         || [&s.original, &s.replacement].iter().any(|v| {

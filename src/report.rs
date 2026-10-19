@@ -174,7 +174,19 @@ pub fn public_text(t: &str) -> String {
     let t = crate::redact::text(t).replace("<!--", "<!\u{200b}--");
     let mut out = String::new();
     let mut rest = t.as_str();
+    let mut line_start = true;
     while !rest.is_empty() {
+        if line_start {
+            let indent = rest.len() - rest.trim_start_matches(' ').len();
+            let after = &rest[indent..];
+            if indent <= 3 && (after.starts_with("```") || after.starts_with("~~~")) {
+                out.push_str(&rest[..indent]);
+                out.push('\\');
+                out.push_str(&after[..1]);
+                rest = &after[1..];
+            }
+            line_start = false;
+        }
         // Preserve Markdown escapes, but do not let them undo neutralization.
         if rest.starts_with('\\') && rest.as_bytes().get(1).is_some_and(u8::is_ascii_punctuation) {
             match rest.as_bytes()[1] {
@@ -208,6 +220,19 @@ pub fn public_text(t: &str) -> String {
             continue;
         }
         let c = rest.chars().next().unwrap();
+        // GitHub also autolinks bare URLs, even after Markdown links are escaped.
+        if ["https://", "http://", "ftp://", "www."]
+            .iter()
+            .any(|prefix| {
+                rest.get(..prefix.len())
+                    .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+            })
+        {
+            out.push(c);
+            out.push('\u{200b}');
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
         match c {
             '@' => out.push_str("@\u{200b}"),
             '<' => out.push_str("&lt;"),
@@ -217,6 +242,7 @@ pub fn public_text(t: &str) -> String {
             }
             _ => out.push(c),
         }
+        line_start = c == '\n';
         rest = &rest[c.len_utf8()..];
     }
     out
