@@ -598,7 +598,7 @@ async fn serve_until(
     fix_scheduler.abort();
     reconcile.abort();
     let _ = tokio::join!(scheduler, fix_scheduler, reconcile);
-    fixes::shutdown(&server).await?;
+    let fixes_stopped = fixes::shutdown(&server).await;
     let cancelled = server.cancel_jobs().await;
     drain.send_replace(true);
     let finished = tokio::time::timeout(deadline, async {
@@ -620,6 +620,7 @@ async fn serve_until(
         }
     }
     cancelled?;
+    fixes_stopped?;
     Ok(())
 }
 
