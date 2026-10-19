@@ -26,12 +26,16 @@ jobs:
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
           REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
+          REVERA_FALLBACK_BASE_URL: ${{ secrets.REVERA_FALLBACK_BASE_URL }}
+          REVERA_FALLBACK_API_KEY: ${{ secrets.REVERA_FALLBACK_API_KEY }}
         run: |
           missing=()
           [ -n "$REVERA_EMBEDDING_BASE_URL" ] || missing+=(REVERA_EMBEDDING_BASE_URL)
           [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
           [ -n "$REVERA_MODEL_BASE_URL" ] || missing+=(REVERA_MODEL_BASE_URL)
           [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
+          [ -n "$REVERA_FALLBACK_BASE_URL" ] || missing+=(REVERA_FALLBACK_BASE_URL)
+          [ -n "$REVERA_FALLBACK_API_KEY" ] || missing+=(REVERA_FALLBACK_API_KEY)
           if [ ${#missing[@]} -eq 0 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
@@ -87,3 +91,5 @@ jobs:
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
           REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
+          REVERA_FALLBACK_BASE_URL: ${{ secrets.REVERA_FALLBACK_BASE_URL }}
+          REVERA_FALLBACK_API_KEY: ${{ secrets.REVERA_FALLBACK_API_KEY }}

@@ -53,6 +53,8 @@ jobs:
       REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
       REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
       REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
+      REVERA_FALLBACK_BASE_URL: ${{ secrets.REVERA_FALLBACK_BASE_URL }}
+      REVERA_FALLBACK_API_KEY: ${{ secrets.REVERA_FALLBACK_API_KEY }}
     steps:
       - name: Require live credentials
         run: |
@@ -61,6 +63,8 @@ jobs:
           [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
           [ -n "$REVERA_MODEL_BASE_URL" ] || missing+=(REVERA_MODEL_BASE_URL)
           [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
+          [ -n "$REVERA_FALLBACK_BASE_URL" ] || missing+=(REVERA_FALLBACK_BASE_URL)
+          [ -n "$REVERA_FALLBACK_API_KEY" ] || missing+=(REVERA_FALLBACK_API_KEY)
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::release verification needs ${missing[*]}; this is a failure, not a skip"; exit 1
           fi
@@ -268,7 +272,7 @@ jobs:
           import os, sys, urllib.parse
           from pathlib import Path
           subs = []
-          for var in ("REVERA_MODEL_BASE_URL", "REVERA_EMBEDDING_BASE_URL"):
+          for var in ("REVERA_MODEL_BASE_URL", "REVERA_FALLBACK_BASE_URL", "REVERA_EMBEDDING_BASE_URL"):
               url = os.environ.get(var, "").strip()
               if url:
                   subs.append((url.rstrip("/"), f"[{var}]"))
