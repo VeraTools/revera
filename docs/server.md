@@ -497,6 +497,16 @@ Read the JSON's `available` value, not just the exit code. `available: true`
 with `proc: false` is supported. Recheck after runtime/security-policy changes
 rather than adding broad container privileges to bypass a failure.
 
+On SELinux-enforcing hosts (for example Fedora, RHEL or Oracle Linux), the
+default container label blocks bubblewrap from making its root read-only. The
+probe shows `bwrap: Can't remount readonly on /: Unable to remount destination
+"/newroot" with correct flags: Permission denied`. For Podman, add
+`SecurityLabelType=container_engine_t` to the Quadlet `[Container]` section, or
+use `--security-opt label=type:container_engine_t` with `podman run`. This keeps
+SELinux enforcing and keeps per-container separation; it is the label Podman
+provides for running sandboxes or container engines inside a container. This
+change is only needed for fixes.
+
 The base image has **no language toolchains**. A configured command such as
 `cargo test --lib` needs its compiler, test runner and dependencies already
 available offline inside the service's sandbox-visible `/usr` tree and test
@@ -612,6 +622,9 @@ TimeoutStartSec=300
 [Install]
 WantedBy=multi-user.target
 ```
+
+For fixes on SELinux hosts, see the label setting in
+[Sandbox runtime and test tools](#sandbox-runtime-and-test-tools).
 
 Run `sudo systemctl daemon-reload && sudo systemctl start revera`.
 
@@ -765,6 +778,8 @@ execution stay off. Fix offers are visible by default but do not run anything.
   owner accept it; **Permission update required** shows a pending difference.
   Then verify the sandbox and choose consent/execution in
   [Settings → Fixes](#fixes-opt-in). Permission alone does not enable fixes.
+  For Podman on SELinux hosts, see the label setting in
+  [Sandbox runtime and test tools](#sandbox-runtime-and-test-tools).
   Patch-only previews need no Contents write; keep it read-only otherwise.
 - Review details now show accepted findings by default. Use **Show diagnostics**
   for rejected or uncertain candidates; they no longer look like confirmed defects.
