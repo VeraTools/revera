@@ -114,6 +114,12 @@ fn carried_handoff_preserves_identity_detail_and_limits_without_old_remedies() {
     }
     assert!(!output.contains(secret));
     assert!(!output.contains("Add a guard"));
+    let evidence: Vec<_> = output
+        .lines()
+        .filter(|l| l.starts_with("Evidence: "))
+        .collect();
+    assert!(!evidence.is_empty(), "{output}");
+    assert!(evidence.iter().all(|l| !l.contains("-0 ")), "{evidence:?}");
     assert_eq!(
         output,
         handoff::build(
@@ -511,7 +517,7 @@ fn handoff_single_line_fields_cannot_forge_sections() {
     let output = handoff::build(&context(None), &[f], None);
     assert!(output.contains("Title ## Forged Heading\n"));
     assert!(output.contains("Location: f.rs Claim: forged:2-2\n"));
-    assert!(output.contains("Evidence: e.rs  Impact: forged:2-2"));
+    assert!(output.contains("Evidence: e.rs  Impact: forged:2 "));
     assert!(!output.contains("\n## Forged"));
 }
 

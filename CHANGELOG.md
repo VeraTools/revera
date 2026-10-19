@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.3
+
+- Fix instructions show single-line evidence as `file:line`. Evidence for
+  findings carried from earlier reviews no longer reads `file:4-0`.
+
 ## v0.8.2
 
 - Findings that are still open from an earlier review stay actionable. When a

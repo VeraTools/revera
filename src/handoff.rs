@@ -61,11 +61,14 @@ pub fn build(context: &Context<'_>, findings: &[Finding], finding: Option<&str>)
             text(&f.impact, 2000)
         ));
         for e in f.supporting_evidence.iter().take(10) {
+            let lines = if e.end_line > e.start_line {
+                format!("{}-{}", e.start_line, e.end_line)
+            } else {
+                e.start_line.to_string()
+            };
             part.push_str(&format!(
-                "Evidence: {}:{}-{} — {}\n",
+                "Evidence: {}:{lines} — {}\n",
                 line(&e.path, 1000),
-                e.start_line,
-                e.end_line,
                 text(&e.note, 2000)
             ));
         }
