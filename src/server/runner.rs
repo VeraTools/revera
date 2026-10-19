@@ -797,9 +797,11 @@ async fn complete_check(
     });
     if !cancelled
         && exit == 0
-        && report
-            .as_ref()
-            .is_some_and(|r| r["status"] == "complete" && accepted_findings(r).next().is_some())
+        && report.as_ref().is_some_and(|r| {
+            r["status"] == "complete"
+                && (accepted_findings(r).next().is_some()
+                    || !super::api::report_carried(r).is_empty())
+        })
         && server.dashboard.lock().await.preferences.fixes.offer
     {
         body["actions"] = json!([{"label":"Fix with Revera","description":"Open a fix request","identifier":"revera_fix"}]);

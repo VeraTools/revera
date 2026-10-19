@@ -145,6 +145,9 @@ pub struct RunReport {
     pub head: String,
     pub strategy: String,
     pub findings: Vec<Finding>,
+    /// Previously published findings still open, not newly validated or publishable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<CarriedFinding>,
     pub plan: PublicationPlan,
     pub ledger: LedgerReport,
     #[serde(default)]
@@ -156,6 +159,87 @@ pub struct RunReport {
     pub timing: Timing,
     #[serde(default)]
     pub stats: RunStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarriedFinding {
+    pub id: String,
+    /// Retained to reconstruct the stable finding identity, not a new verdict.
+    pub defect_key: String,
+    pub severity: crate::findings::Severity,
+    pub title: String,
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: Option<u32>,
+    pub claim: String,
+    pub trigger: String,
+    pub impact: String,
+    pub evidence: Vec<String>,
+}
+
+impl CarriedFinding {
+    pub fn from_state(f: &crate::state::StateFinding) -> Self {
+        Self {
+            id: f.id.clone(),
+            defect_key: f.defect_key.clone(),
+            severity: f.severity,
+            title: f.title.clone(),
+            file: f.file.clone(),
+            start_line: f.start_line,
+            end_line: f.end_line,
+            claim: f.claim.clone(),
+            trigger: f.trigger.clone(),
+            impact: f.impact.clone(),
+            evidence: f.evidence.clone(),
+        }
+    }
+
+    /// Repair context only: deliberately has no current-run validator verdict.
+    pub fn to_finding(&self) -> Finding {
+        let state = crate::state::StateFinding {
+            id: self.id.clone(),
+            defect_key: self.defect_key.clone(),
+            severity: self.severity,
+            title: self.title.clone(),
+            file: self.file.clone(),
+            start_line: self.start_line,
+            end_line: self.end_line,
+            claim: self.claim.clone(),
+            trigger: self.trigger.clone(),
+            impact: self.impact.clone(),
+            evidence: self.evidence.clone(),
+            status: crate::state::FindingState::Open,
+            posted: true,
+        };
+        Finding {
+            source: "carried".into(),
+            ..state.to_finding()
+        }
+    }
+}
+
+/// The same eligibility rule for fresh and identical-content reviews.
+pub fn carried_findings(state: &ReviewState, findings: &[Finding]) -> Vec<CarriedFinding> {
+    let ids: std::collections::HashSet<_> = findings.iter().map(Finding::id).collect();
+    state
+        .findings
+        .iter()
+        .filter(|f| {
+            f.status == crate::state::FindingState::Open && f.posted && !ids.contains(&f.id)
+        })
+        .map(CarriedFinding::from_state)
+        .collect()
+}
+
+impl RunReport {
+    pub fn actionable_findings(&self) -> Vec<Finding> {
+        self.findings
+            .iter()
+            .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
+            .cloned()
+            .chain(self.carried.iter().map(CarriedFinding::to_finding))
+            .collect()
+    }
 }
 
 pub fn surfaced_ids(report: &RunReport) -> Vec<String> {
@@ -535,10 +619,12 @@ pub fn append_handoff(
     bot_login: &str,
 ) {
     if report.status != RunStatus::Complete
-        || crate::findings::accepted_counts(&report.findings).total == 0
+        || (crate::findings::accepted_counts(&report.findings).total == 0
+            && report.carried.is_empty())
     {
         return;
     }
+    let instructions = crate::handoff::build(context, &report.actionable_findings(), None);
     let s = &mut report.plan.summary_markdown;
     s.push_str("\n<details><summary>Fix with your coding agent</summary>\n\n");
     if let Some(link) = context.review_url.and_then(dashboard_link) {
@@ -546,7 +632,6 @@ pub fn append_handoff(
             "[Open this review and download instructions](<{link}>).\n\n"
         ));
     }
-    let instructions = crate::handoff::build(context, &report.findings, None);
     if instructions.chars().count() <= 3000 {
         let instructions = instructions.replace("<!--", "<!\u{200b}--");
         let fence = "`".repeat(3.max(backtick_run(&instructions) + 1));

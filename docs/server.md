@@ -338,7 +338,7 @@ the fix-status line can update before approval; they are not code writes.
 
 ### Request a fix
 
-Start from a **complete** review with accepted findings and an unchanged,
+Start from a **complete** review with accepted or carried findings and an unchanged,
 open PR. Use **Fix with Revera** in the GitHub summary, the **Revera** check's
 **Fix with Revera** button, or the same button on the dashboard review.
 You can also post a new PR conversation comment, using your App's slug:
@@ -351,10 +351,15 @@ You can also post a new PR conversation comment, using your App's slug:
 @<app-slug> fix cancel
 ```
 
-`fix` and `fix all` select all accepted findings from the latest complete
-installed review. Use a finding's displayed ID, or a unique hexadecimal prefix
+`fix` and `fix all` select accepted findings and previously published findings
+still open from earlier reviews, using the latest complete installed review.
+The dashboard lists carried findings separately without changing the accepted
+count. Their line numbers may have moved; the fixer and verifier check them
+against the latest reviewed head. Use a finding's displayed ID, or a unique hexadecimal prefix
 of at least six characters, to select one. `fix status` reports the latest
 request; `fix cancel` stops it before publication, not an already published change.
+Repeating `fix` when a preview is ready or published replies with its status
+and dashboard link instead of creating another request.
 
 For mentions and Checks, Revera asks GitHub for the requester's **current
 repository role**: maintainers and repository admins by default, optionally

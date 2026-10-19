@@ -67,6 +67,10 @@ The report's `findings` list can contain rejected or uncertain candidates as
 well as accepted findings. Check `validation_status`; only `accepted` findings
 are publishable. A validator's `validated_fix` is a suggested remedy, not a
 tested patch. See [finding details](how-it-works.md#findings).
+The separate `carried` list contains previously published findings still open
+from earlier reviews, excluding this run's findings. It keeps instructions and
+fix requests available without changing accepted counts or posting them again.
+Reports without this optional field are still supported.
 
 An identical completed review can be reused. Add `--force` to run it again.
 

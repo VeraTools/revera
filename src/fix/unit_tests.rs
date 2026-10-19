@@ -675,6 +675,97 @@ fn inheritance_trust_and_terminal_ids() {
 }
 
 struct SlowClient;
+
+struct CarriedContextClient;
+#[async_trait::async_trait]
+impl ModelClient for CarriedContextClient {
+    fn route_label(&self) -> String {
+        "carried-context".into()
+    }
+    async fn complete(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let user = messages
+            .iter()
+            .find_map(|m| {
+                m.content
+                    .as_deref()
+                    .filter(|s| s.contains("UNTRUSTED INPUT DATA"))
+            })
+            .unwrap();
+        assert!(user.contains("reported at an earlier commit; line numbers may have moved"));
+        assert!(user.contains(&format!("\"carried_ids\":[\"{}\"]", finding().id())));
+        for expected in [
+            "Addition subtracts",
+            "add(2,3)",
+            "positive inputs",
+            "wrong arithmetic result",
+        ] {
+            assert!(user.contains(expected), "{expected}: {user}");
+        }
+        let verify = tools.iter().any(|t| t.name == "submit_fix_verdicts");
+        if !verify {
+            assert!(messages.iter().any(|m| m.content.as_deref().is_some_and(|text|
+                text.contains("Verify each selected finding in code; findings listed in carried_ids were accepted at an earlier commit and must be re-derived against the pinned code."))));
+        }
+        let (name, arguments) = if verify {
+            (
+                "submit_fix_verdicts",
+                json!({"per_finding":[{"id":finding().id(),"verdict":"resolved","rationale":"Re-derived"}],"new_problems":[]}),
+            )
+        } else {
+            (
+                "submit_fix",
+                json!({"summary":"Fixed","per_finding":[{"id":finding().id(),"disposition":"fixed","note":"Checked"}]}),
+            )
+        };
+        Ok(Completion {
+            message: serde_json::from_value(json!({"role":"assistant","tool_calls":[{"id":"done","name":name,"arguments":arguments}]})).unwrap(),
+            usage: Default::default(), model: "mock".into(), latency_ms: 0,
+        })
+    }
+}
+
+#[tokio::test]
+async fn carried_context_reaches_fixer_and_verifier_without_a_current_verdict() {
+    let t = temp();
+    let mut state = crate::state::ReviewState::default();
+    state.upsert(&finding(), crate::state::FindingState::Open);
+    state.mark_posted(&[finding().id()]);
+    let carried = crate::report::carried_findings(&state, &[])
+        .remove(0)
+        .to_finding();
+    assert!(carried.validation_status.is_none());
+    assert!(!crate::pipeline::anchor::is_publishable(&carried));
+    for stage in [Stage::Generate, Stage::Verify] {
+        let mut r = request();
+        r.findings = vec![carried.clone()];
+        r.patch = Some(patch(change()));
+        r.tests = Some(tests::TestResult {
+            outcome: tests::Outcome::NotConfigured,
+            output: None,
+            reason: None,
+        });
+        validate_request(&r, stage).unwrap();
+        let result = run_with_client(
+            &r,
+            t.path(),
+            stage,
+            Arc::new(CarriedContextClient),
+            LedgerHandle::new(),
+            Instant::now(),
+        )
+        .await
+        .unwrap();
+        match result {
+            StageResult::Generate(r) => assert!(r.submission.is_some()),
+            StageResult::Verify(r) => assert!(r.submission.is_some()),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl ModelClient for SlowClient {
     fn route_label(&self) -> String {

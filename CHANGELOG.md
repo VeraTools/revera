@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.2
+
+- Findings that are still open from an earlier review stay actionable. When a
+  later push leaves an earlier finding unfixed, the summary still includes
+  **Fix with your coding agent** and the fix offer, listing those findings
+  under "Still open from earlier reviews" with a note that line numbers may
+  have moved. `@app fix`, the dashboard and the Checks button can fix them, and
+  the review page shows them as a separate group. They are not counted as new
+  accepted findings and are not posted again.
+- Repeating `@app fix` when a fix for the same findings already exists now
+  replies with its status and a dashboard link instead of only reacting.
+
 ## v0.8.1
 
 - Setup shows a separate connection result for the investigator, the validator

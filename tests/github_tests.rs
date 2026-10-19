@@ -21,6 +21,7 @@ fn report_with_findings(inline: Vec<InlineComment>, findings: Vec<Finding>) -> R
         head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         strategy: "baseline".into(),
         findings,
+        carried: vec![],
         plan: PublicationPlan {
             inline,
             summary_markdown: "## Revera review\n\n- finding\n".into(),
@@ -162,6 +163,68 @@ fn handoff_and_fix_offer_require_completed_accepted_findings() {
             .contains("Fix with your coding agent")
     );
     assert!(!report.plan.summary_markdown.contains("```text"));
+}
+
+#[test]
+fn carried_only_summary_keeps_instructions_and_fix_offer_without_new_publication() {
+    let f = finding("src/bug.rs");
+    let mut state = ReviewState::default();
+    state.upsert(&f, FindingState::Open);
+    state.mark_posted(&[f.id()]);
+    let mut report = report(vec![]);
+    report.carried = revera::report::carried_findings(&state, &[]);
+    report.plan.summary_markdown = revera::report::summary_markdown(&revera::report::Summary {
+        carried_open: report.carried.len(),
+        ..Default::default()
+    });
+    let context = revera::handoff::Context {
+        repo: "owner/repo",
+        pr_url: "https://github.com/owner/repo/pull/1",
+        base: "bbbb",
+        head: "aaaa",
+        review_url: None,
+        stale: Some(false),
+    };
+    revera::report::append_handoff(
+        &mut report,
+        &context,
+        Some("https://review.example/fixes/new?job=1"),
+        "app[bot]",
+    );
+    let summary = &report.plan.summary_markdown;
+    for expected in [
+        "no accepted findings, 1 still open from earlier runs",
+        "Fix with your coding agent",
+        "Want Revera to fix these?",
+        "Fix with Revera",
+        "Still open from earlier reviews",
+        "line numbers may have moved",
+        &f.id(),
+    ] {
+        assert!(summary.contains(expected), "{expected}: {summary}");
+    }
+    assert!(report.plan.inline.is_empty());
+    assert!(revera::report::surfaced_ids(&report).is_empty());
+    assert!(!revera::pipeline::anchor::is_publishable(
+        &report.carried[0].to_finding()
+    ));
+    report.status = RunStatus::Partial;
+    report.plan.summary_markdown.clear();
+    revera::report::append_handoff(
+        &mut report,
+        &context,
+        Some("https://review.example/fixes/new?job=1"),
+        "app[bot]",
+    );
+    assert!(report.plan.summary_markdown.is_empty());
+}
+
+#[test]
+fn reports_without_carried_field_load_and_empty_carried_is_omitted() {
+    let old = serde_json::to_value(report(vec![])).unwrap();
+    assert!(old.get("carried").is_none());
+    let loaded: RunReport = serde_json::from_value(old).unwrap();
+    assert!(loaded.carried.is_empty());
 }
 
 #[tokio::test]

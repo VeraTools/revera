@@ -542,18 +542,22 @@ async fn review(server: &Server, id: &str) -> Outcome<(dashboard::JobSummary, Ve
     if report["head"].as_str() != job.head_sha.as_deref() {
         return Err(conflict("review head does not match its report"));
     }
-    let findings = super::api::report_findings(&report);
+    let mut findings = super::api::report_findings(&report);
+    findings.extend(super::api::report_carried(&report));
     if findings.is_empty() {
-        return Err(conflict("review has no accepted findings"));
+        return Err(conflict("review has no accepted or carried findings"));
     }
     Ok((job, findings))
 }
 fn select(findings: &[Finding], ids: Option<&[String]>) -> Result<Vec<Finding>> {
     let Some(ids) = ids else {
+        if findings.len() > 100 {
+            bail!("This review has more than 100 actionable findings; select up to 100 to fix.");
+        }
         return Ok(findings.to_vec());
     };
     if ids.is_empty() || ids.len() > 100 {
-        bail!("select at least one accepted finding (maximum 100)");
+        bail!("select at least one finding (maximum 100)");
     }
     let mut selected = BTreeMap::new();
     for prefix in ids {
@@ -1122,7 +1126,12 @@ async fn plan(State(s): State<Arc<Server>>, Query(q): Query<Plan>) -> Outcome<Js
     let ids = q
         .findings
         .map(|v| v.split(',').map(str::to_owned).collect::<Vec<_>>());
-    let selected = select(&findings, ids.as_deref())?;
+    // The page needs every finding to choose a subset; the request handler
+    // still enforces the 100-finding limit.
+    let selected = match ids.as_deref() {
+        Some(ids) => select(&findings, Some(ids))?,
+        None => findings,
+    };
     let existing = s
         .fixes
         .lock()
@@ -2948,16 +2957,26 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
     match outcome {
         Ok(r)
             if r.state == "awaiting_confirmation"
-                || matches!(action, super::mentions::FixCommand::Status) =>
+                || matches!(action, super::mentions::FixCommand::Status)
+                || (matches!(action, super::mentions::FixCommand::Request(_))
+                    && !matches!(
+                        r.state.as_str(),
+                        "queued" | "generating" | "validating" | "publishing" | "verifying"
+                    )) =>
         {
             let url = format!("{}/fixes/{}", s.settings.public_url, r.id);
             let body = if r.state == "awaiting_confirmation" {
                 format!(
                     "This fix request is awaiting confirmation. [Open it in the dashboard]({url}) to review and confirm it."
                 )
-            } else {
+            } else if matches!(action, super::mentions::FixCommand::Status) {
                 format!(
                     "Fix request status: {}. [Open it in the dashboard]({url}).",
+                    r.state.replace('_', " ")
+                )
+            } else {
+                format!(
+                    "A fix request for these findings already exists: {}. [Open it in the dashboard]({url}).",
                     r.state.replace('_', " ")
                 )
             };

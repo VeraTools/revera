@@ -386,6 +386,7 @@ fn fork_skip(
         head: e.head_sha.clone(),
         strategy: format!("{:?}", strategy).to_lowercase(),
         findings: vec![],
+        carried: vec![],
         plan: crate::report::PublicationPlan {
             inline: vec![],
             summary_markdown: crate::report::summary_markdown(&crate::report::Summary {

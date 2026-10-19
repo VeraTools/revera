@@ -322,7 +322,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         state.reviewed_head = head_sha.clone();
         state.save(&repo)?;
         let plan_state = state.public_projection(cfg.review.publish_uncertain);
-        let carried = state.open_findings().len();
+        let carried = crate::report::carried_findings(&state, &[]);
         let reason = "reused completed review of identical content";
         let summary = summary_markdown(&Summary {
             coverage: "",
@@ -330,7 +330,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             strategy: strategy_name,
             publish_uncertain: cfg.review.publish_uncertain,
             reused: true,
-            carried_open: carried,
+            carried_open: carried.len(),
             ..Default::default()
         });
         let rep = RunReport {
@@ -340,6 +340,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             head: head_sha,
             strategy: strategy_name.into(),
             findings: vec![],
+            carried,
             plan: PublicationPlan {
                 inline: vec![],
                 summary_markdown: summary,
@@ -636,8 +637,36 @@ pub async fn finish(
     // the validator may lower severity: the threshold applies to the
     // corrected finding, not the investigator's claim
     let before = collapsed.len();
-    collapsed.retain(|f| f.severity >= cfg.review.min_severity);
-    prep.stats.below_threshold_after_validation = before - collapsed.len();
+    // Posted rechecks bypass `reenter`, but must obey the same threshold.
+    let mut below_threshold_prior: std::collections::BTreeMap<_, _> = prep
+        .rechecks
+        .iter()
+        .filter(|f| {
+            f.validation_status == Some(crate::findings::ValidationStatus::Accepted)
+                && f.severity < cfg.review.min_severity
+        })
+        .map(|f| (f.id(), f.clone()))
+        .collect();
+    // Unposted ones re-entered `collapsed` and are counted by the retain below.
+    let rechecks_below = below_threshold_prior
+        .keys()
+        .filter(|id| !reenter_ids.contains(*id))
+        .count();
+    // Closed (resolved/rejected) findings stay closed; only still-open ones
+    // are moved out of the carried set.
+    let still_open = |id: &str| {
+        prep.state
+            .find(id)
+            .is_some_and(|f| matches!(f.status, FindingState::Open | FindingState::Uncertain))
+    };
+    collapsed.retain(|f| {
+        let keep = f.severity >= cfg.review.min_severity;
+        if !keep && still_open(&f.id()) {
+            below_threshold_prior.insert(f.id(), f.clone());
+        }
+        keep
+    });
+    prep.stats.below_threshold_after_validation = before - collapsed.len() + rechecks_below;
 
     // ---- anchor + plan ----
     // only publishable findings compete for inline slots; everything else
@@ -665,6 +694,16 @@ pub async fn finish(
 
     // ---- state update ----
     let mut state = prep.state.clone();
+    for (id, f) in below_threshold_prior
+        .into_iter()
+        .filter(|_| !validation_disabled)
+    {
+        if state.find(&id).is_some() {
+            // Preserve identity and posting history for later rechecks, but
+            // exclude this finding from carried repair context now and later.
+            state.upsert(&f, FindingState::Uncertain);
+        }
+    }
     let mut reopened_titles: Vec<String> = vec![];
     for f in final_findings.iter().filter(|_| !validation_disabled) {
         // `posted` is only ever set by the publisher via mark_posted().
@@ -699,13 +738,7 @@ pub async fn finish(
         Some(prep.partial_reasons.join("; "))
     };
     let timing = prep.timing.finish(prep.wall);
-    let final_ids: std::collections::HashSet<String> =
-        final_findings.iter().map(|f| f.id()).collect();
-    let carried_open = state
-        .findings
-        .iter()
-        .filter(|f| f.status == FindingState::Open && f.posted && !final_ids.contains(&f.id))
-        .count();
+    let carried = crate::report::carried_findings(&state, &final_findings);
     let mut stats = prep.stats.clone();
     stats.reopened = reopened_titles.len();
     stats.accepted = final_findings
@@ -763,7 +796,7 @@ pub async fn finish(
         note: prep.report_note.as_deref(),
         timing: Some(&timing),
         reused: false,
-        carried_open,
+        carried_open: carried.len(),
         retrieval_unavailable: prep.retrieval_unavailable.as_deref(),
         resolved: &prep.resolved_titles,
         reopened: &reopened_titles,
@@ -777,6 +810,7 @@ pub async fn finish(
         head: prep.head_sha.clone(),
         strategy: prep.strategy_name.clone(),
         findings: final_findings,
+        carried,
         plan: PublicationPlan {
             inline,
             summary_markdown: summary,
@@ -814,7 +848,229 @@ pub fn investigator_user(req: &ReviewRequest, diff: &DiffSet, max_diff_bytes: us
 #[cfg(test)]
 mod tests {
     use super::clamp_budget;
+    use super::*;
     use std::time::{Duration, Instant};
+
+    fn carried_fixture() -> (tempfile::TempDir, Config, ReviewRequest) {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join("bug.rs"), "bug\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(dir.path().join("bug.rs"), "still a bug\n").unwrap();
+        git(&["commit", "-qam", "head"]);
+        let cfg = Config::parse("vera: {enabled: false}\nmodels: {investigator: {protocol: openai-chat, base_url: 'https://api.example.com/v1', api_key_env: CARRIED_TEST_KEY, model: fixture}}", "test").unwrap();
+        let req = ReviewRequest {
+            repo: dir.path().into(),
+            base: "HEAD~1".into(),
+            head: None,
+            title: None,
+            body: String::new(),
+            strategy_override: None,
+            force: false,
+            repository_public: false,
+        };
+        (dir, cfg, req)
+    }
+
+    fn carried_state() -> ReviewState {
+        let mut state = ReviewState::default();
+        for (key, status, posted) in [
+            ("open", FindingState::Open, true),
+            ("unposted", FindingState::Open, false),
+            ("uncertain", FindingState::Uncertain, true),
+            ("resolved", FindingState::Resolved, true),
+            ("rejected", FindingState::Rejected, true),
+        ] {
+            let f: Finding = serde_json::from_value(json!({
+                "defect_key":key,"severity":"high","file":"bug.rs","start_line":1,
+                "title":key,"claim":"Bug remains","trigger":"Input","impact":"Wrong result",
+                "supporting_evidence":[{"path":"bug.rs","start_line":1,"end_line":1,"note":"Evidence"}]
+            })).unwrap();
+            state.upsert(&f, status);
+            if posted {
+                state.mark_posted(&[f.id()]);
+            }
+        }
+        state
+    }
+
+    fn assert_carried_report(report: &RunReport) {
+        assert!(report.findings.is_empty());
+        assert!(report.plan.inline.is_empty());
+        assert_eq!(report.stats.accepted, 0);
+        assert_eq!(report.carried.len(), 1);
+        let f = &report.carried[0];
+        assert_eq!(f.title, "open");
+        assert_eq!(f.claim, "Bug remains");
+        assert_eq!(f.trigger, "Input");
+        assert_eq!(f.impact, "Wrong result");
+        assert_eq!(f.evidence, ["bug.rs:1 Evidence"]);
+        assert_eq!(f.to_finding().id(), f.id);
+        assert!(!is_publishable(&f.to_finding()));
+    }
+
+    #[tokio::test]
+    async fn fresh_report_carries_only_posted_open_findings() {
+        let (_dir, cfg, req) = carried_fixture();
+        let PrepareOut::Ready(mut prep) = prepare(&cfg, &req, "baseline").await.unwrap() else {
+            panic!()
+        };
+        prep.state = carried_state();
+        let (report, state) = finish(&cfg, prep, vec![], &[]).await.unwrap();
+        assert_carried_report(&report);
+        assert!(
+            report
+                .plan
+                .summary_markdown
+                .contains("1 still open from earlier runs")
+        );
+        // Even a current diagnostic with the same ID must suppress carrying.
+        let current = state.findings[0].to_finding();
+        assert!(crate::report::carried_findings(&state, &[current]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn reused_report_carries_only_posted_open_findings() {
+        let (dir, cfg, req) = carried_fixture();
+        let PrepareOut::Ready(prep) = prepare(&cfg, &req, "baseline").await.unwrap() else {
+            panic!()
+        };
+        let mut state = carried_state();
+        // An unposted open finding intentionally prevents the reuse path.
+        state.findings.retain(|f| f.posted);
+        state.record_outcome(
+            &prep.base_sha,
+            &prep.head_sha,
+            &prep.patch_id,
+            &prep.review_key,
+            RunStatus::Complete,
+        );
+        state.save(dir.path()).unwrap();
+        let PrepareOut::ShortCircuit(report, _) = prepare(&cfg, &req, "baseline").await.unwrap()
+        else {
+            panic!()
+        };
+        assert!(report.stats.reused);
+        assert_carried_report(&report);
+        assert!(
+            report
+                .plan
+                .summary_markdown
+                .contains("1 open finding carried forward")
+        );
+        assert!(!report.plan.summary_markdown.contains("2 open findings"));
+    }
+
+    #[tokio::test]
+    async fn below_threshold_rechecks_become_uncertain_without_carrying_or_reposting() {
+        for posted in [true, false] {
+            let (dir, mut cfg, req) = carried_fixture();
+            cfg.review.min_severity = crate::findings::Severity::Medium;
+            let PrepareOut::Ready(mut prep) = prepare(&cfg, &req, "baseline").await.unwrap() else {
+                panic!()
+            };
+            let PrepareOut::Ready(mut later_prep) = prepare(&cfg, &req, "baseline").await.unwrap()
+            else {
+                panic!()
+            };
+            let prior = carried_state().findings[0].to_finding();
+            let mut corrected = prior.clone();
+            corrected.severity = crate::findings::Severity::Low;
+            corrected.validation_status = Some(crate::findings::ValidationStatus::Accepted);
+            prep.state.upsert(&prior, FindingState::Open);
+            if posted {
+                prep.state.mark_posted(&[prior.id()]);
+            }
+            prep.rechecks = vec![corrected];
+            let (report, state) = finish(&cfg, prep, vec![], &[]).await.unwrap();
+            assert!(report.carried.is_empty());
+            assert!(report.findings.is_empty());
+            assert!(report.plan.inline.is_empty());
+            let tracked = state.find(&prior.id()).unwrap();
+            assert_eq!(tracked.status, FindingState::Uncertain);
+            assert_eq!(tracked.severity, crate::findings::Severity::Low);
+            assert_eq!(tracked.posted, posted);
+            assert_eq!(report.stats.accepted, 0);
+            assert_eq!(report.stats.uncertain, 0);
+            assert_eq!(report.stats.below_threshold_after_validation, 1);
+            assert!(
+                report
+                    .plan
+                    .summary_markdown
+                    .contains("no accepted findings")
+            );
+            assert!(
+                !report
+                    .plan
+                    .summary_markdown
+                    .contains("still open from earlier runs")
+            );
+            assert!(
+                !report
+                    .plan
+                    .summary_markdown
+                    .contains("Resolved since last review")
+            );
+            let saved = ReviewState::load(dir.path()).unwrap().unwrap();
+            assert_eq!(
+                saved.find(&prior.id()).unwrap().status,
+                FindingState::Uncertain
+            );
+            assert_eq!(recheck_candidates(&saved).len(), 1);
+            assert!(crate::report::carried_findings(&saved, &[]).is_empty());
+            let PrepareOut::ShortCircuit(reused, _) =
+                prepare(&cfg, &req, "baseline").await.unwrap()
+            else {
+                panic!()
+            };
+            assert!(reused.carried.is_empty());
+            assert_eq!(reused.stats.accepted, 0);
+
+            // A later above-threshold recheck reopens it without re-posting
+            // an already published finding.
+            later_prep.state = saved;
+            later_prep.state.mark(
+                &prior.id(),
+                recheck_transition(crate::findings::ValidationStatus::Accepted),
+            );
+            later_prep.rechecks = vec![Finding {
+                severity: crate::findings::Severity::High,
+                validation_status: Some(crate::findings::ValidationStatus::Accepted),
+                ..prior.clone()
+            }];
+            let (report, state) = finish(&cfg, later_prep, vec![], &[]).await.unwrap();
+            assert_eq!(state.find(&prior.id()).unwrap().status, FindingState::Open);
+            if posted {
+                assert!(report.plan.inline.is_empty());
+                assert!(report.findings.is_empty());
+                assert_eq!(report.carried.len(), 1);
+            } else {
+                assert_eq!(report.findings.len(), 1);
+                assert!(report.carried.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn tracked_block_lists_only_open_findings_when_validating() {

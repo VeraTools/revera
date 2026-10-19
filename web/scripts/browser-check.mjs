@@ -709,6 +709,83 @@ async function checkAgentHandoff() {
     0,
   );
   await clean.context.close();
+
+  const carried = await open('/reviews/review-101');
+  await carried.context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await carried.page.getByText('No accepted findings in this review.', { exact: true }).waitFor();
+  await carried.page.waitForFunction(async () => {
+    const { live } = await window.importDashboard('/src/lib/events.ts');
+    let connected = false;
+    const stop = live.subscribe((state) => (connected = state.connected));
+    stop();
+    return connected;
+  });
+  await carried.page.evaluate(async () => {
+    const { setMockReviewCarried } = await window.importDashboard('/src/lib/mock.ts');
+    setMockReviewCarried('review-101');
+  });
+  const group = carried.page.getByRole('region', {
+    name: 'Still open from earlier reviews',
+    exact: true,
+  });
+  await group.getByRole('heading', { name: /^Still open from earlier reviews/ }).waitFor();
+  assert.equal(await group.locator('details.finding').count(), 1);
+  assert.equal(
+    await carried.page
+      .getByRole('region', { name: 'Accepted findings', exact: true })
+      .locator('details.finding')
+      .count(),
+    0,
+  );
+  await group.getByText(/Reported at an earlier commit; line numbers may have moved/).waitFor();
+  const expectedCarried = await carried.page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return api.job('review-101');
+  });
+  assert.equal(expectedCarried.counts.total, 0);
+  assert.equal(expectedCarried.carried.length, 1);
+  assert.equal(expectedCarried.carried[0].validation_status, null);
+  const mixedFixtures = await carried.page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    const { setMockReviewCarried } = await window.importDashboard('/src/lib/mock.ts');
+    setMockReviewCarried('review-104');
+    setMockReviewCarried('review-105');
+    return Promise.all([api.job('review-104'), api.job('review-105')]);
+  });
+  assert.equal(mixedFixtures[0].carried.length, 1);
+  assert.equal(mixedFixtures[1].carried.length, 0);
+  for (const fixture of mixedFixtures) {
+    assert.equal(
+      fixture.carried.some((carried) =>
+        fixture.findings.some((current) => current.id === carried.id),
+      ),
+      false,
+    );
+  }
+  await group.getByRole('button', { name: 'Copy prompt', exact: true }).click();
+  assert.equal(
+    await carried.page.evaluate(() => navigator.clipboard.readText()),
+    expectedCarried.carried[0].prompt,
+  );
+  await carried.page.getByRole('button', { name: 'Copy fix instructions', exact: true }).click();
+  assert.equal(
+    await carried.page.evaluate(() => navigator.clipboard.readText()),
+    expectedCarried.instructions,
+  );
+  const carriedDownloadPromise = carried.page.waitForEvent('download');
+  await carried.page.getByRole('button', { name: 'Download .md', exact: true }).click();
+  const carriedStream = await (await carriedDownloadPromise).createReadStream();
+  const carriedChunks = [];
+  for await (const chunk of carriedStream) carriedChunks.push(chunk);
+  assert.equal(Buffer.concat(carriedChunks).toString(), expectedCarried.instructions);
+  await carried.page.getByRole('link', { name: 'Fix with Revera', exact: true }).click();
+  await carried.page
+    .getByRole('heading', { name: 'Generate a fix preview', exact: true })
+    .waitFor();
+  await carried.page.getByText(expectedCarried.carried[0].title, { exact: true }).waitFor();
+  await carried.page.getByRole('checkbox').uncheck();
+  await carried.page.getByText('Select at least one finding to fix.', { exact: true }).waitFor();
+  await carried.context.close();
 }
 
 async function checkThemeAndRetrievalLink() {

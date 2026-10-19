@@ -134,6 +134,184 @@ fn write_report(s: &Server, id: &str, head: &str, state: &str, findings: Value, 
     let root = dashboard::job_dir(&s.settings.data_dir, id).unwrap();
     crate::fsutil::write_atomic_in(&root,"report.json",&serde_json::to_vec(&json!({"status":state,"head":head,"base":BASE,"findings":findings,"plan":{"state":{"findings":tracked}}})).unwrap()).unwrap();
 }
+
+fn carried_report(s: &Server, job: &str) -> crate::report::CarriedFinding {
+    let mut f = finding();
+    f.supporting_evidence = vec![crate::findings::Evidence {
+        path: "caller.py".into(),
+        start_line: 3,
+        end_line: 3,
+        note: "Wrong result used".into(),
+    }];
+    let mut state = crate::state::ReviewState::default();
+    state.upsert(&f, crate::state::FindingState::Open);
+    state.mark_posted(&[f.id()]);
+    let carried = crate::report::carried_findings(&state, &[]).remove(0);
+    let root = dashboard::job_dir(&s.settings.data_dir, job).unwrap();
+    let report = json!({"status":"complete","head":HEAD,"base":BASE,"findings":[],"carried":[carried],"plan":{"state":state}});
+    crate::fsutil::write_atomic_in(&root, "report.json", &serde_json::to_vec(&report).unwrap())
+        .unwrap();
+    s.dashboard
+        .try_lock()
+        .unwrap()
+        .jobs
+        .get_mut(job)
+        .unwrap()
+        .findings = Default::default();
+    carried
+}
+
+#[tokio::test]
+async fn oversized_default_selection_fails_before_creating_a_request() {
+    let (_data, s, _mock, job) = fixture().await;
+    let findings: Vec<_> = (0..101)
+        .map(|i| Finding {
+            defect_key: format!("finding-{i}"),
+            ..finding()
+        })
+        .collect();
+    write_report(&s, &job, HEAD, "complete", json!(findings), json!([]));
+    let error = request(&s, "dashboard", "admin", &job, None, false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.1,
+        "This review has more than 100 actionable findings; select up to 100 to fix."
+    );
+    assert!(s.fixes.lock().await.entries.is_empty());
+    let (status, plan) = call(
+        s.clone(),
+        reqwest::Method::GET,
+        &format!("/api/fixes/plan?job={job}"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(plan["findings"].as_array().unwrap().len(), 101);
+    assert_eq!(select(&findings[..100], None).unwrap().len(), 100);
+    let ids: Vec<_> = findings[..100].iter().map(Finding::id).collect();
+    assert_eq!(select(&findings, Some(&ids)).unwrap().len(), 100);
+    for ids in [vec![], vec![findings[0].id(); 101]] {
+        assert_eq!(
+            select(&findings, Some(&ids)).unwrap_err().to_string(),
+            "select at least one finding (maximum 100)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn carried_only_review_supports_mentions_dashboard_and_check_fix_requests() {
+    let (_data, s, mock, job) = fixture().await;
+    let carried = carried_report(&s, &job);
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/7/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    invoke_fix(&s, &fix_comment("@revera-test fix", 33, "maintainer")).await;
+    let e = s
+        .fixes
+        .lock()
+        .await
+        .entries
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    assert_eq!(e.record.state, "awaiting_confirmation");
+    assert_eq!(e.record.head_sha, HEAD);
+    assert_eq!(e.record.findings[0]["id"], carried.id);
+    let f = &e.context.findings[0];
+    assert!(f.is_carried());
+    assert!(f.validation_status.is_none());
+    assert_eq!(f.id(), carried.id);
+    assert_eq!(f.title, carried.title);
+    assert_eq!(f.claim, carried.claim);
+    assert_eq!(f.trigger, carried.trigger);
+    assert_eq!(f.impact, carried.impact);
+    assert_eq!(f.file, carried.file);
+    assert_eq!(f.start_line, carried.start_line);
+    assert_eq!(f.supporting_evidence[0].path, "caller.py");
+    assert_eq!(f.supporting_evidence[0].start_line, 3);
+    assert_eq!(f.supporting_evidence[0].note, "Wrong result used");
+    let (status, plan) = call(
+        s.clone(),
+        reqwest::Method::GET,
+        &format!("/api/fixes/plan?job={job}&findings={}", &carried.id[..6]),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(plan["blocked"].is_null());
+    assert_eq!(plan["findings"][0]["carried"], true);
+    assert_eq!(plan["job"]["findings"]["total"], 0);
+    assert!(
+        plan["findings"][0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains(crate::handoff::CARRIED_NOTE)
+    );
+    let same = request(
+        &s,
+        "dashboard",
+        "admin",
+        &job,
+        Some(std::slice::from_ref(&carried.id)),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(same.id, e.record.id);
+    let payload = json!({"action":"requested_action","requested_action":{"identifier":"revera_fix"},"installation":{"id":9},"repository":{"id":1,"full_name":"owner/repo"},"sender":{"login":"maintainer","type":"User"},"check_run":{"id":17,"name":"Revera","app":{"id":42},"external_id":"7","head_sha":HEAD}});
+    check_action(&s, &super::super::tests::test_app(), &payload)
+        .await
+        .unwrap();
+    assert_eq!(s.fixes.lock().await.entries.len(), 1);
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull(BASE)))
+        .with_priority(1)
+        .mount(&mock)
+        .await;
+    assert!(
+        request(&s, "mention", "maintainer", &job, None, false)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn repeated_fix_mentions_link_existing_ready_published_and_verified_requests() {
+    for state in ["ready", "published", "verified"] {
+        let (_data, s, mock, job) = fixture().await;
+        let r = request(&s, "dashboard", "admin", &job, None, false)
+            .await
+            .unwrap();
+        change(&s, &r.id, |e| e.record.state = state.into())
+            .await
+            .unwrap();
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .and(body_partial_json(json!({"body":format!(
+                "A fix request for these findings already exists: {state}. [Open it in the dashboard](https://revera.example.com/fixes/{}).", r.id
+            )})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+            .expect(1).mount(&mock).await;
+        invoke_fix(&s, &fix_comment("@revera-test fix", 33, "maintainer")).await;
+        assert_eq!(s.fixes.lock().await.entries.len(), 1);
+        assert_eq!(entry(&s, &r.id).await.unwrap().record.state, state);
+        assert!(
+            mock.received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| !r.url.path().ends_with("/reactions"))
+        );
+    }
+}
 async fn call(
     s: Arc<Server>,
     verb: reqwest::Method,

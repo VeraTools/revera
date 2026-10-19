@@ -47,7 +47,8 @@ export interface Finding {
   trigger: string;
   impact: string;
   supporting_evidence: { path: string; start_line: number; end_line: number; note: string }[];
-  validation_status: 'accepted';
+  validation_status: 'accepted' | null;
+  carried?: boolean;
   validated_fix?: string | null;
   validated_fix_label: string;
   suggestion?: {
@@ -74,6 +75,7 @@ export interface JobDetail {
   job: JobSummary;
   summary_markdown?: string;
   findings: Finding[];
+  carried?: Finding[];
   counts: JobSummary['findings'];
   instructions: string;
   reviewed_head_sha?: string;
