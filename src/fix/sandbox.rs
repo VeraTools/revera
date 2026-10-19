@@ -180,8 +180,16 @@ pub async fn probe() -> SandboxStatus {
     SandboxStatus {
         available: false,
         proc: false,
-        reason: Some(reason),
+        reason: Some(probe_failure_reason(reason)),
     }
+}
+
+fn probe_failure_reason(mut reason: String) -> String {
+    if reason.contains("Can't remount readonly") {
+        reason.truncate(reason.trim_end().len());
+        reason.push_str(" On SELinux hosts, run the container with the container_engine_t label (see docs/server.md, \"Sandbox runtime and test tools\").");
+    }
+    reason
 }
 
 pub fn command(status: &SandboxStatus, p: &Profile, argv: &[String]) -> Result<Command, Error> {
@@ -313,6 +321,29 @@ pub async fn run(status: &SandboxStatus, p: &Profile, argv: &[String]) -> Result
                 stderr: "wall-clock limit exceeded".into(),
                 truncated: false,
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::probe_failure_reason;
+
+    #[test]
+    fn readonly_remount_failure_includes_selinux_hint_only_when_relevant() {
+        let reason = "bwrap: Can't remount readonly on /: Unable to remount destination \"/newroot\" with correct flags: Permission denied";
+        assert_eq!(
+            probe_failure_reason(format!("{reason}\n")),
+            format!(
+                "{reason} On SELinux hosts, run the container with the container_engine_t label (see docs/server.md, \"Sandbox runtime and test tools\")."
+            )
+        );
+        for reason in [
+            "probe timed out",
+            "bwrap: Creating new namespace failed",
+            "",
+        ] {
+            assert_eq!(probe_failure_reason(reason.into()), reason);
         }
     }
 }

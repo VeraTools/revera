@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.8.1
+
+- Setup shows a separate connection result for the investigator, the validator
+  and, when API retrieval is on, the embedding model. **Finish setup** needs
+  every tested connection to pass, and a failed embedding test explains how to
+  fix it or turn retrieval off. Reloading `/setup` after the App is created now
+  works, and signed-in administrators can open Settings from setup to repair a
+  saved configuration. Thanks to @cam-cc.
+- Fix requests: replies to `@app fix` read "awaiting confirmation" instead of
+  internal state names. Draft PRs and commits are titled after the finding
+  (`Fix: <title>`, or `Fix <n> Revera findings` for several), and the PR body
+  lists findings with their severity. The
+  fix history records the requester's permission check separately from the
+  confirmation.
+- Fix sandbox on SELinux hosts: when the probe fails because bubblewrap cannot
+  make its root read-only, the reason now points to the fix. For Podman, run the
+  container with the `container_engine_t` label; see
+  [Sandbox runtime and test tools](docs/server.md#sandbox-runtime-and-test-tools).
+
 ## v0.8.0
 
 Existing setups keep working without changes. Fix execution and external PR
