@@ -118,8 +118,13 @@ fn carried_handoff_preserves_identity_detail_and_limits_without_old_remedies() {
         .lines()
         .filter(|l| l.starts_with("Evidence: "))
         .collect();
-    assert!(!evidence.is_empty(), "{output}");
-    assert!(evidence.iter().all(|l| !l.contains("-0 ")), "{evidence:?}");
+    assert_eq!(evidence, ["Evidence: f.rs:2 — Missing branch"]);
+    let mut ranged = finding("accepted");
+    ranged.supporting_evidence[0].end_line = 4;
+    assert!(
+        handoff::build(&context(Some(false)), &[ranged], None)
+            .contains("Evidence: f.rs:2-4 — Missing branch\n")
+    );
     assert_eq!(
         output,
         handoff::build(
