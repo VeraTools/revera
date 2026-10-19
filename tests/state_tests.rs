@@ -101,6 +101,12 @@ fn state_evidence_preserves_spaced_paths_notes_and_malformed_fallbacks() {
             ("malformed", 0, ""),
         ]
     );
+    // Compact references keep one line, so the range is that line.
+    assert!(
+        back.supporting_evidence
+            .iter()
+            .all(|e| e.end_line == e.start_line)
+    );
 }
 
 #[test]
