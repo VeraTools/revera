@@ -1799,7 +1799,7 @@ async fn authorize_execution(s: &Server, id: &str, pr: &Value) -> Result<()> {
                 // A confirming administrator never promotes an author preview.
                 e.context.preview_only |= preview;
                 e.record
-                    .audit(actor, "confirmed", "execution permission rechecked");
+                    .audit(actor, "authorized", "execution permission rechecked");
             })
             .await?;
             Ok(())
@@ -1880,7 +1880,7 @@ async fn generate_until(
                 "awaiting_confirmation",
                 Some("execution disabled; confirm this run"),
                 "revera",
-                "confirmed",
+                "confirmation_required",
             )
         })
         .await?;
@@ -2397,7 +2397,7 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery, automatic: bool) -> Resu
             .iter()
             .map(|f| format!(
                 "- {} ({})",
-                crate::handoff::text(&f.title, 500).replace(['\n', '\r'], " "),
+                crate::report::public_line(&crate::handoff::text(&f.title, 500)),
                 f.id()
             ))
             .collect::<Vec<_>>()

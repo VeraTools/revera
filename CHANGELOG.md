@@ -10,7 +10,8 @@
   saved configuration. Thanks to @cam-cc.
 - Fix requests: replies to `@app fix` read "awaiting confirmation" instead of
   internal state names. Draft PRs and commits are titled after the finding
-  (`Fix: <title>`), and the PR body lists findings with their severity. The
+  (`Fix: <title>`, or `Fix <n> Revera findings` for several), and the PR body
+  lists findings with their severity. The
   fix history records the requester's permission check separately from the
   confirmation.
 - Fix sandbox on SELinux hosts: when the probe fails because bubblewrap cannot

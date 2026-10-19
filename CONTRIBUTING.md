@@ -82,8 +82,9 @@ otherwise).
    fixture commit (keeping `[skip ci]`), force-push and dispatch again.
 5. For releases that change the App server, run the
    [App server smoke test](#app-server-smoke-test) on the `X.Y.Z` image.
-6. Dispatch `release-promote.yml` with the tag. It moves `vX` and the `:0`
-   and `:latest` images, marks the release Latest and reads them back.
+6. Dispatch `release-promote.yml` with the tag. It moves `vX`, marks the
+   release Latest and reads both back, then points the `:0` and `:latest`
+   images at the release image.
 7. Open a small follow-up PR so `dogfood-released.yml` exercises the
    promoted `@v0` Action.
 

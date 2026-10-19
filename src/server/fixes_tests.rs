@@ -844,7 +844,8 @@ async fn draft_delivery_uses_readable_subjects_and_safe_finding_lists() {
         let commit: Value = serde_json::from_slice(&commit.body).unwrap();
         let list = findings
             .iter()
-            .map(|f| format!("- {} ({})", f.title.replace(['\r', '\n'], " "), f.id()))
+            .zip(&titles)
+            .map(|(f, title)| format!("- {title} ({})", f.id()))
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(commit["message"], format!("{subject}\n\n{list}"), "{case}");
