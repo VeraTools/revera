@@ -816,14 +816,15 @@ async fn stop(server: &Server, item: &Tracked, reason: &str) -> Outcome<()> {
 
 async fn prune(server: &Server, policy: &Policy) -> Result<()> {
     let root = crate::fsutil::ensure_dir(&server.settings.data_dir, FsPath::new("external"))?;
-    // Queue lock prevents a checkout becoming active between selection and removal.
+    // Stage removals under the queue lock so a selected checkout cannot become active.
+    // Slow recursive deletion happens after releasing all server locks.
     let queue = server.queue.lock().await;
     let mut keep: BTreeSet<_> = queue
         .pending
         .values()
         .chain(queue.running.values().map(|r| &r.job))
         .filter(|job| job.repo.source() == Source::External)
-        .map(|job| job.repo.id)
+        .map(|job| (job.repo.id, job.key().1))
         .collect();
     keep.extend(
         server
@@ -833,7 +834,7 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
             .tracked
             .values()
             .filter(|item| item.status == "tracking")
-            .map(|item| item.repo_id),
+            .map(|item| (item.repo_id, item.number)),
     );
     let cutoff = chrono::Utc::now() - chrono::Duration::days(policy.retention_days as i64);
     let dashboard = server.dashboard.lock().await;
@@ -843,7 +844,7 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
         .filter(|job| job.source == Source::External)
         .filter_map(|job| {
             Some((
-                job.repo_id?,
+                (job.repo_id?, job.pr?),
                 chrono::DateTime::parse_from_rfc3339(&job.queued_at).ok()?,
             ))
         })
@@ -853,7 +854,16 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
                 .or_insert(at);
             acc
         });
+    drop(dashboard);
+    let mut repo_recent = BTreeMap::new();
+    for ((id, _), at) in &recent {
+        repo_recent
+            .entry(*id)
+            .and_modify(|old| *old = (*at).max(*old))
+            .or_insert(*at);
+    }
     let mut dirs = Vec::new();
+    let mut garbage = Vec::new();
     for entry in std::fs::read_dir(&root)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
@@ -864,16 +874,67 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
             .to_str()
             .and_then(|s| s.parse::<u64>().ok())
         {
-            dirs.push((id, recent.get(&id).copied()));
+            dirs.push((id, repo_recent.get(&id).copied()));
+        } else if entry.file_name().to_str().is_some_and(|name| {
+            name.strip_prefix(".prune-")
+                .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        }) {
+            // Finish deletion of trees detached by an interrupted previous prune.
+            garbage.push(entry.path());
         }
     }
     dirs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    let mut workspaces = Vec::new();
     for (index, (id, at)) in dirs.into_iter().enumerate() {
-        if !keep.contains(&id) && (index >= policy.max_checkouts || at.is_none_or(|at| at < cutoff))
+        let dir = crate::fsutil::ensure_dir(&root, FsPath::new(&id.to_string()))?;
+        if !keep.iter().any(|(repo, _)| *repo == id)
+            && (index >= policy.max_checkouts || at.is_none_or(|at| at < cutoff))
         {
-            let dir = crate::fsutil::ensure_dir(&root, FsPath::new(&id.to_string()))?;
-            std::fs::remove_dir_all(dir)?;
+            stage_removal(&root, &dir, &mut garbage)?;
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(number) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix("pull-"))
+                .and_then(|number| number.parse::<u64>().ok())
+                .filter(|number| *number > 0)
+            {
+                workspaces.push((
+                    (id, number),
+                    entry.path(),
+                    recent.get(&(id, number)).copied(),
+                ));
+            }
         }
     }
+    workspaces.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+    for (index, (target, dir, at)) in workspaces.into_iter().enumerate() {
+        if !keep.contains(&target)
+            && (index >= policy.max_checkouts || at.is_none_or(|at| at < cutoff))
+        {
+            stage_removal(&root, &dir, &mut garbage)?;
+        }
+    }
+    drop(queue);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        for dir in garbage {
+            std::fs::remove_dir_all(dir)?;
+        }
+        Ok(())
+    })
+    .await??;
+    Ok(())
+}
+
+fn stage_removal(root: &FsPath, dir: &FsPath, garbage: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    let detached = root.join(format!(".prune-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::rename(dir, &detached)?;
+    garbage.push(detached);
     Ok(())
 }

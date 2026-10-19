@@ -839,6 +839,77 @@ async fn external_unconfigured_and_rejected_admissions_preserve_quota_and_retry_
 }
 
 #[tokio::test]
+async fn external_retention_prunes_inactive_prs_inside_an_active_repository() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let now = chrono::Utc::now();
+    server
+        .dashboard
+        .lock()
+        .await
+        .preferences
+        .external
+        .max_checkouts = 1;
+    crate::fsutil::ensure_dir(
+        data.path(),
+        Path::new("external/.prune-0123456789abcdef0123456789abcdef"),
+    )
+    .unwrap();
+    for (number, days) in [(7, 9), (8, 9), (9, 1), (10, 9), (11, 9), (12, 2)] {
+        let workspace = crate::fsutil::ensure_dir(
+            data.path(),
+            &Path::new("external/701").join(format!("pull-{number}")),
+        )
+        .unwrap();
+        std::fs::write(workspace.join("checkout"), "retained contents").unwrap();
+        let review = events::Job::new(
+            events::Repo::parse(&public_repo(), None).unwrap(),
+            events::Kind::Review {
+                number,
+                pr: public_pr(&"a".repeat(40)),
+                force: true,
+            },
+            "manual",
+        );
+        let mut summary = dashboard::JobSummary::queued(&review);
+        summary.queued_at = (now - chrono::Duration::days(days)).to_rfc3339();
+        summary.set_state("complete", None);
+        server.update_job(summary).await.unwrap();
+        if matches!(number, 10 | 11) {
+            server.queue.lock().await.enqueue(review);
+        }
+    }
+    let _ = server.queue.lock().await.take().unwrap();
+    let item = tracked(7);
+    server
+        .external
+        .lock()
+        .await
+        .tracked
+        .insert(item.url.clone(), item);
+    external::poll(&server).await.unwrap();
+    for number in [7, 9, 10, 11] {
+        assert!(
+            data.path()
+                .join(format!("external/701/pull-{number}/checkout"))
+                .is_file(),
+            "{number}"
+        );
+    }
+    assert!(!data.path().join("external/701/pull-8").exists());
+    assert!(!data.path().join("external/701/pull-12").exists());
+    assert!(
+        std::fs::read_dir(data.path().join("external"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".prune-"))
+    );
+}
+
+#[tokio::test]
 async fn external_tracking_retries_malformed_metadata_without_stopping() {
     for endpoint in [
         "/repos/community/project",
