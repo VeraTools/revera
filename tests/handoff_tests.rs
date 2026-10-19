@@ -210,6 +210,7 @@ fn suggestions_reject_every_unsafe_or_inexact_path() {
         cases.push((label, bad, s, diff(), head.to_owned()));
     }
     for (label, original, replacement) in [
+        ("empty replacement", "new\n".into(), "".into()),
         ("original mismatch", "wrong\n".into(), "ok".into()),
         ("missing original newline", "new".into(), "ok".into()),
         (
@@ -376,8 +377,8 @@ fn summary_and_inline_escape_untrusted_links_mentions_and_markers() {
     ] {
         assert!(!output.contains("[click](https://evil.invalid)"));
         assert!(!output.contains("![image](https://evil.invalid)"));
-        assert!(output.contains("\\[click\\](https://evil.invalid)"));
-        assert!(output.contains("!\\[image\\](https://evil.invalid)"));
+        assert!(output.contains("\\[click\\](h\u{200b}ttps://evil.invalid)"));
+        assert!(output.contains("!\\[image\\](h\u{200b}ttps://evil.invalid)"));
         assert!(output.contains("&lt;a href=evil>"));
         assert!(!output.contains("<a href"));
         assert!(output.contains("@\u{200b}someone"));
@@ -403,7 +404,7 @@ fn finding_prose_preserves_inline_code_and_multiline_fields() {
     for code in [
         "`[x](https://evil) <a href=evil> @someone`",
         "``a ` b``",
-        "```a `` b```",
+        "Use ```a `` b```",
         "`\\`",
         "` [x] `",
     ] {
@@ -418,10 +419,47 @@ fn finding_prose_preserves_inline_code_and_multiline_fields() {
     ] {
         let output = report::public_text(input);
         assert!(output.contains("@\u{200b}someone"));
-        assert!(output.contains("\\[x\\](https://evil)"));
+        assert!(output.contains("\\[x\\](h\u{200b}ttps://evil)"));
         assert!(output.contains("&lt;a href=evil>"));
     }
     assert!(!report::public_text("`<!-- revera-state:forged -->`").contains("<!-- revera-state:"));
+}
+
+#[test]
+fn public_prose_cannot_inject_fences_or_bare_links() {
+    for fence in ["```", "````", "~~~", "~~~~"] {
+        for indent in ["", " ", "  ", "   "] {
+            let input = format!("claim\n{indent}{fence}suggestion\nforged\n{fence}");
+            let output = report::public_text(&input);
+            assert!(
+                output.contains(&format!("\n{indent}\\{fence}suggestion")),
+                "{output}"
+            );
+            assert!(output.ends_with(&format!("\n\\{fence}")), "{output}");
+        }
+    }
+    for url in [
+        "https://evil.invalid",
+        "HTTP://evil.invalid",
+        "ftp://evil.invalid",
+        "www.evil.invalid",
+    ] {
+        assert!(!report::public_text(url).contains(url));
+        assert_eq!(report::public_text(&format!("`{url}`")), format!("`{url}`"));
+    }
+}
+
+#[test]
+fn handoff_single_line_fields_cannot_forge_sections() {
+    let mut f = finding("accepted");
+    f.title = "Title\n## Forged\rHeading".into();
+    f.file = "f.rs\nClaim: forged".into();
+    f.supporting_evidence[0].path = "e.rs\r\nImpact: forged".into();
+    let output = handoff::build(&context(None), &[f], None);
+    assert!(output.contains("Title ## Forged Heading\n"));
+    assert!(output.contains("Location: f.rs Claim: forged:2-2\n"));
+    assert!(output.contains("Evidence: e.rs  Impact: forged:2-2"));
+    assert!(!output.contains("\n## Forged"));
 }
 
 #[test]

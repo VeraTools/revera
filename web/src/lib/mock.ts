@@ -37,7 +37,7 @@ const connectedAccounts: Installation[] = [
   suspended: status === 'suspended',
   permissions: id
     ? {
-        contents: login === 'northstar' ? 'write' : 'read',
+        contents: ['northstar', 'second-org'].includes(String(login)) ? 'write' : 'read',
         pull_requests: 'write',
         checks: 'write',
       }
@@ -65,6 +65,8 @@ function installationInventory() {
       'https://github.com/organizations/northstar/settings/apps/revera-northstar/permissions',
     advanced_url:
       'https://github.com/organizations/northstar/settings/apps/revera-northstar/advanced',
+    // This fixture represents an app registered with publish_fixes enabled;
+    // execution remains off until separately authorized in Fix settings.
     requested_permissions: { contents: 'write', pull_requests: 'write', checks: 'write' },
   };
 }
@@ -602,7 +604,15 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     );
     if (!account) throw new Error('Account not found.');
     account.allowed = method === 'PUT';
-    account.status = account.allowed ? 'allowed' : 'awaiting_approval';
+    account.status = account.suspended
+      ? 'suspended'
+      : !account.id
+        ? 'not_installed'
+        : !account.allowed
+          ? 'awaiting_approval'
+          : account.permissions.contents !== 'write'
+            ? 'permission_update'
+            : 'allowed';
     if (!account.allowed)
       repos = repos.filter((r) => !r.full_name.startsWith(`${account.account.login}/`));
     emit('repos');

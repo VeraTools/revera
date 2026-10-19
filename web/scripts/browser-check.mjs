@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { checkFixes, fixScreenshots } from './browser-fixes.mjs';
+import { checkReviewRegressions } from './browser-review-regressions.mjs';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
@@ -988,6 +989,12 @@ async function checkExternalReviews() {
   await page.getByLabel('GitHub PR URL', { exact: true }).fill('https://evil.example/o/r/pull/1');
   await page.getByRole('button', { name: 'Queue private review', exact: true }).click();
   await page.getByText('Use https://github.com/OWNER/REPO/pull/NUMBER', { exact: true }).waitFor();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Review PR URL', exact: true }).click();
+  assert.equal(
+    await page.getByText('Use https://github.com/OWNER/REPO/pull/NUMBER', { exact: true }).count(),
+    0,
+  );
   await page
     .getByLabel('GitHub PR URL', { exact: true })
     .fill('https://github.com/community/project/pull/7');
@@ -1056,7 +1063,14 @@ async function checkExternalReviews() {
     false,
   );
   await page.getByRole('link', { name: 'External PR settings', exact: true }).click();
-  await page.getByRole('checkbox', { name: 'Track my external PRs', exact: true }).check();
+  await page
+    .getByRole('checkbox', { name: 'Enable external PR tracking for all users', exact: true })
+    .check();
+  await page.getByLabel('Check tracked PRs every (minutes)', { exact: true }).fill('15.5');
+  assert.equal(
+    await page.getByRole('button', { name: 'Save external settings', exact: true }).isEnabled(),
+    false,
+  );
   await page.getByLabel('Check tracked PRs every (minutes)', { exact: true }).fill('30');
   await page.getByRole('button', { name: 'Save external settings', exact: true }).click();
   await page.getByText('External settings saved.', { exact: true }).waitFor();
@@ -1188,6 +1202,8 @@ async function checkManifestChoices() {
 }
 
 try {
+  if (!emptyYaml && !process.argv.includes('--screenshots-only'))
+    await checkReviewRegressions({ open, choose, edit });
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkExternalReviews();
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
     await checkFixes({ open, choose, edit, savedConfig });

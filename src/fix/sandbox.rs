@@ -218,7 +218,10 @@ pub fn command(status: &SandboxStatus, p: &Profile, argv: &[String]) -> Result<C
                 ));
             }
             let meta = std::fs::symlink_metadata(host)?;
-            if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
+            if meta.file_type().is_symlink()
+                || host.canonicalize()?.as_os_str() != host.as_os_str()
+                || (!meta.is_file() && !meta.is_dir())
+            {
                 return Err(Error::Profile(
                     "bind source must be a real file or directory, never a socket/symlink".into(),
                 ));

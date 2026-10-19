@@ -65,6 +65,7 @@ export class ConfigDocument {
     return role === 'fix_verifier' ? 'validator' : 'investigator';
   }
   overrideRoute(role: 'fixer' | 'fix_verifier') {
+    if (this.errors.length || this.has(['models', role])) return;
     let inherited = this.inheritedRole(role);
     if (inherited === 'validator' && !this.has(['models', inherited])) inherited = 'investigator';
     const route = this.document.getIn(['models', inherited]);

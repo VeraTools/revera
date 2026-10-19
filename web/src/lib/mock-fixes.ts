@@ -489,10 +489,10 @@ export function mockFixRequest(url: URL, method: string, body: unknown, ctx: Con
       throw new Error(cap?.reason || 'Choose an available GitHub delivery method.');
     f.delivery = {
       mode: cap.mode as 'draft_pr' | 'same_branch',
-      branch: 'revera/fix-234',
+      branch: cap.mode === 'same_branch' ? 'feature/search' : 'revera/fix-234',
       commit: 'c'.repeat(40),
-      pr: 280,
-      url: `https://github.com/${f.repo}/pull/280`,
+      pr: cap.mode === 'same_branch' ? f.pr : 280,
+      url: cap.mode === 'same_branch' ? f.pr_url : `https://github.com/${f.repo}/pull/280`,
       error: '',
     };
     f.state = policy.rereview ? 'verifying' : 'published';

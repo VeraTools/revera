@@ -42,11 +42,12 @@
         type="checkbox"
         bind:checked={policy.tracking_enabled}
         onchange={() => (saved = false)}
-      /> Track my external PRs</label
+      /> Enable external PR tracking for all users</label
     >
     <p class="muted">
       Off by default. In Reviews, find your open PRs and explicitly select which to track. Disabling
-      pauses polling without changing your selections. Closing or untracking a PR stops it.
+      pauses polling for everyone without changing their selections. Closing or untracking a PR
+      stops it.
     </p>
     <div class="field">
       <label for="external-poll-minutes">Check tracked PRs every (minutes)</label>
@@ -55,6 +56,7 @@
         type="number"
         min="15"
         max="1440"
+        step="1"
         bind:value={policy.poll_minutes}
         oninput={() => (saved = false)}
       />
@@ -71,7 +73,7 @@
     <button
       class="button"
       disabled={busy ||
-        !policy.poll_minutes ||
+        !Number.isInteger(policy.poll_minutes) ||
         policy.poll_minutes < 15 ||
         policy.poll_minutes > 1440}
       onclick={save}>Save external settings</button

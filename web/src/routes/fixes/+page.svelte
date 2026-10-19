@@ -32,14 +32,19 @@
     'unsupported',
   ];
   const filtered = $derived(fixes.filter((f) => !stateFilter || f.state === stateFilter));
+  const liveFix = $derived($live.fix);
+  let generation = 0;
   async function load() {
+    const current = ++generation;
     try {
-      fixes = (await api.fixes()).fixes;
+      const result = (await api.fixes()).fixes;
+      if (current !== generation) return;
+      fixes = result;
       error = '';
     } catch (cause) {
-      error = errorMessage(cause);
+      if (current === generation) error = errorMessage(cause);
     } finally {
-      loading = false;
+      if (current === generation) loading = false;
     }
   }
   $effect(() => {
@@ -49,7 +54,7 @@
     });
   });
   $effect(() => {
-    $live.fix;
+    liveFix;
     untrack(() => void load());
   });
   function filter(value: string) {
@@ -114,7 +119,7 @@
           >{/each}
       </tbody>
     </table>
-  </div>{:else if loading}<p class="loading" role="status">Loading fixes…</p>{:else}<div
+  </div>{:else if loading}<p class="loading" role="status">Loading fixes…</p>{:else if !error}<div
     class="empty-state"
   >
     <p>

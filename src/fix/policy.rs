@@ -6,6 +6,7 @@ pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 /// Explicit CI configuration set, including nested workflow/job definitions.
 pub const CI_GLOBS: &[&str] = &[
     ".github/workflows/**",
+    ".github/actions/**",
     ".circleci/**",
     ".buildkite/**",
     ".gitlab-ci.yml",
@@ -67,8 +68,21 @@ pub fn valid_path(path: &str) -> bool {
 }
 pub fn sensitive(path: &str) -> bool {
     static SET: std::sync::OnceLock<globset::GlobSet> = std::sync::OnceLock::new();
-    SET.get_or_init(|| crate::tools::glob_set(crate::config::SENSITIVE_GLOBS))
+    SET.get_or_init(|| case_insensitive_globs(crate::config::SENSITIVE_GLOBS))
         .is_match(path)
+}
+
+fn case_insensitive_globs(patterns: &[&str]) -> globset::GlobSet {
+    let mut set = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        set.add(
+            globset::GlobBuilder::new(pattern)
+                .case_insensitive(true)
+                .build()
+                .unwrap(),
+        );
+    }
+    set.build().unwrap()
 }
 
 pub fn check(patch: &Patch, policy: &Policy) -> Report {
@@ -94,7 +108,7 @@ pub fn check(patch: &Patch, policy: &Policy) -> Report {
     {
         error(None, "deleted_file_count");
     }
-    let ci = crate::tools::glob_set(CI_GLOBS);
+    let ci = case_insensitive_globs(CI_GLOBS);
     for f in &patch.files {
         let path = Some(f.path.as_str());
         if !valid_path(&f.path) {

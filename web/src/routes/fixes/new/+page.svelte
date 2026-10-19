@@ -37,8 +37,16 @@
     const current = ++revision;
     selectionBusy = true;
     try {
+      if (!selected.length) {
+        existing = null;
+        error = '';
+        return;
+      }
       const result = await api.fixPlan(plan!.job.id, [...selected]);
-      if (current === revision) existing = result.existing;
+      if (current === revision) {
+        existing = result.existing;
+        error = '';
+      }
     } catch (cause) {
       if (current === revision) error = errorMessage(cause);
     } finally {

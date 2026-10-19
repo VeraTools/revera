@@ -319,7 +319,7 @@ async fn run_with_client(
     );
     let check = |v: &Value| check_terminal(v, stage, request);
     let run = tokio::time::timeout(
-        Duration::from_secs(request.budget.seconds),
+        Duration::from_secs(request.budget.seconds).saturating_add(crate::agent::TERMINAL_GRACE),
         run_agent_checked(
             &client,
             if stage == Stage::Generate {
@@ -441,6 +441,14 @@ fn route_json(route: &ModelRoute) -> Value {
     v
 }
 
+// Also runs on setup errors and cancellation, before the controller retains artifacts.
+struct SecretConfig(PathBuf);
+impl Drop for SecretConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Controller API. `io_dir` must be a fresh dedicated directory outside `tree`.
 /// Only this route's model credentials enter the child. Never bind the server's
 /// YAML, checkout, data directory or sockets. Verification gets a read-only tree.
@@ -481,6 +489,7 @@ pub async fn run_in_sandbox_with_env(
     validate_request(request, stage)?;
     let route = stage.route(cfg);
     check_route(route, &cfg.github.token_env)?;
+    let executable = executable.canonicalize()?;
     if io_dir.exists() || !io_dir.is_absolute() || io_dir.starts_with(tree) {
         return Err(Error::Invalid(
             "I/O directory must be fresh, absolute and outside the tree".into(),
@@ -515,6 +524,7 @@ pub async fn run_in_sandbox_with_env(
     let mut input = serde_json::to_value(request).map_err(|e| Error::Invalid(e.to_string()))?;
     crate::redact::json(&mut input);
     let isolated = json!({"models":{"investigator":route_json(route)},"vera":{"enabled":false},"budget":{"retries":cfg.budget.retries.min(3)}});
+    let config_guard = SecretConfig(io_dir.join("config.json"));
     crate::fsutil::write_secret_atomic(
         io_dir,
         "config.json",
@@ -528,13 +538,14 @@ pub async fn run_in_sandbox_with_env(
     )
     .map_err(|e| Error::Config(e.to_string()))?;
     let mut limits = limits;
-    limits.wall = limits.wall.min(Duration::from_secs(
-        request.budget.seconds.saturating_add(5),
-    ));
+    limits.wall = limits.wall.min(
+        Duration::from_secs(request.budget.seconds.saturating_add(5))
+            .saturating_add(crate::agent::TERMINAL_GRACE),
+    );
     let mut p = sandbox::Profile {
         net: true,
         binds_ro: vec![
-            (executable.canonicalize()?, "/revera".into()),
+            (executable, "/revera".into()),
             (io_dir.join("config.json"), "/input/config.json".into()),
             (io_dir.join("request.json"), "/input/request.json".into()),
         ],
@@ -563,12 +574,14 @@ pub async fn run_in_sandbox_with_env(
     .map(str::to_owned);
     let result = sandbox::run(&status, &p, &argv).await;
     // Selected headers may contain secrets; never retain the child's config.
-    let _ = std::fs::remove_file(io_dir.join("config.json"));
+    drop(config_guard);
     let output = result?;
     if output.code != Some(0) || output.timed_out {
         return Err(Error::Child(format!(
             "timed_out={}, code={:?}: {}",
-            output.timed_out, output.code, output.stderr
+            output.timed_out,
+            output.code,
+            crate::redact::diagnostic(&output.stderr)
         )));
     }
     let path = out.join("result.json");

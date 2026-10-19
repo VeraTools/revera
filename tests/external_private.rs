@@ -61,8 +61,11 @@ async fn private_cli_reviews_fork_without_any_github_reads_writes_or_repository_
             "head": {"sha": head, "ref": "topic", "repo": {"full_name": "contributor/project"}},
             "base": {"sha": base, "ref": "main"}}}).to_string()).unwrap();
     let config = scratch.path().join("operator.yaml");
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/scripts/clean.json");
-    std::fs::write(&config, format!("review: {{guidance: agents, publish: comment}}\nmodels:\n  investigator: {{protocol: scripted, script: {}, model: offline}}\nvera: {{enabled: false}}\n", script.display())).unwrap();
+    let provider = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"done","type":"function","function":{"name":"submit_findings","arguments":"{\"findings\":[],\"coverage\":\"Checked lib.rs\"}"}}]}}]})))
+        .expect(1).mount(&provider).await;
+    std::fs::write(&config, format!("review: {{guidance: agents, publish: comment}}\nmodels:\n  investigator: {{protocol: openai-chat, base_url: {}, api_key_env: REVERA_MODEL_API_KEY, model: offline}}\nvera: {{enabled: false}}\n", provider.uri())).unwrap();
     let out = scratch.path().join("report.json");
     let result = Command::new(env!("CARGO_BIN_EXE_revera"))
         .current_dir(&repo)
@@ -76,6 +79,7 @@ async fn private_cli_reviews_fork_without_any_github_reads_writes_or_repository_
         .arg(&out)
         .env("GITHUB_API_URL", mock.uri())
         .env("GITHUB_TOKEN", "ghs_must_not_be_used")
+        .env("REVERA_MODEL_API_KEY", "private-review-model-fixture")
         .output()
         .unwrap();
     assert_eq!(
@@ -93,6 +97,14 @@ async fn private_cli_reviews_fork_without_any_github_reads_writes_or_repository_
     assert!(report["stats"]["guidance"].is_null());
     assert!(!report.to_string().contains("UNTRUSTED_GUIDANCE_SENTINEL"));
     assert!(mock.received_requests().await.unwrap().is_empty());
+    let requests = provider.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let prompt = String::from_utf8(requests[0].body.clone()).unwrap();
+    assert!(
+        prompt.contains("lib.rs"),
+        "investigator received the reviewed diff"
+    );
+    assert!(!prompt.contains("UNTRUSTED_GUIDANCE_SENTINEL"));
 
     let bad = Command::new(env!("CARGO_BIN_EXE_revera"))
         .current_dir(&repo)
