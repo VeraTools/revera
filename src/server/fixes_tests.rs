@@ -182,6 +182,12 @@ async fn default_requests_converge_without_model_runs_writes_or_settings_mutatio
         .unwrap();
     assert_eq!(a.state, "awaiting_confirmation");
     assert!(a.consent.is_none());
+    assert!(
+        a.events
+            .iter()
+            .any(|e| e.action == "authorized" && e.detail == "requester permission checked")
+    );
+    assert!(a.events.iter().all(|e| e.action != "confirmed"));
     let b = request(
         &s,
         "mention",
@@ -193,6 +199,9 @@ async fn default_requests_converge_without_model_runs_writes_or_settings_mutatio
     .await
     .unwrap();
     assert_eq!(a.id, b.id);
+    assert!(b.events.iter().any(|e| e.action == "authorized"
+        && e.detail == "requester permission checked; existing request"));
+    assert!(b.events.iter().all(|e| e.action != "confirmed"));
     let payload = json!({"action":"requested_action","requested_action":{"identifier":"revera_fix"},"installation":{"id":9},"repository":{"id":1,"full_name":"owner/repo"},"sender":{"login":"maintainer","type":"User"},"check_run":{"id":17,"name":"Revera","app":{"id":42},"external_id":"7","head_sha":HEAD}});
     check_action(&s, &super::super::tests::test_app(), &payload)
         .await
@@ -234,6 +243,15 @@ async fn default_requests_converge_without_model_runs_writes_or_settings_mutatio
     assert!(!s.dashboard.lock().await.preferences.fixes.execution);
     let persisted = Store::load(&s.settings.data_dir).unwrap();
     assert_eq!(persisted.entries[&a.id].record.state, "queued");
+    assert_eq!(
+        persisted.entries[&a.id]
+            .record
+            .events
+            .iter()
+            .filter(|e| e.action == "confirmed")
+            .count(),
+        1
+    );
     for req in mock.received_requests().await.unwrap() {
         assert!(!req.url.path().contains("/v1/"));
         assert!(!req.url.path().contains("/git/"));
@@ -758,6 +776,100 @@ async fn approved_draft_and_same_branch_deliver_once_without_force() {
     }
 }
 
+#[test]
+fn delivery_subject_is_one_line_and_truncates_on_character_boundaries() {
+    let mut f = finding();
+    f.title = "Wrong\r\nsum".into();
+    assert_eq!(delivery_subject(&[f.clone()]), "Fix: Wrong  sum");
+    f.title = "é".repeat(95);
+    assert_eq!(delivery_subject(&[f.clone()]), format!("Fix: {}", f.title));
+    f.title = "é".repeat(150);
+    let subject = delivery_subject(&[f]);
+    assert_eq!(subject, format!("Fix: {}…", "é".repeat(94)));
+    assert_eq!(subject.chars().count(), 100);
+}
+
+#[test]
+fn delivery_subject_sanitizes_again_after_truncating_inline_code() {
+    let mut f = finding();
+    f.title = format!(
+        "`@someone [click](https://example.com) {} `",
+        "é".repeat(100)
+    );
+    let subject = delivery_subject(&[f]);
+    assert_eq!(subject.chars().count(), 100);
+    assert!(subject.ends_with('…'));
+    assert!(subject.contains("@\u{200b}someone"));
+    assert!(subject.contains("\\[click\\](h\u{200b}ttps://example.com)"));
+    assert!(!subject.contains("@someone"));
+    assert!(!subject.contains("https://"));
+}
+
+#[tokio::test]
+async fn draft_delivery_uses_readable_subjects_and_safe_finding_lists() {
+    for case in ["single", "multiple", "untrusted"] {
+        let (_data, s, mock, job) = fixture().await;
+        s.dashboard.lock().await.preferences.fixes.rereview = false;
+        let mut findings = vec![finding()];
+        let (subject, titles) = match case {
+            "multiple" => {
+                let mut second = finding();
+                second.defect_key = "another-defect".into();
+                second.title = "Missing guard".into();
+                second.severity = crate::findings::Severity::Medium;
+                findings.push(second);
+                ("Fix 2 Revera findings", vec!["Wrong sum", "Missing guard"])
+            }
+            "untrusted" => {
+                findings[0].title = "@someone <!-- [click](https://example.com)\r\nnext".into();
+                (
+                    "Fix: @\u{200b}someone &lt;!\u{200b}-- \\[click\\](h\u{200b}ttps://example.com)  next",
+                    vec![
+                        "@\u{200b}someone &lt;!\u{200b}-- \\[click\\](h\u{200b}ttps://example.com)  next",
+                    ],
+                )
+            }
+            _ => ("Fix: Wrong sum", vec!["Wrong sum"]),
+        };
+        write_report(&s, &job, HEAD, "complete", json!(findings), json!([]));
+        let id = ready(&s, &job).await;
+        delivery_mocks(&mock, HEAD, Delivery::DraftPr, None).await;
+        let record = publish(&s, &id, "admin", Delivery::DraftPr).await.unwrap();
+        assert_eq!(record.state, "published", "{case}: {:?}", record.reason);
+        let requests = mock.received_requests().await.unwrap();
+        let commit = requests
+            .iter()
+            .find(|r| r.method == "POST" && r.url.path().ends_with("/git/commits"))
+            .unwrap();
+        let commit: Value = serde_json::from_slice(&commit.body).unwrap();
+        let list = findings
+            .iter()
+            .map(|f| format!("- {} ({})", f.title.replace(['\r', '\n'], " "), f.id()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(commit["message"], format!("{subject}\n\n{list}"), "{case}");
+        let pr = requests
+            .iter()
+            .find(|r| r.method == "POST" && r.url.path().ends_with("/pulls"))
+            .unwrap();
+        let pr: Value = serde_json::from_slice(&pr.body).unwrap();
+        assert_eq!(pr["title"], subject, "{case}");
+        let list = findings
+            .iter()
+            .zip(titles)
+            .map(|(f, title)| format!("- [{}] {title} (`{}`)", f.severity, f.id()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            pr["body"],
+            format!(
+                "Revera fix for #7, approved in the dashboard: https://revera.example.com/fixes/{id}\n\nFindings:\n{list}"
+            ),
+            "{case}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn automatic_delivery_is_only_for_opted_in_available_installed_draft_previews() {
     for case in [
@@ -1095,11 +1207,12 @@ async fn fix_mentions_reply_or_react_once_with_durable_claims_and_live_authoriza
         .filter(|r| r.method == "POST" && r.url.path().ends_with("/issues/7/comments"))
     {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
-        assert!(
-            body["body"]
-                .as_str()
-                .unwrap()
-                .contains(&format!("https://revera.example.com/fixes/{}", r.id))
+        assert_eq!(
+            body["body"],
+            format!(
+                "This fix request is awaiting confirmation. [Open it in the dashboard](https://revera.example.com/fixes/{}) to review and confirm it.",
+                r.id
+            )
         );
     }
     assert!(
@@ -1107,6 +1220,34 @@ async fn fix_mentions_reply_or_react_once_with_durable_claims_and_live_authoriza
             .iter()
             .all(|r| !r.url.path().contains("/v1/") && !r.url.path().contains("/git/"))
     );
+}
+
+#[tokio::test]
+async fn fix_status_mentions_use_readable_state_names() {
+    for (state, readable) in [("ready", "ready"), ("publish_failed", "publish failed")] {
+        let (_data, s, mock, job) = fixture().await;
+        let r = request(&s, "dashboard", "admin", &job, None, false)
+            .await
+            .unwrap();
+        change(&s, &r.id, |e| e.record.state = state.into())
+            .await
+            .unwrap();
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .and(body_partial_json(json!({"body":format!(
+                "Fix request status: {readable}. [Open it in the dashboard](https://revera.example.com/fixes/{}).",
+                r.id
+            )})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id":44})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        invoke_fix(
+            &s,
+            &fix_comment("@revera-test fix status", 35, "maintainer"),
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

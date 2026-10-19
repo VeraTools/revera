@@ -851,11 +851,11 @@ pub async fn request(
             if denied.is_some() {
                 "permission_denied"
             } else {
-                "confirmed"
+                "authorized"
             },
             denied
                 .as_deref()
-                .unwrap_or("permission granted; existing request"),
+                .unwrap_or("requester permission checked; existing request"),
         );
         let record = save(server, &mut store, e).await?;
         return if let Some(reason) = denied {
@@ -902,7 +902,7 @@ pub async fn request(
     if let Some(reason) = denied.as_deref() {
         record.transition("failed", Some(reason), actor, "permission_denied");
     } else {
-        record.audit(actor, "confirmed", "permission granted");
+        record.audit(actor, "authorized", "requester permission checked");
     }
     if once && denied.is_none() {
         record.audit(actor, "consent_once", "this request only");
@@ -2389,22 +2389,16 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery, automatic: bool) -> Resu
         owner: owner.into(),
         name: name.into(),
     };
-    let ids = e
-        .context
-        .findings
-        .iter()
-        .map(Finding::id)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let subject = delivery_subject(&e.context.findings);
     let message = format!(
-        "Fix Revera findings {ids}\n\n{}",
+        "{subject}\n\n{}",
         e.context
             .findings
             .iter()
             .map(|f| format!(
-                "- {}: {}",
-                f.id(),
-                crate::handoff::text(&f.title, 500).replace(['\n', '\r'], " ")
+                "- {} ({})",
+                crate::handoff::text(&f.title, 500).replace(['\n', '\r'], " "),
+                f.id()
             ))
             .collect::<Vec<_>>()
             .join("\n")
@@ -2451,10 +2445,23 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery, automatic: bool) -> Resu
                 &commit,
                 p.branch_prefix.trim_end_matches('-'),
                 branch,
-                &format!("Fix Revera findings {ids}"),
+                &subject,
                 &format!(
-                    "Approved Revera fix preview: {}/fixes/{}\n\nFindings: {ids}",
-                    s.settings.public_url, e.record.id
+                    "Revera fix for #{}, approved in the dashboard: {}/fixes/{}\n\nFindings:\n{}",
+                    e.record.pr,
+                    s.settings.public_url,
+                    e.record.id,
+                    e.context
+                        .findings
+                        .iter()
+                        .map(|f| format!(
+                            "- [{}] {} (`{}`)",
+                            f.severity,
+                            crate::report::public_line(&crate::handoff::text(&f.title, 500)),
+                            f.id()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 ),
             )
             .await?;
@@ -2470,6 +2477,27 @@ async fn deliver(s: &Server, e: &Entry, mode: Delivery, automatic: bool) -> Resu
             )
         }
         Delivery::Patch => bail!("patch delivery cannot write"),
+    }
+}
+
+fn delivery_subject(findings: &[Finding]) -> String {
+    let subject = match findings {
+        [f] => format!("Fix: {}", crate::handoff::text(&f.title, 500)),
+        fs => format!("Fix {} Revera findings", fs.len()),
+    };
+    let public = crate::report::public_line(&subject);
+    if public.chars().count() <= 100 {
+        return public;
+    }
+    let mut shortened = subject.chars().take(99).collect::<String>();
+    loop {
+        // Re-sanitize after shortening: cutting off an inline-code delimiter
+        // must not expose a mention or link that was safe inside that span.
+        let public = format!("{}…", crate::report::public_line(&shortened));
+        if public.chars().count() <= 100 {
+            return public;
+        }
+        shortened.pop();
     }
 }
 
@@ -2922,16 +2950,18 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
             if r.state == "awaiting_confirmation"
                 || matches!(action, super::mentions::FixCommand::Status) =>
         {
-            super::mentions::reply(
-                s,
-                &command,
-                &token,
-                &format!(
-                    "Fix {}: [open the dashboard]({}/fixes/{}) to confirm or view this request.",
-                    r.state, s.settings.public_url, r.id
-                ),
-            )
-            .await
+            let url = format!("{}/fixes/{}", s.settings.public_url, r.id);
+            let body = if r.state == "awaiting_confirmation" {
+                format!(
+                    "This fix request is awaiting confirmation. [Open it in the dashboard]({url}) to review and confirm it."
+                )
+            } else {
+                format!(
+                    "Fix request status: {}. [Open it in the dashboard]({url}).",
+                    r.state.replace('_', " ")
+                )
+            };
+            super::mentions::reply(s, &command, &token, &body).await
         }
         Ok(_) => {
             s.api
