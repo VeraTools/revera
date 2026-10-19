@@ -12,6 +12,14 @@ models:
     max_output_tokens: 6000
     temperature: 0.2
     reasoning: high
+    fallback:
+      - protocol: openai-chat
+        base_url: ${REVERA_FALLBACK_BASE_URL}
+        api_key_env: REVERA_FALLBACK_API_KEY
+        model: factory/glm-5.3
+        max_output_tokens: 6000
+        temperature: 0.2
+        reasoning: high
   validator:
     protocol: openai-chat
     base_url: ${REVERA_MODEL_BASE_URL}
@@ -20,6 +28,14 @@ models:
     max_output_tokens: 4000
     temperature: 0.2
     reasoning: high
+    fallback:
+      - protocol: openai-chat
+        base_url: ${REVERA_FALLBACK_BASE_URL}
+        api_key_env: REVERA_FALLBACK_API_KEY
+        model: factory/glm-5.3-flash
+        max_output_tokens: 4000
+        temperature: 0.2
+        reasoning: high
 vera:
   version: "2.1.4"
   backend: api
