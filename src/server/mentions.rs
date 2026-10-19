@@ -247,8 +247,9 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
             &token,
             &format!(
                 "Commands: `@{} review` (repository mode), `@{} quick`, `@{} deep`, \
-             `@{} review quick|standard|deep`, `@{} help`.",
-                app.slug, app.slug, app.slug, app.slug, app.slug
+             `@{} review quick|standard|deep`, `@{} fix [all|<ids>]`, `@{} fix status`, \
+             `@{} fix cancel`, `@{} help`.",
+                app.slug, app.slug, app.slug, app.slug, app.slug, app.slug, app.slug, app.slug
             ),
         )
         .await;
