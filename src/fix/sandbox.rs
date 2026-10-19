@@ -186,6 +186,7 @@ pub async fn probe() -> SandboxStatus {
 
 fn probe_failure_reason(mut reason: String) -> String {
     if reason.contains("Can't remount readonly") {
+        reason.truncate(reason.trim_end().len());
         reason.push_str(" On SELinux hosts, run the container with the container_engine_t label (see docs/server.md, \"Sandbox runtime and test tools\").");
     }
     reason
@@ -332,7 +333,7 @@ mod probe_tests {
     fn readonly_remount_failure_includes_selinux_hint_only_when_relevant() {
         let reason = "bwrap: Can't remount readonly on /: Unable to remount destination \"/newroot\" with correct flags: Permission denied";
         assert_eq!(
-            probe_failure_reason(reason.into()),
+            probe_failure_reason(format!("{reason}\n")),
             format!(
                 "{reason} On SELinux hosts, run the container with the container_engine_t label (see docs/server.md, \"Sandbox runtime and test tools\")."
             )
