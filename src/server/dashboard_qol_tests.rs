@@ -289,6 +289,7 @@ async fn overview_windows_sum_review_findings_failures_tokens_and_median() {
     Mock::given(method("GET"))
         .and(path("/app"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .with_priority(1)
         .expect(3)
         .mount(&mock)
         .await;

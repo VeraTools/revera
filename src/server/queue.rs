@@ -1,11 +1,9 @@
-use super::events::{Job, Kind};
+use super::events::{Job, Key, Kind, Source};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{Arc, Weak},
 };
 use tokio::sync::watch;
-
-type Key = (u64, u64);
 
 pub struct Running {
     pub job: Job,
@@ -15,31 +13,65 @@ pub struct Running {
 #[cfg(test)]
 mod tests {
     use super::Queue;
+    use crate::server::events::Source::Installed;
 
     #[test]
     fn review_admissions_expire_and_close_invalidates_only_its_pr() {
         let mut queue = Queue::default();
-        let first = queue.review_admission((1, 7));
-        let concurrent = queue.review_admission((1, 7));
-        let other = queue.review_admission((1, 8));
-        queue.close((1, 7));
-        assert!(!queue.admits((1, 7), &first));
-        assert!(!queue.admits((1, 7), &concurrent));
-        assert!(queue.admits((1, 8), &other));
-        let reopened = queue.review_admission((1, 7));
-        assert!(queue.admits((1, 7), &reopened));
-        assert!(!queue.admits((1, 7), &first));
+        let first = queue.review_admission((1, 7, Installed));
+        let concurrent = queue.review_admission((1, 7, Installed));
+        let other = queue.review_admission((1, 8, Installed));
+        queue.close((1, 7, Installed));
+        assert!(!queue.admits((1, 7, Installed), &first));
+        assert!(!queue.admits((1, 7, Installed), &concurrent));
+        assert!(queue.admits((1, 8, Installed), &other));
+        let reopened = queue.review_admission((1, 7, Installed));
+        assert!(queue.admits((1, 7, Installed), &reopened));
+        assert!(!queue.admits((1, 7, Installed), &first));
         drop(reopened);
         drop(other);
         for number in 9..1000 {
-            let admission = queue.review_admission((1, number));
-            assert!(queue.admits((1, number), &admission));
+            let admission = queue.review_admission((1, number, Installed));
+            assert!(queue.admits((1, number, Installed), &admission));
             assert_eq!(
                 queue.admissions.len(),
                 1,
                 "expired lookups retained in memory"
             );
         }
+    }
+
+    #[test]
+    fn configured_external_concurrency_allows_two_and_holds_the_third() {
+        use crate::server::events::{Job, Kind, Repo, Source};
+        let mut queue = Queue::default();
+        for id in 1..=3 {
+            let repo = Repo::parse(
+                &serde_json::json!({"id":id,"full_name":format!("owner/repo{id}")}),
+                None,
+            )
+            .unwrap();
+            queue.enqueue(Job::new(
+                repo,
+                Kind::Review {
+                    number: 7,
+                    pr: serde_json::json!({"head":{"sha":"head"}}),
+                    force: true,
+                },
+                "manual",
+            ));
+        }
+        let (first, _) = queue.take_with_external_limit(2).unwrap();
+        let (second, _) = queue.take_with_external_limit(2).unwrap();
+        assert_ne!(first.repo.id, second.repo.id);
+        assert_eq!(queue.running.len(), 2);
+        assert_eq!(queue.pending.len(), 1);
+        assert!(queue.take_with_external_limit(2).is_none());
+        queue.running.remove(&first.key());
+        assert_eq!(
+            queue.take_with_external_limit(2).unwrap().0.repo.source(),
+            Source::External
+        );
     }
 }
 
@@ -104,17 +136,19 @@ impl Queue {
     }
 
     pub fn remove_repo(&mut self, repo: super::events::Repo) -> Vec<Job> {
-        self.admissions.retain(|key, _| key.0 != repo.id);
+        self.admissions
+            .retain(|key, _| key.0 != repo.id || key.2 != repo.source());
         let cancelled = self
             .pending
             .values()
             .chain(self.running.values().map(|running| &running.job))
-            .filter(|job| job.repo.id == repo.id)
+            .filter(|job| job.repo.id == repo.id && job.repo.source() == repo.source())
             .cloned()
             .collect();
-        self.pending.retain(|key, _| key.0 != repo.id);
+        self.pending
+            .retain(|key, _| key.0 != repo.id || key.2 != repo.source());
         for (key, running) in &self.running {
-            if key.0 == repo.id {
+            if key.0 == repo.id && key.2 == repo.source() {
                 let _ = running.cancel.send(true);
             }
         }
@@ -132,9 +166,25 @@ impl Queue {
         self.pending.contains_key(&key) || self.running.contains_key(&key)
     }
 
+    #[cfg(test)]
     pub fn take(&mut self) -> Option<(Job, watch::Receiver<bool>)> {
-        let busy: HashSet<_> = self.running.keys().map(|key| key.0).collect();
-        let key = *self.pending.keys().find(|key| !busy.contains(&key.0))?;
+        self.take_with_external_limit(1)
+    }
+
+    pub fn take_with_external_limit(
+        &mut self,
+        external_limit: usize,
+    ) -> Option<(Job, watch::Receiver<bool>)> {
+        let busy: HashSet<_> = self.running.keys().map(|key| (key.0, key.2)).collect();
+        let external_running = self
+            .running
+            .keys()
+            .filter(|key| key.2 == Source::External)
+            .count();
+        let key = *self.pending.keys().find(|key| {
+            !busy.contains(&(key.0, key.2))
+                && (key.2 != Source::External || external_running < external_limit)
+        })?;
         let job = self.pending.remove(&key)?;
         let (cancel, rx) = watch::channel(false);
         self.running.insert(

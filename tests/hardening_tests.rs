@@ -55,6 +55,7 @@ fn anchor_drops_invalid_end_line() {
         validation_status: None,
         suggested_fix: None,
         validated_fix: None,
+        suggestion: None,
         source: "x".into(),
         rationale: None,
         sources: vec![],
@@ -91,6 +92,7 @@ fn finding_body_sanitizes_markers_and_fences() {
         validation_status: None,
         suggested_fix: None,
         validated_fix: Some("let x = ```rust\nfoo\n```;".into()),
+        suggestion: None,
         source: "x".into(),
         rationale: None,
         sources: vec![],
@@ -126,6 +128,7 @@ fn finding_body_omits_investigator_suggestion_without_validator_fix() {
         validation_status: Some(revera::findings::ValidationStatus::Accepted),
         suggested_fix: Some("unsafe investigator suggestion".into()),
         validated_fix: None,
+        suggestion: None,
         source: "x".into(),
         rationale: None,
         sources: vec![],
@@ -154,6 +157,7 @@ fn validated_fix_keeps_model_markup_inside_safe_fence() {
         validation_status: Some(revera::findings::ValidationStatus::Accepted),
         suggested_fix: None,
         validated_fix: Some(payload.into()),
+        suggestion: None,
         source: "x".into(),
         rationale: None,
         sources: vec![],
@@ -161,7 +165,7 @@ fn validated_fix_keeps_model_markup_inside_safe_fence() {
     let body = finding_body(&f);
     assert!(!body.contains("<!-- revera-id:000000000000 -->"), "{body}");
     assert!(
-        body.contains("Suggested fix:\n```\n**bold** <img src=x> @everyone"),
+        body.contains("Validator's suggested remedy — not a tested patch:\n```\n**bold** <img src=x> @everyone"),
         "{body}"
     );
     assert!(
@@ -284,6 +288,7 @@ fn panel_union_preserves_minority() {
         validation_status: None,
         suggested_fix: None,
         validated_fix: None,
+        suggestion: None,
         source: "panel:general".into(),
         rationale: None,
         sources: vec![],
@@ -475,6 +480,7 @@ vera: {executable: "true", version: "1.4.1", backend: api}
             validation_status: None,
             suggested_fix: None,
             validated_fix: None,
+            suggestion: None,
             source: "x".into(),
             rationale: None,
             sources: vec![],
@@ -495,6 +501,7 @@ vera: {executable: "true", version: "1.4.1", backend: api}
             validation_status: None,
             suggested_fix: None,
             validated_fix: None,
+            suggestion: None,
             source: "x".into(),
             rationale: None,
             sources: vec![],

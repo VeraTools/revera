@@ -6,6 +6,13 @@ writes its server default to `/data/revera.yaml`. Unknown keys are errors.
 `${VAR}` in string values expands from the environment; missing or empty
 referenced variables are configuration errors.
 
+Installed App reviews use the repository's base-commit `revera.yaml` when
+present, otherwise the server default; they do not merge the two. External
+public PR reviews always use the server file and disable repository guidance.
+Owner approvals, [external review limits](server.md#external-settings-api) and
+[fix execution policy](server.md#fix-settings-and-limits) are server preferences
+in `settings.json`, not YAML review settings.
+
 Setup guides: [GitHub App](server.md), [Action](action.md), [local CLI](cli.md).
 
 The smallest valid file is one investigator route:
@@ -30,6 +37,8 @@ what a run would need.
 |---|---|---|
 | `investigator` | required | route that reads the diff and proposes candidates |
 | `validator` | inherits `investigator` | route that re-derives each candidate in a fresh context |
+| `fixer` | inherits `investigator` | App fixes only: generates edits in a sandbox |
+| `fix_verifier` | inherits effective `validator` | App fixes only: independently checks the patched code, read-only |
 | `lead` | `investigator` | `delegated` only: plans questions and synthesises worker reports |
 | `workers` | `[investigator]` | `delegated` only: list of routes answering the lead's questions |
 | `scouts` | — | `panel` only: list of named routes (`name` plus route fields) |
@@ -38,6 +47,15 @@ Omitting `validator` does not skip validation: the investigator's route is
 called again with an empty conversation for every candidate. Set an
 explicit validator to use a different model (a stronger one, or one from a
 different provider family).
+
+Fixes use the **server's** model configuration, never repository YAML.
+`fix_verifier` inherits `validator`, or `investigator` when neither is set;
+it does not inherit `fixer`. Inheritance includes the route's fallbacks;
+an explicit route uses only its own. Both accept the same route fields below
+and require HTTP protocols for sandbox execution. Configure them in
+**Settings → Fixes → Fix model routes** or under `models` in the server YAML.
+Naming a route does not enable execution or authorize publication; see
+[Fixes (opt-in)](server.md#fixes-opt-in).
 
 ### Route fields
 
@@ -183,6 +201,8 @@ Larger repositories may need more agent time. Earlier runs benefited from
 `agent_max_seconds: 420`–`600`, but later runs still failed to submit within
 those budgets. See the [large-repository results](evaluation.md#e3-current-engine-end-to-end)
 before choosing a budget; more time does not guarantee completion.
+In the App, **Settings → Budgets** previews the Quick and Deep limits produced
+by these values. Custom profiles are labelled instead of showing built-in limits.
 
 ## `vera`
 
@@ -319,6 +339,12 @@ A path outside the checkout is read as-is (operator-provided). Before any
 credential is resolved, event mode requires `https` endpoints (loopback
 excepted), valid credential variable names that are not GitHub token
 variables, and `review.validate: true` for `publish: comment`.
+
+The server uses `--private` for external jobs. It requires `--event` and an
+operator `--config` outside the checkout, forces dry-run/private publication,
+disables repository guidance and makes no GitHub API calls in the review child.
+It does not turn an arbitrary local checkout into a public-PR URL client; use
+the App's [Review PR URL dialog](server.md#external-public-pr-reviews) for that.
 
 Index runs (`revera index`, and the Action on push, schedule or manual
 events) read the config from the checked-out commit: they have no pull

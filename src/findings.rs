@@ -73,6 +73,13 @@ pub struct Finding {
         skip_serializing_if = "Option::is_none"
     )]
     pub validated_fix: Option<String>,
+    /// Exact replacement checked against the immutable reviewed head by Rust.
+    #[serde(
+        default,
+        deserialize_with = "lenient_suggestion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub suggestion: Option<Suggestion>,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -114,6 +121,114 @@ pub struct Verdict {
     /// verdict itself.
     #[serde(default, deserialize_with = "lenient_fix")]
     pub fix: Option<String>,
+    #[serde(default, deserialize_with = "lenient_suggestion")]
+    pub suggestion: Option<Suggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub start_line: u32,
+    pub end_line: u32,
+    /// Exact bytes of the original range, including its final newline if present.
+    pub original: String,
+    pub replacement: String,
+}
+
+fn lenient_suggestion<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Suggestion>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).ok())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedCounts {
+    pub total: u64,
+    pub high: u64,
+    pub medium: u64,
+    pub low: u64,
+}
+
+fn count_severities<'a>(severities: impl Iterator<Item = &'a str>) -> AcceptedCounts {
+    let mut counts = AcceptedCounts::default();
+    for severity in severities {
+        counts.total += 1;
+        match severity {
+            "high" => counts.high += 1,
+            "medium" => counts.medium += 1,
+            "low" => counts.low += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
+pub fn accepted_counts(findings: &[Finding]) -> AcceptedCounts {
+    count_severities(
+        findings
+            .iter()
+            .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
+            .map(|f| match f.severity {
+                Severity::High => "high",
+                Severity::Medium => "medium",
+                Severity::Low => "low",
+            }),
+    )
+}
+
+pub fn accepted_values(report: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
+    report["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["validation_status"].as_str() == Some("accepted"))
+}
+
+pub fn accepted_counts_json(report: &serde_json::Value) -> AcceptedCounts {
+    count_severities(accepted_values(report).map(|f| f["severity"].as_str().unwrap_or("")))
+}
+
+/// Fail closed unless this is an exact, small replacement of added RIGHT-side lines.
+pub fn checked_suggestion(
+    f: &Finding,
+    suggestion: &Suggestion,
+    diff: &crate::diff::DiffSet,
+    head: &str,
+) -> Option<Suggestion> {
+    use crate::diff::DiffLineKind;
+    let s = suggestion;
+    if f.validation_status != Some(ValidationStatus::Accepted)
+        || s.start_line == 0
+        || s.end_line < s.start_line
+        || s.end_line - s.start_line >= 10
+        || s.start_line != f.start_line
+        || s.end_line != f.end_line.unwrap_or(f.start_line)
+        || s.replacement.is_empty()
+        || s.replacement.len() > 2000
+        || s.replacement.lines().count() > 20
+        || [&s.original, &s.replacement].iter().any(|v| {
+            v.contains(['\0', '\r'])
+                || v.contains("<!--")
+                || crate::redact::text(v).as_ref() != v.as_str()
+        })
+        || crate::tools::glob_set(crate::config::SENSITIVE_GLOBS).is_match(&f.file)
+    {
+        return None;
+    }
+    let file = diff.file(&f.file)?;
+    if file.new_path != f.file
+        || !file.hunks.iter().any(|h| {
+            (s.start_line..=s.end_line).all(|n| {
+                h.lines
+                    .iter()
+                    .any(|l| l.new_no == Some(n) && l.kind == DiffLineKind::Add)
+            })
+        })
+    {
+        return None;
+    }
+    let lines: Vec<_> = head.split_inclusive('\n').collect();
+    let range = lines.get(s.start_line as usize - 1..s.end_line as usize)?;
+    (range.concat() == s.original).then(|| s.clone())
 }
 
 fn lenient_fix<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {

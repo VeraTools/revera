@@ -354,7 +354,7 @@ async fn closed_webhook_during_delayed_mention_lookup_cannot_resurrect_review() 
     reopened["comment"]["id"] = json!(34);
     invoke(&server, reopened).await;
     assert_eq!(
-        server.queue.lock().await.pending[&(1, 7)].head(),
+        server.queue.lock().await.pending[&(1, 7, Installed)].head(),
         "reopened-head"
     );
 }
@@ -456,7 +456,7 @@ async fn mentions_acknowledge_then_force_current_head_and_ignore_auto_filters() 
             .await
             .unwrap();
         let queue = server.queue.lock().await;
-        let review = &queue.pending[&(1, 7)];
+        let review = &queue.pending[&(1, 7, Installed)];
         assert_eq!(review.head(), "current-head-not-webhook-head");
         assert_eq!(review.mode, expected);
         assert_eq!(review.trigger, "mention");
@@ -476,7 +476,13 @@ async fn mentions_acknowledge_then_force_current_head_and_ignore_auto_filters() 
 
 #[tokio::test]
 async fn help_and_unknown_commands_reply_once_without_reaction_or_review() {
-    for text in ["help", "unknown", "summarize this"] {
+    for text in [
+        "help",
+        "unknown",
+        "summarize this",
+        "fix abcde",
+        "fix status all",
+    ] {
         let mock = MockServer::start().await;
         let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
         mention_token(&mock).await;
@@ -495,7 +501,16 @@ async fn help_and_unknown_commands_reply_once_without_reaction_or_review() {
         let requests = mock.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
-        for command in ["review", "quick", "standard", "deep", "help"] {
+        for command in [
+            "review",
+            "quick",
+            "standard",
+            "deep",
+            "help",
+            "fix [all|<ids>]",
+            "fix status",
+            "fix cancel",
+        ] {
             assert!(body["body"].as_str().unwrap().contains(command));
         }
     }
@@ -647,7 +662,24 @@ fn old_settings_migrate_to_mentions_and_explicit_off_without_legacy_output_field
         assert_eq!(dashboard.preferences.repos["owner/inherit"].trigger, None);
         assert_eq!(dashboard.preferences.trigger("owner/inherit"), expected);
         let saved = std::fs::read_to_string(data.path().join("settings.json")).unwrap();
-        assert!(!saved.contains("enabled"));
+        // Compare the entire persisted schema: legacy fields must be absent,
+        // while the unrelated external.tracking_enabled key is legitimate.
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).unwrap(),
+            json!({
+                "admins": [], "allowed_owners": [], "default_trigger": expected,
+                "owner_accounts": {}, "revoked_owners": [], "revoked_owner_ids": [],
+                "default_mode": "standard", "review_drafts": false,
+                "skip_authors": ["dependabot[bot]", "renovate[bot]"],
+                "repos": {"owner/off": {"trigger": "off", "mode": null, "fixes": null},
+                    "owner/inherit": {"trigger": null, "mode": null, "fixes": null}},
+                "fixes": super::super::fixes::Policy::default(),
+                "external": {"tracking_enabled": false, "poll_minutes": 60,
+                    "max_tracked": 25, "max_repo_size_kb": 1048576,
+                    "reviews_per_hour": 20, "concurrency": 1,
+                    "retention_days": 7, "max_checkouts": 50}
+            })
+        );
     }
     let fresh = tempfile::tempdir().unwrap();
     crate::fsutil::ensure_dir(fresh.path(), Path::new("jobs")).unwrap();
@@ -810,6 +842,7 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
             RepoPreference {
                 trigger: Some(Trigger::Mention),
                 mode: Some(Mode::Quick),
+                fixes: None,
             },
         );
     }
@@ -850,9 +883,9 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
         let body: Value = response.json().await.unwrap();
         id = body["id"].as_str().unwrap().into();
         let queue = server.queue.lock().await;
-        assert_eq!(queue.pending[&(1, 7)].mode, expected);
+        assert_eq!(queue.pending[&(1, 7, Installed)].mode, expected);
         assert_eq!(
-            queue.pending[&(1, 7)].trigger,
+            queue.pending[&(1, 7, Installed)].trigger,
             if rerun { "rerun" } else { "manual" }
         );
     }
@@ -882,7 +915,7 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
             409
         );
     }
-    assert_eq!(server.queue.lock().await.pending[&(1, 7)].id, id);
+    assert_eq!(server.queue.lock().await.pending[&(1, 7, Installed)].id, id);
     task.abort();
 }
 
@@ -898,6 +931,7 @@ async fn overview_exposes_subscription_and_organization_app_settings_url() {
                 "events": if subscribed { vec!["issue_comment"] } else { vec!["pull_request"] },
                 "owner": {"type": "Organization"}
             })))
+            .with_priority(1)
             .expect(1)
             .mount(&mock)
             .await;

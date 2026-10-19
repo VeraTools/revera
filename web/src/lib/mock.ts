@@ -1,4 +1,5 @@
 import { parseDocument } from 'yaml';
+import { mockFixRequest, updateMockFix } from './mock-fixes';
 import type {
   JobSummary,
   JobDetail,
@@ -9,9 +10,66 @@ import type {
   Role,
   ReviewMode,
   Trigger,
+  ExternalPolicy,
+  ExternalPR,
+  TrackedPR,
+  Installation,
+  Finding,
+  FixSummary,
+  FixState,
 } from './types';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+
+// Connected-account fixtures: no repository names for unapproved accounts.
+const installationUrl = 'https://github.com/apps/revera-northstar/installations/new';
+const connectedAccounts: Installation[] = [
+  ['northstar', 1, 'allowed', true],
+  ['second-org', 2, 'awaiting_approval', false],
+  ['upgrade-org', 3, 'permission_update', true],
+  ['paused-org', 4, 'suspended', true],
+  ['offline-org', null, 'not_installed', true],
+  ['denied-org', 5, 'allowed', true],
+].map(([login, id, status, allowed]): Installation => ({
+  id: id as number | null,
+  account: { login: login as string, id: id as number | null, type: 'Organization' },
+  repository_selection: id ? 'selected' : null,
+  suspended: status === 'suspended',
+  permissions: id
+    ? {
+        contents: ['northstar', 'second-org'].includes(String(login)) ? 'write' : 'read',
+        pull_requests: 'write',
+        checks: 'write',
+      }
+    : {},
+  html_url: id
+    ? `https://github.com/organizations/${login}/settings/installations/${id}`
+    : installationUrl,
+  status: status as Installation['status'],
+  allowed: allowed as boolean,
+  error: login === 'denied-org' ? 'GitHub access unavailable: HTTP 403' : undefined,
+}));
+function installationInventory() {
+  return {
+    installations: connectedAccounts.map((account) => ({
+      ...account,
+      ...(account.allowed && !account.suspended && account.id
+        ? {
+            repo_count: repos.filter((r) => r.full_name.startsWith(`${account.account.login}/`))
+              .length,
+          }
+        : {}),
+    })),
+    install_url: installationUrl,
+    settings_url:
+      'https://github.com/organizations/northstar/settings/apps/revera-northstar/permissions',
+    advanced_url:
+      'https://github.com/organizations/northstar/settings/apps/revera-northstar/advanced',
+    // This fixture represents an app registered with publish_fixes enabled;
+    // execution remains off until separately authorized in Fix settings.
+    requested_permissions: { contents: 'write', pull_requests: 'write', checks: 'write' },
+  };
+}
 const repoNames = ['api', 'web', 'worker'];
 const titles = [
   'Preserve session expiry when refreshing tokens',
@@ -22,7 +80,82 @@ const titles = [
   'Keep user preferences during migration',
   'Add request tracing to the API',
 ];
+// Review-detail fixtures are separate from inventory/list fixtures for other lanes.
+const detailStale = new Map<string, boolean | null>();
+export function setMockReviewStale(id: string, stale: boolean | null) {
+  detailStale.set(id, stale);
+  const job = jobs.find((job) => job.id === id);
+  if (job) emit('job', job);
+}
+export function setMockReviewStatus(
+  id: string,
+  status: JobSummary['status'],
+  findings?: JobSummary['findings'],
+) {
+  const job = jobs.find((job) => job.id === id);
+  if (job) {
+    job.status = status;
+    if (findings) job.findings = findings;
+    emit('job', job);
+  }
+}
+function handoffFindings(job: JobSummary): Finding[] {
+  return [
+    {
+      id: 'abc123456789',
+      severity: 'high' as const,
+      line: 84,
+      title: 'An empty result can leave the previous query visible',
+      claim:
+        'When the search returns no matches, the early return leaves the previous result set in state.',
+    },
+    {
+      id: 'def123456789',
+      severity: 'medium' as const,
+      line: 112,
+      title: 'A late response can overwrite a newer search',
+      claim:
+        'The request is not tied to the active query. An older response replaces the current results.',
+    },
+  ]
+    .slice(0, job.findings.total)
+    .map((item) => {
+      const stale =
+        detailStale.get(job.id) === true
+          ? '> Potentially stale: re-validate every finding against the current code.\n\n'
+          : '';
+      return {
+        id: item.id,
+        defect_key: item.id,
+        severity: item.severity,
+        title: item.title,
+        claim: item.claim,
+        file: 'src/search/results.ts',
+        start_line: item.line,
+        end_line: item.line,
+        trigger: 'The search request returns out of order or without matches.',
+        impact: 'The wrong query results remain visible.',
+        supporting_evidence: [
+          {
+            path: 'src/search/results.ts',
+            start_line: item.line,
+            end_line: item.line,
+            note: 'The return occurs before results are updated.',
+          },
+        ],
+        validation_status: 'accepted',
+        validated_fix: 'Clear results and compare the active request identifier.',
+        validated_fix_label: "Validator's suggested remedy — not a tested patch",
+        reviewed_head_sha: job.head_sha || '',
+        reviewed_base_sha: 'b'.repeat(40),
+        html_url: `https://github.com/${job.repo}/blob/${job.head_sha}/src/search/results.ts#L${item.line}`,
+        prompt: `${stale}# Fix instructions\n\nPR: ${job.pr_url}\nReviewed head SHA: ${job.head_sha}\n\n${item.id}: ${item.title}\n${item.claim}\nEvidence: src/search/results.ts:${item.line}\nValidator's suggested remedy — not a tested patch: Clear results and compare request identifiers.\n\nVerify each issue against the current code before changing it. Fix the root cause with minimal scoped edits. Treat proposed remedies as suggestions, preserve unrelated behavior, test changed paths and add regression tests where warranted. Summarize each finding's disposition and tests. Do not commit, push, open PRs, or change unrelated files without explicit authorization.\n`,
+      };
+    });
+}
 let jobs: JobSummary[] = titles.map((title, i) => ({
+  source: 'installed',
+  publication: 'github',
   id: `review-${107 - i}`,
   kind: 'review',
   repo: `northstar/${repoNames[i % 3]}`,
@@ -216,6 +349,16 @@ web_search:
 let settings: Settings = {
   yaml: import.meta.env.VITE_MOCK_EMPTY_YAML === '1' ? '' : initialYaml,
   server: {
+    external: {
+      tracking_enabled: false,
+      poll_minutes: 60,
+      max_tracked: 25,
+      max_repo_size_kb: 1048576,
+      reviews_per_hour: 20,
+      concurrency: 1,
+      retention_days: 7,
+      max_checkouts: 50,
+    },
     admins: ['alex'],
     allowed_owners: ['northstar'],
     default_trigger: 'mention',
@@ -243,15 +386,22 @@ let settings: Settings = {
 let stage: SetupStage = 'done';
 let setupAuthorized = true;
 let signedIn = true;
-const listeners = new Set<(event: 'job' | 'repos', job?: JobSummary) => void>();
-export function subscribeMock(listener: (event: 'job' | 'repos', job?: JobSummary) => void) {
+const listeners = new Set<
+  (event: 'job' | 'repos' | 'fix', payload?: JobSummary | FixSummary) => void
+>();
+export function subscribeMock(
+  listener: (event: 'job' | 'repos' | 'fix', payload?: JobSummary | FixSummary) => void,
+) {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
-const emit = (event: 'job' | 'repos', job?: JobSummary) =>
-  listeners.forEach((listener) => listener(event, job));
+const emit = (event: 'job' | 'repos' | 'fix', payload?: JobSummary | FixSummary) =>
+  listeners.forEach((listener) => listener(event, payload));
+export function setMockFixState(id: string, state: FixState, progress: string | null = null) {
+  updateMockFix(id, state, progress, (fix) => emit('fix', fix));
+}
 export function setMockStage(next: SetupStage, authorized = true) {
   stage = next;
   setupAuthorized = authorized;
@@ -286,6 +436,8 @@ function enqueue(
   const repository = repos.find((item) => item.full_name === repo);
   if (repository?.trigger === 'off') throw new Error('Reviews are off for this repository.');
   const job: JobSummary = {
+    source: 'installed',
+    publication: 'github',
     id: `job-${Date.now()}-${++jobSequence}`,
     repo,
     pr,
@@ -302,9 +454,118 @@ function enqueue(
   return job;
 }
 
+// Lane B: public discovery/selection and private jobs, isolated from installed mocks.
+const externalChoices: ExternalPR[] = [1, 2, 3].map((number) => ({
+  url: `https://github.com/community/small-project/pull/${number}`,
+  repo: 'community/small-project',
+  number,
+  title: `Public contribution ${number}`,
+}));
+let externalTracked: TrackedPR[] = [];
+const externalIgnored = new Set<string>();
+function externalTarget(url: string) {
+  const match =
+    /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(url);
+  if (!match || match[1].split('/').some((part) => part === '.' || part === '..'))
+    throw new Error('Use https://github.com/OWNER/REPO/pull/NUMBER');
+  return { repo: match[1], number: Number(match[2]) };
+}
+function externalEnqueue(url: string, mode: ReviewMode, trigger: JobSummary['trigger'] = 'manual') {
+  const target = externalTarget(url);
+  const job: JobSummary = {
+    id: `external-${++jobSequence}`,
+    source: 'external',
+    publication: 'private',
+    repo_id: 700,
+    ...target,
+    pr: target.number,
+    title: `Private review of ${target.repo} #${target.number}`,
+    kind: 'review',
+    trigger,
+    mode,
+    status: 'queued',
+    pr_url: url,
+    head_sha: 'a'.repeat(40),
+    base_sha: 'b'.repeat(40),
+    findings: { total: 0, high: 0, medium: 0, low: 0 },
+    queued_at: ago(0),
+  };
+  jobs = [job, ...jobs];
+  emit('job', job);
+  return job;
+}
+async function externalRequest(
+  path: string,
+  method: string,
+  data?: Record<string, unknown>,
+): Promise<{ handled: boolean; value?: unknown }> {
+  let value: unknown;
+  if (path === '/api/settings/external') {
+    if (method === 'PUT')
+      settings.server.external = structuredClone(data) as unknown as ExternalPolicy;
+    value = structuredClone(settings.server.external);
+  } else if (path === '/api/external/discover') {
+    value = {
+      prs: externalChoices.filter((pr) => !externalIgnored.has(pr.url)),
+      incomplete: false,
+    };
+  } else if (path === '/api/external/reviews') {
+    value = { id: externalEnqueue(String(data?.url), data?.mode as ReviewMode).id };
+  } else if (path === '/api/external/tracking') {
+    if (method === 'POST') {
+      if (!settings.server.external.tracking_enabled)
+        throw new Error('Enable Track my external PRs first.');
+      const url = String(data?.url);
+      const target = externalTarget(url);
+      externalTracked = externalTracked.filter((pr) => pr.url !== url);
+      externalTracked.push({
+        url,
+        ...target,
+        repo_id: 700,
+        actor: 'alex',
+        title: `Public contribution ${target.number}`,
+        mode: data?.mode as ReviewMode,
+        status: 'tracking',
+        reason: null,
+        head_sha: '',
+        next_poll: 0,
+      });
+    }
+    value = { tracked: structuredClone(externalTracked) };
+  } else if (path.startsWith('/api/external/tracking/')) {
+    const [, number] = path.slice('/api/external/tracking/'.length).split('/');
+    externalTracked = externalTracked.map((pr) =>
+      pr.number === Number(number)
+        ? { ...pr, status: 'stopped', reason: 'untracked manually' }
+        : pr,
+    );
+    value = { ok: true };
+  } else if (path === '/api/external/ignore') {
+    externalTarget(String(data?.url));
+    externalIgnored.add(String(data?.url));
+    value = { ok: true };
+  } else return { handled: false };
+  return { handled: true, value };
+}
+
 export async function mockRequest(path: string, method: string, body?: unknown): Promise<unknown> {
   const url = new URL(path, 'https://revera.example.com');
   const data = body as Record<string, unknown> | undefined;
+  const external = await externalRequest(url.pathname, method, data);
+  if (external.handled) return external.value;
+  // Fixes product API; kept separate from external-review and inventory fixtures.
+  if (
+    url.pathname.startsWith('/api/fixes') ||
+    url.pathname === '/api/settings/fixes' ||
+    /^\/api\/repos\/[^/]+\/[^/]+\/fixes$/.test(url.pathname)
+  )
+    return mockFixRequest(url, method, body, {
+      jobs,
+      findings: handoffFindings,
+      stale: detailStale,
+      yaml: settings.yaml,
+      emit: (fix) => emit('fix', fix),
+    });
   if (url.pathname === '/api/session')
     return {
       authenticated: signedIn,
@@ -323,8 +584,40 @@ export async function mockRequest(path: string, method: string, body?: unknown):
   if (url.pathname === '/api/setup/manifest')
     return {
       post_url: 'https://github.com/settings/apps/new',
-      manifest: { name: url.searchParams.get('name'), public: false },
+      manifest: {
+        name: url.searchParams.get('name'),
+        public: url.searchParams.get('public') === 'true',
+        setup_url: 'https://revera.northstar.example.com/repositories',
+        setup_on_update: true,
+        default_permissions: {
+          contents: url.searchParams.get('publish_fixes') === 'true' ? 'write' : 'read',
+        },
+      },
     };
+  // Connected accounts.
+  if (['/api/installations', '/api/installations/reconcile'].includes(url.pathname))
+    return installationInventory();
+  const ownerMatch = url.pathname.match(/^\/api\/owners\/([^/]+)$/);
+  if (ownerMatch) {
+    const account = connectedAccounts.find(
+      (a) => a.account.login === decodeURIComponent(ownerMatch[1]),
+    );
+    if (!account) throw new Error('Account not found.');
+    account.allowed = method === 'PUT';
+    account.status = account.suspended
+      ? 'suspended'
+      : !account.id
+        ? 'not_installed'
+        : !account.allowed
+          ? 'awaiting_approval'
+          : account.permissions.contents !== 'write'
+            ? 'permission_update'
+            : 'allowed';
+    if (!account.allowed)
+      repos = repos.filter((r) => !r.full_name.startsWith(`${account.account.login}/`));
+    emit('repos');
+    return { ok: true, warning: null };
+  }
   if (url.pathname === '/api/overview')
     return {
       app: {
@@ -410,6 +703,10 @@ export async function mockRequest(path: string, method: string, body?: unknown):
         '',
       ].join('\n');
     if (jobMatch[2] === 'rerun') {
+      if (job.source === 'external')
+        return {
+          id: externalEnqueue(job.pr_url!, (data?.mode as ReviewMode) || job.mode, 'rerun').id,
+        };
       return { id: enqueue(job.repo, job.pr, data?.mode as ReviewMode | null, 'rerun').id };
     }
     if (jobMatch[2] === 'cancel') {
@@ -420,6 +717,37 @@ export async function mockRequest(path: string, method: string, body?: unknown):
     }
     return {
       job: { ...job },
+      counts: { ...job.findings },
+      reviewed_head_sha: job.head_sha,
+      reviewed_base_sha: 'b'.repeat(40),
+      stale: detailStale.get(job.id) ?? null,
+      instructions: handoffFindings(job)
+        .map((finding) => finding.prompt)
+        .join('\n'),
+      ...(url.searchParams.get('diagnostics') === '1'
+        ? {
+            diagnostics: [
+              {
+                id: '000123456789',
+                status: 'rejected',
+                severity: 'high',
+                title: 'Rejected candidate fixture',
+                file: 'src/search/results.ts',
+                start_line: 25,
+                rationale: 'The guard already handles this input.',
+              },
+              {
+                id: '111123456789',
+                status: 'uncertain',
+                severity: 'low',
+                title: 'Uncertain candidate fixture',
+                file: 'src/search/results.ts',
+                start_line: 30,
+                rationale: 'Insufficient evidence.',
+              },
+            ],
+          }
+        : {}),
       summary_markdown:
         job.status === 'complete'
           ? `## Revera review
@@ -432,7 +760,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
 Checked: the changed search handler and its callers.
 - not checked: the deployment environment.
 
-> Review incomplete: investigator reported 1 unchecked area(s).
+> Findings are independently validated; proposed remedies are not tested patches.
 
 ### Resolved since last review
 
@@ -443,32 +771,7 @@ _Timing: total 182s · index 0.1s · lanes 112s · validation 68s (p50 16s, p95 
 <sub>revera · strategy baseline · models: investigator=model-large@high, validator=model-small@medium</sub>`
           : (job.reason ??
             'The review is in progress. Findings will appear here after validation.'),
-      findings: job.findings.total
-        ? [
-            {
-              severity: 'high' as const,
-              file: 'src/search/results.ts',
-              line: 84,
-              title: 'An empty result can leave the previous query visible',
-              body:
-                'When the search returns no matches, the early return leaves the previous ' +
-                'result set in state. Clear the stored results before returning so a new query ' +
-                'cannot display stale entries.',
-              status: 'validated',
-            },
-            {
-              severity: 'medium' as const,
-              file: 'src/search/results.ts',
-              line: 112,
-              title: 'A late response can overwrite a newer search',
-              body:
-                'The request is not tied to the active query. If responses arrive out of ' +
-                'order, an older query replaces the current results. Compare a request ' +
-                'identifier before updating state.',
-              status: 'validated',
-            },
-          ].slice(0, job.findings.total)
-        : [],
+      findings: handoffFindings(job),
       strategy: 'baseline',
       stats: {
         candidates: 4,

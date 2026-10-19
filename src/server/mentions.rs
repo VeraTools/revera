@@ -42,10 +42,18 @@ impl Recent {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     Review(Option<Mode>),
+    Fix(FixCommand),
     Help,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FixCommand {
+    Request(Option<Vec<String>>),
+    Status,
+    Cancel,
 }
 
 #[derive(Debug)]
@@ -54,6 +62,7 @@ pub struct Request {
     pub number: u64,
     pub comment: u64,
     pub command: Command,
+    pub actor: String,
 }
 
 /// Only ordinary text can issue commands, not quotations or Markdown code.
@@ -112,7 +121,7 @@ pub fn command(body: &str, slug: &str) -> Option<Command> {
             // punctuation ("review this, please.") still works.
             let words: Vec<_> = rest
                 .split_whitespace()
-                .take(2)
+                .take(102)
                 .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
                 .collect();
             let mode = |word: Option<&&str>| match word.copied() {
@@ -125,6 +134,20 @@ pub fn command(body: &str, slug: &str) -> Option<Command> {
                 Some("review") => Command::Review(mode(words.get(1))),
                 Some("quick") => Command::Review(Some(Mode::Quick)),
                 Some("deep") => Command::Review(Some(Mode::Deep)),
+                Some("fix") => Command::Fix(match words.get(1).copied() {
+                    None | Some("all") if words.len() <= 2 => FixCommand::Request(None),
+                    Some("status") if words.len() == 2 => FixCommand::Status,
+                    Some("cancel") if words.len() == 2 => FixCommand::Cancel,
+                    _ if words[1..].iter().all(|id| {
+                        (6..=12).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_hexdigit())
+                    }) =>
+                    {
+                        FixCommand::Request(Some(
+                            words[1..].iter().map(|s| s.to_string()).collect(),
+                        ))
+                    }
+                    _ => return Some(Command::Help),
+                }),
                 _ => Command::Help,
             });
         }
@@ -142,21 +165,27 @@ pub fn event(value: &Value, slug: &str, preferences: &Preferences) -> Result<Opt
             .as_str()
             .is_some_and(|t| t.eq_ignore_ascii_case("bot"))
         || login.to_ascii_lowercase().ends_with("[bot]")
-        || !matches!(
-            comment["author_association"].as_str(),
-            Some("OWNER" | "MEMBER" | "COLLABORATOR")
-        )
     {
         return Ok(None);
     }
     let Some(command) = command(comment["body"].as_str().unwrap_or(""), slug) else {
         return Ok(None);
     };
+    // Fix authorization is live, not an author_association claim. Keep the
+    // existing review-command association filter unchanged.
+    if !matches!(command, Command::Fix(_))
+        && !matches!(
+            comment["author_association"].as_str(),
+            Some("OWNER" | "MEMBER" | "COLLABORATOR")
+        )
+    {
+        return Ok(None);
+    }
     let installation = value["installation"]["id"]
         .as_u64()
         .context("missing installation")?;
     let repo = Repo::parse(&value["repository"], installation)?;
-    if preferences.trigger(&repo.full_name) == Trigger::Off {
+    if preferences.trigger(&repo.full_name) == Trigger::Off && !matches!(command, Command::Fix(_)) {
         return Ok(None);
     }
     Ok(Some(Request {
@@ -167,10 +196,14 @@ pub fn event(value: &Value, slug: &str, preferences: &Preferences) -> Result<Opt
             .context("missing PR number")?,
         comment: comment["id"].as_u64().context("missing comment ID")?,
         command,
+        actor: login.into(),
     }))
 }
 
 pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result<()> {
+    if matches!(request.command, Command::Fix(_)) {
+        return super::fixes::mention(server, app, request).await;
+    }
     let mode = {
         let preferences = &server.dashboard.lock().await.preferences;
         if preferences.trigger(&request.repo.full_name) == Trigger::Off {
@@ -193,16 +226,16 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
     }
     // Capture before any network wait. Closing the PR invalidates this token;
     // the queue rechecks it under the same lock that applies the close.
-    let admission = server
-        .queue
-        .lock()
-        .await
-        .review_admission((request.repo.id, request.number));
+    let admission = server.queue.lock().await.review_admission((
+        request.repo.id,
+        request.number,
+        super::events::Source::Installed,
+    ));
     let token = server
         .api
         .installation_token(
             app,
-            request.repo.installation,
+            request.repo.installation_id()?,
             Some(request.repo.id),
             app::Permissions::Comments,
         )
@@ -214,8 +247,9 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
             &token,
             &format!(
                 "Commands: `@{} review` (repository mode), `@{} quick`, `@{} deep`, \
-             `@{} review quick|standard|deep`, `@{} help`.",
-                app.slug, app.slug, app.slug, app.slug, app.slug
+             `@{} review quick|standard|deep`, `@{} fix [all|<ids>]`, `@{} fix status`, \
+             `@{} fix cancel`, `@{} help`.",
+                app.slug, app.slug, app.slug, app.slug, app.slug, app.slug, app.slug, app.slug
             ),
         )
         .await;
@@ -267,7 +301,12 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
     Ok(())
 }
 
-async fn reply(server: &Server, request: &Request, token: &str, body: &str) -> Result<()> {
+pub(super) async fn reply(
+    server: &Server,
+    request: &Request,
+    token: &str,
+    body: &str,
+) -> Result<()> {
     let mut value = json!({"body": body});
     crate::redact::json(&mut value);
     server

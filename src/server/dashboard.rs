@@ -45,11 +45,18 @@ impl Mode {
 pub struct Preferences {
     pub admins: Vec<String>,
     pub allowed_owners: Vec<String>,
+    /// Login aliases pinned to GitHub account IDs. Keep old aliases to prevent
+    /// a newly registered account taking over a previously approved login.
+    pub owner_accounts: BTreeMap<String, u64>,
+    pub revoked_owners: Vec<String>,
+    pub revoked_owner_ids: BTreeSet<u64>,
     pub default_trigger: Trigger,
     pub default_mode: Mode,
     pub repos: BTreeMap<String, RepoPreference>,
     pub review_drafts: bool,
     pub skip_authors: Vec<String>,
+    pub external: super::external::Policy,
+    pub fixes: super::fixes::Policy,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -57,6 +64,7 @@ pub struct Preferences {
 pub struct RepoPreference {
     pub trigger: Option<Trigger>,
     pub mode: Option<Mode>,
+    pub fixes: Option<super::fixes::Override>,
 }
 
 #[derive(Default, Deserialize)]
@@ -65,6 +73,7 @@ struct RepoPreferenceFile {
     trigger: Option<Trigger>,
     mode: Option<Mode>,
     enabled: Option<bool>,
+    fixes: Option<super::fixes::Override>,
 }
 
 impl From<RepoPreferenceFile> for RepoPreference {
@@ -74,6 +83,7 @@ impl From<RepoPreferenceFile> for RepoPreference {
                 .trigger
                 .or_else(|| (file.enabled == Some(false)).then_some(Trigger::Off)),
             mode: file.mode,
+            fixes: file.fixes,
         }
     }
 }
@@ -83,12 +93,17 @@ impl From<RepoPreferenceFile> for RepoPreference {
 struct PreferencesFile {
     admins: Vec<String>,
     allowed_owners: Vec<String>,
+    owner_accounts: BTreeMap<String, u64>,
+    revoked_owners: Vec<String>,
+    revoked_owner_ids: BTreeSet<u64>,
     default_trigger: Option<Trigger>,
     default_mode: Mode,
     default_enabled: Option<bool>,
     repos: BTreeMap<String, RepoPreference>,
     review_drafts: bool,
     skip_authors: Option<Vec<String>>,
+    external: super::external::Policy,
+    fixes: super::fixes::Policy,
 }
 
 impl From<PreferencesFile> for Preferences {
@@ -96,6 +111,9 @@ impl From<PreferencesFile> for Preferences {
         Self {
             admins: file.admins,
             allowed_owners: file.allowed_owners,
+            owner_accounts: file.owner_accounts,
+            revoked_owners: file.revoked_owners,
+            revoked_owner_ids: file.revoked_owner_ids,
             default_trigger: file.default_trigger.unwrap_or_else(|| {
                 if file.default_enabled == Some(false) {
                     Trigger::Off
@@ -106,6 +124,8 @@ impl From<PreferencesFile> for Preferences {
             default_mode: file.default_mode,
             repos: file.repos,
             review_drafts: file.review_drafts,
+            external: file.external,
+            fixes: file.fixes,
             skip_authors: file
                 .skip_authors
                 .unwrap_or_else(|| Self::default().skip_authors),
@@ -118,16 +138,89 @@ impl Default for Preferences {
         Self {
             admins: vec![],
             allowed_owners: vec![],
+            owner_accounts: BTreeMap::new(),
+            revoked_owners: vec![],
+            revoked_owner_ids: BTreeSet::new(),
             default_trigger: Trigger::Mention,
             default_mode: Mode::Standard,
             repos: BTreeMap::new(),
             review_drafts: false,
+            external: super::external::Policy::default(),
+            fixes: super::fixes::Policy::default(),
             skip_authors: vec!["dependabot[bot]".into(), "renovate[bot]".into()],
         }
     }
 }
 
 impl Preferences {
+    pub fn owner_allowed(&self, login: &str, id: Option<u64>, implicit: bool) -> bool {
+        let pinned = self
+            .owner_accounts
+            .iter()
+            .find(|(v, _)| v.eq_ignore_ascii_case(login));
+        if self
+            .revoked_owners
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(login))
+            || id
+                .or_else(|| pinned.map(|(_, id)| *id))
+                .is_some_and(|id| self.revoked_owner_ids.contains(&id))
+        {
+            return false;
+        }
+        if let (Some(id), Some((_, pinned))) = (id, pinned)
+            && id != *pinned
+        {
+            return false;
+        }
+        implicit
+            || self.allowed_owners.iter().any(|allowed| {
+                allowed.eq_ignore_ascii_case(login)
+                    || id.is_some_and(|id| {
+                        self.owner_accounts.get(&allowed.to_ascii_lowercase()) == Some(&id)
+                    })
+            })
+    }
+
+    pub fn approve_owner(&mut self, login: &str, id: Option<u64>) {
+        let login = login.to_ascii_lowercase();
+        self.revoked_owners
+            .retain(|v| !v.eq_ignore_ascii_case(&login));
+        if let Some(id) = id.filter(|id| *id != 0) {
+            self.revoked_owner_ids.remove(&id);
+            self.allowed_owners.retain(|owner| {
+                self.owner_accounts.get(&owner.to_ascii_lowercase()) != Some(&id)
+                    || owner.eq_ignore_ascii_case(&login)
+            });
+            self.owner_accounts.insert(login.clone(), id);
+        }
+        if !self
+            .allowed_owners
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(&login))
+        {
+            self.allowed_owners.push(login);
+        }
+    }
+
+    pub fn revoke_owner(&mut self, login: &str, id: Option<u64>) {
+        self.allowed_owners.retain(|v| {
+            !v.eq_ignore_ascii_case(login)
+                && !id
+                    .is_some_and(|id| self.owner_accounts.get(&v.to_ascii_lowercase()) == Some(&id))
+        });
+        if !self
+            .revoked_owners
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(login))
+        {
+            self.revoked_owners.push(login.to_ascii_lowercase());
+        }
+        if let Some(id) = id {
+            self.revoked_owner_ids.insert(id);
+        }
+    }
+
     fn load(data: &Path) -> Result<Self> {
         let path = data.join("settings.json");
         crate::fsutil::check_regular_target(&path)?;
@@ -188,6 +281,14 @@ pub struct CheckRecovery {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobSummary {
+    #[serde(default)]
+    pub source: super::events::Source,
+    #[serde(default)]
+    pub publication: super::events::Publication,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
     /// Persisted by `persist_job`, but never included in dashboard responses.
     #[serde(default, skip_serializing)]
     pub check: Option<CheckRecovery>,
@@ -238,6 +339,13 @@ impl JobSummary {
         };
         Self {
             check: None,
+            source: job.repo.source(),
+            publication: job.publication(),
+            repo_id: Some(job.repo.id),
+            base_sha: match &job.kind {
+                Kind::Review { pr, .. } => string(&pr["base"]["sha"]),
+                _ => None,
+            },
             id: job.id.clone(),
             kind: if pr.is_some() { "review" } else { "index" }.into(),
             repo: job.repo.full_name.clone(),
@@ -350,7 +458,7 @@ impl Dashboard {
             installations: seen
                 .0
                 .values()
-                .map(|known| known.repo.installation)
+                .filter_map(|known| known.repo.installation)
                 .collect::<BTreeSet<_>>()
                 .len(),
             repos: BTreeMap::new(),
@@ -634,17 +742,35 @@ impl Server {
             .jobs
             .values()
             .filter(|job| {
-                !active.contains(&job.id) && job.check.as_ref().is_some_and(|check| check.pending)
+                job.source == super::events::Source::Installed
+                    && !active.contains(&job.id)
+                    && job
+                        .check
+                        .as_ref()
+                        .is_some_and(|check| check.pending && check.repo.installation.is_some())
             })
             .cloned()
             .collect();
         for mut job in jobs {
             let check = job.check.as_mut().unwrap();
+            let owner = check.repo.full_name.split('/').next().unwrap_or("");
+            let inventory = self.installations.lock().await;
+            let inaccessible = !inventory.install_url.is_empty()
+                && !inventory
+                    .installations
+                    .iter()
+                    .any(|i| i.id == check.repo.installation && i.allowed && !i.suspended);
+            drop(inventory);
+            if inaccessible || !self.allowed_owner(&app, owner).await {
+                check.pending = false;
+                self.update_job(job).await?;
+                continue;
+            }
             let token = self
                 .api
                 .installation_token(
                     &app,
-                    check.repo.installation,
+                    check.repo.installation_id()?,
                     Some(check.repo.id),
                     super::app::Permissions::Checks,
                 )
@@ -694,7 +820,13 @@ impl Server {
         }
         persist_job(&self.settings.data_dir, &summary)?;
         dashboard.jobs.insert(summary.id.clone(), summary.clone());
-        let _ = self.events.send(("job", serde_json::to_value(summary)?));
+        let _ = self.events.send(("job", serde_json::to_value(&summary)?));
+        drop(dashboard);
+        // Queue-only terminal paths never reach the runner. This callback is
+        // local persistence only: callers may still hold the queue lock.
+        if summary.kind == "review" && summary.terminal() && summary.status != "complete" {
+            super::fixes::review_terminated(self, &summary).await?;
+        }
         Ok(())
     }
     pub async fn transition(&self, job: &Job, status: &str, reason: Option<String>) -> Result<()> {

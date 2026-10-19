@@ -5,6 +5,8 @@ mod assets;
 mod auth;
 mod dashboard;
 mod events;
+mod external;
+mod fixes;
 mod mentions;
 mod queue;
 mod reconcile;
@@ -70,6 +72,17 @@ pub(super) struct Server {
     events: broadcast::Sender<(&'static str, serde_json::Value)>,
     stopping: watch::Sender<bool>,
     workers: Mutex<tokio::task::JoinSet<()>>,
+    // External public targets never enter installation inventory or credential paths.
+    external: Mutex<external::Store>,
+    external_poll: Mutex<()>,
+    external_heads: Mutex<std::collections::BTreeMap<String, (i64, String)>>,
+    // Connected-account inventory and policy mutations are serialized, never
+    // holding a dashboard/queue lock across GitHub requests.
+    reconcile_lock: Mutex<()>,
+    reconcile_request: watch::Sender<u64>,
+    installations: Mutex<reconcile::Installations>,
+    fixes: Mutex<fixes::Store>,
+    fix_notify: Notify,
 }
 
 impl Server {
@@ -89,12 +102,13 @@ impl Server {
         &self,
         mut job: events::Job,
         admission: Option<&queue::ReviewAdmission>,
-    ) {
+    ) -> bool {
         let preferences = self.dashboard.lock().await.preferences.clone();
-        if !matches!(job.kind, events::Kind::Remove)
+        if job.repo.source() == events::Source::Installed
+            && !matches!(job.kind, events::Kind::Remove)
             && preferences.trigger(&job.repo.full_name) == dashboard::Trigger::Off
         {
-            return;
+            return false;
         }
         if matches!(job.trigger.as_str(), "webhook" | "reconcile" | "auto")
             && let events::Kind::Review { pr, .. } = &job.kind
@@ -102,19 +116,39 @@ impl Server {
             if preferences.trigger(&job.repo.full_name) != dashboard::Trigger::Auto
                 || !preferences.reviewable(pr)
             {
-                return;
+                return false;
             }
             job.trigger = "auto".into();
             job.mode = preferences.mode(&job.repo.full_name);
         }
+        let app = self.setup.lock().await.app.clone();
         let mut queue = self.queue.lock().await;
+        if job.repo.source() == events::Source::Installed
+            && !matches!(job.kind, events::Kind::Remove)
+        {
+            let installations = self.installations.lock().await;
+            if !installations.install_url.is_empty()
+                && !installations.installations.iter().any(|i| {
+                    i.id == job.repo.installation && i.allowed && !i.suspended && i.error.is_none()
+                })
+            {
+                return false;
+            }
+            drop(installations);
+            let owner = job.repo.full_name.split('/').next().unwrap_or("");
+            if let Some(app) = app.as_ref()
+                && !self.allowed_owner(app, owner).await
+            {
+                return false;
+            }
+        }
         if *self.stopping.borrow() || admission.is_some_and(|token| !queue.admits(job.key(), token))
         {
-            return;
+            return false;
         }
         let previous = queue.pending.get(&job.key()).cloned();
         queue.enqueue(job.clone());
-        let accepted = queue
+        let mut accepted = queue
             .pending
             .get(&job.key())
             .is_some_and(|j| j.id == job.id);
@@ -138,6 +172,7 @@ impl Server {
             }
             if let Err(e) = self.update_job(summary).await {
                 queue.pending.remove(&job.key());
+                accepted = false;
                 tracing::warn!(
                     "job metadata: {}",
                     crate::redact::diagnostic(&e.to_string())
@@ -152,21 +187,57 @@ impl Server {
             );
         }
         self.notify.notify_one();
+        accepted && !skipped
     }
 
     async fn allowed_owner(&self, app: &app::App, owner: &str) -> bool {
-        self.allowed(app, owner)
-            || self
-                .dashboard
-                .lock()
-                .await
-                .preferences
-                .allowed_owners
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(owner))
+        self.allowed_account(app, owner, None).await
     }
 
-    async fn close(&self, key: (u64, u64)) -> Result<()> {
+    async fn allowed_account(&self, app: &app::App, owner: &str, id: Option<u64>) -> bool {
+        let dashboard = self.dashboard.lock().await;
+        let preferences = &dashboard.preferences;
+        preferences.owner_allowed(owner, id, self.implicit_owner(preferences, app, owner, id))
+    }
+
+    fn implicit_owner(
+        &self,
+        preferences: &dashboard::Preferences,
+        app: &app::App,
+        owner: &str,
+        id: Option<u64>,
+    ) -> bool {
+        self.allowed(app, owner)
+            || id
+                .or_else(|| {
+                    preferences
+                        .owner_accounts
+                        .get(&owner.to_ascii_lowercase())
+                        .copied()
+                })
+                .is_some_and(|id| {
+                    std::iter::once(&app.owner)
+                        .chain(self.allowed.iter())
+                        .any(|login| {
+                            preferences.owner_accounts.get(&login.to_ascii_lowercase()) == Some(&id)
+                        })
+                })
+    }
+
+    fn request_reconcile(&self) {
+        self.reconcile_request
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    async fn close(&self, key: events::Key) -> Result<()> {
+        fixes::invalidate(
+            self,
+            key.0,
+            key.2,
+            Some(key.1),
+            "PR closed or review cancelled",
+        )
+        .await?;
         let mut queue = self.queue.lock().await;
         let jobs: Vec<_> = queue
             .pending
@@ -184,6 +255,23 @@ impl Server {
     }
 
     async fn remove_repo(&self, repo: events::Repo) -> Result<()> {
+        fixes::invalidate(
+            self,
+            repo.id,
+            events::Source::Installed,
+            None,
+            "repository removed or approval revoked",
+        )
+        .await?;
+        {
+            let mut dashboard = self.dashboard.lock().await;
+            dashboard.repos.retain(|_, info| info.repo.id != repo.id);
+            dashboard::write_inventory(
+                &self.settings.data_dir,
+                dashboard.installations,
+                &dashboard.repos,
+            )?;
+        }
         let mut queue = self.queue.lock().await;
         for job in queue.remove_repo(repo) {
             self.transition(&job, "cancelled", Some("repository removed".into()))
@@ -210,7 +298,10 @@ impl Server {
     async fn handle(&self, app: &app::App, event: events::Event) -> Result<()> {
         match event {
             events::Event::Job(job) => self.enqueue(job).await,
-            events::Event::Close(repo, number) => self.close((repo, number)).await?,
+            events::Event::Close(repo, number) => {
+                self.close((repo, number, events::Source::Installed))
+                    .await?
+            }
             events::Event::Rerequest(repo, number) => {
                 if self
                     .dashboard
@@ -226,7 +317,7 @@ impl Server {
                     .api
                     .installation_token(
                         app,
-                        repo.installation,
+                        repo.installation_id()?,
                         Some(repo.id),
                         app::Permissions::ReadPulls,
                     )
@@ -274,7 +365,7 @@ impl Server {
                     .await
                     .0
                     .values()
-                    .filter(|r| r.repo.installation == id)
+                    .filter(|r| r.repo.installation == Some(id))
                     .map(|r| r.repo.clone())
                     .collect();
                 {
@@ -284,10 +375,19 @@ impl Server {
                             .pending
                             .values()
                             .chain(queue.running.values().map(|r| &r.job))
-                            .filter(|j| j.repo.installation == id)
+                            .filter(|j| j.repo.installation == Some(id))
                             .map(|j| j.repo.clone()),
                     );
                 }
+                repos.extend(
+                    self.dashboard
+                        .lock()
+                        .await
+                        .repos
+                        .values()
+                        .filter(|info| info.repo.installation == Some(id))
+                        .map(|info| info.repo.clone()),
+                );
                 repos.sort_by_key(|repo| repo.id);
                 repos.dedup_by_key(|repo| repo.id);
                 for repo in repos {
@@ -348,7 +448,7 @@ async fn initialize(
         .context("data directory must be absolute")?;
     crate::fsutil::ensure_dir(std::path::Path::new("/"), relative)?;
     settings.data_dir = settings.data_dir.canonicalize()?;
-    for dir in ["repos", "jobs", "cache"] {
+    for dir in ["repos", "jobs", "cache", "external", "fixes"] {
         crate::fsutil::ensure_dir(&settings.data_dir, std::path::Path::new(dir))?;
     }
     let config = settings
@@ -372,7 +472,9 @@ async fn initialize(
     } else {
         config
     };
-    if config.starts_with(settings.data_dir.join("repos")) {
+    if config.starts_with(settings.data_dir.join("repos"))
+        || config.starts_with(settings.data_dir.join("external"))
+    {
         bail!("server default config must be outside the repository workspaces");
     }
     dashboard.sync_health(&settings.data_dir, yaml.as_deref(), &session_key)?;
@@ -419,6 +521,10 @@ async fn initialize(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let external = external::Store::load(&settings.data_dir)?;
+    dashboard.preferences.external.validate()?;
+    dashboard.preferences.fixes.validate()?;
+    let fixes = fixes::Store::load(&settings.data_dir)?;
     let server = Arc::new(Server {
         settings,
         config,
@@ -435,6 +541,14 @@ async fn initialize(
         events: broadcast::channel(1024).0,
         stopping: watch::channel(false).0,
         workers: Mutex::new(tokio::task::JoinSet::new()),
+        external: Mutex::new(external),
+        external_poll: Mutex::new(()),
+        external_heads: Mutex::new(std::collections::BTreeMap::new()),
+        reconcile_lock: Mutex::new(()),
+        reconcile_request: watch::channel(0).0,
+        installations: Mutex::new(reconcile::Installations::default()),
+        fixes: Mutex::new(fixes),
+        fix_notify: Notify::new(),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(
@@ -467,6 +581,7 @@ async fn serve_until(
     deadline: std::time::Duration,
 ) -> Result<()> {
     let scheduler = tokio::spawn(dispatch(server.clone()));
+    let fix_scheduler = tokio::spawn(fixes::dispatch(server.clone()));
     let reconcile = tokio::spawn(reconcile::loop_forever(server.clone()));
     let (drain, mut draining) = watch::channel(false);
     let http = axum::serve(listener, router(server.clone())).with_graceful_shutdown(async move {
@@ -480,8 +595,10 @@ async fn serve_until(
     };
     server.stopping.send_replace(true);
     scheduler.abort();
+    fix_scheduler.abort();
     reconcile.abort();
-    let _ = tokio::join!(scheduler, reconcile);
+    let _ = tokio::join!(scheduler, fix_scheduler, reconcile);
+    let fixes_stopped = fixes::shutdown(&server).await;
     let cancelled = server.cancel_jobs().await;
     drain.send_replace(true);
     let finished = tokio::time::timeout(deadline, async {
@@ -503,6 +620,7 @@ async fn serve_until(
         }
     }
     cancelled?;
+    fixes_stopped?;
     Ok(())
 }
 
@@ -530,11 +648,18 @@ async fn dispatch(server: Arc<Server>) {
             let Ok(permit) = semaphore.clone().try_acquire_owned() else {
                 break;
             };
+            let external_limit = server
+                .dashboard
+                .lock()
+                .await
+                .preferences
+                .external
+                .concurrency;
             let mut queue = server.queue.lock().await;
             if *server.stopping.borrow() {
                 return;
             }
-            let Some((job, cancel)) = queue.take() else {
+            let Some((job, cancel)) = queue.take_with_external_limit(external_limit) else {
                 break;
             };
             drop(queue);
@@ -552,6 +677,7 @@ async fn dispatch(server: Arc<Server>) {
                     queue.running.remove(&job.key());
                 }
                 drop(queue);
+                fixes::refresh_review_status(&worker, &job).await;
                 drop(permit);
                 worker.notify.notify_one();
             });
@@ -669,19 +795,87 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
     if event == "ping" {
         return StatusCode::OK;
     }
-    let owner = if matches!(event, "installation" | "installation_repositories") {
-        &payload["installation"]["account"]["login"]
-    } else {
-        &payload["repository"]["owner"]["login"]
+    // Lifecycle events from unapproved installers can refresh account status,
+    // but must never reach the job mapper (or expose their repositories).
+    if reconcile::installation_event(event, &payload) {
+        if event == "installation"
+            && matches!(payload["action"].as_str(), Some("deleted" | "suspend"))
+        {
+            let mut inventory = server.installations.lock().await;
+            for installation in inventory
+                .installations
+                .iter_mut()
+                .filter(|i| i.id == payload["installation"]["id"].as_u64())
+            {
+                installation.suspended = true;
+                installation.status = "suspended".into();
+                installation.repo_count = None;
+            }
+        }
+        let account = &payload["installation"]["account"];
+        if matches!(
+            payload["action"].as_str(),
+            Some("deleted" | "removed" | "suspend")
+        ) && server
+            .allowed_account(
+                &app,
+                account["login"].as_str().unwrap_or(""),
+                account["id"].as_u64(),
+            )
+            .await
+        {
+            let mapped = if payload["action"] == "suspend" {
+                payload["installation"]["id"]
+                    .as_u64()
+                    .map(events::Event::RemoveInstallation)
+                    .ok_or_else(|| anyhow::anyhow!("missing installation"))
+            } else {
+                events::map_with_preferences(
+                    event,
+                    &payload,
+                    app.id,
+                    &server.dashboard.lock().await.preferences,
+                )
+            };
+            match mapped {
+                Ok(removal) => {
+                    if let Err(error) = server.handle(&app, removal).await {
+                        tracing::warn!(
+                            "installation removal: {}",
+                            crate::redact::diagnostic(&format!("{error:#}"))
+                        );
+                    }
+                }
+                Err(_) => return StatusCode::BAD_REQUEST,
+            }
+        }
+        server.request_reconcile();
+        return StatusCode::ACCEPTED;
     }
-    .as_str()
-    .unwrap_or("");
-    if !server.allowed_owner(&app, owner).await {
+    let owner = &payload["repository"]["owner"];
+    if !server
+        .allowed_account(
+            &app,
+            owner["login"].as_str().unwrap_or(""),
+            owner["id"].as_u64(),
+        )
+        .await
+    {
         tracing::warn!("ignored webhook from an owner outside the allowed owners");
         return StatusCode::ACCEPTED;
     }
     let preferences = server.dashboard.lock().await.preferences.clone();
-    let event_name = event.to_owned();
+    if event == "check_run" && payload["action"] == "requested_action" {
+        tokio::spawn(async move {
+            if let Err(error) = fixes::check_action(&server, &app, &payload).await {
+                tracing::warn!(
+                    "fix check action: {}",
+                    crate::redact::diagnostic(&error.to_string())
+                );
+            }
+        });
+        return StatusCode::ACCEPTED;
+    }
     let mapped = if event == "issue_comment" {
         mentions::event(&payload, &app.slug, &preferences)
             .map(|request| request.map_or(events::Event::Ignore, events::Event::Mention))
@@ -710,14 +904,6 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
             "webhook work failed: {}",
             crate::redact::diagnostic(&format!("{e:#}"))
         );
-    }
-    if matches!(
-        event_name.as_str(),
-        "installation" | "installation_repositories"
-    ) {
-        tokio::spawn(async move {
-            let _ = reconcile::once(&server).await;
-        });
     }
     StatusCode::ACCEPTED
 }

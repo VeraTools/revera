@@ -1,5 +1,5 @@
 use super::{
-    Server,
+    Server, dashboard,
     events::{Job, Kind},
     reconcile,
 };
@@ -243,11 +243,7 @@ struct Execution {
 }
 
 pub fn accepted_findings(report: &Value) -> impl Iterator<Item = &Value> {
-    report["findings"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|finding| finding["validation_status"].as_str() == Some("accepted"))
+    crate::findings::accepted_values(report)
 }
 
 pub const CLEAN_ARGS: &[&str] = &[
@@ -258,6 +254,247 @@ pub const CLEAN_ARGS: &[&str] = &[
     "-e",
     ".revera/vera-cache.json",
 ];
+
+/// Clear ambient credentials and git configuration for public targets. Only
+/// operator-configured model/search credentials are deliberately added below.
+fn anonymous_env(data: &Path, repo_id: u64) -> Vec<(String, String)> {
+    let root = data.join("external").join(repo_id.to_string());
+    let mut env = vec![
+        (
+            "PATH".into(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+        ),
+        ("HOME".into(), root.join("home").display().to_string()),
+        (
+            "XDG_CONFIG_HOME".into(),
+            root.join("home/config").display().to_string(),
+        ),
+        (
+            "XDG_CACHE_HOME".into(),
+            root.join("cache").display().to_string(),
+        ),
+        (
+            "REVERA_VERA_HOME".into(),
+            root.join("cache/vera-home").display().to_string(),
+        ),
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+        ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ];
+    let settings = [
+        ("core.hooksPath", "/dev/null"),
+        ("core.fsmonitor", "false"),
+        ("credential.helper", ""),
+        ("http.extraHeader", ""),
+        ("http.followRedirects", "false"),
+        ("protocol.allow", "never"),
+        ("protocol.https.allow", "always"),
+    ];
+    env.push(("GIT_CONFIG_COUNT".into(), settings.len().to_string()));
+    for (i, (key, value)) in settings.into_iter().enumerate() {
+        env.push((format!("GIT_CONFIG_KEY_{i}"), key.into()));
+        env.push((format!("GIT_CONFIG_VALUE_{i}"), value.into()));
+    }
+    env
+}
+
+async fn anonymous_git(ws: &Path, env: &[(String, String)], args: &[&str], log: Log) -> Result<()> {
+    let mut command = Command::new("git");
+    command
+        .env_clear()
+        .envs(env.iter().cloned())
+        .current_dir(ws)
+        .args(args)
+        .stdin(Stdio::null());
+    if logged(&mut command, log).await? != 0 {
+        bail!("anonymous git command failed (see job log)");
+    }
+    Ok(())
+}
+
+async fn prepare_external(
+    ws: &Path,
+    remote: &str,
+    number: u64,
+    head: &str,
+    base: &str,
+    env: &[(String, String)],
+    log: Log,
+) -> Result<()> {
+    if !crate::git::is_oid(head) || !crate::git::is_oid(base) {
+        bail!("PR has invalid commit ids");
+    }
+    if std::fs::symlink_metadata(ws.join(".git")).is_ok() {
+        crate::fsutil::ensure_dir(ws, Path::new(".git"))?;
+        anonymous_git(
+            ws,
+            env,
+            &["remote", "set-url", "origin", remote],
+            log.clone(),
+        )
+        .await?;
+    } else {
+        anonymous_git(ws, env, &["init", "--template=", "."], log.clone()).await?;
+        anonymous_git(ws, env, &["remote", "add", "origin", remote], log.clone()).await?;
+    }
+    anonymous_git(
+        ws,
+        env,
+        &["config", "remote.origin.promisor", "true"],
+        log.clone(),
+    )
+    .await?;
+    anonymous_git(
+        ws,
+        env,
+        &["config", "remote.origin.partialclonefilter", "blob:none"],
+        log.clone(),
+    )
+    .await?;
+    // Fork heads live in the base repository's read-only pull namespace. Fetch
+    // the recorded SHA too: a force-push between resolution and fetch must never
+    // make us review FETCH_HEAD instead of the pinned revision.
+    anonymous_git(
+        ws,
+        env,
+        &[
+            "fetch",
+            "--no-tags",
+            "--filter=blob:none",
+            "origin",
+            &format!("refs/pull/{number}/head"),
+            head,
+            base,
+        ],
+        log.clone(),
+    )
+    .await?;
+    anonymous_git(
+        ws,
+        env,
+        &["checkout", "--force", "--detach", head],
+        log.clone(),
+    )
+    .await?;
+    anonymous_git(ws, env, CLEAN_ARGS, log).await
+}
+
+async fn execute_external(
+    server: &Server,
+    job: &Job,
+    execution: &mut Execution,
+    log: Log,
+) -> Result<i32> {
+    if job.repo.installation.is_some() {
+        bail!("external execution cannot use an installation");
+    }
+    let Kind::Review { number, pr, force } = &job.kind else {
+        bail!("external targets support reviews only");
+    };
+    let yaml = server.config_yaml()?.context(UNCONFIGURED)?;
+    let (cfg, env) = {
+        let dashboard = server.dashboard.lock().await;
+        let cfg = dashboard.parse(&yaml)?;
+        cfg.check_trust(true)?;
+        let mut env = anonymous_env(&server.settings.data_dir, job.repo.id);
+        let routes = [&cfg.models.investigator, cfg.effective_validator()]
+            .into_iter()
+            .chain(cfg.models.lead.iter())
+            .chain(cfg.models.workers.iter().flatten())
+            .chain(cfg.models.scouts.iter().flatten().map(|scout| &scout.route));
+        let names = dashboard::Dashboard::referenced(&yaml)
+            .into_iter()
+            .chain(
+                routes
+                    .flat_map(|route| route.routes())
+                    .filter_map(|route| route.api_key_env.clone()),
+            )
+            .chain(
+                cfg.vera
+                    .embedding
+                    .iter()
+                    .chain(cfg.vera.reranker.iter())
+                    .map(|e| e.api_key_env.clone()),
+            )
+            .chain(std::iter::once(cfg.web_search.api_key_env.clone()));
+        for name in names {
+            // Never allow reserved names, even if the operator referenced them.
+            if crate::config::check_credential_env(
+                "external credential",
+                &name,
+                &cfg.github.token_env,
+            )
+            .is_ok()
+                && let Some(value) = dashboard.env(&name)
+            {
+                env.push((name, value));
+            }
+        }
+        (cfg, env)
+    };
+    if cfg.vera.executable.contains('/') && !Path::new(&cfg.vera.executable).is_absolute() {
+        bail!("external reviews require a trusted absolute Vera executable or PATH name");
+    }
+    let relative = PathBuf::from("external").join(job.repo.id.to_string());
+    for dir in ["home", "home/config", "cache", "cache/vera-home"] {
+        crate::fsutil::ensure_dir(&server.settings.data_dir, &relative.join(dir))?;
+    }
+    // Per-PR workspaces isolate local review history as well as installed jobs.
+    let ws = crate::fsutil::ensure_dir(
+        &server.settings.data_dir,
+        &relative.join(format!("pull-{number}")),
+    )?;
+    prepare_external(
+        &ws,
+        &format!("https://github.com/{}.git", job.repo.full_name),
+        *number,
+        pr["head"]["sha"].as_str().context("missing head")?,
+        pr["base"]["sha"].as_str().context("missing base")?,
+        &env,
+        log.clone(),
+    )
+    .await?;
+    let event = execution.report.parent().unwrap().join("event.json");
+    let mut value = job.event();
+    value["repository"]["private"] = json!(false);
+    crate::redact::json(&mut value);
+    crate::fsutil::write_output(
+        &server.settings.data_dir,
+        &event,
+        &serde_json::to_vec(&value)?,
+    )?;
+    let mut command = server.runner.command();
+    command
+        .env_clear()
+        .envs(env)
+        .current_dir(&ws)
+        .stdin(Stdio::null())
+        .arg("review")
+        .arg("--repo")
+        .arg(&ws)
+        .arg("--event")
+        .arg(event)
+        .arg("--publish")
+        .arg("dry-run")
+        .arg("--private")
+        .arg("--review-url")
+        .arg(format!(
+            "{}/reviews/{}",
+            server.settings.public_url.trim_end_matches('/'),
+            job.id
+        ))
+        .arg("--config")
+        .arg(&server.config)
+        .arg("--out")
+        .arg(&execution.report);
+    if *force {
+        command.arg("--force");
+    }
+    if let Some(profile) = job.mode.profile() {
+        command.arg("--profile").arg(profile);
+    }
+    logged(&mut command, log).await
+}
 
 async fn execute(
     server: &Server,
@@ -276,7 +513,7 @@ async fn execute(
         .api
         .installation_token(
             app,
-            job.repo.installation,
+            job.repo.installation_id()?,
             Some(job.repo.id),
             if matches!(job.kind, Kind::Review { .. }) {
                 super::app::Permissions::Review
@@ -439,7 +676,19 @@ async fn execute(
                 .arg("--out")
                 .arg(&execution.report)
                 .arg("--bot-login")
-                .arg(format!("{}[bot]", app.slug));
+                .arg(format!("{}[bot]", app.slug))
+                .arg("--review-url")
+                .arg(format!(
+                    "{}/reviews/{}",
+                    server.settings.public_url.trim_end_matches('/'),
+                    job.id
+                ));
+            if server.dashboard.lock().await.preferences.fixes.offer {
+                command.arg("--fix-url").arg(format!(
+                    "{}/fixes/new?job={}",
+                    server.settings.public_url, job.id
+                ));
+            }
             if *force {
                 command.arg("--force");
             }
@@ -464,6 +713,14 @@ pub async fn run(server: Arc<Server>, job: &Job, cancel: watch::Receiver<bool>) 
         tracing::warn!(
             "job failed: {}",
             crate::redact::diagnostic(&format!("{e:#}"))
+        );
+    }
+    if matches!(job.kind, Kind::Review { .. })
+        && let Err(error) = super::fixes::review_finished(&server, job).await
+    {
+        tracing::warn!(
+            "fix review completion: {}",
+            crate::redact::diagnostic(&error.to_string())
         );
     }
 }
@@ -492,7 +749,13 @@ async fn bounded_execute(
     execution: &mut Execution,
     log: Log,
 ) -> Result<i32> {
-    let work = execute(server, job, app, execution, log.clone());
+    let work = async {
+        if job.repo.source() == super::events::Source::External {
+            execute_external(server, job, execution, log.clone()).await
+        } else {
+            execute(server, job, app, execution, log.clone()).await
+        }
+    };
     match tokio::time::timeout(Duration::from_secs(55 * 60), work).await {
         Ok(Ok(code)) => Ok(code),
         failure => {
@@ -526,12 +789,21 @@ async fn complete_check(
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
     let (conclusion, title, summary) = conclusion(exit, report.as_ref(), cancelled);
-    let body = json!({
+    let mut body = json!({
         "status": "completed",
         "conclusion": conclusion,
         "completed_at": chrono::Utc::now().to_rfc3339(),
         "output": {"title": title, "summary": summary}
     });
+    if !cancelled
+        && exit == 0
+        && report
+            .as_ref()
+            .is_some_and(|r| r["status"] == "complete" && accepted_findings(r).next().is_some())
+        && server.dashboard.lock().await.preferences.fixes.offer
+    {
+        body["actions"] = json!([{"label":"Fix with Revera","description":"Open a fix request","identifier":"revera_fix"}]);
+    }
     let mut summary = server
         .dashboard
         .lock()
@@ -692,16 +964,13 @@ async fn finish_summary(
         .context("job summary missing")?;
     summary.set_state(if skipped { "skipped" } else { status }, reason);
     if let Some(report) = report {
-        summary.findings = super::dashboard::FindingCounts::default();
-        for finding in accepted_findings(&report) {
-            summary.findings.total += 1;
-            match finding["severity"].as_str() {
-                Some("high") => summary.findings.high += 1,
-                Some("medium") => summary.findings.medium += 1,
-                Some("low") => summary.findings.low += 1,
-                _ => {}
-            }
-        }
+        let counts = crate::findings::accepted_counts_json(&report);
+        summary.findings = super::dashboard::FindingCounts {
+            total: counts.total,
+            high: counts.high,
+            medium: counts.medium,
+            low: counts.low,
+        };
         if !report["ledger"].is_null() {
             summary.tokens = Some(json!({
                 "prompt": report["ledger"]["prompt_tokens"].as_u64().unwrap_or(0),
@@ -728,4 +997,138 @@ fn failure_reason(path: &Path, exit: i32) -> String {
         }
     }
     last.unwrap_or_else(|| format!("process exited with status {exit}"))
+}
+
+#[cfg(test)]
+mod external_tests {
+    use super::*;
+
+    fn local_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().into()
+    }
+
+    #[tokio::test]
+    async fn anonymous_fetch_pins_exact_shas_even_after_fork_ref_force_push() {
+        let scratch = tempfile::tempdir().unwrap();
+        let source = scratch.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        local_git(&source, &["init", "-q"]);
+        std::fs::write(source.join("file.txt"), "base\n").unwrap();
+        local_git(&source, &["add", "."]);
+        local_git(&source, &["commit", "-qm", "base"]);
+        let base = local_git(&source, &["rev-parse", "HEAD"]);
+        std::fs::write(source.join("file.txt"), "fork head\n").unwrap();
+        local_git(&source, &["commit", "-qam", "fork head"]);
+        let head = local_git(&source, &["rev-parse", "HEAD"]);
+        local_git(&source, &["update-ref", "refs/pull/7/head", &head]);
+        std::fs::write(source.join("file.txt"), "force-pushed head\n").unwrap();
+        local_git(&source, &["commit", "-qam", "force push"]);
+        let newer = local_git(&source, &["rev-parse", "HEAD"]);
+        local_git(&source, &["update-ref", "refs/pull/7/head", &newer]);
+        let bare = scratch.path().join("remote.git");
+        local_git(
+            scratch.path(),
+            &[
+                "clone",
+                "--bare",
+                source.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        local_git(&bare, &["update-ref", "refs/pull/7/head", &newer]);
+        let ws = crate::fsutil::ensure_dir(scratch.path(), Path::new("checkout")).unwrap();
+        let mut env = anonymous_env(scratch.path(), 701);
+        // Test transport only; production environment permits HTTPS and nothing else.
+        env.push(("GIT_CONFIG_COUNT".into(), "8".into()));
+        env.push(("GIT_CONFIG_KEY_7".into(), "protocol.file.allow".into()));
+        env.push(("GIT_CONFIG_VALUE_7".into(), "always".into()));
+        let log = Arc::new(Mutex::new(
+            crate::fsutil::create_private(scratch.path(), "git.log").unwrap(),
+        ));
+        prepare_external(
+            &ws,
+            &format!("file://{}", bare.display()),
+            7,
+            &head,
+            &base,
+            &env,
+            log.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(local_git(&ws, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            std::fs::read_to_string(ws.join("file.txt")).unwrap(),
+            "fork head\n"
+        );
+        assert_eq!(local_git(&ws, &["rev-parse", &base]), base);
+        prepare_external(
+            &ws,
+            &format!("file://{}", bare.display()),
+            7,
+            &newer,
+            &base,
+            &env,
+            log,
+        )
+        .await
+        .unwrap();
+        assert_eq!(local_git(&ws, &["rev-parse", "HEAD"]), newer);
+        assert_eq!(
+            std::fs::read_to_string(ws.join("file.txt")).unwrap(),
+            "force-pushed head\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_child_clear_environment_has_no_github_or_ambient_credentials() {
+        let scratch = tempfile::tempdir().unwrap();
+        let runner = Runner {
+            executable: "/bin/sh".into(),
+            prefix: vec![],
+        };
+        let mut child = runner.command();
+        child
+            .env_clear()
+            .envs(anonymous_env(scratch.path(), 701))
+            .env("MODEL_KEY", "only-intended-model-credential")
+            .args(["-c", "env"]);
+        let result = child.output().await.unwrap();
+        assert!(result.status.success());
+        let environment = String::from_utf8(result.stdout).unwrap();
+        assert!(environment.contains("MODEL_KEY=only-intended-model-credential"));
+        for forbidden in [
+            "GITHUB_TOKEN=",
+            "GH_TOKEN=",
+            "AUTHORIZATION",
+            "REVERA_SETUP",
+            "SSH_AUTH_SOCK=",
+            "PRIVATE KEY",
+            "GIT_ASKPASS=",
+        ] {
+            assert!(!environment.contains(forbidden), "{forbidden}");
+        }
+        assert!(environment.contains(&format!(
+            "HOME={}/external/701/home",
+            scratch.path().display()
+        )));
+    }
 }

@@ -229,6 +229,112 @@ impl GitHubApi {
             .context("malformed GitHub pull payload: missing head.sha")
     }
 
+    /// Git Data API helpers for the approved fix controller. Creates are never
+    /// automatically replayed. Ref updates are deliberately single-attempt:
+    /// the caller must recheck freshness before retrying a publication.
+    pub async fn git_get_commit(&self, owner: &str, repo: &str, sha: &str) -> Result<Value> {
+        self.send_idempotent(self.http.get(format!(
+            "{}/repos/{owner}/{repo}/git/commits/{sha}",
+            self.base
+        )))
+        .await
+    }
+
+    pub async fn git_create_blob(&self, owner: &str, repo: &str, content: &str) -> Result<Value> {
+        self.send_post(
+            self.http
+                .post(format!("{}/repos/{owner}/{repo}/git/blobs", self.base))
+                .json(&json!({"content":content,"encoding":"utf-8"})),
+        )
+        .await
+    }
+
+    pub async fn git_create_tree(
+        &self,
+        owner: &str,
+        repo: &str,
+        base_tree: &str,
+        entries: &[Value],
+    ) -> Result<Value> {
+        self.send_post(
+            self.http
+                .post(format!("{}/repos/{owner}/{repo}/git/trees", self.base))
+                .json(&json!({"base_tree":base_tree,"tree":entries})),
+        )
+        .await
+    }
+
+    pub async fn git_create_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        parent: &str,
+        tree: &str,
+        message: &str,
+    ) -> Result<Value> {
+        self.send_post(
+            self.http
+                .post(format!("{}/repos/{owner}/{repo}/git/commits", self.base))
+                .json(
+                    &json!({"message":crate::redact::text(message),"tree":tree,"parents":[parent]}),
+                ),
+        )
+        .await
+    }
+
+    pub async fn git_get_ref(&self, owner: &str, repo: &str, branch: &str) -> Result<Value> {
+        self.send_idempotent(self.http.get(format!(
+            "{}/repos/{owner}/{repo}/git/ref/heads/{branch}",
+            self.base
+        )))
+        .await
+    }
+
+    pub async fn git_create_ref(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<Value> {
+        self.send_post(
+            self.http
+                .post(format!("{}/repos/{owner}/{repo}/git/refs", self.base))
+                .json(&json!({"ref":format!("refs/heads/{branch}"),"sha":sha})),
+        )
+        .await
+    }
+
+    pub async fn git_fast_forward_ref(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<Value> {
+        self.send_post(
+            self.http
+                .patch(format!(
+                    "{}/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                    self.base
+                ))
+                .json(&json!({"sha":sha,"force":false})),
+        )
+        .await
+    }
+
+    pub async fn create_draft_pull(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<Value> {
+        self.send_post(self.http.post(format!("{}/repos/{owner}/{repo}/pulls", self.base)).json(&json!({"head":head,"base":base,"title":crate::redact::text(title),"body":crate::redact::text(body),"draft":true}))).await
+    }
+
     async fn list_comments(&self, url: String, what: &str) -> Result<Vec<GhComment>> {
         let mut out = Vec::new();
         for page in 1..=MAX_PAGES {

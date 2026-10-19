@@ -6,14 +6,15 @@ use serde_json::{Value, json};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Repo {
     pub id: u64,
-    pub installation: u64,
+    /// None is an external public target, never an installation placeholder.
+    pub installation: Option<u64>,
     pub full_name: String,
     pub default_branch: String,
     pub pushed_at: String,
 }
 
 impl Repo {
-    pub fn parse(v: &Value, installation: u64) -> Result<Self> {
+    pub fn parse(v: &Value, installation: impl Into<Option<u64>>) -> Result<Self> {
         let full_name = v["full_name"]
             .as_str()
             .context("repository missing full_name")?;
@@ -32,13 +33,46 @@ impl Repo {
         }
         Ok(Self {
             id: v["id"].as_u64().context("repository missing id")?,
-            installation,
+            installation: installation.into(),
             full_name: full_name.into(),
             default_branch: v["default_branch"].as_str().unwrap_or("main").into(),
             pushed_at: pushed_at(&v["pushed_at"]),
         })
     }
+
+    pub fn installation_id(&self) -> Result<u64> {
+        self.installation
+            .context("external targets have no installation")
+    }
+
+    pub fn source(&self) -> Source {
+        if self.installation.is_some() {
+            Source::Installed
+        } else {
+            Source::External
+        }
+    }
 }
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    #[default]
+    Installed,
+    External,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Publication {
+    #[default]
+    Github,
+    Private,
+}
+
+pub type Key = (u64, u64, Source);
 
 /// REST responses give `pushed_at` as an RFC 3339 string, push webhooks as
 /// Unix seconds; normalize so the two compare equal.
@@ -78,14 +112,21 @@ impl Job {
             kind,
         }
     }
-    pub fn key(&self) -> (u64, u64) {
+    pub fn key(&self) -> Key {
         (
             self.repo.id,
             match &self.kind {
                 Kind::Review { number, .. } => *number,
                 _ => 0,
             },
+            self.repo.source(),
         )
+    }
+    pub fn publication(&self) -> Publication {
+        match self.repo.source() {
+            Source::Installed => Publication::Github,
+            Source::External => Publication::Private,
+        }
     }
     pub fn head(&self) -> &str {
         match &self.kind {

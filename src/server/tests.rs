@@ -1,3 +1,4 @@
+use super::events::Source::Installed;
 use super::*;
 use aws_lc_rs::{encoding::AsDer, signature::KeyPair};
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -10,7 +11,7 @@ use wiremock::{
     matchers::{body_json, header, method, path},
 };
 
-fn test_app() -> app::App {
+pub(super) fn test_app() -> app::App {
     static APP: OnceLock<app::App> = OnceLock::new();
     APP.get_or_init(|| {
         let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
@@ -192,8 +193,8 @@ fn queue_coalesces_cancels_and_serializes() {
     other.repo.full_name = "owner/other".into();
     queue.enqueue(other);
     assert_eq!(queue.take().unwrap().0.repo.id, 2);
-    queue.close((1, 7));
-    assert!(!queue.pending.contains_key(&(1, 7)));
+    queue.close((1, 7, Installed));
+    assert!(!queue.pending.contains_key(&(1, 7, Installed)));
 }
 
 #[test]
@@ -276,7 +277,7 @@ fn jwt_signs_and_verifies_generated_key() {
 
 #[test]
 fn manifest_fields() {
-    let v = app::manifest("https://review.example.com", "revera-example");
+    let v = app::manifest("https://review.example.com", "revera-example", false, false);
     assert_eq!(v["name"], "revera-example");
     assert_eq!(v["public"], false);
     assert_eq!(v["url"], "https://github.com/VeraTools/revera");
@@ -288,7 +289,8 @@ fn manifest_fields() {
         v["redirect_url"],
         "https://review.example.com/setup/callback"
     );
-    assert_eq!(v["setup_url"], "https://review.example.com/");
+    assert_eq!(v["setup_url"], "https://review.example.com/repositories");
+    assert_eq!(v["setup_on_update"], true);
     assert_eq!(
         v["default_permissions"],
         json!({"contents": "read", "pull_requests": "write", "checks": "write",
@@ -345,6 +347,7 @@ async fn server(
     configured: bool,
 ) -> (tempfile::TempDir, Arc<Server>) {
     let data = tempfile::tempdir().unwrap();
+    mock_registration(mock).await;
     // These pre-mention fixtures exercise automatic-review behavior explicitly.
     dashboard::write_preferences(
         data.path(),
@@ -373,6 +376,15 @@ async fn server(
     .await
     .unwrap();
     (data, server)
+}
+
+async fn mock_registration(mock: &MockServer) {
+    Mock::given(method("GET")).and(path("/app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "owner": {"login": "owner", "type": "User"},
+            "permissions": {"contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read", "issues": "read"},
+            "events": ["pull_request", "push", "check_run", "issue_comment"]
+        }))).mount(mock).await;
 }
 
 async fn http(server: Arc<Server>) -> (String, tokio::task::JoinHandle<()>) {
@@ -405,7 +417,7 @@ async fn operator_paths_and_proxy_url_prefix_are_supported() {
         "https://review.example.com/revera"
     );
     assert_eq!(
-        app::manifest(&server.settings.public_url, "revera")["hook_attributes"]["url"],
+        app::manifest(&server.settings.public_url, "revera", false, false)["hook_attributes"]["url"],
         "https://review.example.com/revera/webhook"
     );
 }
@@ -766,7 +778,10 @@ async fn reconcile_api_first_sighting_and_stale_head_are_not_backfilled() {
         .mount(&mock)
         .await;
     reconcile::once(&server).await.unwrap();
-    assert_eq!(server.queue.lock().await.pending[&(1, 7)].head(), "later");
+    assert_eq!(
+        server.queue.lock().await.pending[&(1, 7, Installed)].head(),
+        "later"
+    );
     assert_eq!(server.seen.lock().await.0[&1].heads[&7], "first");
     reconcile::once(&server).await.unwrap();
     assert_eq!(server.queue.lock().await.pending.len(), 1);
@@ -1283,6 +1298,7 @@ async fn disabled_repository_suppresses_webhook_and_reconcile_jobs() {
         dashboard::RepoPreference {
             trigger: Some(dashboard::Trigger::Off),
             mode: None,
+            fixes: None,
         },
     );
     let (url, task) = http(server.clone()).await;
@@ -1417,7 +1433,7 @@ async fn removal_cancels_pending_and_running_job_metadata() {
         server.enqueue(pending.clone()).await;
         let mut other = job("other-head");
         other.repo.id = 2;
-        other.repo.installation = 10;
+        other.repo.installation = Some(10);
         other.repo.full_name = "owner/other".into();
         server.enqueue(other.clone()).await;
         let event = if installation {
@@ -1435,7 +1451,7 @@ async fn removal_cancels_pending_and_running_job_metadata() {
         }
         assert_eq!(job_metadata(data.path(), &other)["status"], "queued");
         assert!(matches!(
-            server.queue.lock().await.pending[&(1, 0)].kind,
+            server.queue.lock().await.pending[&(1, 0, Installed)].kind,
             events::Kind::Remove
         ));
         // A runner that was already finishing must not overwrite cancellation.
@@ -1974,3 +1990,10 @@ mod mention_tests;
 
 #[path = "dashboard_qol_tests.rs"]
 mod dashboard_qol_tests;
+
+#[path = "external_tests.rs"]
+mod external_tests;
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
+#[path = "installation_tests.rs"]
+mod installation_tests;

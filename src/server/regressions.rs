@@ -176,6 +176,7 @@ async fn first_config_save_reconciles_setup_skips_without_backfilling_other_prs(
     for initial_inventory in [false, true] {
         let mock = MockServer::start().await;
         let (data, server) = without_models(&mock).await;
+        mock_registration(&mock).await;
         server.setup.lock().await.app = Some(test_app());
         let (cookie, csrf) = administrator(&server).await;
         let current = job("new-head");
@@ -357,7 +358,13 @@ async fn real_delivery_owners_gate_repo_and_installation_events() {
             StatusCode::ACCEPTED
         );
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !server.queue.lock().await.pending.contains_key(&key) {
+            while !server
+                .queue
+                .lock()
+                .await
+                .pending
+                .contains_key(&(key.0, key.1, Installed))
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -376,7 +383,7 @@ async fn real_delivery_owners_gate_repo_and_installation_events() {
     payload["installation"]["account"]["login"] = json!("owner");
     deliver(&server, "installation_repositories", payload).await;
     assert!(matches!(
-        server.queue.lock().await.pending[&(1, 0)].kind,
+        server.queue.lock().await.pending[&(1, 0, Installed)].kind,
         events::Kind::Remove
     ));
 }
@@ -891,6 +898,58 @@ async fn restart_recovers_orphan_checks_with_fresh_scoped_tokens() {
     }
     restarted.recover_checks().await.unwrap();
     assert_eq!(mock.received_requests().await.unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn failed_reconciliation_still_recovers_orphan_checks() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let mut orphan = dashboard::JobSummary::queued(&job("head"));
+    orphan.check = Some(dashboard::CheckRecovery {
+        id: 100,
+        repo: job("head").repo,
+        pending: true,
+    });
+    let id = orphan.id.clone();
+    server.update_job(orphan).await.unwrap();
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(ResponseTemplate::new(503))
+        .with_priority(1)
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/9/access_tokens"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(json!({"token":"recover-tick-token"})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/check-runs/100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":"in_progress"})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/owner/repo/check-runs/100"))
+        .and(body_partial_json(
+            json!({"status":"completed","conclusion":"cancelled"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":100})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    assert!(reconcile::once(&server).await.is_err());
+    assert!(
+        !server.dashboard.lock().await.jobs[&id]
+            .check
+            .as_ref()
+            .unwrap()
+            .pending
+    );
 }
 
 #[tokio::test]

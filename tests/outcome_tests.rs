@@ -37,6 +37,7 @@ fn finding(file: &str, key: &str, line: u32) -> Finding {
         validation_status: Some(ValidationStatus::Accepted),
         suggested_fix: None,
         validated_fix: None,
+        suggestion: None,
         source: "investigator".into(),
         rationale: None,
         sources: vec![],
@@ -668,7 +669,10 @@ fn summary_presentation_complete_clean() {
         ..Default::default()
     });
     assert!(s.starts_with("## Revera review\n\n**Status: complete**"));
-    assert!(s.contains("no new findings"));
+    assert_eq!(
+        s.lines().nth(2),
+        Some("**Status: complete** — no accepted findings")
+    );
     assert!(!s.contains("incomplete"));
 }
 

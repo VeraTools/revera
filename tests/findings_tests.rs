@@ -19,6 +19,7 @@ fn finding(file: &str, key: &str, line: u32, sev: Severity) -> Finding {
         validation_status: None,
         suggested_fix: None,
         validated_fix: None,
+        suggestion: None,
         source: "investigator".into(),
         rationale: None,
         sources: vec![],

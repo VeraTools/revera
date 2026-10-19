@@ -110,6 +110,7 @@ impl StateFinding {
     /// Rebuild a `Finding` for rechecking, from the retained detail.
     pub fn to_finding(&self) -> Finding {
         Finding {
+            suggestion: None,
             defect_key: self.defect_key.clone(),
             severity: self.severity,
             file: self.file.clone(),

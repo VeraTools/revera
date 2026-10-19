@@ -15,6 +15,7 @@
     TestResult,
     Trigger,
     ReviewMode,
+    FixSettings as FixSettingsData,
   } from '#lib/types';
   import ModelFields from './ModelFields.svelte';
   import SecretDialog from './SecretDialog.svelte';
@@ -26,8 +27,10 @@
   import FallbackModels from './FallbackModels.svelte';
   import WebSearchFields from './WebSearchFields.svelte';
   import MentionCommands from './MentionCommands.svelte';
+  import FixSettings from './FixSettings.svelte';
+  import { validFixLimits } from '../fix-policy';
 
-  const tabs = ['Models', 'Review', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
+  const tabs = ['Models', 'Review', 'Fixes', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
   const modelRoles = [
     {
       role: 'investigator',
@@ -43,6 +46,11 @@
   let tab = $state('models');
   let config = $state<ConfigDocument>();
   let server = $state<ServerSettings>();
+  let fixSettings = $state<FixSettingsData>();
+  let savedFixes = $state('');
+  let fixFormValid = $state(true);
+  const fixesDirty = $derived(!!fixSettings && JSON.stringify(fixSettings.fixes) !== savedFixes);
+  const fixesValid = $derived(fixFormValid && (!fixSettings || validFixLimits(fixSettings.fixes)));
   let secrets = $state<Secret[]>([]);
   let savedYaml = $state('');
   let savedServer = $state('');
@@ -58,7 +66,7 @@
   let separateValidator = $state(false);
   const yamlDirty = $derived(config?.yaml !== savedYaml);
   const serverDirty = $derived(JSON.stringify(server) !== savedServer);
-  const dirty = $derived(!!config && (yamlDirty || serverDirty));
+  const dirty = $derived(!!config && (yamlDirty || serverDirty || fixesDirty));
   const envNames = $derived(config?.referencedEnv() || []);
   const validatorInherits = $derived(!!config && !config.has(['models', 'validator']));
   const retrievalOn = $derived(
@@ -74,7 +82,10 @@
   }
   async function load() {
     try {
-      hydrate(await api.settings());
+      const [settings, fixes] = await Promise.all([api.settings(), api.fixSettings()]);
+      hydrate(settings);
+      fixSettings = fixes;
+      savedFixes = JSON.stringify(fixes.fixes);
       error = '';
     } catch (cause) {
       error = errorMessage(cause);
@@ -101,7 +112,7 @@
     }
   }
   async function save() {
-    if (!config || !server || config.errors.length) return;
+    if (!config || !server || config.errors.length || !fixesValid) return;
     busy = 'save';
     error = '';
     message = '';
@@ -117,12 +128,17 @@
         await api.saveServer(server);
         savedServer = JSON.stringify(server);
       }
+      if (fixesDirty && fixSettings) {
+        await api.saveFixSettings(fixSettings.fixes);
+        savedFixes = JSON.stringify(fixSettings.fixes);
+      }
+      if (fixSettings) fixSettings.models = (await api.fixSettings()).models;
       secrets = (await api.settings()).secrets;
       message = 'Settings saved.';
     } catch (cause) {
       const partialSave =
-        configSaved && serverDirty
-          ? ' Review configuration was saved; server settings are still unsaved.'
+        configSaved && (serverDirty || fixesDirty)
+          ? ` Review configuration was saved; ${[serverDirty ? 'server settings' : '', fixesDirty ? 'fix policy' : ''].filter(Boolean).join(' and ')} changes are still unsaved.`
           : '';
       error = errorMessage(cause) + partialSave;
     } finally {
@@ -133,6 +149,8 @@
     config?.replace(savedYaml);
     separateValidator = config?.has(['models', 'validator']) || false;
     server = JSON.parse(savedServer) as ServerSettings;
+    if (fixSettings) fixSettings.fixes = JSON.parse(savedFixes);
+    fixFormValid = true;
     error = '';
     message = '';
   }
@@ -390,6 +408,19 @@
               >{/if}
           </div>{:else}<p class="helper">This configuration does not reference any keys.</p>{/each}
       </section>
+    </Tabs.Content>
+    <Tabs.Content value="fixes">
+      {#if fixSettings}<FixSettings
+          data={fixSettings}
+          {config}
+          {secrets}
+          {setKey}
+          removeKey={removeSecret}
+          disabled={dirty || !!busy}
+          test={(role) => void test(role)}
+          {tests}
+          bind:valid={fixFormValid}
+        />{/if}
     </Tabs.Content>
     <Tabs.Content value="review"
       ><section class="settings-section">
@@ -667,7 +698,7 @@
           <button class="button small" onclick={validate}><Check size={14} />Validate YAML</button
           ><button
             class="button small"
-            disabled={!!busy || !dirty || config.errors.length > 0}
+            disabled={!!busy || !dirty || config.errors.length > 0 || !fixesValid}
             onclick={save}><Save size={14} />Save</button
           >
         </div>
@@ -695,7 +726,7 @@
       <div class="actions">
         <button class="button small" disabled={!!busy} onclick={discard}>Discard</button><button
           class="button primary small"
-          disabled={!!busy || config.errors.length > 0}
+          disabled={!!busy || config.errors.length > 0 || !fixesValid}
           onclick={save}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button
         >
       </div>

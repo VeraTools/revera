@@ -9,6 +9,14 @@
   import JobsTable from '#lib/components/JobsTable.svelte';
   import Notice from '#lib/components/Notice.svelte';
   import SelectField from '#lib/components/SelectField.svelte';
+  import ExternalReviewDialog from '#lib/components/ExternalReviewDialog.svelte';
+  import ExternalTracking from '#lib/components/ExternalTracking.svelte';
+  let queued = $state('');
+  function onqueued(id: string) {
+    queued = id;
+    clearFilters();
+    void load();
+  }
   let jobs = $state<JobSummary[]>([]);
   let repos = $state<Repository[]>([]);
   let repo = $state('');
@@ -113,7 +121,12 @@
     <h1>Reviews</h1>
     <p>Review history, findings, and run details.</p>
   </div>
+  <ExternalReviewDialog {onqueued} />
 </div>
+{#if queued}<p role="status">
+    Private review queued. <a href={`/reviews/${queued}`}>Open review</a>
+  </p>{/if}
+<ExternalTracking {onqueued} />
 <div class="filters">
   <div class="search-field">
     <label class="sr-only" for="review-search">Search reviews</label><Search size={15} />

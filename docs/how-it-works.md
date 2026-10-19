@@ -67,9 +67,14 @@ comment are reconciled separately, and the publisher reads existing
 failure never duplicates inline comments on retry. The publisher re-fetches
 the PR head SHA and refuses to publish if it moved.
 
+Installed App reviews and the Action can publish to GitHub. The App also
+supports [external public PR reviews](server.md#external-public-pr-reviews):
+these use the same review engine but keep results private, with no GitHub
+comments or checks.
+
 ## Boundaries
 
-1. Models return findings and verdicts through tools (`submit_findings`,
+1. Review models return findings and verdicts through tools (`submit_findings`,
    `submit_verdict`). They never post comments, run shell commands or write
    files.
 2. Repository tools are read-only and scoped to the exact head tree; opt-in web
@@ -81,6 +86,16 @@ the PR head SHA and refuses to publish if it moved.
    `budget.run_max_seconds`, with a reserve kept for validation and the
    final report. A budget breach yields `partial` with the reason in the
    summary, never a silently truncated "clean" review.
+5. [Opt-in App fixes](server.md#fixes-opt-in) have a separate boundary and
+   limits. A fixer can edit only a disposable head snapshot in a bubblewrap
+   sandbox; its fresh-context verifier is read-only. Both receive selected
+   model credentials and network access for model calls, never a GitHub token.
+   Only an administrator-approved test command executes repository code, in a
+   separate sandbox without network or credentials. Rust checks the patch.
+   Publication needs a dashboard administrator's approval (or an
+   administrator's setting that allows draft PRs without it) and rechecks the
+   PR head, policy and installation grants. Model output cannot authorize a
+   push.
 
 ## Outcomes
 
@@ -89,6 +104,9 @@ the PR head SHA and refuses to publish if it moved.
 | `complete` | every stage finished; zero findings means "reviewed, nothing found" |
 | `partial` | something was not checked: budget, provider error, retrieval unavailable, malformed model output, skipped fork |
 | `failed` | configuration/setup error or crash; no trustworthy report |
+
+The dashboard also labels jobs `queued`, `running`, `cancelled` or `skipped`.
+Skipped or cancelled work is not a completed review, even when it has no findings.
 
 The CLI exits 0 / 2 / other respectively; the Action normalises a missing or
 unparseable report to `failed` and applies `fail-on` to the result. The run
@@ -109,6 +127,7 @@ file, start_line, end_line?
 title, claim, trigger, impact
 suggested_fix?        investigator's proposal; never published
 validated_fix?        remedy supplied or approved by the validator
+suggestion?           validator's exact {start_line, end_line, original, replacement}
 introduced_by_change  bool
 supporting_evidence[] { path, start_line, end_line, note }
 counterevidence_checked[]   filled by the validator
@@ -120,7 +139,53 @@ Identity is `file + defect_key`, not wording, so a rephrased finding on the
 next push is the same finding. The investigator cannot set a publishable
 remedy: its `suggested_fix` is only a proposal, and any investigator-supplied
 `validated_fix` is discarded. The validator's `Verdict.fix` becomes
-`validated_fix`; reports and comments render only that validator-owned value.
+`validated_fix`. The dashboard, agent instructions and comments use that
+validator-owned remedy, not the investigator's proposal. It is advice, not
+a tested patch.
+
+The review page shows accepted findings with their IDs, trigger, impact,
+evidence and links to the file at the reviewed commit. GitHub, the dashboard
+and the review API count only accepted findings. Rejected, uncertain and
+unvalidated candidates are hidden under **Show diagnostics**, labelled
+**Not validated — not reported as defects**; they are not included in agent
+instructions. The full JSON report can still contain these candidates.
+
+### Instructions for a coding agent
+
+For a complete review with accepted findings, the dashboard offers **Copy fix
+instructions** and **Download .md** for all findings. Each accepted finding
+also has **Copy prompt**. Instructions include the PR URL, repository, base
+and head commit IDs (SHAs), findings, evidence and the validator's suggested
+remedies. They are built without another model call and ask the agent to
+verify each issue, make scoped edits, test them, and get permission before
+committing, pushing or opening a PR. Long instructions are capped and link
+back to the review.
+
+**Potentially stale** means the PR head has changed since review; copied and
+downloaded instructions then require re-validation. **Freshness unknown**
+means the current head could not be checked, not that the result is current.
+Re-run the review to check the latest head.
+
+On GitHub, a complete review with accepted findings adds a collapsed
+**Fix with your coding agent** section to the existing summary. App reviews
+link to the dashboard; instructions are also included in the comment when
+they fit within 3,000 characters. Partial or failed reviews do not get this
+handoff section.
+
+### GitHub suggested changes
+
+An inline finding can include GitHub's suggested-change block only
+when the validator supplies an exact replacement: the original text must
+match the reviewed head byte for byte, the finding must cover those same
+lines, and every line must be added or modified in one head-side diff hunk.
+The range is at most 10 lines; the replacement is at most 20 lines and 2,000
+bytes. Sensitive files, redacted text, unsafe comment markers and invalid
+characters are refused.
+
+If any check fails, Revera keeps the explanatory finding without a suggestion
+block. Unchanged lines, larger edits and prose remedies alone do not
+produce a block. A suggestion still needs a person to review and apply it;
+passing these checks does not mean it has been tested.
 
 ## State and re-review
 
@@ -193,7 +258,7 @@ entirely.
 
 ```text
 src/
-  cli.rs        review | doctor | cache-key | cache-info
+  cli.rs        serve | review | index | doctor | cache-key | cache-info
   config.rs     revera.yaml schema, env expansion, profiles, effective validation
   git.rs        git subprocesses: revisions, merge-base, diff, patch and tree ids, grep
   diff.rs       unified diff → hunks → reviewable lines
@@ -203,8 +268,10 @@ src/
   agent.rs      bounded tool-calling loop
   pipeline/     baseline | delegated | panel → candidates → validation → anchoring
   findings.rs   finding and verdict schema, ids, candidate collapsing
+  handoff.rs    accepted-finding instructions shared by dashboard and GitHub
   state.rs      review state and review key
   github/       event parsing, API, publication, state marker
   report.rs     run report + summary rendering
+  server/       GitHub App, dashboard API, review queue and external PR tracking
 prompts/        investigator, validator, lead, worker, scout prompts
 ```

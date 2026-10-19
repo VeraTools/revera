@@ -49,10 +49,10 @@ export class ConfigDocument {
     if (
       value === undefined &&
       path[0] === 'models' &&
-      path[1] === 'validator' &&
-      !this.document.hasIn(['models', 'validator'])
+      ['validator', 'fixer', 'fix_verifier'].includes(String(path[1])) &&
+      !this.document.hasIn(['models', path[1]])
     )
-      value = this.document.getIn(['models', 'investigator', ...path.slice(2)]);
+      value = this.get(['models', this.inheritedRole(String(path[1])), ...path.slice(2)], fallback);
     if (value && typeof value === 'object' && 'toJSON' in value)
       value = (value as { toJSON: () => unknown }).toJSON();
     return value === undefined || value === null ? fallback : (value as T);
@@ -60,6 +60,28 @@ export class ConfigDocument {
   has(path: ConfigPath) {
     this.revision;
     return this.document.hasIn(path);
+  }
+  private inheritedRole(role: string) {
+    return role === 'fix_verifier' ? 'validator' : 'investigator';
+  }
+  overrideRoute(role: 'fixer' | 'fix_verifier') {
+    if (this.errors.length || this.has(['models', role])) return;
+    let inherited = this.inheritedRole(role);
+    if (inherited === 'validator' && !this.has(['models', inherited])) inherited = 'investigator';
+    const route = this.document.getIn(['models', inherited]);
+    this.document.setIn(
+      ['models', role],
+      isMap(route)
+        ? route.clone()
+        : this.document.createNode({
+            protocol: 'openai-chat',
+            base_url: '',
+            api_key_env: 'REVERA_MODEL_API_KEY',
+            model: '',
+          }),
+    );
+    this.yaml = this.document.toString();
+    this.revision++;
   }
   set(path: ConfigPath, value: unknown) {
     if (this.errors.length) return;

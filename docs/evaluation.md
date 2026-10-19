@@ -4,6 +4,11 @@ What has been measured, how, and what the numbers do and do not show. All
 of it is evidence gathered while building Revera on small synthetic corpora
 with 1–2 runs per cell; none of it is a benchmark.
 
+These are historical results, not a new evaluation of every release. TP
+means a true defect found, FN a missed defect, and FP a reported finding
+judged wrong. LOC means lines of code; a rep is one repeated run. Model
+names and configuration labels below identify the routes used for those runs.
+
 ## Method
 
 - **Corpora.** `eval/build-corpus.sh` and `eval/build-corpus-hard.sh` build
@@ -401,7 +406,8 @@ They do not establish a benefit for adding more local tools.
 
 Repository tools are read-only, use the content exclusions and have bounded
 output. Delegated workers and panel scouts investigate with tools; planning
-has none and synthesis gets only `read_file`. Fresh validators get their own
+has read-only repository tools with a six-call budget, while synthesis gets
+only `read_file`. Neither planning nor synthesis has web tools. Fresh validators get their own
 conversation and share the review's web limits, with capacity reserved for
 validation. Generic shell execution, file mutation, arbitrary HTTP, browsing
 history and CI logs are not reviewer tools.

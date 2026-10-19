@@ -90,15 +90,17 @@ pub fn token_matches(expected: &str, actual: &str) -> bool {
     other.verify_slice(&signature).is_ok()
 }
 
-pub fn manifest(public_url: &str, name: &str) -> Value {
+pub fn manifest(public_url: &str, name: &str, public: bool, publish_fixes: bool) -> Value {
     json!({
-        "name": name, "public": false, "url": "https://github.com/VeraTools/revera",
+        "name": name, "public": public, "url": "https://github.com/VeraTools/revera",
         "hook_attributes": {"url": format!("{public_url}/webhook")},
         "redirect_url": format!("{public_url}/setup/callback"),
-        "setup_url": format!("{public_url}/"),
+        "setup_url": format!("{public_url}/repositories"),
+        "setup_on_update": true,
         "callback_urls": [format!("{public_url}/auth/callback")],
         "default_permissions": {
-            "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read",
+            "contents": if publish_fixes { "write" } else { "read" },
+            "pull_requests": "write", "checks": "write", "metadata": "read",
             "issues": "read"
         },
         "default_events": ["pull_request", "push", "check_run", "issue_comment"]
@@ -118,9 +120,44 @@ pub enum Permissions {
     Index,
     ReadPulls,
     Comments,
+    Fix,
+    FixWorkflows,
 }
 
+#[derive(Debug)]
+pub struct ApiStatus(pub reqwest::StatusCode, bool);
+
+impl ApiStatus {
+    pub fn denied(&self) -> bool {
+        self.0 == reqwest::StatusCode::NOT_FOUND
+            || (self.0 == reqwest::StatusCode::FORBIDDEN && !self.1)
+    }
+}
+
+impl std::fmt::Display for ApiStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GitHub API returned HTTP {}", self.0.as_u16())
+    }
+}
+impl std::error::Error for ApiStatus {}
+
 impl Api {
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+    /// Anonymous, read-only external metadata path. It cannot mint tokens or write.
+    pub async fn public_get(&self, path: &str, etag: Option<&str>) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        Ok(request.send().await?)
+    }
+
     pub async fn oauth_token(&self, app: &App, code: &str, redirect: &str) -> Result<String> {
         let response = self
             .http
@@ -178,10 +215,29 @@ impl Api {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await?;
+        let mut response = request.send().await?;
         if !response.status().is_success() {
             // Conversion and token responses may contain credentials; do not echo bodies.
-            bail!("GitHub API returned HTTP {}", response.status().as_u16());
+            let status = response.status();
+            let mut rate_limited = response.headers().contains_key("retry-after")
+                || response
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|v| v == "0");
+            if status == reqwest::StatusCode::FORBIDDEN && !rate_limited {
+                let mut body = Vec::new();
+                while let Some(chunk) = response.chunk().await? {
+                    let remaining = 64 * 1024 - body.len();
+                    body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                    if body.len() == 64 * 1024 {
+                        break;
+                    }
+                }
+                rate_limited = String::from_utf8_lossy(&body)
+                    .to_ascii_lowercase()
+                    .contains("rate limit");
+            }
+            return Err(ApiStatus(status, rate_limited).into());
         }
         Ok(response.json().await?)
     }
@@ -233,6 +289,12 @@ impl Api {
             Permissions::Checks => json!({"checks": "write", "metadata": "read"}),
             Permissions::ReadPulls => {
                 json!({"contents": "read", "pull_requests": "read", "metadata": "read"})
+            }
+            Permissions::Fix => {
+                json!({"contents":"write","pull_requests":"write","metadata":"read"})
+            }
+            Permissions::FixWorkflows => {
+                json!({"contents":"write","pull_requests":"write","metadata":"read","workflows":"write"})
             }
         };
         let mut body = json!({"permissions": permissions});
