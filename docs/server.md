@@ -41,8 +41,9 @@ Comment `@<app-slug> review` on a PR to start a review. The default trigger
 is **mention**. Choose **auto** in the dashboard if you want reviews on PR
 events instead. Existing open PRs are not reviewed in bulk after installation.
 
-The server saves app credentials in `/data/app.json`; setup-token endpoints
-then disappear. Until model configuration is saved, jobs are skipped without
+The server saves app credentials in `/data/app.json`; app creation and its
+callback then close. The `/setup` page remains available for configuration
+and recovery. Until model configuration is saved, jobs are skipped without
 creating PR checks. The dashboard writes `/data/revera.yaml` when you save models.
 
 ## Triggers, review modes and mentions
@@ -481,9 +482,19 @@ Dashboard API writes require an administrator session and CSRF token.
 - If the server will not start, check the data directory's ownership, HTTPS
   public URL and any existing YAML file. A missing default config is allowed
   for first setup; an invalid one is not.
-- If setup returns 401, use the exact logged link. After setup, 404 is expected.
+- If first-time setup returns 401, use the exact logged link.
   A rejected sign-in usually means the login is not an administrator or first
   setup finished in a different browser.
+- If a connection failure returns you to setup, check the individual
+  investigator, validator and embedding results. Signed-in administrators can
+  use **Open settings** or visit `/settings` to repair the saved configuration.
+  Setup completion still requires successful tests for the configured connections.
+- For an embedding HTTP 400, check the endpoint, key and supported model ID.
+  Embedding models produce search vectors; rerankers reorder search results and
+  cannot replace an embedding model. To continue without semantic search, turn
+  off **Use Vera retrieval** under **Repository search**, test connections again,
+  then finish setup. Retrieval is optional, but its embedding test must pass
+  while API retrieval is enabled.
 - If mentions do nothing, check the App's Issues permission, Issue comment
   subscription and installation approval. Confirm the repository is not off
   and the commenter is an owner, member or collaborator.

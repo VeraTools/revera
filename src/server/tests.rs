@@ -503,7 +503,14 @@ async fn setup_gating_state_and_signature_before_json() {
             0o600
         );
     }
-    for path in ["setup", "setup/callback"] {
+    let reload = client
+        .get(format!("{url}/setup?token={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reload.status(), 200);
+    assert!(reload.headers().get("set-cookie").is_none());
+    for path in ["setup/callback", "api/setup/manifest"] {
         assert_eq!(
             client
                 .get(format!("{url}/{path}"))
@@ -514,6 +521,15 @@ async fn setup_gating_state_and_signature_before_json() {
             404
         );
     }
+    assert_eq!(
+        client
+            .get(format!("{url}/api/settings"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
     let bad = b"not JSON";
     assert_eq!(
         client

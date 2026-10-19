@@ -134,7 +134,8 @@ pub async fn setup(
 ) -> Response {
     let setup = server.setup.lock().await;
     if setup.app.is_some() {
-        return StatusCode::NOT_FOUND.into_response();
+        // Reloading the wizard must work without reopening bootstrap authorization.
+        return assets::page("/setup");
     }
     if !setup
         .token

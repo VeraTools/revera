@@ -50,9 +50,17 @@
   const retrievalOn = $derived(
     config?.has(['vera']) ? config.get(['vera', 'enabled'], true) : false,
   );
-  const tested = $derived(
-    !!config && config.yaml === testedYaml && tests.investigator?.ok && tests.validator?.ok,
+  const embeddingRequired = $derived(
+    retrievalOn && config?.get(['vera', 'backend'], 'local') === 'api',
   );
+  const testsCurrent = $derived(!!config && config.yaml === testedYaml);
+  const tested = $derived(
+    testsCurrent &&
+      tests.investigator?.ok &&
+      tests.validator?.ok &&
+      (!embeddingRequired || tests.embedding?.ok),
+  );
+  const testRoles: Role[] = ['investigator', 'validator', 'embedding'];
   async function load() {
     try {
       session = await api.session();
@@ -214,20 +222,21 @@
     error = '';
     message = '';
     tests = {};
+    const yaml = config.yaml;
+    const testEmbedding = embeddingRequired;
     try {
-      await api.saveConfig(config.yaml);
+      await api.saveConfig(yaml);
       tests.investigator = await api.test('investigator');
       tests.validator = await api.test('validator');
-      if (retrievalOn && config.get(['vera', 'backend'], 'local') === 'api')
-        tests.embedding = await api.test('embedding');
-      testedYaml = config.yaml;
+      if (testEmbedding) tests.embedding = await api.test('embedding');
+      testedYaml = yaml;
       if (!tests.investigator.ok || !tests.validator.ok || tests.embedding?.ok === false)
         error =
           tests.investigator.error ||
           tests.validator.error ||
           tests.embedding?.error ||
           'A connection failed. Check the endpoint, model, and key.';
-      else message = 'Both review models are connected.';
+      else message = 'All tested connections are working.';
     } catch (cause) {
       error = errorMessage(cause);
     } finally {
@@ -453,15 +462,37 @@
           <button class="button" onclick={test} disabled={!!busy}
             >{busy === 'test' ? 'Testing…' : 'Test connections'}</button
           >
-          {#if tested}<Status status="complete" label="Connected" />{/if}
+          {#if testsCurrent}
+            {#each testRoles as role}
+              {#if tests[role]}
+                <span title={tests[role]?.error}>
+                  <Status
+                    status={tests[role]?.ok ? 'complete' : 'failed'}
+                    label={`${role}: ${tests[role]?.ok ? 'Connected' : 'Failed'}`}
+                  />
+                </span>
+              {/if}
+            {/each}
+          {/if}
         </div>
-        <button
-          class="button primary setup-submit"
-          disabled={!!busy || !tested || tests.embedding?.ok === false}
-          onclick={finish}>Finish setup</button
+        {#if testsCurrent && tests.embedding?.ok === false}
+          <p class="helper">
+            Embedding connection failed. Check the endpoint, key, and model. The endpoint must
+            support embeddings, and the model must be an embedding model, not a reranker. You can
+            turn off Use Vera retrieval under Repository search, then test again to continue without
+            semantic search.
+          </p>
+        {/if}
+        <button class="button primary setup-submit" disabled={!!busy || !tested} onclick={finish}
+          >Finish setup</button
         >
         <p class="helper" style="margin-top: 12px">
           Testing saves this configuration. You can change all model settings later.
+        </p>
+        <p class="helper">
+          Need to repair an existing configuration? <a class="text-link" href="/settings"
+            >Open settings</a
+          >.
         </p>
       </section>
       <p class="setup-note">API keys are stored on your server and never shown again.</p>

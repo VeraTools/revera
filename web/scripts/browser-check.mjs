@@ -184,6 +184,86 @@ async function testWizard(page) {
   return savedConfig(page);
 }
 
+async function checkSetupRecovery() {
+  const { context, page } = await open('/setup?stage=configure');
+  await page.getByRole('heading', { name: 'Connect your review models', exact: true }).waitFor();
+  await page.locator('summary').filter({ hasText: 'Repository search' }).click();
+  const retrieval = page.getByLabel('Enable Vera retrieval', { exact: true });
+  if ((await retrieval.getAttribute('aria-checked')) === 'false') await retrieval.click();
+  await choose(page, 'Embedding backend', 'API endpoint');
+  await edit(page, 'model-embedding-endpoint', 'https://api.example.com/v1');
+  await edit(page, 'model-embedding-name', 'incorrect-embedding-model');
+  await page.getByLabel('Enable reranker', { exact: true }).click();
+  await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    const { setMockStage } = await window.importDashboard('/src/lib/mock.ts');
+    const test = api.test;
+    window.testedRoles = [];
+    window.failEmbedding = true;
+    api.test = async (role) => {
+      window.testedRoles.push(role);
+      const result =
+        role === 'embedding' && window.failEmbedding
+          ? { ok: false, error: 'model request failed: embedding probe: HTTP 400' }
+          : await test(role);
+      // The real server does not complete setup while an enabled role fails.
+      if (window.failEmbedding) setMockStage('configure');
+      return result;
+    };
+  });
+  await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+  await page.getByText('Embedding: Failed', { exact: true }).waitFor();
+  for (const label of ['Investigator: Connected', 'Validator: Connected'])
+    await page.getByText(label, { exact: true }).waitFor();
+  assert.equal(await page.getByText('Connected', { exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Finish setup' }).isEnabled(), false);
+  assert.ok((await page.locator('body').innerText()).includes('not a reranker'));
+  assert.deepEqual(await page.evaluate(() => window.testedRoles), [
+    'investigator',
+    'validator',
+    'embedding',
+  ]);
+
+  await page.getByRole('link', { name: 'Open settings', exact: true }).click();
+  await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, '/settings');
+  const session = await page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    return api.session();
+  });
+  assert.equal(session.setup.stage, 'configure', 'Recovery does not complete setup');
+  await page.getByRole('link', { name: 'Reviews', exact: true }).click();
+  await page.getByRole('heading', { name: 'Connect your review models', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, '/setup', 'Other pages remain setup-gated');
+  await page.locator('summary').filter({ hasText: 'Repository search' }).click();
+  await page.getByLabel('Enable Vera retrieval', { exact: true }).click();
+  await page.evaluate(() => {
+    window.failEmbedding = false;
+    window.testedRoles = [];
+  });
+  await page.getByRole('button', { name: 'Test connections', exact: true }).click();
+  await page.getByText('All tested connections are working.', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.testedRoles), ['investigator', 'validator']);
+  assert.equal(await page.getByText('Embedding: Failed', { exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Finish setup', exact: true }).click();
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+  await context.close();
+
+  const signedOut = await open('/setup?stage=configure');
+  await signedOut.page.getByRole('link', { name: 'Open settings', exact: true }).waitFor();
+  await signedOut.page.evaluate(async () => {
+    const { api } = await window.importDashboard('/src/lib/api.ts');
+    await api.logout();
+  });
+  await signedOut.page.getByRole('link', { name: 'Open settings', exact: true }).click();
+  await signedOut.page.waitForURL(`${base}/setup`);
+  assert.equal(
+    await signedOut.page.getByRole('heading', { name: 'Settings', exact: true }).count(),
+    0,
+  );
+  await signedOut.context.close();
+}
+
 async function checkWizardReranker() {
   {
     const { context, page } = await open('/setup?stage=configure');
@@ -1056,6 +1136,7 @@ try {
     await checkReviewSettings();
     await checkMentionsAndReviewDetail();
     await checkSetupLink();
+    await checkSetupRecovery();
 
     // Selects retain labels, keyboard navigation, and empty filter values.
     for (const [scheme, viewport] of [
