@@ -152,7 +152,7 @@ const REPAIR_MIN_LEFT: Duration = Duration::from_secs(15);
 
 /// Allowance for the single completion that answers the "budget exhausted"
 /// notice once the time budget is already spent.
-const TERMINAL_GRACE: Duration = Duration::from_secs(20);
+pub(crate) const TERMINAL_GRACE: Duration = Duration::from_secs(20);
 
 /// Like `run_agent`, but the terminal call's arguments are validated with
 /// `check`. On failure (and while time remains) the error is returned to

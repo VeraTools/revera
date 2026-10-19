@@ -239,23 +239,29 @@ pub async fn open_draft_pr(
                 branch: branch.clone(),
                 cause: Box::new(map_error(e)),
             })?;
-        let number = v["number"]
-            .as_u64()
-            .filter(|n| *n > 0)
-            .ok_or_else(|| Error::Malformed("PR number".into()))?;
-        let url = v["html_url"]
-            .as_str()
-            .filter(|s| s.starts_with("https://"))
-            .ok_or_else(|| Error::Malformed("PR URL".into()))?
-            .to_owned();
-        if v["draft"] != true {
-            return Err(Error::Malformed("created PR is not a draft".into()));
-        }
-        return Ok(DraftPull {
-            number,
-            url,
+        let result = (|| {
+            let number = v["number"]
+                .as_u64()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| Error::Malformed("PR number".into()))?;
+            let url = v["html_url"]
+                .as_str()
+                .filter(|s| s.starts_with("https://"))
+                .ok_or_else(|| Error::Malformed("PR URL".into()))?
+                .to_owned();
+            if v["draft"] != true {
+                return Err(Error::Malformed("created PR is not a draft".into()));
+            }
+            Ok(DraftPull {
+                number,
+                url,
+                branch: branch.clone(),
+                commit: commit.into(),
+            })
+        })();
+        return result.map_err(|cause| Error::DraftFailed {
             branch,
-            commit: commit.into(),
+            cause: Box::new(cause),
         });
     }
     Err(Error::RefExists)

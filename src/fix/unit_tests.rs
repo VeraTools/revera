@@ -170,6 +170,8 @@ fn policy_each_rejection_and_warning() {
     assert!(policy::check(&patch(f), &policy).allowed());
     for p in [
         ".env",
+        ".ENV",
+        "sub/.ENV.LOCAL",
         "sub/.env.local",
         "private.pem",
         ".npmrc",
@@ -188,6 +190,9 @@ fn policy_each_rejection_and_warning() {
     }
     for p in [
         ".github/workflows/test.yml",
+        ".github/actions/build/action.yml",
+        ".GitHub/Actions/build/action.yml",
+        ".GitHub/Workflows/test.yml",
         ".circleci/config.yml",
         ".gitlab-ci.yml",
         "azure-pipelines.yml",
@@ -684,6 +689,139 @@ impl ModelClient for SlowClient {
         Err(ProviderError::Other("unexpected completion".into()))
     }
 }
+
+struct BudgetTerminalClient(std::sync::atomic::AtomicBool);
+#[async_trait::async_trait]
+impl ModelClient for BudgetTerminalClient {
+    fn route_label(&self) -> String {
+        "budget-terminal".into()
+    }
+    async fn complete(
+        &self,
+        messages: &[ChatMessage],
+        _: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let value = if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            // Cross the between-turn deadline without hanging an await.
+            std::thread::sleep(Duration::from_millis(1100));
+            json!({"tool_calls":[{"id":"read","name":"read_file","arguments":{"path":"bug.py"}}]})
+        } else {
+            assert!(messages.iter().any(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("Budget exhausted"))
+            }));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            json!({"content":json!({"summary":"checked","per_finding":[{"id":finding().id(),"disposition":"not_fixed","note":"budget"}]}).to_string()})
+        };
+        let mut value = value;
+        value["role"] = json!("assistant");
+        Ok(Completion {
+            message: serde_json::from_value(value).unwrap(),
+            usage: Default::default(),
+            model: "mock".into(),
+            latency_ms: 0,
+        })
+    }
+}
+
+#[tokio::test]
+async fn time_budget_keeps_terminal_grace_and_tool_accounting() {
+    let t = temp();
+    std::fs::write(t.path().join("bug.py"), "original\n").unwrap();
+    let mut r = request();
+    r.budget.seconds = 1;
+    let StageResult::Generate(result) = run_with_client(
+        &r,
+        t.path(),
+        Stage::Generate,
+        Arc::new(BudgetTerminalClient(std::sync::atomic::AtomicBool::new(
+            false,
+        ))),
+        LedgerHandle::new(),
+        Instant::now(),
+    )
+    .await
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(result.stopped, Stop::Terminal);
+    assert!(result.submission.is_some());
+    assert_eq!(result.tool_calls, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn sandbox_rejects_symlink_bind_aliases() {
+    let t = temp();
+    let real = t.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = t.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let status = sandbox::SandboxStatus {
+        available: true,
+        proc: false,
+        reason: None,
+    };
+    for source in [
+        link.clone(),
+        PathBuf::from(format!("{}/", link.display())),
+        link.join("."),
+        link.join("child"),
+    ] {
+        std::fs::create_dir_all(real.join("child")).unwrap();
+        let p = sandbox::Profile {
+            binds_ro: vec![(source, "/work".into())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            sandbox::command(&status, &p, &["true".into()]),
+            Err(sandbox::Error::Profile(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn secret_config_removed_on_error_and_cancellation() {
+    let t = temp();
+    let path = t.path().join("config.json");
+    let fail = || -> Result<(), std::io::Error> {
+        let _guard = SecretConfig(path.clone());
+        std::fs::write(&path, "secret headers")?;
+        std::fs::read(t.path().join("missing"))?;
+        Ok(())
+    };
+    assert!(fail().is_err());
+    assert!(!path.exists());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let child_path = path.clone();
+    let task = tokio::spawn(async move {
+        let _guard = SecretConfig(child_path.clone());
+        std::fs::write(child_path, "secret headers").unwrap();
+        tx.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    rx.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(!path.exists());
+    let io = t.path().join("io");
+    let cfg = scripted_config(t.path(), json!([]), "fixer");
+    assert!(matches!(
+        run_in_sandbox(
+            &t.path().join("missing"),
+            &cfg,
+            &request(),
+            t.path(),
+            &io,
+            Stage::Generate,
+            sandbox::Limits::default()
+        )
+        .await,
+        Err(Error::Io(_))
+    ));
+    assert!(!io.exists());
+}
 #[tokio::test]
 async fn hard_time_budget_stops_a_hung_provider() {
     let t = temp();
@@ -876,6 +1014,31 @@ async fn sandbox_isolation_limits_and_test_runner() {
         binds_rw: vec![(tree.clone(), "/work".into())],
         ..Default::default()
     };
+    // Exercise the controller's child-error boundary with real sandbox stderr.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = t.path().join("child");
+        std::fs::write(&executable, "#!/bin/sh\necho 'https://provider.example/v1?opaque=private-query-value' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cfg = Config::parse("models: {investigator: {protocol: openai-chat, model: mock, api_key_env: REVERA_FIX_TEST_KEY, base_url: 'https://provider.example/v1'}}", "test").unwrap();
+        let io = t.path().join("child-io");
+        let error = run_in_sandbox(
+            &executable,
+            &cfg,
+            &request(),
+            &tree,
+            &io,
+            Stage::Generate,
+            sandbox::Limits::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, Error::Child(_)), "{error}");
+        assert!(!error.to_string().contains("private-query-value"));
+        assert!(error.to_string().contains("query removed"));
+        assert!(!io.join("config.json").exists());
+    }
     let run = |s: String| {
         let p = p.clone();
         let status = status.clone();

@@ -314,3 +314,30 @@ async fn draft_failure_retains_branch_for_reconciliation_and_wrong_parent_blocks
         assert_ne!(r.method.as_str(), "DELETE");
     }
 }
+
+#[tokio::test]
+async fn malformed_created_pr_retains_branch_for_reconciliation() {
+    let commit = sha('c');
+    let branch = format!("fix-{}", &commit[..12]);
+    for response in [
+        json!({"number":42,"html_url":"https://github.com/owner/repo/pull/42","draft":false}),
+        json!({"number":0,"html_url":"https://github.com/owner/repo/pull/42","draft":true}),
+        json!({"number":42,"html_url":"invalid","draft":true}),
+    ] {
+        let s = MockServer::start().await;
+        let api = GitHubApi::with_base(&s.uri(), "installation-token-test");
+        mock(
+            &s,
+            "POST",
+            "/repos/owner/repo/git/refs",
+            201,
+            ref_body(&branch, &commit),
+        )
+        .await;
+        mock(&s, "POST", "/repos/owner/repo/pulls", 201, response).await;
+        assert!(
+            matches!(open_draft_pr(&api, &repo(), &commit, "fix", "main", "Fix", "body").await,
+            Err(Error::DraftFailed { branch: actual, cause }) if actual == branch && matches!(*cause, Error::Malformed(_)))
+        );
+    }
+}
