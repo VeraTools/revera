@@ -107,12 +107,24 @@ pub(super) async fn discover(server: &Server, app: &super::app::App) -> Result<I
         let allowed = preferences.owner_allowed(
             &account.login,
             account.id,
-            server.allowed(app, &account.login),
+            server.implicit_owner(&preferences, app, &account.login, account.id),
         );
         if allowed {
             // Also pin implicit app/env owners. Approval survives renames, but
             // never follows a different account that later takes the old login.
-            preferences.approve_owner(&account.login, account.id);
+            let explicit = preferences.allowed_owners.iter().any(|login| {
+                login.eq_ignore_ascii_case(&account.login)
+                    || account.id.is_some_and(|id| {
+                        preferences.owner_accounts.get(&login.to_ascii_lowercase()) == Some(&id)
+                    })
+            });
+            if explicit {
+                preferences.approve_owner(&account.login, account.id);
+            } else if let Some(id) = account.id.filter(|id| *id != 0) {
+                preferences
+                    .owner_accounts
+                    .insert(account.login.to_ascii_lowercase(), id);
+            }
         }
         let suspended = !value["suspended_at"].is_null();
         let permissions: BTreeMap<String, String> = serde_json::from_value(
@@ -346,6 +358,7 @@ pub async fn save(server: &Server, seen: &Seen) -> Result<()> {
 
 pub(super) async fn once(server: &Server) -> Result<()> {
     let _guard = server.reconcile_lock.lock().await;
+    server.recover_checks().await?;
     once_locked(server).await
 }
 
@@ -452,7 +465,7 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 installation.repo_count = None;
                 if !error
                     .downcast_ref::<super::app::ApiStatus>()
-                    .is_some_and(|status| matches!(status.0.as_u16(), 403 | 404))
+                    .is_some_and(|status| status.denied())
                 {
                     // A temporary outage is not an uninstall. Preserve the last
                     // inventory for this approved installation, without new jobs.
@@ -592,13 +605,17 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
     drop(dashboard);
     *server.installations.lock().await = accounts;
     let _ = server.events.send(("repos", serde_json::json!({})));
-    server.recover_checks().await?;
     Ok(())
 }
 
 pub(super) async fn tick(server: &Server) -> Result<()> {
     super::api::test_untested(server).await;
-    super::external::poll(server).await?;
+    if let Err(error) = super::external::poll(server).await {
+        tracing::warn!(
+            "external poll failed: {}",
+            crate::redact::diagnostic(&format!("{error:#}"))
+        );
+    }
     once(server).await
 }
 

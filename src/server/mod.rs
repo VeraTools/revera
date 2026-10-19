@@ -195,11 +195,33 @@ impl Server {
     }
 
     async fn allowed_account(&self, app: &app::App, owner: &str, id: Option<u64>) -> bool {
-        self.dashboard
-            .lock()
-            .await
-            .preferences
-            .owner_allowed(owner, id, self.allowed(app, owner))
+        let dashboard = self.dashboard.lock().await;
+        let preferences = &dashboard.preferences;
+        preferences.owner_allowed(owner, id, self.implicit_owner(preferences, app, owner, id))
+    }
+
+    fn implicit_owner(
+        &self,
+        preferences: &dashboard::Preferences,
+        app: &app::App,
+        owner: &str,
+        id: Option<u64>,
+    ) -> bool {
+        self.allowed(app, owner)
+            || id
+                .or_else(|| {
+                    preferences
+                        .owner_accounts
+                        .get(&owner.to_ascii_lowercase())
+                        .copied()
+                })
+                .is_some_and(|id| {
+                    std::iter::once(&app.owner)
+                        .chain(self.allowed.iter())
+                        .any(|login| {
+                            preferences.owner_accounts.get(&login.to_ascii_lowercase()) == Some(&id)
+                        })
+                })
     }
 
     fn request_reconcile(&self) {
