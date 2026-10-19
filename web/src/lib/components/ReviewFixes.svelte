@@ -9,6 +9,7 @@
   let fixes = $state<FixSummary[]>([]);
   let error = $state('');
   let generation = 0;
+  const liveFix = $derived($live.fix?.review_job === job.id ? $live.fix : undefined);
   async function load(id: string) {
     const current = ++generation;
     try {
@@ -23,8 +24,10 @@
   }
   $effect(() => {
     const id = job.id;
-    $live.fix;
     untrack(() => void load(id));
+  });
+  $effect(() => {
+    if (liveFix) untrack(() => void load(job.id));
   });
 </script>
 

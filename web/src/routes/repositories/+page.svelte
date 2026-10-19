@@ -211,10 +211,9 @@
     );
   });
   $effect(() => {
-    const revision = $live.repos;
+    $live.repos;
     if (ready) {
       void load();
-      if (revision) void loadAccounts();
     }
   });
   async function update(repo: Repository, field: 'trigger' | 'mode', value: string) {

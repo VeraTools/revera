@@ -9,7 +9,9 @@
       .map((text, index) => {
         const path = text.match(/^\+\+\+ b\/(.+)$/m)?.[1] || text.match(/^--- a\/(.+)$/m)?.[1];
         const file = files.find((f) => f.path === path) || files[index];
-        return { text, file, path: path || file?.path || 'Patch' };
+        const lines = text.trimEnd().split('\n');
+        const hunk = lines.findIndex((line) => line.startsWith('@@'));
+        return { lines, hunk, file, path: path || file?.path || 'Patch' };
       }),
   );
 </script>
@@ -27,11 +29,9 @@
             <span class="removed">−{block.file.deletions}</span></span
           >{/if}</summary
       >
-      <pre aria-label={`Diff for ${block.path}`}>{#each block.text
-          .trimEnd()
-          .split('\n') as line}<span
-            class:add={line.startsWith('+') && !line.startsWith('+++')}
-            class:remove={line.startsWith('-') && !line.startsWith('---')}
+      <pre aria-label={`Diff for ${block.path}`}>{#each block.lines as line, index}<span
+            class:add={block.hunk >= 0 && index > block.hunk && line.startsWith('+')}
+            class:remove={block.hunk >= 0 && index > block.hunk && line.startsWith('-')}
             class:hunk={line.startsWith('@@')}>{line || ' '}{'\n'}</span
           >{/each}</pre>
     </details>{/each}

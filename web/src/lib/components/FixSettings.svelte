@@ -8,6 +8,7 @@
   import SelectField from './SelectField.svelte';
   import Status from './Status.svelte';
   import Notice from './Notice.svelte';
+  import { fixLimitRanges } from '../fix-policy';
   let {
     data,
     config,
@@ -96,7 +97,9 @@
   $effect(() => {
     const policy = data.fixes;
     untrack(() => {
-      commandText = policy.test_command.map((arg) => JSON.stringify(arg)).join(' ');
+      commandText = policy.test_command
+        .map((arg) => `"${arg.replace(/["\\]/g, '\\$&')}"`)
+        .join(' ');
       commandError = '';
       valid = true;
     });
@@ -151,7 +154,6 @@
   }
   function delivery(value: string) {
     fixes.delivery = value as FixPolicy['delivery'];
-    if (value === 'same_branch') fixes.require_approval = true;
   }
 </script>
 
@@ -309,15 +311,15 @@
       credentials. Repository YAML cannot enable fixes or raise these limits.
     </p>
     <div class="field section">
-      <label for="fix-test-command">Test command (argv)</label><input
+      <label for="fix-test-command">Test command (argv)</label><textarea
         id="fix-test-command"
+        rows="2"
         class="mono"
         value={commandText}
         oninput={(event) => command(event.currentTarget.value)}
         placeholder="cargo test --lib"
         aria-invalid={!!commandError}
-        aria-describedby="fix-command-hint"
-      /><small id="fix-command-hint"
+        aria-describedby="fix-command-hint"></textarea><small id="fix-command-hint"
         >Space-separated arguments; quote arguments containing spaces. Runs directly, not through a
         shell. Leave empty for no configured tests.</small
       >{#if commandError}<Notice message={commandError} />{/if}
@@ -335,6 +337,8 @@
           id="fix-test-timeout"
           type="number"
           min="1"
+          max="3600"
+          step="1"
           bind:value={fixes.test_timeout_seconds}
         />
       </div>
@@ -342,7 +346,9 @@
           <label for={`fix-limit-${key}`}>{label}</label><input
             id={`fix-limit-${key}`}
             type="number"
-            min="1"
+            min={fixLimitRanges[key][0]}
+            max={fixLimitRanges[key][1]}
+            step="1"
             bind:value={fixes.limits[key]}
           />
         </div>{/each}

@@ -28,6 +28,7 @@
   import WebSearchFields from './WebSearchFields.svelte';
   import MentionCommands from './MentionCommands.svelte';
   import FixSettings from './FixSettings.svelte';
+  import { validFixLimits } from '../fix-policy';
 
   const tabs = ['Models', 'Review', 'Fixes', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
   const modelRoles = [
@@ -49,13 +50,7 @@
   let savedFixes = $state('');
   let fixFormValid = $state(true);
   const fixesDirty = $derived(!!fixSettings && JSON.stringify(fixSettings.fixes) !== savedFixes);
-  const fixesValid = $derived(
-    fixFormValid &&
-      (!fixSettings ||
-        [fixSettings.fixes.test_timeout_seconds, ...Object.values(fixSettings.fixes.limits)].every(
-          (value) => Number.isInteger(value) && value > 0,
-        )),
-  );
+  const fixesValid = $derived(fixFormValid && (!fixSettings || validFixLimits(fixSettings.fixes)));
   let secrets = $state<Secret[]>([]);
   let savedYaml = $state('');
   let savedServer = $state('');
@@ -143,7 +138,7 @@
     } catch (cause) {
       const partialSave =
         configSaved && (serverDirty || fixesDirty)
-          ? ' Model configuration was saved; policy changes are still unsaved.'
+          ? ` Review configuration was saved; ${[serverDirty ? 'server settings' : '', fixesDirty ? 'fix policy' : ''].filter(Boolean).join(' and ')} changes are still unsaved.`
           : '';
       error = errorMessage(cause) + partialSave;
     } finally {

@@ -18,6 +18,7 @@
   let once = $state(false);
   let executionEnabled = $state(false);
   let generation = 0;
+  const liveFix = $derived($live.fix);
   const running = $derived(
     !!detail &&
       ['queued', 'generating', 'validating', 'publishing', 'verifying'].includes(detail.fix.state),
@@ -35,14 +36,18 @@
   );
   async function load(id: string) {
     const current = ++generation;
+    if (detail?.fix.id !== id) {
+      detail = undefined;
+      executionEnabled = false;
+      delivery = 'patch';
+      once = false;
+      note = '';
+      message = '';
+      error = '';
+    }
     try {
       const result = await api.fix(id);
       if (current !== generation) return;
-      if (detail?.fix.id !== id) {
-        delivery = 'patch';
-        once = false;
-        note = '';
-      }
       detail = result;
       if (result.actions.confirm) {
         const settings = await api.fixSettings();
@@ -59,7 +64,7 @@
     if (id) untrack(() => void load(id));
   });
   $effect(() => {
-    if ($live.fix?.id === page.params.id) untrack(() => void load(page.params.id!));
+    if (liveFix?.id === page.params.id) untrack(() => void load(page.params.id!));
   });
   async function action(which: FixAction) {
     if (!detail) return;

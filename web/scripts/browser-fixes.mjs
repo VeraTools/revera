@@ -27,6 +27,7 @@ export async function checkFixes({ open, choose, edit, savedConfig }) {
     assert.equal(await page.getByRole('checkbox').count(), 1);
     assert.equal(await page.getByRole('checkbox').isChecked(), true);
     await page.getByRole('checkbox').uncheck();
+    assert.equal(await page.locator('.notice.error').count(), 0);
     assert.equal(
       await page.getByRole('button', { name: 'Generate preview (this run only)' }).isEnabled(),
       false,
@@ -195,6 +196,14 @@ export async function checkFixes({ open, choose, edit, savedConfig }) {
     page.once('dialog', (dialog) => dialog.dismiss());
     await approve.click();
     await page.locator('.detail-header').getByText('Ready', { exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(async () => {
+        const { api } = await window.importDashboard('/src/lib/api.ts');
+        return (await api.fix('fix-ready')).fix.state;
+      }),
+      'ready',
+      'Dismissing approval must not publish',
+    );
     page.once('dialog', (dialog) => dialog.accept());
     await approve.click();
     await page.locator('.detail-header').getByText('Verifying', { exact: true }).waitFor();

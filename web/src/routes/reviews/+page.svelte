@@ -14,6 +14,7 @@
   let queued = $state('');
   function onqueued(id: string) {
     queued = id;
+    clearFilters();
     void load();
   }
   let jobs = $state<JobSummary[]>([]);

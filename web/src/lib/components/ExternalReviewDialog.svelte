@@ -11,6 +11,9 @@
   let mode = $state<ReviewMode>('standard');
   let busy = $state(false);
   let error = $state('');
+  $effect(() => {
+    if (open) error = '';
+  });
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     busy = true;
