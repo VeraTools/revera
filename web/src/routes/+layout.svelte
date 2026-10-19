@@ -68,7 +68,11 @@
     try {
       session = await api.session();
       error = '';
-      if (!isSetup && session.setup.stage !== 'done') await goto('/setup');
+      const settingsRecovery =
+        page.url.pathname === '/settings' &&
+        session.authenticated &&
+        session.setup.stage === 'configure';
+      if (!isSetup && session.setup.stage !== 'done' && !settingsRecovery) await goto('/setup');
       if (session.authenticated) appName = (await api.overview()).app.name;
     } catch (cause) {
       error = errorMessage(cause);
