@@ -1681,10 +1681,12 @@ async fn recovered_queued_fixes_wait_for_successful_installation_discovery() {
     reconcile::discover(&s, &super::super::tests::test_app())
         .await
         .unwrap();
-    let failed = tokio::time::timeout(Duration::from_secs(5), async {
+    // After discovery the request proceeds past the installation check. It then
+    // stops at the sandbox probe (hosts without bubblewrap) or the missing checkout.
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let r = entry(&s, &r.id).await.unwrap().record;
-            if r.state == "failed" {
+            if matches!(r.state.as_str(), "failed" | "unsupported") {
                 break r;
             }
             events.recv().await.unwrap();
@@ -1692,7 +1694,13 @@ async fn recovered_queued_fixes_wait_for_successful_installation_discovery() {
     })
     .await
     .unwrap();
-    assert!(failed.reason.unwrap().contains("checkout is unavailable"));
+    let reason = ended.reason.unwrap();
+    if fix::sandbox::probe().await.available {
+        assert_eq!(ended.state, "failed");
+        assert!(reason.contains("checkout is unavailable"), "{reason}");
+    } else {
+        assert_eq!(ended.state, "unsupported", "{reason}");
+    }
     scheduler.abort();
     let _ = scheduler.await;
 }
