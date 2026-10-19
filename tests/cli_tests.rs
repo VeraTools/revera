@@ -306,6 +306,10 @@ fn validator_fix_replaces_unsafe_investigator_fix_and_reuse_drops_it() {
     assert_eq!(reused["stats"]["reused"], true, "{reused}");
     assert_eq!(reused["stats"]["validation"], "reused", "{reused}");
     assert!(reused["findings"].as_array().unwrap().is_empty());
+    assert_eq!(reused["carried"].as_array().unwrap().len(), 1);
+    assert_eq!(reused["carried"][0]["title"], "division can fail");
+    assert!(reused["carried"][0].get("validation_status").is_none());
+    assert!(reused["carried"][0].get("validated_fix").is_none());
     assert!(
         reused["plan"]["state"]["findings"][0]["validated_fix"].is_null(),
         "{reused}"

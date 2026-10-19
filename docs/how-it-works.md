@@ -150,10 +150,16 @@ unvalidated candidates are hidden under **Show diagnostics**, labelled
 **Not validated — not reported as defects**; they are not included in agent
 instructions. The full JSON report can still contain these candidates.
 
+Previously published findings that remain open appear separately under
+**Still open from earlier reviews**. They do not increase this run's accepted
+count and are not posted inline again. The report's `carried` list retains
+their details for instructions and fix requests; uncertain, resolved and
+unpublished findings are not included.
+
 ### Instructions for a coding agent
 
-For a complete review with accepted findings, the dashboard offers **Copy fix
-instructions** and **Download .md** for all findings. Each accepted finding
+For a complete review with accepted or carried findings, the dashboard offers **Copy fix
+instructions** and **Download .md** for all actionable findings. Each finding
 also has **Copy prompt**. Instructions include the PR URL, repository, base
 and head commit IDs (SHAs), findings, evidence and the validator's suggested
 remedies. They are built without another model call and ask the agent to
@@ -161,12 +167,17 @@ verify each issue, make scoped edits, test them, and get permission before
 committing, pushing or opening a PR. Long instructions are capped and link
 back to the review.
 
+Carried findings have a separate **Still open from earlier reviews** heading.
+Their line numbers may have moved since they were first reported, so the
+instructions ask the agent to re-validate them against the current code.
+Old validator remedies are not carried forward.
+
 **Potentially stale** means the PR head has changed since review; copied and
 downloaded instructions then require re-validation. **Freshness unknown**
 means the current head could not be checked, not that the result is current.
 Re-run the review to check the latest head.
 
-On GitHub, a complete review with accepted findings adds a collapsed
+On GitHub, a complete review with accepted or carried findings adds a collapsed
 **Fix with your coding agent** section to the existing summary. App reviews
 link to the dashboard; instructions are also included in the comment when
 they fit within 3,000 characters. Partial or failed reviews do not get this

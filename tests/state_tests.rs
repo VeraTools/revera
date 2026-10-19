@@ -96,6 +96,7 @@ fn surfaced_ids_only_returns_accepted_findings() {
     let mut rejected = finding("rejected.rs", "rejected", 2);
     rejected.validation_status = Some(ValidationStatus::Rejected);
     let report = RunReport {
+        carried: vec![],
         status: RunStatus::Complete,
         reason: None,
         base: "b".into(),

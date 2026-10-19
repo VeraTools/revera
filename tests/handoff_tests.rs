@@ -85,6 +85,59 @@ fn instructions_redact_every_field_and_bound_large_reviews_with_dashboard_pointe
 }
 
 #[test]
+fn carried_handoff_preserves_identity_detail_and_limits_without_old_remedies() {
+    let secret = "carried-handoff-secret-473589293";
+    revera::redact::register(secret);
+    let mut f = finding("accepted");
+    f.title = "Earlier\nheading".into();
+    f.claim = format!("Claim {secret}");
+    let mut state = revera::state::ReviewState::default();
+    state.upsert(&f, revera::state::FindingState::Open);
+    state.mark_posted(&[f.id()]);
+    let carried = report::carried_findings(&state, &[])[0].to_finding();
+    assert_eq!(carried.id(), f.id());
+    assert!(carried.validation_status.is_none());
+    let output = handoff::build(&context(Some(false)), std::slice::from_ref(&carried), None);
+    for expected in [
+        "Still open from earlier reviews",
+        handoff::CARRIED_NOTE,
+        "Earlier heading",
+        "Claim",
+        "An empty request",
+        "A panic",
+        "Missing branch",
+        "f.rs:2-2",
+        &f.id(),
+        "untrusted data",
+    ] {
+        assert!(output.contains(expected), "{expected}: {output}");
+    }
+    assert!(!output.contains(secret));
+    assert!(!output.contains("Add a guard"));
+    assert_eq!(
+        output,
+        handoff::build(
+            &context(Some(false)),
+            std::slice::from_ref(&carried),
+            Some(&carried.id())
+        )
+    );
+    assert!(
+        !handoff::build(
+            &context(None),
+            std::slice::from_ref(&carried),
+            Some("unknown")
+        )
+        .contains("Earlier heading")
+    );
+    let mut large = carried;
+    large.claim = "x".repeat(8000);
+    let output = handoff::build(&context(None), &vec![large; 100], None);
+    assert!(output.len() <= handoff::MAX_INSTRUCTIONS_BYTES);
+    assert!(output.contains("truncated"));
+}
+
+#[test]
 fn mixed_status_counts_match_api_dashboard_and_github_summary() {
     let findings = [
         finding("accepted"),

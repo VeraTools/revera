@@ -58,10 +58,12 @@ Revera reviews. Findings are posted inline when they sit on diff lines;
 other accepted findings go in the managed summary. Later pushes update the
 same review state without duplicating still-open findings.
 
-A complete review with accepted findings also has a collapsed **Fix with
+A complete review with accepted or carried findings also has a collapsed **Fix with
 your coding agent** section in its summary. Small, exact replacements may
 appear as GitHub suggested changes; neither is a tested patch. See
 [instructions and suggestions](how-it-works.md#instructions-for-a-coding-agent).
+Carried findings remain available after later pushes or identical-content
+reruns, without being counted as newly accepted or posted inline again.
 
 ## Inputs
 

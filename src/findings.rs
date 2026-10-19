@@ -89,6 +89,12 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// Controller-created repair context from an explicitly carried report entry.
+    /// This is not a validator verdict and does not make a finding publishable.
+    pub fn is_carried(&self) -> bool {
+        self.source == "carried" && self.validation_status.is_none()
+    }
+
     /// hex(sha256(file + "\0" + defect_key))[..12]
     pub fn id(&self) -> String {
         finding_id(&self.file, &self.defect_key)
