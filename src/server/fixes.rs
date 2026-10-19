@@ -542,9 +542,10 @@ async fn review(server: &Server, id: &str) -> Outcome<(dashboard::JobSummary, Ve
     if report["head"].as_str() != job.head_sha.as_deref() {
         return Err(conflict("review head does not match its report"));
     }
-    let findings = super::api::report_findings(&report);
+    let mut findings = super::api::report_findings(&report);
+    findings.extend(super::api::report_carried(&report));
     if findings.is_empty() {
-        return Err(conflict("review has no accepted findings"));
+        return Err(conflict("review has no accepted or carried findings"));
     }
     Ok((job, findings))
 }
@@ -2948,16 +2949,26 @@ pub async fn mention(s: &Server, app: &app::App, command: super::mentions::Reque
     match outcome {
         Ok(r)
             if r.state == "awaiting_confirmation"
-                || matches!(action, super::mentions::FixCommand::Status) =>
+                || matches!(action, super::mentions::FixCommand::Status)
+                || (matches!(action, super::mentions::FixCommand::Request(_))
+                    && !matches!(
+                        r.state.as_str(),
+                        "queued" | "generating" | "validating" | "publishing" | "verifying"
+                    )) =>
         {
             let url = format!("{}/fixes/{}", s.settings.public_url, r.id);
             let body = if r.state == "awaiting_confirmation" {
                 format!(
                     "This fix request is awaiting confirmation. [Open it in the dashboard]({url}) to review and confirm it."
                 )
-            } else {
+            } else if matches!(action, super::mentions::FixCommand::Status) {
                 format!(
                     "Fix request status: {}. [Open it in the dashboard]({url}).",
+                    r.state.replace('_', " ")
+                )
+            } else {
+                format!(
+                    "A fix request for these findings already exists: {}. [Open it in the dashboard]({url}).",
                     r.state.replace('_', " ")
                 )
             };

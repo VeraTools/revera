@@ -623,6 +623,32 @@ pub(super) fn report_findings(report: &Value) -> Vec<crate::findings::Finding> {
         .collect()
 }
 
+pub(super) fn report_carried(report: &Value) -> Vec<crate::findings::Finding> {
+    // Exclude every current-run ID, including diagnostics; never turn a
+    // rejected/uncertain current verdict into carried repair context.
+    let mut seen: std::collections::HashSet<_> = report["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            crate::findings::finding_id(
+                f["file"].as_str().unwrap_or(""),
+                f["defect_key"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    report["carried"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| serde_json::from_value::<crate::report::CarriedFinding>(v.clone()).ok())
+        .filter_map(|c| {
+            let f = c.to_finding();
+            (c.id == f.id() && seen.insert(c.id)).then_some(f)
+        })
+        .collect()
+}
+
 fn line_link(repo: &str, head: &str, file: &str, start: u32, end: u32) -> Option<String> {
     if file.len() > 1000
         || repo.len() > 300
@@ -700,7 +726,8 @@ pub(super) fn finding_detail(
         "trigger": crate::handoff::text(&finding.trigger, 2000),
         "impact": crate::handoff::text(&finding.impact, 2000),
         "supporting_evidence": evidence,
-        "validation_status": "accepted",
+        "validation_status": finding.validation_status,
+        "carried": finding.is_carried(),
         "validated_fix": finding.validated_fix.as_ref().map(|fix| crate::handoff::text(fix, 4000)),
         "validated_fix_label": "Validator's suggested remedy — not a tested patch",
         "suggestion": suggestion,
@@ -745,6 +772,7 @@ async fn review_detail(
     let mut value = json!({
         "job": summary,
         "findings": [],
+        "carried": [],
         "counts": crate::findings::AcceptedCounts::default(),
         "stale": null,
         "instructions": "",
@@ -771,12 +799,14 @@ async fn review_detail(
             stale,
         };
         let accepted = report_findings(&report);
+        let carried = report_carried(&report);
         value["counts"] = json!(crate::findings::accepted_counts_json(&report));
         value["job"]["findings"] = value["counts"].clone();
         value["stale"] = json!(stale);
         value["reviewed_head_sha"] = json!(crate::handoff::text(head, 80));
         value["reviewed_base_sha"] = json!(crate::handoff::text(base, 80));
-        value["instructions"] = json!(crate::handoff::build(&context, &accepted, None));
+        let actionable = [accepted.clone(), carried.clone()].concat();
+        value["instructions"] = json!(crate::handoff::build(&context, &actionable, None));
         if let Some(markdown) = report["plan"]["summary_markdown"].as_str() {
             value["summary_markdown"] = json!(crate::handoff::text(
                 &runner::strip_state(markdown),
@@ -785,6 +815,12 @@ async fn review_detail(
         }
         value["findings"] = json!(
             accepted
+                .iter()
+                .map(|f| finding_detail(f, &context))
+                .collect::<Vec<_>>()
+        );
+        value["carried"] = json!(
+            carried
                 .iter()
                 .map(|f| finding_detail(f, &context))
                 .collect::<Vec<_>>()
@@ -822,9 +858,9 @@ async fn instructions(
                 "finding must be a unique hexadecimal ID prefix of at least 6 characters".into(),
             ));
         }
-        let matches: Vec<_> = detail["findings"]
-            .as_array()
+        let matches: Vec<_> = ["findings", "carried"]
             .into_iter()
+            .filter_map(|field| detail[field].as_array())
             .flatten()
             .filter(|f| {
                 f["id"]

@@ -215,17 +215,7 @@
           {/each}
         </section>
       {/if}
-      <div class="section-heading">
-        <h2>
-          Accepted findings <span
-            class="muted"
-            style="font-weight: 400; margin-left: 8px; font-size: 12px"
-            >{detail.findings.length}{#if split}{' · '}{split}{/if}</span
-          >
-        </h2>
-        <span class="helper">Checked independently</span>
-      </div>
-      {#if detail.job.status === 'complete' && detail.findings.length}
+      {#if detail.job.status === 'complete' && (detail.findings.length || detail.carried?.length)}
         <div class="actions handoff-actions">
           <button class="button small" onclick={() => copyInstructions(detail!.instructions)}
             ><Copy size={13} />Copy fix instructions</button
@@ -233,56 +223,75 @@
           <button class="button small" onclick={downloadInstructions}>Download .md</button>
         </div>
       {/if}
-      {#each detail.findings as finding, index}<details class="finding" open={index === 0}>
-          <summary
-            ><div class="finding-top">
-              <Status status={finding.severity} />
-              {#if finding.html_url}<a
-                  class="mono text-link"
-                  href={finding.html_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  >{finding.file}{finding.start_line
-                    ? `:${finding.start_line}${finding.end_line > finding.start_line ? `-${finding.end_line}` : ''}`
-                    : ''}</a
-                >
-              {:else}<span class="mono"
-                  >{finding.file}{finding.start_line ? `:${finding.start_line}` : ''}</span
-                >{/if}
-            </div>
-            <div class="finding-title">{finding.title}<ChevronDown size={15} /></div></summary
-          >
-          <p class="helper">Finding <code>{finding.id}</code></p>
-          <p class="finding-body">{finding.claim || 'No additional detail.'}</p>
-          {#if finding.trigger}<p class="finding-body">
-              <strong>Trigger:</strong>
-              {finding.trigger}
+      {#each [{ title: 'Accepted findings', findings: detail.findings, carried: false }, { title: 'Still open from earlier reviews', findings: detail.carried || [], carried: true }].filter((group) => !group.carried || group.findings.length) as group}
+        <section aria-label={group.title}>
+          <div class="section-heading">
+            <h2>
+              {group.title}
+              <span class="muted" style="font-weight: 400; margin-left: 8px; font-size: 12px"
+                >{group.findings.length}{#if !group.carried && split}{' · '}{split}{/if}</span
+              >
+            </h2>
+            {#if !group.carried}<span class="helper">Checked independently</span>{/if}
+          </div>
+          {#if group.carried}<p class="helper">
+              Reported at an earlier commit; line numbers may have moved. Re-validate against the
+              current code before making changes.
             </p>{/if}
-          {#if finding.impact}<p class="finding-body">
-              <strong>Impact:</strong>
-              {finding.impact}
-            </p>{/if}
-          {#if finding.supporting_evidence.length}<h3 class="helper">Supporting evidence</h3>
-            <ul class="finding-evidence">
-              {#each finding.supporting_evidence as evidence}<li>
-                  <code>{evidence.path}:{evidence.start_line}-{evidence.end_line}</code> — {evidence.note}
-                </li>{/each}
-            </ul>
-          {/if}
-          {#if finding.validated_fix}<p class="helper">{finding.validated_fix_label}</p>
-            <p class="finding-body">{finding.validated_fix}</p>{/if}
-          {#if finding.suggestion}<p class="helper">Exact suggested change — not a tested patch</p>
-            <pre class="finding-replacement">{finding.suggestion.replacement}</pre>{/if}
-          <button class="button small" onclick={() => copyInstructions(finding.prompt)}
-            ><Copy size={13} />Copy prompt</button
-          >
-        </details>{:else}<p class="muted" style="font-size: 13px; padding: 20px 0">
-          {['queued', 'running'].includes(detail.job.status)
-            ? 'Findings will appear after validation.'
-            : detail.job.status === 'complete'
-              ? 'No accepted findings in this review.'
-              : 'No accepted findings. The review did not complete; this is not a clean result.'}
-        </p>{/each}
+          {#each group.findings as finding, index}<details class="finding" open={index === 0}>
+              <summary
+                ><div class="finding-top">
+                  <Status status={finding.severity} />
+                  {#if finding.html_url}<a
+                      class="mono text-link"
+                      href={finding.html_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      >{finding.file}{finding.start_line
+                        ? `:${finding.start_line}${finding.end_line > finding.start_line ? `-${finding.end_line}` : ''}`
+                        : ''}</a
+                    >
+                  {:else}<span class="mono"
+                      >{finding.file}{finding.start_line ? `:${finding.start_line}` : ''}</span
+                    >{/if}
+                </div>
+                <div class="finding-title">{finding.title}<ChevronDown size={15} /></div></summary
+              >
+              <p class="helper">Finding <code>{finding.id}</code></p>
+              <p class="finding-body">{finding.claim || 'No additional detail.'}</p>
+              {#if finding.trigger}<p class="finding-body">
+                  <strong>Trigger:</strong>
+                  {finding.trigger}
+                </p>{/if}
+              {#if finding.impact}<p class="finding-body">
+                  <strong>Impact:</strong>
+                  {finding.impact}
+                </p>{/if}
+              {#if finding.supporting_evidence.length}<h3 class="helper">Supporting evidence</h3>
+                <ul class="finding-evidence">
+                  {#each finding.supporting_evidence as evidence}<li>
+                      <code>{evidence.path}:{evidence.start_line}-{evidence.end_line}</code> — {evidence.note}
+                    </li>{/each}
+                </ul>
+              {/if}
+              {#if finding.validated_fix}<p class="helper">{finding.validated_fix_label}</p>
+                <p class="finding-body">{finding.validated_fix}</p>{/if}
+              {#if finding.suggestion}<p class="helper">
+                  Exact suggested change — not a tested patch
+                </p>
+                <pre class="finding-replacement">{finding.suggestion.replacement}</pre>{/if}
+              <button class="button small" onclick={() => copyInstructions(finding.prompt)}
+                ><Copy size={13} />Copy prompt</button
+              >
+            </details>{:else}<p class="muted" style="font-size: 13px; padding: 20px 0">
+              {['queued', 'running'].includes(detail.job.status)
+                ? 'Findings will appear after validation.'
+                : detail.job.status === 'complete'
+                  ? 'No accepted findings in this review.'
+                  : 'No accepted findings. The review did not complete; this is not a clean result.'}
+            </p>{/each}
+        </section>
+      {/each}
       <section class="section" aria-label="Diagnostics">
         <button class="button small" aria-expanded={showDiagnostics} onclick={toggleDiagnostics}
           >{showDiagnostics ? 'Hide diagnostics' : 'Show diagnostics'}</button
@@ -466,7 +475,10 @@
             onclick={() => void action('rerun')}>Re-run review<RotateCcw size={14} /></button
           >{/if}
       </div>
-      <ReviewFixes job={detail.job} accepted={detail.findings.length} />
+      <ReviewFixes
+        job={detail.job}
+        actionable={detail.findings.length + (detail.carried?.length || 0)}
+      />
     </aside>
   </div>
 {:else if !notice.state.error}<div class="loading" role="status">Loading review…</div>{/if}

@@ -5,7 +5,7 @@
   import type { JobSummary, FixSummary } from '#lib/types';
   import FixStatus from './FixStatus.svelte';
   import Notice from './Notice.svelte';
-  let { job, accepted }: { job: JobSummary; accepted: number } = $props();
+  let { job, actionable }: { job: JobSummary; actionable: number } = $props();
   let fixes = $state<FixSummary[]>([]);
   let error = $state('');
   let generation = 0;
@@ -31,10 +31,10 @@
   });
 </script>
 
-{#if (job.kind === 'review' && job.status === 'complete' && accepted > 0) || fixes.length || error}
+{#if (job.kind === 'review' && job.status === 'complete' && actionable > 0) || fixes.length || error}
   <section class="section" aria-label="Review fix requests">
     <h3>Fix requests</h3>
-    {#if job.kind === 'review' && job.status === 'complete' && accepted > 0}<a
+    {#if job.kind === 'review' && job.status === 'complete' && actionable > 0}<a
         class="button"
         href={`/fixes/new?job=${encodeURIComponent(job.id)}`}>Fix with Revera</a
       >

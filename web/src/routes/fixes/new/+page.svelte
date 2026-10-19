@@ -97,7 +97,7 @@
         </div>
       </div>
       <div class="section-heading">
-        <h2>Accepted findings</h2>
+        <h2>Findings to fix</h2>
         <span class="helper">{selected.length} selected</span>
       </div>
       {#each plan.findings as finding}<label class="plan-finding"

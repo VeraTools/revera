@@ -61,6 +61,7 @@ async fn accepted_detail_diagnostics_download_and_cached_staleness() {
         .await
         .unwrap();
     assert_eq!(detail["findings"].as_array().unwrap().len(), 1);
+    assert!(detail["carried"].as_array().unwrap().is_empty());
     assert!(detail.get("diagnostics").is_none());
     assert_eq!(
         detail["counts"],
@@ -167,6 +168,97 @@ async fn accepted_detail_diagnostics_download_and_cached_staleness() {
         assert_eq!(response.status(), status);
     }
     task.abort();
+}
+
+#[tokio::test]
+async fn carried_detail_and_downloads_are_separate_from_accepted_counts() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, _) = administrator(&server).await;
+    let head = "a".repeat(40);
+    let mut summary = dashboard::JobSummary::queued(&job(&head));
+    summary.set_state("complete", None);
+    let id = summary.id.clone();
+    server
+        .dashboard
+        .lock()
+        .await
+        .jobs
+        .insert(id.clone(), summary);
+    let secret = "carried-api-secret-786456354";
+    crate::redact::register(secret);
+    let f = serde_json::from_value(json!({"defect_key":"old-guard","severity":"high","file":"bug.rs","start_line":2,"end_line":3,
+        "title":"Earlier finding","claim":format!("Claim {secret}"),"trigger":"Empty input","impact":"Panic",
+        "supporting_evidence":[{"path":"caller.rs","start_line":8,"end_line":8,"note":"Caller"}],"validation_status":"accepted"})).unwrap();
+    let mut state = crate::state::ReviewState::default();
+    state.upsert(&f, crate::state::FindingState::Open);
+    state.mark_posted(&[f.id()]);
+    let carried = crate::report::carried_findings(&state, &[]);
+    let report = json!({"head":head,"base":"b".repeat(40),"status":"complete","findings":[],"carried":carried});
+    let dir = dashboard::job_dir(data.path(), &id).unwrap();
+    crate::fsutil::ensure_dir(data.path(), &Path::new("jobs").join(&id)).unwrap();
+    crate::fsutil::write_atomic_in(&dir, "report.json", &serde_json::to_vec(&report).unwrap())
+        .unwrap();
+    let (url, task) = http(server).await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{url}/api/jobs/{id}");
+    let detail: Value = client
+        .get(&endpoint)
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(detail["findings"].as_array().unwrap().is_empty());
+    assert_eq!(detail["counts"]["total"], 0);
+    assert_eq!(detail["job"]["findings"], detail["counts"]);
+    assert_eq!(detail["carried"].as_array().unwrap().len(), 1);
+    let carried = &detail["carried"][0];
+    assert_eq!(carried["id"], f.id());
+    assert_eq!(carried["carried"], true);
+    assert!(carried["validation_status"].is_null());
+    assert_eq!(carried["supporting_evidence"][0]["path"], "caller.rs");
+    assert!(
+        carried["prompt"]
+            .as_str()
+            .unwrap()
+            .contains(crate::handoff::CARRIED_NOTE)
+    );
+    assert!(!detail.to_string().contains(secret));
+    for query in [String::new(), format!("?finding={}", &f.id()[..6])] {
+        let response = client
+            .get(format!("{endpoint}/instructions.md{query}"))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let text = response.text().await.unwrap();
+        assert!(text.contains("Still open from earlier reviews"));
+        assert!(text.contains("line numbers may have moved"));
+        assert!(text.contains(&f.id()));
+        assert!(!text.contains(secret));
+    }
+    task.abort();
+}
+
+#[test]
+fn carried_api_rejects_duplicates_current_verdicts_and_mismatched_identities() {
+    let f: crate::findings::Finding = serde_json::from_value(json!({"defect_key":"old","file":"bug.rs","start_line":1,"severity":"low","title":"Old","claim":"Claim"})).unwrap();
+    let mut state = crate::state::ReviewState::default();
+    state.upsert(&f, crate::state::FindingState::Open);
+    state.mark_posted(&[f.id()]);
+    let carried = crate::report::carried_findings(&state, &[]).remove(0);
+    assert_eq!(
+        api::report_carried(&json!({"findings":[],"carried":[carried,carried]})).len(),
+        1
+    );
+    assert!(api::report_carried(&json!({"findings":[f],"carried":[carried]})).is_empty());
+    let mut mismatch = carried;
+    mismatch.id = "000000000000".into();
+    assert!(api::report_carried(&json!({"findings":[],"carried":[mismatch]})).is_empty());
 }
 
 #[test]

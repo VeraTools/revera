@@ -153,6 +153,25 @@ function handoffFindings(job: JobSummary): Finding[] {
       };
     });
 }
+const carriedReviews = new Set<string>();
+export function setMockReviewCarried(id: string) {
+  carriedReviews.add(id);
+  const job = jobs.find((job) => job.id === id);
+  if (job) emit('job', job);
+}
+function carriedFindings(job: JobSummary): Finding[] {
+  if (!carriedReviews.has(job.id)) return [];
+  const finding = handoffFindings({ ...job, findings: { ...job.findings, total: 1 } })[0];
+  return [
+    {
+      ...finding,
+      carried: true,
+      validation_status: null,
+      validated_fix: null,
+      prompt: `# Fix instructions\n\n## Still open from earlier reviews\n\nReported at an earlier commit; line numbers may have moved. Re-validate against the current code before making changes.\n\n${finding.id}: ${finding.title}\n${finding.claim}\nEvidence: ${finding.file}:${finding.start_line}\n`,
+    },
+  ];
+}
 let jobs: JobSummary[] = titles.map((title, i) => ({
   source: 'installed',
   publication: 'github',
@@ -561,7 +580,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
   )
     return mockFixRequest(url, method, body, {
       jobs,
-      findings: handoffFindings,
+      findings: (job) => [...handoffFindings(job), ...carriedFindings(job)],
       stale: detailStale,
       yaml: settings.yaml,
       emit: (fix) => emit('fix', fix),
@@ -721,7 +740,8 @@ export async function mockRequest(path: string, method: string, body?: unknown):
       reviewed_head_sha: job.head_sha,
       reviewed_base_sha: 'b'.repeat(40),
       stale: detailStale.get(job.id) ?? null,
-      instructions: handoffFindings(job)
+      carried: carriedFindings(job),
+      instructions: [...handoffFindings(job), ...carriedFindings(job)]
         .map((finding) => finding.prompt)
         .join('\n'),
       ...(url.searchParams.get('diagnostics') === '1'
