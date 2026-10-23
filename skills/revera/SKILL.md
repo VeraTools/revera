@@ -1,6 +1,6 @@
 ---
 name: revera
-description: Set up, configure, run or diagnose Revera, the AI pull-request reviewer (revera.yaml, the Revera GitHub Action, the revera CLI, Vera retrieval for Revera, or a Revera run that came back partial/failed). Not for general code review requests.
+description: Set up, configure, run or diagnose Revera, the AI pull-request reviewer (revera.yaml, the Revera GitHub Action, the self-hosted Revera GitHub App and dashboard, the revera CLI, Vera retrieval for Revera, or a Revera run that came back partial/failed). Not for general code review requests.
 ---
 
 # Using Revera
@@ -38,6 +38,11 @@ reviews; the Action uses workflow events.
 
 - Do not set `review.validate: false` for real reviews; it is for
   evaluation and cannot be combined with `publish: comment`.
-- Keep `review.guidance` at `off` unless the user asks for it.
+- Keep `review.guidance` at `off` unless the user asks for it. `review`
+  reads `REVIEW.md`; `agents` falls back to `AGENTS.md`, then `CLAUDE.md`;
+  `skills` also lists the repository's agent skills for the reviewer to open.
+  All of it comes from the base commit. `review.notes` adds the operator's own
+  instructions. The App sets both per repository under Repositories → Review
+  guidance.
 - Report what was actually checked: say "doctor passed" or "live review ran",
   not "working", when only one of them happened.

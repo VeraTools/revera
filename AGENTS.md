@@ -17,7 +17,7 @@ diff, review identity, state and publication. Keep that split.
   through `redact::secret_env`, send text through `redact::text`/`redact::json`,
   write files through `fsutil` (symlink-safe, atomic). `config::SENSITIVE_GLOBS`
   is the single content policy for tools and diffs.
-- The Vera index identity (`vera::index_key`) covers only what changes
+- The Vera index identity (`Config::index_key`) covers only what changes
   indexed content. Reranker, model routes, prompts, budgets and guidance
   belong in the review fingerprint so review-only changes keep a warm cache.
 - Guidance (`review.guidance`) stays `off` by default until an evaluation
@@ -35,7 +35,12 @@ bash scripts/test-install-revera.sh && bash scripts/test-install-vera.sh
 bash scripts/test-action-outcome.sh
 bash scripts/test-verify-release-report.sh
 bash eval/test-run-all.sh && bash eval/test-frozen.sh
+(cd web && npm ci && npm run check && npm run build)
 ```
+
+The dashboard (`web/`) is embedded into the binary from `web/build`;
+`VITE_MOCK=1 npm run dev` serves it against `web/src/lib/mock.ts`, which must
+mirror every API route the pages call.
 
 Static analysis (deny, machete, shellcheck, ruff, actionlint, zizmor, MSRV)
 and the release sequence are listed in CONTRIBUTING.md.
