@@ -507,6 +507,21 @@
         </div>
         <div class="toggle-row">
           <div>
+            <h3>Index default-branch pushes</h3>
+            <p>
+              Off by default: Revera indexes when a pull request opens or is reviewed. Turn on to
+              keep first reviews warm. Each future default-branch push can use embedding requests
+              when API retrieval is on.
+            </p>
+          </div>
+          <Toggle
+            checked={server.index_on_push}
+            label="Index default-branch pushes"
+            onchange={(value) => (server!.index_on_push = value)}
+          />
+        </div>
+        <div class="toggle-row">
+          <div>
             <h3>Review pull requests from forks</h3>
             <p>
               Off by default. Revera never runs the pull request’s code; models only read its

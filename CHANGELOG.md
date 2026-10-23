@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- The GitHub App no longer indexes on every push. Reviews update their own
+  index, and in mention mode a newly opened, reopened or ready PR warms the
+  default-branch index. Default-branch push indexing is now off by default;
+  turn it on in **Settings → Review → Index default-branch pushes**. When on,
+  pushes to other branches or tags no longer re-index an unchanged default
+  branch every ten minutes.
+- Jobs recover from a stale Git `index.lock` or `HEAD.lock` left by an
+  interrupted checkout, instead of failing every later job for that repository.
+
 ## v0.8.3
 
 - Fix instructions show single-line evidence as `file:line`. Evidence for

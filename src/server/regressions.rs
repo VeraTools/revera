@@ -301,7 +301,7 @@ async fn first_config_save_reconciles_setup_skips_without_backfilling_other_prs(
     }
 }
 
-async fn deliver(server: &Arc<Server>, event: &str, payload: Value) -> StatusCode {
+pub(super) async fn deliver(server: &Arc<Server>, event: &str, payload: Value) -> StatusCode {
     let body = serde_json::to_vec(&payload).unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("X-GitHub-Event", event.parse().unwrap());

@@ -885,6 +885,20 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
     let Ok(event) = mapped else {
         return StatusCode::BAD_REQUEST;
     };
+    if let events::Event::Job(job) = &event
+        && matches!(job.kind, events::Kind::Index)
+    {
+        let sha = if job.trigger == "pull_request" {
+            payload["pull_request"]["base"]["sha"].as_str()
+        } else {
+            payload["after"].as_str()
+        };
+        if let Some(sha) = sha
+            && server.seen.lock().await.index_current(job.repo.id, sha)
+        {
+            return StatusCode::ACCEPTED;
+        }
+    }
     // Apply ordinary queue mutations in delivery order; only API work is detached.
     if matches!(
         event,

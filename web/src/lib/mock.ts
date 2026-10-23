@@ -395,6 +395,7 @@ let settings: Settings = {
         ]),
     ),
     review_drafts: false,
+    index_on_push: false,
     skip_authors: ['dependabot[bot]', 'renovate[bot]'],
   },
   secrets:

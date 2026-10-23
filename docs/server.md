@@ -530,8 +530,13 @@ only if wanted. External private reviews do not use that publication guard.
 Closing an installed PR cancels its work. A newer head replaces
 pending work and cancels an older running review.
 
-Default-branch pushes warm the Vera index in mention and auto modes. Work
-runs one job at a time per repository and source (installed or external), up to
+Every review updates the Vera index itself. In mention mode, a reviewable PR
+that opens, reopens or becomes ready also warms its default-branch base, unless
+that commit is already indexed. Default-branch push indexing is off by default;
+enable **Settings → Review → Index default-branch pushes** to refresh the index
+after each push so first reviews start warm. With API retrieval, each indexed
+push can use embedding requests. Pushes to other branches or tags never index.
+Work runs one job at a time per repository and source (installed or external), up to
 the global concurrency limit.
 Each job runs the CLI in a separate process with a 55-minute hard limit.
 
@@ -545,9 +550,12 @@ Reconciliation runs at startup and every ten minutes by default. The first
 sighting records existing PR heads without reviewing them. Later head changes
 are recovered in auto mode if not already queued or running.
 
-Failed or partial indexes keep the previous push checkpoint. Automatic
-retries wait 10 minutes, then double up to 24 hours after the latest failure.
-A complete index resets the wait. Push webhooks and **Index now** bypass it.
+With push indexing on, reconciliation catches up on missed pushes by comparing
+the default-branch commit with the last indexed one. Failed or partial indexes
+are retried after 10 minutes, then the wait doubles up to 24 hours after the
+latest failure; a complete index resets it. Push webhooks bypass the wait, and
+**Index now** always runs. With push indexing off, nothing is indexed or retried
+in the background.
 
 ## Deployment reference
 
@@ -767,6 +775,15 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
+### From 0.8.x
+
+Default-branch push indexing is now **off by default**, including for existing
+settings files. Reviews still update their own index, and in mention mode a new
+reviewable PR warms its default-branch base. To keep indexing every push,
+enable **Settings → Review → Index default-branch pushes**. Turning it on can
+also index a repository whose default branch moved in the few minutes before,
+since the last background check.
+
 ### From 0.7.0 to 0.8.0
 
 No change is required for an existing review-only installation. Keep the data
@@ -849,13 +866,14 @@ Dashboard API writes require an administrator session and CSRF token.
 - `GET /api/settings/server` returns preferences, also under `server` in
   `GET /api/settings`. `PUT /api/settings/server` saves preferences including
   `{admins, allowed_owners, default_trigger, default_mode, repos, review_drafts,
-  skip_authors, external}`; preserve fields from GET when updating. Owner identity
+  index_on_push, skip_authors, external}`; preserve fields from GET when updating. Owner identity
   and revocation records are server-managed. Triggers are `mention|auto|off`;
-  modes are `quick|standard|deep`.
+  modes are `quick|standard|deep`. `index_on_push` is a boolean, default `false`.
   `repos` maps full repository names to `{trigger: value|null, mode: value|null}`.
 - `GET /api/repos` includes effective `trigger` and `mode`, nullable
   `trigger_override` and `mode_override`, and index/job metadata. A waiting
-  index retry has `index.retry_at`. `pushed_at` is the last push as an RFC 3339
+  index retry has `index.retry_at` (only when `index_on_push` is on).
+  `pushed_at` is the last push as an RFC 3339
   UTC timestamp, omitted when unknown or invalid. `open_prs` is the open PR count
   from the last reconciliation (normally every 10 minutes), omitted for older
   inventories that have no count. `review_count` counts review jobs in retained

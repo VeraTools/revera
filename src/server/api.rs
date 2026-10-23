@@ -1083,7 +1083,7 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 }
                 if let Some(retry_at) = dashboard
                     .index_retry_at(&info.repo.full_name)
-                    .filter(|at| *at > chrono::Utc::now())
+                    .filter(|at| dashboard.preferences.index_on_push && *at > chrono::Utc::now())
                 {
                     index["retry_at"] = json!(retry_at.to_rfc3339());
                 }

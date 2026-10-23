@@ -167,6 +167,7 @@ pub fn map(event: &str, v: &Value, app_id: u64) -> Result<Event> {
         app_id,
         &super::dashboard::Preferences {
             default_trigger: Trigger::Auto,
+            index_on_push: true,
             ..Default::default()
         },
     )
@@ -229,9 +230,17 @@ pub fn map_with_preferences(
                     },
                 }));
             }
+            if matches!(action, "opened" | "reopened" | "ready_for_review")
+                && trigger == Trigger::Mention
+                && preferences.reviewable(&v["pull_request"])
+                && v["pull_request"]["base"]["ref"].as_str() == Some(&repo.default_branch)
+            {
+                return Ok(Event::Job(Job::new(repo, Kind::Index, "pull_request")));
+            }
         }
         "push"
-            if v["ref"].as_str() == Some(&format!("refs/heads/{}", repo.default_branch))
+            if preferences.index_on_push
+                && v["ref"].as_str() == Some(&format!("refs/heads/{}", repo.default_branch))
                 && v["deleted"].as_bool() != Some(true) =>
         {
             return Ok(Event::Job(Job {

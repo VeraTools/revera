@@ -7,6 +7,7 @@
     "#lib/api": "./src/lib/api.ts",
     "#lib/config.svelte": "./src/lib/config.svelte.ts",
     "#lib/events": "./src/lib/events.ts",
+    "#lib/job-labels": "./src/lib/job-labels.ts",
     "#lib/mock": "./src/lib/mock.ts",
     "#lib/markdown": "./src/lib/markdown.ts",
     "#lib/notices.svelte": "./src/lib/notices.svelte.ts",

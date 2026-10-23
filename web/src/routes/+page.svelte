@@ -5,6 +5,7 @@
   import { live } from '#lib/events';
   import { duration, number, relative, severitySplit } from '#lib/time';
   import type { Overview } from '#lib/types';
+  import { triggerLabel } from '#lib/job-labels';
   import JobsTable from '#lib/components/JobsTable.svelte';
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
@@ -182,7 +183,7 @@
               <div class="row-meta">
                 {job.repo}<span>·</span>{job.pr ? `#${job.pr}` : 'Index'}
                 {#if job.kind === 'review'}<span>·</span><span class="capitalize"
-                    >{job.mode} · {job.trigger}</span
+                    >{job.mode} · {triggerLabel(job.trigger)}</span
                   >{/if}
                 <span>·</span>{job.status === 'running' && job.started_at
                   ? `started ${relative(job.started_at).toLowerCase()}`

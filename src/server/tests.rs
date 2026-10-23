@@ -210,7 +210,7 @@ fn reconcile_no_backfill_and_finished_only() {
         "enqueue never records a finished head"
     );
     current = job("two");
-    seen.finished(&current);
+    seen.finished(&current, None);
     assert!(seen.observe(&current.repo, &[pr("two")]).is_empty());
     current.repo.pushed_at = "changed".into();
     assert!(matches!(
@@ -218,7 +218,7 @@ fn reconcile_no_backfill_and_finished_only() {
         events::Kind::Index
     ));
     current.kind = events::Kind::Index;
-    seen.finished(&current);
+    seen.finished(&current, None);
     assert!(seen.observe(&current.repo, &[pr("two")]).is_empty());
     let mut draft = pr("three");
     draft["draft"] = json!(true);
@@ -229,7 +229,7 @@ fn reconcile_no_backfill_and_finished_only() {
 fn finished_webhook_before_first_reconcile_does_not_backfill_other_prs() {
     let mut seen = reconcile::Seen::default();
     let current = job("finished");
-    seen.finished(&current);
+    seen.finished(&current, None);
     let mut older = pr("already-open");
     older["number"] = json!(8);
     assert!(
@@ -348,11 +348,12 @@ async fn server(
 ) -> (tempfile::TempDir, Arc<Server>) {
     let data = tempfile::tempdir().unwrap();
     mock_registration(mock).await;
-    // These pre-mention fixtures exercise automatic-review behavior explicitly.
+    // Preserve the automatic-review and push-indexing scenarios of these fixtures.
     dashboard::write_preferences(
         data.path(),
         &dashboard::Preferences {
             default_trigger: dashboard::Trigger::Auto,
+            index_on_push: true,
             ..Default::default()
         },
     )
@@ -2000,6 +2001,9 @@ mod live_regressions;
 
 #[path = "backoff_tests.rs"]
 mod backoff_tests;
+
+#[path = "indexing_tests.rs"]
+mod indexing_tests;
 
 #[path = "mention_tests.rs"]
 mod mention_tests;
