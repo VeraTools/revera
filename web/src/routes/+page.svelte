@@ -182,9 +182,8 @@
               <a class="row-title" href={`/reviews/${job.id}`}>{job.title || 'Repository index'}</a>
               <div class="row-meta">
                 {job.repo}<span>·</span>{job.pr ? `#${job.pr}` : 'Index'}
-                {#if job.kind === 'review'}<span>·</span><span class="capitalize"
-                    >{job.mode} · {triggerLabel(job.trigger)}</span
-                  >{/if}
+                {#if job.kind === 'review'}<span>·</span><span class="capitalize">{job.mode}</span
+                  >{/if}<span>·</span>{triggerLabel(job.trigger)}
                 <span>·</span>{job.status === 'running' && job.started_at
                   ? `started ${relative(job.started_at).toLowerCase()}`
                   : `queued ${relative(job.queued_at).toLowerCase()}`}

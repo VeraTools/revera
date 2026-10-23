@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0
 
 - The GitHub App no longer indexes on every push. Reviews update their own
   index, and in mention mode a newly opened, reopened or ready PR warms the
@@ -10,6 +10,8 @@
   branch every ten minutes.
 - Jobs recover from a stale Git `index.lock` or `HEAD.lock` left by an
   interrupted checkout, instead of failing every later job for that repository.
+- Security: update `rustls-webpki`, `webpki-root-certs` and `ctutils` for
+  RUSTSEC-2026-0382, RUSTSEC-2026-0383 and RUSTSEC-2026-0385.
 
 ## v0.8.3
 

@@ -458,7 +458,7 @@ async fn manual_index_runs_with_push_indexing_off_and_even_when_sha_is_current()
 
 #[tokio::test]
 async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks_recover() {
-    for outcome in ["success", "failure", "cancelled"] {
+    for outcome in ["success", "no-index", "failure", "cancelled"] {
         let mock = MockServer::start().await;
         let scratch = tempfile::tempdir().unwrap();
         let marker = scratch.path().join("indexed-head");
@@ -468,7 +468,8 @@ async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks
             marker.display(),
             marker.display(),
             match outcome {
-                "success" => "exit 0",
+                "success" => "mkdir -p .vera && echo '{}' > .vera/vectors.manifest; exit 0",
+                "no-index" => "exit 0",
                 "failure" => "exit 1",
                 _ => "sleep 60",
             }
@@ -542,20 +543,21 @@ async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks
             .unwrap()
             .unwrap();
         assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), head);
-        let success = outcome == "success";
+        let success = matches!(outcome, "success" | "no-index");
         let seen: reconcile::Seen = dashboard::read_json(data.path(), "seen.json").unwrap();
-        // Success records the fetched commit; a failed run may have discarded
-        // the previous index, so it forgets the commit; cancellation keeps it.
+        // Success records the fetched commit only when an index exists (Vera
+        // disabled exits 0 without one); a failed run may have discarded the
+        // previous index, so it forgets the commit; cancellation keeps it.
         match outcome {
             "success" => assert!(seen.index_current(1, &head)),
-            "failure" => assert_eq!(seen.0[&1].indexed_sha, None),
-            _ => assert!(seen.index_current(1, INDEXED)),
+            "no-index" | "cancelled" => assert!(seen.index_current(1, INDEXED)),
+            _ => assert_eq!(seen.0[&1].indexed_sha, None),
         }
         assert_eq!(seen.0[&1].pushed_at, if success { "two" } else { "one" });
         assert_eq!(
             job_metadata(data.path(), &current)["status"],
             match outcome {
-                "success" => "complete",
+                "success" | "no-index" => "complete",
                 "failure" => "failed",
                 _ => "cancelled",
             }

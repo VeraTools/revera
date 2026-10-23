@@ -912,7 +912,17 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
             continue;
         }
         if exit == 0 || !matches!(job.kind, Kind::Index) {
-            record_finish(server, job, cancelled, execution.indexed_sha.as_deref()).await?;
+            // With retrieval disabled `revera index` succeeds without building
+            // an index; only a ready index counts as the commit being indexed.
+            let ready = server
+                .settings
+                .data_dir
+                .join("repos")
+                .join(&job.repo.full_name)
+                .join(".vera/vectors.manifest")
+                .is_file();
+            let indexed = execution.indexed_sha.as_deref().filter(|_| ready);
+            record_finish(server, job, cancelled, indexed).await?;
         } else if !cancelled {
             // A failed run may have discarded the previous index (for example
             // after an identity change), so no commit is known to be indexed.

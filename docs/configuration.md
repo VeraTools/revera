@@ -278,7 +278,7 @@ base-branch push trigger to refresh the shared starting index after merges.
 Push, schedule and manual Action runs index only; they do not review or
 publish. See the [workflow example](action.md#keep-the-index-warm).
 The GitHub App updates the index during every review, and in mention mode warms
-the default-branch index when a reviewable PR opens. Default-branch push
+the default-branch index when a reviewable PR opens, reopens or becomes ready. Default-branch push
 indexing is off by default; see [the server guide](server.md#review-lifecycle).
 
 ## `web_search`

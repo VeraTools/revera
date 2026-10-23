@@ -775,7 +775,7 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
-### From 0.8.x
+### From 0.8.x to 0.9.0
 
 Default-branch push indexing is now **off by default**, including for existing
 settings files. Reviews still update their own index, and in mention mode a new

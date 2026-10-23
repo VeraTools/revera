@@ -1,3 +1,10 @@
+const labels: Record<string, string> = {
+  pull_request: 'Pull request',
+  webhook: 'Push',
+  reconcile: 'Background check',
+};
+
 export function triggerLabel(trigger: string): string {
-  return trigger === 'pull_request' ? 'Pull request' : trigger;
+  const label = labels[trigger] ?? trigger;
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
