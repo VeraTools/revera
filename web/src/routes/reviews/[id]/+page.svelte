@@ -6,6 +6,7 @@
   import { api, errorMessage } from '#lib/api';
   import { duration, number, severitySplit } from '#lib/time';
   import { renderSummary } from '#lib/markdown';
+  import { triggerLabel } from '#lib/job-labels';
   import { createNotices } from '#lib/notices.svelte';
   import type { JobDetail, ReviewMode, Repository } from '#lib/types';
   import ReviewModeField from '#lib/components/ReviewModeField.svelte';
@@ -383,7 +384,7 @@
         </div>
         <div>
           <dt>Triggered by</dt>
-          <dd style="text-transform: capitalize">{detail.job.trigger}</dd>
+          <dd style="text-transform: capitalize">{triggerLabel(detail.job.trigger)}</dd>
         </div>
         <div>
           <dt>Commit</dt>

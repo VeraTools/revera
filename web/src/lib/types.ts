@@ -22,7 +22,8 @@ export interface JobSummary {
   title?: string;
   author?: string;
   head_sha?: string;
-  trigger: 'mention' | 'auto' | 'manual' | 'rerun' | 'webhook' | 'reconcile' | 'tracking';
+  trigger:
+    'mention' | 'auto' | 'manual' | 'rerun' | 'webhook' | 'reconcile' | 'tracking' | 'pull_request';
   mode: ReviewMode;
   status: JobStatus;
   reason?: string;
@@ -181,6 +182,7 @@ export interface ServerSettings {
   default_mode: ReviewMode;
   repos: Record<string, { trigger?: Trigger | null; mode?: ReviewMode | null }>;
   review_drafts: boolean;
+  index_on_push: boolean;
   skip_authors: string[];
 }
 

@@ -16,7 +16,7 @@ fn index_history(order: i64, status: &str, finished: DateTime<Utc>) -> dashboard
     summary
 }
 
-async fn inventory(mock: &MockServer, repo: Value, prs: Vec<Value>, times: u64) {
+pub(super) async fn inventory(mock: &MockServer, repo: Value, prs: Vec<Value>, times: u64) {
     Mock::given(method("GET"))
         .and(path("/app/installations"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([

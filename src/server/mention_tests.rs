@@ -581,6 +581,7 @@ fn triggers_gate_webhooks_and_reconcile_but_keep_mention_indexes_warm() {
         let prefs = Preferences {
             default_trigger: trigger,
             default_mode: Mode::Quick,
+            index_on_push: true,
             ..Default::default()
         };
         let mut payload = json!({"installation": {"id": 9}, "repository": repository(),
@@ -669,7 +670,7 @@ fn old_settings_migrate_to_mentions_and_explicit_off_without_legacy_output_field
             json!({
                 "admins": [], "allowed_owners": [], "default_trigger": expected,
                 "owner_accounts": {}, "revoked_owners": [], "revoked_owner_ids": [],
-                "default_mode": "standard", "review_drafts": false,
+                "default_mode": "standard", "review_drafts": false, "index_on_push": false,
                 "skip_authors": ["dependabot[bot]", "renovate[bot]"],
                 "repos": {"owner/off": {"trigger": "off", "mode": null, "fixes": null},
                     "owner/inherit": {"trigger": null, "mode": null, "fixes": null}},

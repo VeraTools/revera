@@ -240,6 +240,7 @@ struct Execution {
     token: String,
     check: Option<u64>,
     report: PathBuf,
+    indexed_sha: Option<String>,
 }
 
 pub fn accepted_findings(report: &Value) -> impl Iterator<Item = &Value> {
@@ -326,6 +327,7 @@ async fn prepare_external(
     }
     if std::fs::symlink_metadata(ws.join(".git")).is_ok() {
         crate::fsutil::ensure_dir(ws, Path::new(".git"))?;
+        clear_checkout_locks(ws)?;
         anonymous_git(
             ws,
             env,
@@ -534,6 +536,7 @@ async fn execute(
     );
     if std::fs::symlink_metadata(ws.join(".git")).is_ok() {
         crate::fsutil::ensure_dir(&ws, Path::new(".git"))?;
+        clear_checkout_locks(&ws)?;
     } else {
         git(
             &ws,
@@ -580,6 +583,7 @@ async fn execute(
             )
             .await?;
             let head = crate::git::rev_parse_with_env(&ws, "FETCH_HEAD", &env).await?;
+            execution.indexed_sha = Some(head.clone());
             (head.clone(), head)
         }
         Kind::Remove => unreachable!(),
@@ -732,6 +736,7 @@ fn prepare_job(server: &Server, job: &Job) -> Result<(PathBuf, Log, Execution)> 
         token: String::new(),
         check: None,
         report: dir.join("report.json"),
+        indexed_sha: None,
     };
     Ok((dir, Arc::new(Mutex::new(file)), execution))
 }
@@ -842,10 +847,15 @@ async fn complete_check(
     Ok(())
 }
 
-async fn record_finish(server: &Server, job: &Job, cancelled: bool) -> Result<()> {
+async fn record_finish(
+    server: &Server,
+    job: &Job,
+    cancelled: bool,
+    indexed_sha: Option<&str>,
+) -> Result<()> {
     if !cancelled {
         let mut seen = server.seen.lock().await;
-        seen.finished(job);
+        seen.finished(job, indexed_sha);
         reconcile::save(server, &seen).await?;
     }
     Ok(())
@@ -863,7 +873,7 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
             .repos
             .remove(&job.repo.full_name);
         let _ = server.events.send(("repos", json!({})));
-        return record_finish(server, job, false).await;
+        return record_finish(server, job, false, None).await;
     }
     if server.config_yaml()?.is_none() {
         server
@@ -902,7 +912,23 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
             continue;
         }
         if exit == 0 || !matches!(job.kind, Kind::Index) {
-            record_finish(server, job, cancelled).await?;
+            // With retrieval disabled `revera index` succeeds without building
+            // an index; only a ready index counts as the commit being indexed.
+            let ready = server
+                .settings
+                .data_dir
+                .join("repos")
+                .join(&job.repo.full_name)
+                .join(".vera/vectors.manifest")
+                .is_file();
+            let indexed = execution.indexed_sha.as_deref().filter(|_| ready);
+            record_finish(server, job, cancelled, indexed).await?;
+        } else if !cancelled {
+            // A failed run may have discarded the previous index (for example
+            // after an identity change), so no commit is known to be indexed.
+            let mut seen = server.seen.lock().await;
+            seen.index_failed(job);
+            reconcile::save(server, &seen).await?;
         }
         finish_summary(server, job, &execution, exit, cancelled).await?;
         if queue
@@ -921,6 +947,29 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
         std::fs::remove_file(event)?;
     }
     server.prune_jobs().await?;
+    Ok(())
+}
+
+fn clear_checkout_locks(ws: &Path) -> Result<()> {
+    let git = crate::fsutil::ensure_dir(ws, Path::new(".git"))?;
+    // The queue serializes checkouts. The fix controller shares this Git dir,
+    // but its rev-parse/cat-file/fetch never take index.lock or HEAD.lock.
+    // Other locks may belong to that controller and must be left alone.
+    for name in ["index.lock", "HEAD.lock"] {
+        let path = git.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                crate::fsutil::check_regular_target(&path)?;
+                std::fs::remove_file(&path)?;
+                tracing::info!(
+                    "removed stale Git lock: {}",
+                    crate::redact::text(&path.display().to_string())
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
@@ -1082,6 +1131,9 @@ mod external_tests {
             "fork head\n"
         );
         assert_eq!(local_git(&ws, &["rev-parse", &base]), base);
+        for name in ["index.lock", "HEAD.lock"] {
+            std::fs::write(ws.join(".git").join(name), "").unwrap();
+        }
         prepare_external(
             &ws,
             &format!("file://{}", bare.display()),
@@ -1094,10 +1146,42 @@ mod external_tests {
         .await
         .unwrap();
         assert_eq!(local_git(&ws, &["rev-parse", "HEAD"]), newer);
+        for name in ["index.lock", "HEAD.lock"] {
+            assert!(!ws.join(".git").join(name).exists());
+        }
         assert_eq!(
             std::fs::read_to_string(ws.join("file.txt")).unwrap(),
             "force-pushed head\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checkout_lock_cleanup_refuses_symlinks_and_non_files() {
+        let scratch = tempfile::tempdir().unwrap();
+        let git = crate::fsutil::ensure_dir(scratch.path(), Path::new(".git")).unwrap();
+        let victim = scratch.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let lock = git.join("index.lock");
+        std::os::unix::fs::symlink(&victim, &lock).unwrap();
+        assert!(clear_checkout_locks(scratch.path()).is_err());
+        assert!(
+            std::fs::symlink_metadata(&lock)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        assert!(clear_checkout_locks(scratch.path()).is_err());
+        assert!(lock.is_dir());
+        std::fs::remove_dir(&lock).unwrap();
+        std::fs::remove_dir(&git).unwrap();
+        let other = scratch.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::os::unix::fs::symlink(&other, &git).unwrap();
+        assert!(clear_checkout_locks(scratch.path()).is_err());
     }
 
     #[tokio::test]

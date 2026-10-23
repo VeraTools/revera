@@ -233,6 +233,8 @@ pub struct Seen(pub BTreeMap<u64, SeenRepo>);
 pub struct SeenRepo {
     pub repo: Repo,
     pub pushed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_sha: Option<String>,
     pub heads: BTreeMap<u64, String>,
     /// A webhook can finish before the first inventory of open PRs.
     #[serde(default)]
@@ -240,6 +242,13 @@ pub struct SeenRepo {
 }
 
 impl Seen {
+    pub fn index_current(&self, repo_id: u64, sha: &str) -> bool {
+        self.0
+            .get(&repo_id)
+            .and_then(|known| known.indexed_sha.as_deref())
+            == Some(sha)
+    }
+
     #[cfg(test)]
     pub fn observe(&mut self, repo: &Repo, prs: &[Value]) -> Vec<Job> {
         self.observe_with_preferences(
@@ -247,6 +256,7 @@ impl Seen {
             prs,
             &super::dashboard::Preferences {
                 default_trigger: Trigger::Auto,
+                index_on_push: true,
                 ..Default::default()
             },
             &BTreeSet::new(),
@@ -276,12 +286,16 @@ impl Seen {
                 repo.id,
                 SeenRepo {
                     repo: repo.clone(),
-                    pushed_at: if retry_index {
+                    pushed_at: if preferences.index_on_push && retry_index {
                         String::new()
                     } else {
                         repo.pushed_at.clone()
                     },
                     heads,
+                    indexed_sha: self
+                        .0
+                        .get(&repo.id)
+                        .and_then(|known| known.indexed_sha.clone()),
                     initialized: true,
                 },
             );
@@ -290,7 +304,8 @@ impl Seen {
         let known = self.0.get_mut(&repo.id).expect("initialized repository");
         known.repo = repo.clone();
         let mut jobs = Vec::new();
-        if preferences.trigger(&repo.full_name) != Trigger::Off
+        if preferences.index_on_push
+            && preferences.trigger(&repo.full_name) != Trigger::Off
             && (known.pushed_at != repo.pushed_at || retry_index)
         {
             jobs.push(Job {
@@ -300,6 +315,8 @@ impl Seen {
                 repo: repo.clone(),
                 kind: Kind::Index,
             });
+        } else if !preferences.index_on_push {
+            known.pushed_at.clone_from(&repo.pushed_at);
         }
         for pr in prs.iter().filter(|pr| {
             preferences.trigger(&repo.full_name) == Trigger::Auto && preferences.reviewable(pr)
@@ -324,13 +341,20 @@ impl Seen {
         jobs
     }
 
-    pub fn finished(&mut self, job: &Job) {
+    pub fn index_failed(&mut self, job: &Job) {
+        if let Some(known) = self.0.get_mut(&job.repo.id) {
+            known.indexed_sha = None;
+        }
+    }
+
+    pub fn finished(&mut self, job: &Job, indexed_sha: Option<&str>) {
         if job.repo.source() == super::events::Source::External {
             return;
         }
         let known = self.0.entry(job.repo.id).or_insert_with(|| SeenRepo {
             repo: job.repo.clone(),
             pushed_at: String::new(),
+            indexed_sha: None,
             heads: BTreeMap::new(),
             initialized: false,
         });
@@ -338,7 +362,12 @@ impl Seen {
             Kind::Review { number, .. } => {
                 known.heads.insert(*number, job.head().into());
             }
-            Kind::Index => known.pushed_at.clone_from(&job.repo.pushed_at),
+            Kind::Index => {
+                known.pushed_at.clone_from(&job.repo.pushed_at);
+                if let Some(sha) = indexed_sha {
+                    known.indexed_sha = Some(sha.into());
+                }
+            }
             Kind::Remove => {
                 self.0.remove(&job.repo.id);
             }
@@ -524,7 +553,11 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 (
                     dashboard.preferences.clone(),
                     dashboard.unconfigured_reviews(&repo.full_name),
-                    dashboard.index_retry_at(&repo.full_name),
+                    dashboard
+                        .preferences
+                        .index_on_push
+                        .then(|| dashboard.index_retry_at(&repo.full_name))
+                        .flatten(),
                 )
             };
             let jobs = seen.observe_with_preferences(
@@ -575,6 +608,16 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                     continue;
                 }
                 if !server.queue.lock().await.contains(job.key()) {
+                    if matches!(job.kind, Kind::Index)
+                        && index_head_current(server, &repo, &token).await
+                    {
+                        let mut seen = server.seen.lock().await;
+                        if let Some(known) = seen.0.get_mut(&repo.id) {
+                            known.pushed_at.clone_from(&repo.pushed_at);
+                        }
+                        save(server, &seen).await?;
+                        continue;
+                    }
                     server.enqueue(job).await;
                 }
             }
@@ -606,6 +649,30 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
     *server.installations.lock().await = accounts;
     let _ = server.events.send(("repos", serde_json::json!({})));
     Ok(())
+}
+
+/// A failed head lookup keeps the existing fallback: let the index job fetch it.
+async fn index_head_current(server: &Server, repo: &Repo, token: &str) -> bool {
+    let mut url = url::Url::parse("https://api.github.com").expect("static URL");
+    url.path_segments_mut()
+        .expect("hierarchical URL")
+        .extend(["repos"])
+        .extend(repo.full_name.split('/'))
+        .extend(["branches", &repo.default_branch]);
+    let Ok(value) = server
+        .api
+        .request(reqwest::Method::GET, url.path(), token, None)
+        .await
+    else {
+        return false;
+    };
+    let Some(sha) = value["commit"]["sha"]
+        .as_str()
+        .filter(|sha| crate::git::is_oid(sha))
+    else {
+        return false;
+    };
+    server.seen.lock().await.index_current(repo.id, sha)
 }
 
 pub(super) async fn tick(server: &Server) -> Result<()> {

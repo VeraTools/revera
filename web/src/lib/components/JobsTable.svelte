@@ -1,6 +1,7 @@
 <script lang="ts">
   import { relative, duration, severitySplit } from '#lib/time';
   import type { JobSummary } from '#lib/types';
+  import { triggerLabel } from '#lib/job-labels';
   import Status from './Status.svelte';
   import ExternalBadge from './ExternalBadge.svelte';
   let { jobs }: { jobs: JobSummary[] } = $props();
@@ -26,8 +27,8 @@
                 >{job.kind === 'index' ? 'Index' : `#${job.pr}`}</span
               >{#if job.author}<span class="meta-separator">·</span><span>{job.author}</span>{/if}
               {#if job.kind === 'review'}<span>·</span><span class="review-kind"
-                  >{job.mode} · {job.trigger}</span
-                >{/if}
+                  >{job.mode} · {triggerLabel(job.trigger)}</span
+                >{:else}<span>·</span><span>{triggerLabel(job.trigger)}</span>{/if}
               {#if job.source === 'external' && job.head_sha}<code title="Reviewed head"
                   >{job.head_sha.slice(0, 7)}</code
                 >{/if}
