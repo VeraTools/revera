@@ -707,6 +707,27 @@ async fn execute(
             if let Some(profile) = job.mode.profile() {
                 command.arg("--profile").arg(profile);
             }
+            let preference = server
+                .dashboard
+                .lock()
+                .await
+                .preferences
+                .repos
+                .get(&job.repo.full_name)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(guidance) = preference.guidance {
+                command.arg("--guidance").arg(guidance.as_str());
+            }
+            if let Some(notes) = preference.notes {
+                let path = execution.report.parent().unwrap().join("notes.md");
+                crate::fsutil::write_output(
+                    &server.settings.data_dir,
+                    &path,
+                    crate::redact::text(&notes).as_bytes(),
+                )?;
+                command.arg("--notes-file").arg(path);
+            }
         }
         Kind::Index => {
             command.arg("index").arg("--repo").arg(&ws);

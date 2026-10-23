@@ -844,6 +844,7 @@ async fn manual_and_rerun_api_accept_modes_and_off_rejects_new_work() {
                 trigger: Some(Trigger::Mention),
                 mode: Some(Mode::Quick),
                 fixes: None,
+                ..Default::default()
             },
         );
     }

@@ -99,6 +99,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/settings/models", post(models))
         .merge(super::external::router())
         .merge(super::fixes::router())
+        .merge(super::guidance::router())
         .route("/api/events", get(events))
         .route("/api", any(|| async { StatusCode::NOT_FOUND }))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
@@ -1095,6 +1096,10 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 .and_then(|r| r.trigger),
             "mode_override": dashboard.preferences.repos.get(&info.repo.full_name)
                 .and_then(|r| r.mode),
+            "guidance": dashboard.preferences.repos.get(&info.repo.full_name)
+                .and_then(|r| r.guidance),
+            "has_notes": dashboard.preferences.repos.get(&info.repo.full_name)
+                .is_some_and(|r| r.notes.is_some()),
             "has_override": info.has_override, "index": index, "html_url": info.html_url,
             "review_count": reviews.len(),
             "finding_count": reviews.iter().map(|job| job.findings.total).sum::<u64>()});
@@ -1129,6 +1134,10 @@ struct RepoSettings {
     trigger: Option<Option<Trigger>>,
     #[serde(deserialize_with = "nullable")]
     mode: Option<Option<Mode>>,
+    #[serde(deserialize_with = "nullable")]
+    guidance: Option<Option<crate::config::GuidanceMode>>,
+    #[serde(deserialize_with = "nullable")]
+    notes: Option<Option<String>>,
     enabled: Option<bool>,
 }
 fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -1189,6 +1198,22 @@ async fn repo_settings(
     Path((owner, name)): Path<(String, String)>,
     Json(input): Json<RepoSettings>,
 ) -> ApiResult {
+    let notes = input
+        .notes
+        .map(|notes| {
+            let notes = notes.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+            if notes
+                .as_ref()
+                .is_some_and(|s| s.chars().count() > crate::guidance::MAX_NOTES_CHARS)
+            {
+                return Err(Error(
+                    StatusCode::BAD_REQUEST,
+                    "notes must be at most 8000 characters".into(),
+                ));
+            }
+            Ok(notes.map(|s| crate::redact::text(&s).into_owned()))
+        })
+        .transpose()?;
     let full_name = format!("{owner}/{name}");
     repo(&server, &full_name).await?;
     let mut dashboard = server.dashboard.lock().await;
@@ -1201,6 +1226,12 @@ async fn repo_settings(
     }
     if let Some(mode) = input.mode {
         settings.mode = mode;
+    }
+    if let Some(guidance) = input.guidance {
+        settings.guidance = guidance;
+    }
+    if let Some(notes) = notes {
+        settings.notes = notes;
     }
     dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
     dashboard.preferences = preferences;

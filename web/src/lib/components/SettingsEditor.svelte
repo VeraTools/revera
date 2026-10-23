@@ -29,6 +29,13 @@
   import MentionCommands from './MentionCommands.svelte';
   import FixSettings from './FixSettings.svelte';
   import { validFixLimits } from '../fix-policy';
+  import {
+    guidanceHint,
+    guidanceLevels,
+    isGuidanceMode,
+    maxNotesCharacters,
+    notesCharacters,
+  } from '../guidance';
 
   const tabs = ['Models', 'Review', 'Fixes', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
   const modelRoles = [
@@ -72,6 +79,12 @@
   const retrievalOn = $derived(
     config?.has(['vera']) ? config.get(['vera', 'enabled'], true) : false,
   );
+  const reviewNotes = $derived(config?.get(['review', 'notes'], '') || '');
+  const reviewNotesCount = $derived(
+    notesCharacters(typeof reviewNotes === 'string' ? reviewNotes : ''),
+  );
+  const reviewNotesTooLong = $derived(reviewNotesCount > maxNotesCharacters);
+  const reviewGuidance = $derived(config?.get(['review', 'guidance'], 'off'));
   function hydrate(data: Settings) {
     config = new ConfigDocument(data.yaml);
     separateValidator = config.has(['models', 'validator']);
@@ -112,7 +125,7 @@
     }
   }
   async function save() {
-    if (!config || !server || config.errors.length || !fixesValid) return;
+    if (!config || !server || config.errors.length || !fixesValid || reviewNotesTooLong) return;
     busy = 'save';
     error = '';
     message = '';
@@ -494,6 +507,39 @@
             />
           </div>
         </div>
+        <div class="field" style="margin-top: 24px">
+          <label for="review-guidance">Repository guidance</label>
+          <SelectField
+            id="review-guidance"
+            value={config.get(['review', 'guidance'], 'off')}
+            options={guidanceLevels}
+            onchange={(value) => config!.set(['review', 'guidance'], value)}
+          />
+          <small>{guidanceHint[isGuidanceMode(reviewGuidance) ? reviewGuidance : 'off']}</small>
+          <small
+            >Repositories can override this level in <a href="/repositories"
+              >Repositories → Review guidance</a
+            >.</small
+          >
+        </div>
+        <div class="field" style="margin-top: 20px">
+          <label for="review-notes">Review notes</label>
+          <textarea
+            id="review-notes"
+            rows="3"
+            value={reviewNotes}
+            oninput={(event) => config!.set(['review', 'notes'], event.currentTarget.value)}
+            placeholder="What should reviews focus on or ignore?"
+            aria-describedby="review-notes-count"
+            aria-invalid={reviewNotesTooLong}></textarea>
+          <small id="review-notes-count" style:color={reviewNotesTooLong ? 'var(--red)' : undefined}
+            >{reviewNotesCount} / {maxNotesCharacters} characters</small
+          >
+          <small
+            >Notes apply at any level, including Off. Repositories can add notes in Repositories →
+            Review guidance.</small
+          >
+        </div>
         <div class="toggle-row" style="margin-top: 24px">
           <div>
             <h3>Review drafts automatically</h3>
@@ -713,7 +759,11 @@
           <button class="button small" onclick={validate}><Check size={14} />Validate YAML</button
           ><button
             class="button small"
-            disabled={!!busy || !dirty || config.errors.length > 0 || !fixesValid}
+            disabled={!!busy ||
+              !dirty ||
+              config.errors.length > 0 ||
+              !fixesValid ||
+              reviewNotesTooLong}
             onclick={save}><Save size={14} />Save</button
           >
         </div>
@@ -741,7 +791,7 @@
       <div class="actions">
         <button class="button small" disabled={!!busy} onclick={discard}>Discard</button><button
           class="button primary small"
-          disabled={!!busy || config.errors.length > 0 || !fixesValid}
+          disabled={!!busy || config.errors.length > 0 || !fixesValid || reviewNotesTooLong}
           onclick={save}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button
         >
       </div>

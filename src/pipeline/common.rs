@@ -494,6 +494,16 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             }
         }
     };
+    let changed: Vec<String> = diff.files.iter().map(|f| f.new_path.clone()).collect();
+    let guidance = crate::guidance::load(
+        &repo,
+        &base_sha,
+        &changed,
+        cfg.review.guidance,
+        cfg.review.guidance_max_bytes,
+    )
+    .await?
+    .with_notes(&cfg.review.notes);
     let mut tb = ToolBox::new(
         repo.clone(),
         diff.clone(),
@@ -501,6 +511,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         cfg.review.max_tool_output_bytes,
     )
     .with_head(&head_sha)
+    .with_guidance(&guidance)
     .with_web(web);
     // a failed index leaves no usable vera_* tools; hiding them keeps the
     // tool note honest about lexical-only coverage
@@ -583,17 +594,8 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             coverage_gaps.push(format!("`{f}` diff omitted (exceeds max_diff_bytes)"));
         }
     }
-    let changed: Vec<String> = diff.files.iter().map(|f| f.new_path.clone()).collect();
-    let guidance = crate::guidance::load(
-        &repo,
-        &base_sha,
-        &changed,
-        cfg.review.guidance,
-        cfg.review.guidance_max_bytes,
-    )
-    .await?;
     let stats = RunStats {
-        guidance: (cfg.review.guidance != crate::config::GuidanceMode::Off)
+        guidance: (cfg.review.guidance != crate::config::GuidanceMode::Off || guidance.notes)
             .then(|| guidance.clone()),
         retrieval,
         resolved: resolved_titles.len(),
@@ -812,6 +814,9 @@ pub async fn finish(
     let timing = prep.timing.finish(prep.wall);
     let carried = crate::report::carried_findings(&state, &final_findings);
     let mut stats = prep.stats.clone();
+    if let Some(guidance) = &mut stats.guidance {
+        guidance.skills_read = prep.toolbox.skills_read();
+    }
     stats.reopened = reopened_titles.len();
     stats.accepted = final_findings
         .iter()

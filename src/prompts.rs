@@ -19,6 +19,9 @@ pub fn prompt_version() -> String {
         LEAD_SYNTHESIZE,
         WORKER,
         SCOUT_FOCUS,
+        crate::guidance::GUIDANCE_PROMPT,
+        crate::guidance::SKILLS_PROMPT,
+        crate::guidance::NOTES_PROMPT,
     ] {
         h.update(p.as_bytes());
         h.update([0]);

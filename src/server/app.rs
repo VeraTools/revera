@@ -242,6 +242,34 @@ impl Api {
         Ok(response.json().await?)
     }
 
+    /// Bounded raw GitHub blob prefix; do not download whole skills for metadata.
+    pub async fn blob_prefix(&self, path: &str, token: &str, max_bytes: usize) -> Result<Vec<u8>> {
+        let mut response = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .header("Accept", "application/vnd.github.raw+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .bearer_auth(token)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let limited = response.headers().contains_key("retry-after")
+                || response
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|v| v == "0");
+            return Err(ApiStatus(response.status(), limited).into());
+        }
+        let mut bytes = Vec::new();
+        while bytes.len() < max_bytes {
+            let Some(chunk) = response.chunk().await? else {
+                break;
+            };
+            bytes.extend_from_slice(&chunk[..chunk.len().min(max_bytes - bytes.len())]);
+        }
+        Ok(bytes)
+    }
+
     pub async fn list(&self, path: &str, token: &str, field: Option<&str>) -> Result<Vec<Value>> {
         let mut items = Vec::new();
         for page in 1..=50 {
