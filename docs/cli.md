@@ -74,6 +74,16 @@ Reports without this optional field are still supported.
 
 An identical completed review can be reused. Add `--force` to run it again.
 
+## Review guidance
+
+Use `--guidance off|review|agents|skills` to override `review.guidance` (default
+`off`). Guidance files and skills come from the base commit, never the PR head.
+Append operator review notes with `--notes-file notes.md`; combined with
+`review.notes`, the limit is 8000 characters. Both investigators and validators
+receive the same context. Changing the mode or notes invalidates a stored
+review, but keeps the Vera index warm. Private external reviews ignore notes
+and force guidance off. See [guidance settings](configuration.md#review).
+
 ## Local files and retrieval
 
 Review state lives in `.revera/`. With Vera enabled, indexes use `.vera/`

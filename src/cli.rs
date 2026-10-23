@@ -39,6 +39,12 @@ enum Cmd {
         config: Option<PathBuf>,
         #[arg(long)]
         profile: Option<String>,
+        /// Override the repository guidance level (base commit only).
+        #[arg(long, value_enum)]
+        guidance: Option<crate::config::GuidanceMode>,
+        /// Append operator review notes from a UTF-8 file (8000 characters total).
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
         #[arg(long)]
         strategy: Option<StrategyArg>,
         #[arg(long)]
@@ -154,6 +160,8 @@ pub async fn run() -> i32 {
             event,
             config,
             profile,
+            guidance,
+            notes_file,
             strategy,
             publish,
             out,
@@ -172,6 +180,8 @@ pub async fn run() -> i32 {
                 event,
                 config,
                 profile,
+                guidance,
+                notes_file,
                 strategy,
                 publish,
                 out,
@@ -195,6 +205,8 @@ struct ReviewArgs {
     event: Option<PathBuf>,
     config: Option<PathBuf>,
     profile: Option<String>,
+    guidance: Option<crate::config::GuidanceMode>,
+    notes_file: Option<PathBuf>,
     strategy: Option<StrategyArg>,
     publish: Option<PublishArg>,
     out: Option<PathBuf>,
@@ -511,6 +523,12 @@ async fn review(a: ReviewArgs) -> i32 {
     if let Some(login) = &a.bot_login {
         cfg.github.bot_login.clone_from(login);
     }
+    if let Err(error) =
+        apply_guidance_overrides(&mut cfg, a.guidance, a.notes_file.as_deref(), a.private)
+    {
+        eprintln!("error: {}", crate::redact::diagnostic(&error.to_string()));
+        return 1;
+    }
     if a.private {
         cfg.review.guidance = crate::config::GuidanceMode::Off;
         cfg.review.publish = PublishMode::DryRun;
@@ -757,6 +775,38 @@ async fn review(a: ReviewArgs) -> i32 {
             1
         }
     }
+}
+
+fn apply_guidance_overrides(
+    cfg: &mut Config,
+    guidance: Option<crate::config::GuidanceMode>,
+    notes_file: Option<&std::path::Path>,
+    private: bool,
+) -> anyhow::Result<()> {
+    if private {
+        cfg.review.guidance = crate::config::GuidanceMode::Off;
+        cfg.review.notes.clear();
+        return Ok(());
+    }
+    if let Some(mode) = guidance {
+        cfg.review.guidance = mode;
+    }
+    if let Some(path) = notes_file {
+        use std::io::Read;
+        let mut bytes = vec![];
+        std::fs::File::open(path)?
+            .take((crate::guidance::MAX_NOTES_CHARS * 4 + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        let notes = String::from_utf8(bytes)?;
+        if !cfg.review.notes.trim().is_empty() && !notes.trim().is_empty() {
+            cfg.review.notes.push_str("\n\n");
+        }
+        cfg.review.notes.push_str(notes.trim());
+    }
+    if cfg.review.notes.chars().count() > crate::guidance::MAX_NOTES_CHARS {
+        anyhow::bail!("review.notes must be at most 8000 characters");
+    }
+    Ok(())
 }
 
 /// Write the run report (redacted) without following symlinks under the
@@ -1081,6 +1131,53 @@ fn cache_info(repo: &std::path::Path) -> i32 {
 mod report_fix_tests {
     use super::sanitize_report_fixes;
     use serde_json::json;
+
+    #[test]
+    fn guidance_and_notes_flags_change_review_key_and_private_ignores_them() {
+        use super::{Cli, Cmd, apply_guidance_overrides};
+        use clap::Parser;
+        let d = tempfile::tempdir().unwrap();
+        crate::fsutil::write_atomic_in(d.path(), "notes.md", b"focus on migrations").unwrap();
+        let notes = d.path().join("notes.md");
+        let cli = Cli::try_parse_from([
+            "revera",
+            "review",
+            "--guidance",
+            "skills",
+            "--notes-file",
+            notes.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Cmd::Review {
+            guidance,
+            notes_file,
+            ..
+        } = cli.cmd
+        else {
+            panic!("review flags")
+        };
+        let mut cfg = crate::config::Config::parse(
+            "models:\n  investigator: {protocol: scripted, script: /dev/null, model: m}\n",
+            "test",
+        )
+        .unwrap();
+        let key = |cfg: &crate::config::Config| {
+            crate::state::review_key("base", "tree", "patch", &cfg.review_fingerprint("baseline"))
+        };
+        let before = key(&cfg);
+        let index = cfg.vera.index_key();
+        apply_guidance_overrides(&mut cfg, guidance, None, false).unwrap();
+        let guided = key(&cfg);
+        assert_ne!(before, guided);
+        apply_guidance_overrides(&mut cfg, None, notes_file.as_deref(), false).unwrap();
+        assert_ne!(guided, key(&cfg));
+        assert_eq!(index, cfg.vera.index_key());
+        assert!(cfg.review.notes.contains("focus on migrations"));
+        apply_guidance_overrides(&mut cfg, guidance, Some(&d.path().join("missing")), true)
+            .unwrap();
+        assert_eq!(before, key(&cfg));
+        assert!(cfg.review.notes.is_empty());
+    }
 
     #[test]
     fn sanitized_validated_reports_hide_investigator_and_rejected_fixes() {

@@ -63,22 +63,25 @@ pub struct ReviewConfig {
     /// seed stored state; `publish: comment` is rejected. Default true.
     #[serde(default = "default_true")]
     pub validate: bool,
-    /// Repository guidance given to the investigator, read from the base
-    /// commit: `off` (default), `review` (`REVIEW.md`) or `agents`
-    /// (`REVIEW.md`, else `AGENTS.md`, per directory).
+    /// Repository guidance read from the immutable base commit.
     #[serde(default)]
     pub guidance: GuidanceMode,
     #[serde(default = "default_guidance_bytes")]
     pub guidance_max_bytes: usize,
+    #[serde(default)]
+    pub notes: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize, Default, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum GuidanceMode {
     #[default]
     Off,
     Review,
     Agents,
+    Skills,
 }
 
 impl GuidanceMode {
@@ -87,6 +90,7 @@ impl GuidanceMode {
             Self::Off => "off",
             Self::Review => "review",
             Self::Agents => "agents",
+            Self::Skills => "skills",
         }
     }
 }
@@ -489,6 +493,7 @@ pub struct ReviewOverride {
     pub max_diff_bytes: Option<usize>,
     pub min_severity: Option<Severity>,
     pub guidance: Option<GuidanceMode>,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -627,6 +632,7 @@ impl Default for ReviewConfig {
             validate: default_true(),
             guidance: GuidanceMode::default(),
             guidance_max_bytes: default_guidance_bytes(),
+            notes: String::new(),
         }
     }
 }
@@ -1039,6 +1045,9 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+        if self.review.notes.chars().count() > crate::guidance::MAX_NOTES_CHARS {
+            bail!("review.notes must be at most 8000 characters");
+        }
         for (name, limit) in [
             (
                 "max_searches_per_review",
@@ -1203,6 +1212,9 @@ impl Config {
     /// token, and in event mode the Vera executable must not be a
     /// repository-relative path (PR content must never be executed).
     pub fn check_trust(&self, event_mode: bool) -> Result<()> {
+        if self.review.notes.chars().count() > crate::guidance::MAX_NOTES_CHARS {
+            bail!("review.notes must be at most 8000 characters");
+        }
         let gh = self.github.token_env.as_str();
         let check_env =
             |what: &str, env: &str| -> Result<()> { check_credential_env(what, env, gh) };
@@ -1359,6 +1371,7 @@ impl Config {
             "validate": self.review.validate,
             "guidance": self.review.guidance.as_str(),
             "guidance_max_bytes": self.review.guidance_max_bytes,
+            "notes": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(self.review.notes.as_bytes())),
             "web_search": self.web_search,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
@@ -1428,6 +1441,9 @@ impl Config {
             }
             if let Some(v) = r.guidance {
                 self.review.guidance = v;
+            }
+            if let Some(v) = &r.notes {
+                self.review.notes.clone_from(v);
             }
         }
         if let Some(b) = &p.budget {

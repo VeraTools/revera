@@ -54,6 +54,22 @@ callback then close. The `/setup` page remains available for configuration
 and recovery. Until model configuration is saved, jobs are skipped without
 creating PR checks. The dashboard writes `/data/revera.yaml` when you save models.
 
+## Review guidance
+
+Set a per-repository guidance level and operator notes in **Repositories →
+Review guidance**, and preview the files and skills on the default branch.
+An unset level inherits the review configuration; notes supplement its
+`review.notes` (8000 characters total). Repository preferences apply even when
+the repository has its own base-commit `revera.yaml`. The preview uses the
+server configuration for its global defaults; a repository's YAML can differ.
+Reviews read guidance and skills from the PR's immutable base commit, not its
+head. External/private reviews ignore these preferences and notes.
+
+The admin-only read APIs are `GET /api/repos/{owner}/{repo}/guidance` and
+`GET /api/repos/{owner}/{repo}/guidance/file?path=AGENTS.md`. The file endpoint
+only serves preview candidates. A truncated GitHub tree is marked in the
+preview. Guidance stays `off` by default; see [configuration](configuration.md#review).
+
 ## Connected accounts and organizations
 
 GitHub decides who may install an App on an account or organization. Revera

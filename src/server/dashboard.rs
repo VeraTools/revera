@@ -66,6 +66,10 @@ pub struct RepoPreference {
     pub trigger: Option<Trigger>,
     pub mode: Option<Mode>,
     pub fixes: Option<super::fixes::Override>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<crate::config::GuidanceMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -75,6 +79,8 @@ struct RepoPreferenceFile {
     mode: Option<Mode>,
     enabled: Option<bool>,
     fixes: Option<super::fixes::Override>,
+    guidance: Option<crate::config::GuidanceMode>,
+    notes: Option<String>,
 }
 
 impl From<RepoPreferenceFile> for RepoPreference {
@@ -85,6 +91,11 @@ impl From<RepoPreferenceFile> for RepoPreference {
                 .or_else(|| (file.enabled == Some(false)).then_some(Trigger::Off)),
             mode: file.mode,
             fixes: file.fixes,
+            guidance: file.guidance,
+            notes: file
+                .notes
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty()),
         }
     }
 }

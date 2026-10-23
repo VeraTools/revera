@@ -7,6 +7,7 @@ mod dashboard;
 mod events;
 mod external;
 mod fixes;
+mod guidance;
 mod mentions;
 mod queue;
 mod reconcile;
@@ -83,6 +84,7 @@ pub(super) struct Server {
     installations: Mutex<reconcile::Installations>,
     fixes: Mutex<fixes::Store>,
     fix_notify: Notify,
+    guidance_cache: Mutex<guidance::Cache>,
 }
 
 impl Server {
@@ -549,6 +551,7 @@ async fn initialize(
         installations: Mutex::new(reconcile::Installations::default()),
         fixes: Mutex::new(fixes),
         fix_notify: Notify::new(),
+        guidance_cache: Mutex::new(guidance::Cache::default()),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(

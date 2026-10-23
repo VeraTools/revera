@@ -74,7 +74,7 @@ pub async fn validate_candidates(
         let budget = cfg.budget.clone();
         let retries = cfg.budget.retries;
         let max_req = cfg.budget.run_max_requests;
-        let system = system_prompt.to_string();
+        let system = format!("{system_prompt}{}", toolbox.guidance_prompt());
         let terminal = terminal.clone();
         let role = role.to_string();
         let cand = c.clone();
