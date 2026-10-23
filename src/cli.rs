@@ -390,7 +390,7 @@ fn fork_skip(
         plan: crate::report::PublicationPlan {
             inline: vec![],
             summary_markdown: crate::report::summary_markdown(&crate::report::Summary {
-                coverage: reason,
+                coverage: "nothing; the pull request was not reviewed",
                 status: Some(RunStatus::Partial),
                 reason: Some(reason),
                 strategy: "none",

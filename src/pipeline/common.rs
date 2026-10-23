@@ -360,6 +360,78 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         };
         return Ok(PrepareOut::ShortCircuit(Box::new(rep), state));
     }
+    // nothing reviewable: an empty diff introduces nothing, so prior open
+    // findings no longer apply; a diff made only of excluded files is
+    // unchecked scope and stays partial with its findings untouched
+    if diff.files.is_empty() {
+        let excluded = !policy_gaps.is_empty();
+        let mut resolved = vec![];
+        if !excluded {
+            let open: Vec<(String, String)> = state
+                .open_findings()
+                .iter()
+                .map(|f| (f.id.clone(), f.title.clone()))
+                .collect();
+            for (id, title) in open {
+                state.mark(&id, FindingState::Resolved);
+                resolved.push(title);
+            }
+        }
+        let (status, reason, coverage) = if excluded {
+            (
+                RunStatus::Partial,
+                "every changed file is excluded by the content policy",
+                "nothing; every changed file is excluded by the content policy",
+            )
+        } else {
+            (
+                RunStatus::Complete,
+                "no changes between base and head",
+                "no changes between base and head",
+            )
+        };
+        state.record_outcome(&base_sha, &head_sha, &patch_id, &key, status);
+        state.save(&repo)?;
+        let plan_state = state.public_projection(cfg.review.publish_uncertain);
+        let carried = crate::report::carried_findings(&state, &[]);
+        let summary = summary_markdown(&Summary {
+            coverage,
+            coverage_gaps: &policy_gaps,
+            status: Some(status),
+            reason: excluded.then_some(reason),
+            strategy: strategy_name,
+            publish_uncertain: cfg.review.publish_uncertain,
+            carried_open: carried.len(),
+            resolved: &resolved,
+            ..Default::default()
+        });
+        let rep = RunReport {
+            status,
+            reason: Some(reason.into()),
+            base: base_sha,
+            head: head_sha,
+            strategy: strategy_name.into(),
+            findings: vec![],
+            carried,
+            plan: PublicationPlan {
+                inline: vec![],
+                summary_markdown: summary,
+                state: plan_state,
+                publish_uncertain: cfg.review.publish_uncertain,
+            },
+            ledger: ledger_report(&ledger.0.lock().unwrap(), wall.elapsed().as_millis() as u64),
+            publication: Default::default(),
+            coverage_gaps: policy_gaps,
+            timing: timing.finish(wall),
+            stats: RunStats {
+                resolved: resolved.len(),
+                validation: "not needed".into(),
+                retrieval: "not needed".into(),
+                ..Default::default()
+            },
+        };
+        return Ok(PrepareOut::ShortCircuit(Box::new(rep), state));
+    }
     if state.version != 0 && state.version != crate::state::STATE_VERSION {
         tracing::warn!(
             "state version {} differs from {}; re-reviewing (publication ids retained)",
@@ -928,6 +1000,54 @@ mod tests {
         assert_eq!(f.evidence, ["bug.rs:1 Evidence"]);
         assert_eq!(f.to_finding().id(), f.id);
         assert!(!is_publishable(&f.to_finding()));
+    }
+
+    #[tokio::test]
+    async fn empty_diff_finishes_without_models_and_resolves_open_findings() {
+        let (dir, cfg, mut req) = carried_fixture();
+        req.base = "HEAD".into();
+        carried_state().save(dir.path()).unwrap();
+        let PrepareOut::ShortCircuit(report, state) =
+            prepare(&cfg, &req, "baseline").await.unwrap()
+        else {
+            panic!("an empty diff must not reach the models")
+        };
+        assert_eq!(report.status, RunStatus::Complete);
+        assert_eq!(report.ledger.requests, 0);
+        assert!(report.carried.is_empty());
+        assert!(state.open_findings().is_empty());
+        let md = &report.plan.summary_markdown;
+        assert!(md.contains("Resolved since last review"), "{md}");
+        assert!(md.contains("no changes between base and head"), "{md}");
+    }
+
+    #[tokio::test]
+    async fn policy_excluded_diff_is_partial_and_keeps_findings() {
+        let (dir, cfg, mut req) = carried_fixture();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        };
+        std::fs::write(dir.path().join(".env"), "TOKEN=x\n").unwrap();
+        git(&["add", "-f", ".env"]);
+        git(&["commit", "-qm", "env only"]);
+        req.base = "HEAD~1".into();
+        carried_state().save(dir.path()).unwrap();
+        let PrepareOut::ShortCircuit(report, state) =
+            prepare(&cfg, &req, "baseline").await.unwrap()
+        else {
+            panic!("a fully excluded diff must not reach the models")
+        };
+        assert_eq!(report.status, RunStatus::Partial);
+        assert_eq!(report.coverage_gaps.len(), 1);
+        assert!(!state.open_findings().is_empty());
     }
 
     #[tokio::test]

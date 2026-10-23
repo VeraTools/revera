@@ -511,16 +511,17 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         ));
     }
     s.push('\n');
-    if !accepted.is_empty() {
-        for f in &accepted {
-            s.push_str(&format!(
-                "- **[{}]** {}:{} — {}\n",
-                f.severity,
-                public_code_span(&f.file),
-                f.start_line,
-                public_line(&f.title)
-            ));
-        }
+    // findings that cannot anchor inline are listed once, in their own section
+    let outside_ids: std::collections::HashSet<String> =
+        inp.outside_diff.iter().map(|f| f.id()).collect();
+    for f in accepted.iter().filter(|f| !outside_ids.contains(&f.id())) {
+        s.push_str(&format!(
+            "- **[{}]** {}:{} — {}\n",
+            f.severity,
+            public_code_span(&f.file),
+            f.start_line,
+            public_line(&f.title)
+        ));
     }
     if inp.publish_uncertain {
         for f in inp

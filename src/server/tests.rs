@@ -594,7 +594,9 @@ fn child_environment_is_token_scoped() {
     let map: std::collections::BTreeMap<_, _> = env.into_iter().collect();
     assert_eq!(map["CUSTOM_TOKEN"], "installation-token");
     assert_eq!(map["XDG_CACHE_HOME"], "/data/cache/owner/repo");
-    assert_eq!(map["GIT_CONFIG_COUNT"], "1");
+    assert_eq!(map["GIT_CONFIG_COUNT"], "3");
+    assert_eq!(map["GIT_CONFIG_KEY_1"], "gc.autoDetach");
+    assert_eq!(map["GIT_CONFIG_KEY_2"], "maintenance.autoDetach");
     assert_eq!(
         map["GIT_CONFIG_KEY_0"],
         "http.https://github.com/.extraheader"
@@ -639,7 +641,7 @@ async fn injectable_child_runs_with_base_config_and_completes_check() {
             &script,
             r#"#!/bin/sh
 [ "$CUSTOM_TOKEN" = 'installation-token' ] || exit 1
-[ "$GIT_CONFIG_COUNT" = 1 ] || exit 1
+[ "$GIT_CONFIG_COUNT" = 3 ] || exit 1
 profile=standard
 while [ $# -gt 0 ]; do
   case $1 in
