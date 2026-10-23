@@ -246,6 +246,23 @@ The server tests unchecked roles at startup and each reconciliation tick;
 active retrieval keys. Results survive restarts; unchanged saves and unrelated
 keys do not clear them.
 
+## Pull requests
+
+The backend provides an administrator-only inbox at `GET /api/pulls` for open
+PRs across approved installed repositories, including repositories with trigger
+off. Reconciliation and PR webhooks maintain its in-memory cache; the response
+includes its oldest repository refresh time and each PR's effective trigger,
+mode and Revera review state (including active, outdated and failed reviews).
+
+The planned **Pull requests** dashboard will filter this inbox by repository,
+author and review state, with review and fix actions on the existing endpoints.
+Its detail page will show the GitHub description, comments, reviews and review
+threads, including resolved/outdated state, alongside Revera jobs and fixes.
+`GET /api/repos/{owner}/{repo}/pulls/{number}` supplies this conversation with
+20-second GitHub caching, redacted bodies and bounded thread context. Truncation
+flags identify conversations that exceed the response limits. The UI arrives
+in the next phase; existing review and fix pages are unchanged.
+
 ## External public PR reviews
 
 An external review reads an open public PR on `github.com` without requiring

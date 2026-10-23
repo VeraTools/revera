@@ -547,6 +547,7 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                     None,
                 )
                 .await?;
+            server.pulls.lock().unwrap().listing(&repo, &prs);
             let mut seen = server.seen.lock().await;
             let (preferences, retry, retry_at) = {
                 let dashboard = server.dashboard.lock().await;
@@ -631,6 +632,11 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
     for repo in removed {
         server.remove_repo(repo).await?;
     }
+    server
+        .pulls
+        .lock()
+        .unwrap()
+        .retain_repos(&inventory.values().map(|info| info.repo.id).collect());
     let mut dashboard = server.dashboard.lock().await;
     super::dashboard::write_inventory(&server.settings.data_dir, installed, &inventory)?;
     dashboard.installations = installed;
