@@ -147,7 +147,7 @@ export interface Overview {
   history_since: string | null;
   recent: JobSummary[];
 }
-export interface Repository {
+export interface Repository extends RepositoryGuidanceSummary {
   full_name: string;
   private: boolean;
   default_branch: string;
@@ -180,7 +180,10 @@ export interface ServerSettings {
   allowed_owners: string[];
   default_trigger: Trigger;
   default_mode: ReviewMode;
-  repos: Record<string, { trigger?: Trigger | null; mode?: ReviewMode | null }>;
+  repos: Record<
+    string,
+    { trigger?: Trigger | null; mode?: ReviewMode | null } & RepoGuidanceSettings
+  >;
   review_drafts: boolean;
   index_on_push: boolean;
   skip_authors: string[];
@@ -429,4 +432,40 @@ export interface FixPlan {
   delivery: FixCapability[];
   existing: FixSummary | null;
   blocked: string | null;
+}
+
+// Repository review guidance (base-commit content; operator notes are separate).
+export type GuidanceMode = 'off' | 'review' | 'agents' | 'skills';
+export interface RepositoryGuidanceSummary {
+  guidance: GuidanceMode | null;
+  has_notes: boolean;
+}
+export interface RepoGuidanceSettings {
+  guidance?: GuidanceMode | null;
+  notes?: string | null;
+}
+export interface GuidanceFile {
+  path: string;
+  dir: string;
+  kind: 'review' | 'agents' | 'claude';
+  bytes: number;
+}
+export interface GuidanceSkill {
+  name: string;
+  path: string;
+  description: string;
+  bytes: number;
+}
+export interface GuidancePreview {
+  full_name: string;
+  default_branch: string;
+  tree: string;
+  truncated_tree: boolean;
+  files: GuidanceFile[];
+  skills: GuidanceSkill[];
+  skills_omitted: number;
+  global: { guidance: GuidanceMode; notes_chars: number };
+  repo: { guidance: GuidanceMode | null; notes: string | null };
+  effective_guidance: GuidanceMode;
+  max_bytes: number;
 }
