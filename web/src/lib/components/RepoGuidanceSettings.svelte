@@ -44,7 +44,13 @@
   const groups = $derived(guidanceGroups(data?.files || [], effective));
   const rootTooLarge = $derived(
     groups.some(
-      (group) => !group.dir && group.files.some((file) => file.used && file.bytes > maxBytes),
+      (group) =>
+        !group.dir &&
+        group.files.some(
+          (file) =>
+            file.used &&
+            file.bytes + new TextEncoder().encode(`\n--- ${file.path} ---\n`).length > maxBytes,
+        ),
     ),
   );
   const normalizedNotes = $derived(notes.trim() || null);
@@ -258,6 +264,9 @@
                 {/each}
               </div>
             {/each}
+            {#if data.files_omitted > 0}<p class="helper">
+                {data.files_omitted} more guidance files are not shown.
+              </p>{/if}
             {#if effective === 'skills'}
               <div class="guidance-group">
                 <h4>Project skills <span class="muted">{data.skills.length}</span></h4>

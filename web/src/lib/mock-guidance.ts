@@ -106,6 +106,7 @@ export function mockGuidanceRequest(
             bytes: bytes(contents[path]),
           }))
         : [],
+      files_omitted: 0,
       skills: hasFiles
         ? skillDescriptions.map(([name, description]) => ({
             name,

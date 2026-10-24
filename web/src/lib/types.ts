@@ -574,6 +574,7 @@ export interface GuidancePreview {
   tree: string;
   truncated_tree: boolean;
   files: GuidanceFile[];
+  files_omitted: number;
   skills: GuidanceSkill[];
   skills_omitted: number;
   global: { guidance: GuidanceMode; notes_chars: number };

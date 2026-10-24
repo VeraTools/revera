@@ -72,7 +72,7 @@ export function renderSummary(md: string): string {
 
 // GitHub bodies are data, never HTML. Tokenize raw text and escape each leaf;
 // generated markup never re-enters the parser (including links and code).
-function githubInline(text: string, depth = 0): string {
+function githubInline(text: string, depth = 0, links = true): string {
   if (depth > 8) return escape(text);
   const token =
     /`([^`\n]+)`|!\[([^\[\]\n]*)\]\((https?:\/\/[^\s)]+)\)|\[([^\[\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|(?<!\w)(?:\*([^*\n]+)\*|_([^_\n]+)_)(?!\w)|https?:\/\/[^\s<>]+/g;
@@ -84,10 +84,14 @@ function githubInline(text: string, depth = 0): string {
     if (code !== undefined) result += `<code>${escape(code)}</code>`;
     else if (image !== undefined || label !== undefined) {
       const href = imageUrl || linkUrl;
-      result += `<a href="${escape(href)}" rel="noreferrer" target="_blank">${image !== undefined ? 'image' : githubInline(label, depth + 1)}</a>`;
-    } else if (bold !== undefined) result += `<strong>${githubInline(bold, depth + 1)}</strong>`;
+      result += links
+        ? `<a href="${escape(href)}" rel="noreferrer" target="_blank">${image !== undefined ? 'image' : githubInline(label, depth + 1, false)}</a>`
+        : escape(match[0]);
+    } else if (bold !== undefined)
+      result += `<strong>${githubInline(bold, depth + 1, links)}</strong>`;
     else if (starItalic !== undefined || underscoreItalic !== undefined)
-      result += `<em>${githubInline(starItalic ?? underscoreItalic, depth + 1)}</em>`;
+      result += `<em>${githubInline(starItalic ?? underscoreItalic, depth + 1, links)}</em>`;
+    else if (!links) result += escape(match[0]);
     else {
       const href = match[0].replace(/[.,;:!?)\]]+$/, '');
       result += `<a href="${escape(href)}" rel="noreferrer" target="_blank">${escape(href)}</a>${escape(match[0].slice(href.length))}`;

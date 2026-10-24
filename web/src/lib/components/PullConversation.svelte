@@ -11,7 +11,9 @@
   const items = $derived(conversation(detail, unresolved, hideBots));
   const unresolvedCount = $derived(detail.threads.filter((thread) => !thread.is_resolved).length);
   const truncated = $derived(
-    Object.values(detail.truncated).some(Boolean) ||
+    detail.truncated.comments ||
+      detail.truncated.reviews ||
+      detail.truncated.threads ||
       detail.threads.some((thread) => thread.truncated),
   );
 </script>
@@ -19,7 +21,12 @@
 <section aria-labelledby="conversation-heading" class="conversation">
   <h2 id="conversation-heading">Conversation</h2>
   <p class="helper conversation-summary">
-    {detail.comments.length} comments · {detail.reviews.length} reviews · {detail.threads.length} threads
+    {detail.comments.length}
+    {detail.comments.length === 1 ? 'comment' : 'comments'} ·
+    {detail.reviews.length}
+    {detail.reviews.length === 1 ? 'review' : 'reviews'} ·
+    {detail.threads.length}
+    {detail.threads.length === 1 ? 'thread' : 'threads'}
     ({unresolvedCount} unresolved)
   </p>
   <div class="segmented conversation-filters" role="group" aria-label="Conversation filters">

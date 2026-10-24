@@ -22,6 +22,7 @@
   let seenJob: JobSummary | undefined,
     seenFix: FixSummary | undefined,
     seenRepos = 0;
+  const loaded = $derived(!!detail);
   const route = $derived({
     owner: page.params.owner!,
     repo: page.params.repo!,
@@ -67,6 +68,7 @@
   });
   $effect(() => {
     const { job, fix, repos } = $live;
+    if (!loaded) return;
     untrack(() => {
       // Fix events use the canonical repository name, not its numeric ID.
       const changed =

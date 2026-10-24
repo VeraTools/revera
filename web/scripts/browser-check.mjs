@@ -1361,7 +1361,7 @@ async function checkManifestChoices() {
 
 try {
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
-    await checkPullRegressions({ open });
+    await checkPullRegressions({ open, output });
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
     await checkReviewRegressions({ open, choose, edit });
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkExternalReviews();

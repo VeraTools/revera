@@ -60,12 +60,12 @@
 </script>
 
 <div class="pull-actions">
-  {#if inactive}
-    <span class="helper">{pull.merged ? 'Merged' : 'Closed'}</span>
-  {:else if pull.review.state === 'reviewing'}
+  {#if pull.review.state === 'reviewing'}
     <button class="button small danger" disabled={busy} onclick={() => void cancel()}
       ><Square size={12} />Cancel</button
     >
+  {:else if inactive}
+    <span class="helper">{pull.merged ? 'Merged' : 'Closed'}</span>
   {:else if canFix(pull)}
     <a class="button small" href={`/fixes/new?job=${encodeURIComponent(pull.review.latest!.id)}`}
       >Fix findings</a

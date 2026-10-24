@@ -173,13 +173,6 @@ function seed(jobs: JobSummary[]) {
       });
   }
 }
-const comment = (id: string, author: PullAuthor, body: string, minutes: number): PullComment => ({
-  id,
-  author,
-  body,
-  created_at: ago(minutes),
-  url: `https://github.com/northstar/worker/pull/234#${id}`,
-});
 const description = `## Keep search results consistent
 
 An empty response currently leaves the previous query visible. This change clears the result set and ignores late responses.
@@ -226,6 +219,13 @@ Existing callers still receive the same result shape. See https://github.com/nor
 No migration is required. **Review the request guard** before merging.
 `;
 function discussion(pull: PullSummary): Pick<PullDetail, 'comments' | 'reviews' | 'threads'> {
+  const comment = (id: string, author: PullAuthor, body: string, minutes: number): PullComment => ({
+    id,
+    author,
+    body,
+    created_at: ago(minutes),
+    url: `${pull.url}#${id}`,
+  });
   const threads: PullThread[] = [
     {
       id: 'thread-resolved',
