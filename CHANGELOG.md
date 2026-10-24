@@ -16,8 +16,9 @@
   to open with `read_skill`. Everything is read from the base commit.
   Validators now see the same guidance as the investigator. Guidance stays
   `off` by default.
-- `review.notes` and `revera review --notes-file` add operator review notes;
-  `--guidance` overrides the level. In the App, **Repositories → Review
+- `review.notes` and `revera review --notes-file` add operator review notes
+  (with `--event`, the file must be outside the checkout); `--guidance`
+  overrides the level. In the App, **Repositories → Review
   guidance** sets the level and notes per repository and previews which files
   and skills a review would read.
 - A PR whose diff is empty finishes without model calls and resolves earlier
