@@ -265,7 +265,9 @@
               </div>
             {/each}
             {#if data.files_omitted > 0}<p class="helper">
-                {data.files_omitted} more guidance files are not shown.
+                {data.files_omitted} more guidance {data.files_omitted === 1
+                  ? 'file is'
+                  : 'files are'} not shown.
               </p>{/if}
             {#if effective === 'skills'}
               <div class="guidance-group">

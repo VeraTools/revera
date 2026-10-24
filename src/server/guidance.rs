@@ -101,9 +101,7 @@ async fn blob(server: &Server, repo: &Repo, token: &str, sha: &str, cap: usize) 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Skill files read for one preview; duplicates by name still leave room
-/// for a full index.
-const MAX_SKILL_FETCHES: usize = 2 * guidance::MAX_SKILLS;
+const MAX_PREVIEW_FILES: usize = 64;
 
 async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot> {
     let branch: String =
@@ -151,7 +149,9 @@ async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot>
             skill_files.insert(path.to_owned(), candidate);
         }
     }
-    let mut candidates: BTreeMap<_, _> = guidance_files.into_iter().take(64).collect();
+    let files_omitted = guidance_files.len().saturating_sub(MAX_PREVIEW_FILES);
+    let mut candidates: BTreeMap<_, _> =
+        guidance_files.into_iter().take(MAX_PREVIEW_FILES).collect();
     let files: Vec<_> = candidates
         .iter()
         .map(|(path, file)| {
@@ -165,19 +165,25 @@ async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot>
     // use, in the loader's order, and count the rest as omitted
     let mut ordered: Vec<_> = skill_files.into_iter().collect();
     ordered.sort_by_key(|(path, _)| (guidance::skill_path(path).map(|(r, _)| r), path.clone()));
-    let unfetched = ordered.len().saturating_sub(MAX_SKILL_FETCHES);
-    ordered.truncate(MAX_SKILL_FETCHES);
+    let unfetched = ordered.len().saturating_sub(guidance::MAX_SKILL_READS);
+    ordered.truncate(guidance::MAX_SKILL_READS);
     let skill_files: BTreeMap<_, _> = ordered.into_iter().collect();
+    // like the loader, an oversized or unreadable skill keeps its
+    // directory-name entry
     let parsed: Vec<Skill> = stream::iter(skill_files.clone())
         .map(|(path, file)| async move {
-            let text = blob(server, repo, token, &file.sha, guidance::FRONT_MATTER_BYTES).await?;
-            Ok::<_, anyhow::Error>(guidance::parse_skill(&path, &text))
+            let text = if file.bytes > guidance::MAX_BLOB_BYTES as u64 {
+                String::new()
+            } else {
+                blob(server, repo, token, &file.sha, guidance::FRONT_MATTER_BYTES)
+                    .await
+                    .unwrap_or_default()
+            };
+            guidance::parse_skill(&path, &text)
         })
         .buffer_unordered(6)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<_>>()?;
+        .collect()
+        .await;
     let (skills, omitted) = guidance::select_skills(parsed);
     let omitted = omitted + unfetched;
     let skills: Vec<_> = skills.iter().map(|skill| {
@@ -189,7 +195,7 @@ async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot>
     let mut response = json!({
         "full_name": repo.full_name, "default_branch": repo.default_branch, "tree": sha,
         "truncated_tree": tree["truncated"].as_bool().unwrap_or(false),
-        "files": files, "skills": skills, "skills_omitted": omitted
+        "files": files, "files_omitted": files_omitted, "skills": skills, "skills_omitted": omitted
     });
     crate::redact::json(&mut response);
     let snapshot = Snapshot {
@@ -217,7 +223,7 @@ async fn preview(
     value["full_name"] = json!(repo.full_name);
     value["default_branch"] = json!(repo.default_branch);
     let global = match server.config_yaml()? {
-        Some(yaml) => crate::config::Config::parse(&yaml, "server config")?.review,
+        Some(yaml) => server.dashboard.lock().await.parse(&yaml)?.review,
         None => crate::config::ReviewConfig::default(),
     };
     let pref = server

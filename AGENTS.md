@@ -17,7 +17,7 @@ diff, review identity, state and publication. Keep that split.
   through `redact::secret_env`, send text through `redact::text`/`redact::json`,
   write files through `fsutil` (symlink-safe, atomic). `config::SENSITIVE_GLOBS`
   is the single content policy for tools and diffs.
-- The Vera index identity (`Config::index_key`) covers only what changes
+- The Vera index identity (`VeraConfig::index_key`) covers only what changes
   indexed content. Reranker, model routes, prompts, budgets and guidance
   belong in the review fingerprint so review-only changes keep a warm cache.
 - Guidance (`review.guidance`) stays `off` by default until an evaluation
@@ -25,7 +25,7 @@ diff, review identity, state and publication. Keep that split.
 
 ## Checks
 
-Everything offline; run before pushing:
+Everything runs offline except `npm ci`; run before pushing:
 
 ```sh
 cargo fmt --check && cargo clippy --all-targets -- -D warnings

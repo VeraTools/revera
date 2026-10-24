@@ -1197,27 +1197,27 @@ async fn bulk_repo_settings(
     Ok(output(json!({"ok": true, "updated": names.len()})))
 }
 
+/// Trimmed, length-checked and redacted repository notes (`None` when blank).
+fn normalize_notes(notes: Option<String>) -> Result<Option<String>, Error> {
+    let notes = notes.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    if notes
+        .as_ref()
+        .is_some_and(|s| s.chars().count() > crate::guidance::MAX_NOTES_CHARS)
+    {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "notes must be at most 8000 characters".into(),
+        ));
+    }
+    Ok(notes.map(|s| crate::redact::text(&s).into_owned()))
+}
+
 async fn repo_settings(
     State(server): State<Arc<Server>>,
     Path((owner, name)): Path<(String, String)>,
     Json(input): Json<RepoSettings>,
 ) -> ApiResult {
-    let notes = input
-        .notes
-        .map(|notes| {
-            let notes = notes.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
-            if notes
-                .as_ref()
-                .is_some_and(|s| s.chars().count() > crate::guidance::MAX_NOTES_CHARS)
-            {
-                return Err(Error(
-                    StatusCode::BAD_REQUEST,
-                    "notes must be at most 8000 characters".into(),
-                ));
-            }
-            Ok(notes.map(|s| crate::redact::text(&s).into_owned()))
-        })
-        .transpose()?;
+    let notes = input.notes.map(normalize_notes).transpose()?;
     let full_name = format!("{owner}/{name}");
     repo(&server, &full_name).await?;
     let mut dashboard = server.dashboard.lock().await;
@@ -1376,9 +1376,10 @@ async fn server_settings(
             "administrator logins must not be blank".into(),
         ));
     }
-    for name in input.repos.keys() {
+    for (name, settings) in &mut input.repos {
         let value = json!({"id": 1, "full_name": name});
         Repo::parse(&value, 1).map_err(invalid)?;
+        settings.notes = normalize_notes(settings.notes.take())?;
     }
     let _guard = server.reconcile_lock.lock().await;
     let mut dashboard = server.dashboard.lock().await;

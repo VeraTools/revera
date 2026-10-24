@@ -208,7 +208,15 @@ pub async fn tree_paths(repo: &Path, rev: &str, roots: &[&str]) -> Result<Vec<St
     if !is_oid(rev) {
         bail!("tree_paths requires a resolved object id");
     }
-    let mut args = vec!["ls-tree", "-r", "-z", "--name-only", rev, "--"];
+    let mut args = vec![
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        "--name-only",
+        rev,
+        "--",
+    ];
     args.extend_from_slice(roots);
     Ok(git(repo, &args)
         .await?

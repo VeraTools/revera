@@ -59,7 +59,8 @@ creating PR checks. The dashboard writes `/data/revera.yaml` when you save model
 Set a per-repository guidance level and operator notes in **Repositories →
 Review guidance**, and preview the files and skills on the default branch.
 An unset level inherits the review configuration; notes supplement its
-`review.notes` (8000 characters total). Repository preferences apply even when
+`review.notes` (8000 characters total; a review trims the repository notes to
+fit and logs a warning). Repository preferences apply even when
 the repository has its own base-commit `revera.yaml`. The preview uses the
 server configuration for its global defaults; a repository's YAML can differ.
 Reviews read guidance and skills from the PR's immutable base commit, not its

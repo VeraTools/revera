@@ -826,7 +826,7 @@ impl ToolBox {
                 let output = self.truncate(crate::redact::text(&s).into_owned());
                 // The shared truncator appends a note beyond its excerpt limit.
                 // External evidence has a strict final model-visible byte cap.
-                let output = if name.starts_with("web_") || name == "read_skill" {
+                let output = if name.starts_with("web_") {
                     crate::text::excerpt_bytes(&output, self.max_output_bytes)
                 } else {
                     output
@@ -861,7 +861,7 @@ impl ToolBox {
             .strip_suffix("/SKILL.md")
             .ok_or("invalid skill")?;
         let path = format!("{dir}/{file}");
-        if crate::guidance::sensitive(&path) {
+        if crate::guidance::sensitive(&path) || self.is_excluded(&path) {
             return Err("file is excluded by content policy".into());
         }
         let bytes = crate::git::read_blob(

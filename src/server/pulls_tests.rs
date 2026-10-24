@@ -85,6 +85,8 @@ async fn webhook_cache_upserts_all_supported_actions_and_removes_closed_and_unin
         "synchronize",
         "ready_for_review",
         "converted_to_draft",
+        "labeled",
+        "unlabeled",
     ]
     .iter()
     .enumerate()
@@ -92,6 +94,19 @@ async fn webhook_cache_upserts_all_supported_actions_and_removes_closed_and_unin
         let mut pull = open_pull(7, &format!("head-{index}"));
         pull["title"] = json!(action);
         pull["draft"] = json!(*action == "converted_to_draft");
+        let labels = if *action == "labeled" {
+            json!(["bug", "ready"])
+        } else {
+            json!(["bug"])
+        };
+        pull["labels"] = json!(
+            labels
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| json!({"name": name}))
+                .collect::<Vec<_>>()
+        );
         webhook_pull(&url, action, pull).await;
         let value = get(&client, &url, "/api/pulls", &cookie).await;
         assert!(
@@ -109,7 +124,7 @@ async fn webhook_cache_upserts_all_supported_actions_and_removes_closed_and_unin
         assert_eq!(pull["base_ref"], "main");
         assert_eq!(pull["head_sha"], format!("head-{index}"));
         assert_eq!(pull["draft"], *action == "converted_to_draft");
-        assert_eq!(pull["labels"], json!(["bug"]));
+        assert_eq!(pull["labels"], labels);
         assert_eq!(pull["trigger"], "off");
     }
     webhook_pull(&url, "closed", open_pull(7, "head")).await;
@@ -485,9 +500,16 @@ async fn detail_maps_graphql_threads_redacts_bodies_and_joins_live_jobs_fixes_an
 
 #[tokio::test]
 async fn detail_auth_unknown_repo_and_graphql_errors_are_safe() {
-    for response in [ResponseTemplate::new(200).set_body_json(json!({"errors":[{"message":"private-upstream-diagnostic"}],"data":{"repository":null}})),
-        ResponseTemplate::new(503).set_body_string("private-upstream-diagnostic"),
-        ResponseTemplate::new(200).set_body_json(json!({"data":{"repository":{"pullRequest":null}}}))] {
+    let unavailable = json!({"error":"GitHub pull request unavailable"});
+    let not_found = json!({"error":"not found"});
+    for (response, status, error) in [
+        (ResponseTemplate::new(200).set_body_json(json!({"errors":[{"message":"private-upstream-diagnostic"}],"data":{"repository":null}})), 502, &unavailable),
+        (ResponseTemplate::new(503).set_body_string("private-upstream-diagnostic"), 502, &unavailable),
+        (ResponseTemplate::new(200).set_body_json(json!({"errors":[{"type":"NOT_FOUND","message":"private-upstream-diagnostic"},{"type":"FORBIDDEN"}],"data":{"repository":{"pullRequest":null}}})), 502, &unavailable),
+        // a pull request number that does not exist is a 404, not an upstream failure
+        (ResponseTemplate::new(200).set_body_json(json!({"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a PullRequest"}],"data":{"repository":{"pullRequest":null}}})), 404, &not_found),
+        (ResponseTemplate::new(200).set_body_json(json!({"data":{"repository":{"pullRequest":null}}})), 404, &not_found),
+    ] {
         let mock = MockServer::start().await;
         let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
         add_repo(&server).await;
@@ -500,8 +522,8 @@ async fn detail_auth_unknown_repo_and_graphql_errors_are_safe() {
         }
         assert_eq!(client.get(format!("{url}/api/repos/owner/unknown/pulls/7")).header("Cookie", &cookie).send().await.unwrap().status(), 404);
         let response = client.get(format!("{url}/api/repos/owner/repo/pulls/7")).header("Cookie", &cookie).send().await.unwrap();
-        assert_eq!(response.status(), 502);
-        assert_eq!(response.json::<Value>().await.unwrap(), json!({"error":"GitHub pull request unavailable"}));
+        assert_eq!(response.status(), status);
+        assert_eq!(&response.json::<Value>().await.unwrap(), error);
         server.dashboard.lock().await.preferences.admins.clear();
         for route in ["/api/pulls", "/api/repos/owner/repo/pulls/7"] {
             assert_eq!(client.get(format!("{url}{route}")).header("Cookie", &cookie).send().await.unwrap().status(), 401);

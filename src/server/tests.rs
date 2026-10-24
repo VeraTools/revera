@@ -1080,6 +1080,44 @@ async fn repository_guidance_patch_validates_trims_and_resets() {
             .status(),
         422
     );
+    // the whole-preferences save applies the same notes rules
+    crate::redact::register("guidance-notes-secret-value");
+    let settings = format!("{url}/api/settings/server");
+    let mut preferences: Value = client
+        .get(&settings)
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for (notes, status) in [
+        (json!("x".repeat(8001)), 400),
+        (json!("  key guidance-notes-secret-value  "), 200),
+    ] {
+        preferences["repos"]["owner/repo"] = json!({"notes": notes});
+        assert_eq!(
+            client
+                .put(&settings)
+                .header("Cookie", &cookie)
+                .header("X-Revera-CSRF", &csrf)
+                .json(&preferences)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+    }
+    let saved = std::fs::read_to_string(data.path().join("settings.json")).unwrap();
+    assert!(!saved.contains("guidance-notes-secret-value"), "{saved}");
+    let prefs: dashboard::Preferences = serde_json::from_str(&saved).unwrap();
+    let notes = prefs.repos["owner/repo"].notes.as_deref().unwrap();
+    assert!(
+        notes.starts_with("key ") && !notes.ends_with(' '),
+        "{notes}"
+    );
     task.abort();
 }
 
@@ -1151,6 +1189,7 @@ async fn guidance_preview_uses_default_tree_caches_skills_and_gates_file_reads()
     assert_eq!(first["global"]["notes_chars"], 12);
     assert_eq!(first["effective_guidance"], "agents");
     assert_eq!(first["files"].as_array().unwrap().len(), 2);
+    assert_eq!(first["files_omitted"], 0);
     assert_eq!(first["skills"][0]["name"], "rust");
     assert_eq!(first["skills"][0]["description"], "Check Rust invariants.");
     assert_eq!(first["skills_omitted"], 0);
@@ -1220,12 +1259,27 @@ async fn guidance_preview_caps_skill_blob_requests() {
         .mount(&mock)
         .await;
     let skill_sha = "c".repeat(40);
-    let tree: Vec<Value> = (0..170)
+    let (big_sha, missing_sha) = ("d".repeat(40), "e".repeat(40));
+    let mut tree: Vec<Value> = (0..170)
         .map(|i| {
             json!({"path": format!(".agents/skills/s{i:03}/SKILL.md"), "type":"blob",
             "mode":"100644", "sha": skill_sha, "size": 10})
         })
         .collect();
+    // an oversized skill is never fetched and an unreadable one does not
+    // fail the preview; both keep their directory-name entries
+    tree.push(
+        json!({"path": ".agents/skills/aaa-big/SKILL.md", "type":"blob",
+        "mode":"100644", "sha": big_sha, "size": crate::guidance::MAX_BLOB_BYTES + 1}),
+    );
+    tree.push(
+        json!({"path": ".agents/skills/aaa-missing/SKILL.md", "type":"blob",
+        "mode":"100644", "sha": missing_sha, "size": 10}),
+    );
+    tree.extend((0..70).map(|i| {
+        json!({"path": format!("d{i:03}/AGENTS.md"), "type":"blob",
+        "mode":"100644", "sha": "f".repeat(40), "size": 10})
+    }));
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/git/trees/main"))
         .respond_with(
@@ -1236,7 +1290,18 @@ async fn guidance_preview_caps_skill_blob_requests() {
     Mock::given(method("GET"))
         .and(path(format!("/repos/owner/repo/git/blobs/{skill_sha}")))
         .respond_with(ResponseTemplate::new(200).set_body_string("Skill body"))
-        .expect(2 * crate::guidance::MAX_SKILLS as u64)
+        .expect(crate::guidance::MAX_SKILL_READS as u64 - 2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{big_sha}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Big body"))
+        .expect(0)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{missing_sha}")))
+        .respond_with(ResponseTemplate::new(404))
         .mount(&mock)
         .await;
     let (url, task) = http(server.clone()).await;
@@ -1253,9 +1318,13 @@ async fn guidance_preview_caps_skill_blob_requests() {
     assert!(shown > 0 && shown <= crate::guidance::MAX_SKILLS);
     assert_eq!(
         shown as u64 + preview["skills_omitted"].as_u64().unwrap(),
-        170
+        172
     );
-    assert_eq!(preview["skills"][0]["name"], "s000");
+    assert_eq!(preview["skills"][0]["name"], "aaa-big");
+    assert_eq!(preview["skills"][1]["name"], "aaa-missing");
+    assert_eq!(preview["skills"][2]["name"], "s000");
+    assert_eq!(preview["files"].as_array().unwrap().len(), 64);
+    assert_eq!(preview["files_omitted"], 6);
     task.abort();
 }
 

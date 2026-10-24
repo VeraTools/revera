@@ -272,6 +272,19 @@ fn skills_front_matter_discovery_policy_and_caps_are_shared() {
     .prompt_block();
     assert!(index.len() <= 8 * 1024);
     assert!(index.contains("skills omitted"));
+    // one entry too long for the remaining index budget does not hide the
+    // shorter ones after it
+    let mut mixed: Vec<_> = (0..5)
+        .map(|i| parse_skill(&format!(".agents/skills/s{i}/SKILL.md"), ""))
+        .collect();
+    for skill in mixed.iter_mut().take(4) {
+        skill.description = "d".repeat(300);
+    }
+    mixed[1].description = "x".repeat(8000);
+    let (selected, omitted) = select_skills(mixed);
+    assert_eq!(omitted, 1);
+    assert!(selected.iter().any(|s| s.name == "s4"));
+    assert!(selected.iter().all(|s| s.name != "s1"));
     assert_eq!(
         parse_skill(
             ".agents/skills/a/SKILL.md",
@@ -364,6 +377,24 @@ async fn skills_discovery_and_read_skill_use_base_and_reject_escapes() {
             .guidance_prompt()
             .contains("look for regressions")
     );
+    let mut excluding = VeraClient::disabled(d.path());
+    excluding.exclude = vec![".agents/skills/rust/reference.md".into()];
+    let tb = ToolBox::new(
+        d.path().into(),
+        Arc::new(DiffSet::default()),
+        Arc::new(excluding),
+        2000,
+    )
+    .with_head(&head)
+    .with_guidance(&guidance);
+    assert!(
+        tb.call(
+            "read_skill",
+            json!({"name": "rust", "file": "reference.md"})
+        )
+        .await
+        .contains("excluded")
+    );
     let plain = ToolBox::new(
         d.path().into(),
         Arc::new(DiffSet::default()),
@@ -441,4 +472,45 @@ fn notes_prompt_and_serialized_guidance_are_compatible() {
             .to_string()
             .contains("8000")
     );
+}
+
+#[test]
+fn repository_notes_fit_after_global_notes() {
+    use revera::guidance::{MAX_NOTES_CHARS, fit_notes};
+    assert_eq!(fit_notes("", "  repo  "), "repo");
+    let global = "g".repeat(MAX_NOTES_CHARS - 10);
+    let fitted = fit_notes(&global, &"r".repeat(100));
+    assert_eq!(fitted.chars().count(), 8);
+    assert!(fit_notes(&"g".repeat(MAX_NOTES_CHARS), "repo").is_empty());
+    assert_eq!(
+        fit_notes("   ", &"é".repeat(MAX_NOTES_CHARS + 5))
+            .chars()
+            .count(),
+        MAX_NOTES_CHARS - 3
+    );
+}
+
+#[tokio::test]
+async fn vendored_guidance_files_are_ignored() {
+    let (d, _) = repo();
+    write(d.path(), "vendor/lib/AGENTS.md", "vendored rules\n");
+    write(d.path(), "vendor/lib/x.rs", "fn v() {}\n");
+    git(d.path(), &["add", "-A"]);
+    git(d.path(), &["commit", "-qm", "vendor"]);
+    let base = git(d.path(), &["rev-parse", "HEAD"]);
+    let g = load(
+        d.path(),
+        &base,
+        &["vendor/lib/x.rs".into()],
+        GuidanceMode::Agents,
+        4096,
+    )
+    .await
+    .unwrap();
+    assert!(
+        g.sources.iter().all(|s| !s.path.starts_with("vendor/")),
+        "{:?}",
+        g.sources
+    );
+    assert!(!g.prompt_block().contains("vendored rules"));
 }

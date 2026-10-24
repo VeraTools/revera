@@ -720,6 +720,17 @@ async fn execute(
                 command.arg("--guidance").arg(guidance.as_str());
             }
             if let Some(notes) = preference.notes {
+                // the review's configuration (base-commit or server) and
+                // repository notes share one limit; trim the repository part
+                // instead of failing the review
+                let fitted = crate::guidance::fit_notes(&cfg.review.notes, &notes);
+                if fitted.len() < notes.len() {
+                    tracing::warn!(
+                        "{}: repository notes trimmed to fit the 8000-character notes limit",
+                        job.repo.full_name
+                    );
+                }
+                let notes = fitted;
                 let path = execution.report.parent().unwrap().join("notes.md");
                 crate::fsutil::write_output(
                     &server.settings.data_dir,

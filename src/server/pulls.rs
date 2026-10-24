@@ -123,6 +123,8 @@ impl Cache {
                 | "synchronize"
                 | "ready_for_review"
                 | "converted_to_draft"
+                | "labeled"
+                | "unlabeled"
                 | "closed"
         ) {
             return;
@@ -275,6 +277,15 @@ pub(super) async fn inbox(State(server): State<Arc<Server>>) -> Json<Value> {
             .then_with(|| a.repo.cmp(&b.repo))
             .then_with(|| a.number.cmp(&b.number))
     });
+    // one pass over job history instead of one per pull request
+    let mut by_pull: BTreeMap<(u64, u64), Vec<JobSummary>> = BTreeMap::new();
+    for job in &jobs {
+        if let (Some(repo_id), Some(pr)) = (job.repo_id, job.pr)
+            && ids.contains(&repo_id)
+        {
+            by_pull.entry((repo_id, pr)).or_default().push(job.clone());
+        }
+    }
     let pulls: Vec<_> = pulls
         .into_iter()
         .map(|pull| {
@@ -282,7 +293,14 @@ pub(super) async fn inbox(State(server): State<Arc<Server>>) -> Json<Value> {
             value["trigger"] = json!(preferences.trigger(&pull.repo));
             value["mode"] = json!(preferences.mode(&pull.repo));
             value["review"] = review(
-                &jobs_for(jobs.iter(), pull.repo_id, pull.number),
+                &jobs_for(
+                    by_pull
+                        .get(&(pull.repo_id, pull.number))
+                        .into_iter()
+                        .flatten(),
+                    pull.repo_id,
+                    pull.number,
+                ),
                 &pull.head_sha,
             );
             value
@@ -389,13 +407,22 @@ pub(super) async fn detail(
         let response = server.api.request(reqwest::Method::POST, "/graphql", &token,
             Some(json!({"query": DETAIL_QUERY, "variables": {"owner": owner, "repo": name, "number": number}})))
             .await.map_err(|_| github_error())?;
-        if response
-            .get("errors")
-            .is_some_and(|errors| !nodes_array(errors).is_empty() || !errors.is_array())
+        let pr = &response["data"]["repository"]["pullRequest"];
+        let errors = response.get("errors");
+        if pr.is_null()
+            && errors.is_some_and(|e| {
+                !nodes_array(e).is_empty()
+                    && nodes_array(e).iter().all(|e| e["type"] == "NOT_FOUND")
+            })
         {
+            return Err(missing());
+        }
+        if errors.is_some_and(|errors| !nodes_array(errors).is_empty() || !errors.is_array()) {
             return Err(github_error());
         }
-        let pr = &response["data"]["repository"]["pullRequest"];
+        if pr.is_null() {
+            return Err(missing());
+        }
         if !pr.is_object() {
             return Err(github_error());
         }

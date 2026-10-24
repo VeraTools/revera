@@ -79,8 +79,9 @@ An identical completed review can be reused. Add `--force` to run it again.
 Use `--guidance off|review|agents|skills` to override `review.guidance` (default
 `off`). Guidance files and skills come from the base commit, never the PR head.
 Append operator review notes with `--notes-file notes.md`; combined with
-`review.notes`, the limit is 8000 characters. With `--event`, the notes file
-must be outside the checkout, because the PR controls files inside it. Both investigators and validators
+`review.notes`, the limit is 8000 characters. With `--event` (and without
+`--private`, which ignores notes), the notes file must be outside the checkout,
+because the PR controls files inside it. Both investigators and validators
 receive the same context. Changing the mode or notes invalidates a stored
 review, but keeps the Vera index warm. Private external reviews ignore notes
 and force guidance off. See [guidance settings](configuration.md#review).
