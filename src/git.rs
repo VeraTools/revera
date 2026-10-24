@@ -203,6 +203,29 @@ pub async fn read_blob_with_env(
     Ok(Some(out))
 }
 
+/// Paths under the given roots in an immutable tree, in one listing.
+pub async fn tree_paths(repo: &Path, rev: &str, roots: &[&str]) -> Result<Vec<String>> {
+    if !is_oid(rev) {
+        bail!("tree_paths requires a resolved object id");
+    }
+    let mut args = vec![
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        "--name-only",
+        rev,
+        "--",
+    ];
+    args.extend_from_slice(roots);
+    Ok(git(repo, &args)
+        .await?
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Regular tracked files in the tree at `rev` (matching `read_blob` modes).
 pub async fn tracked_files(repo: &Path, rev: &str) -> Result<HashSet<String>> {
     if !is_oid(rev) {

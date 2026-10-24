@@ -594,7 +594,9 @@ fn child_environment_is_token_scoped() {
     let map: std::collections::BTreeMap<_, _> = env.into_iter().collect();
     assert_eq!(map["CUSTOM_TOKEN"], "installation-token");
     assert_eq!(map["XDG_CACHE_HOME"], "/data/cache/owner/repo");
-    assert_eq!(map["GIT_CONFIG_COUNT"], "1");
+    assert_eq!(map["GIT_CONFIG_COUNT"], "3");
+    assert_eq!(map["GIT_CONFIG_KEY_1"], "gc.autoDetach");
+    assert_eq!(map["GIT_CONFIG_KEY_2"], "maintenance.autoDetach");
     assert_eq!(
         map["GIT_CONFIG_KEY_0"],
         "http.https://github.com/.extraheader"
@@ -639,18 +641,27 @@ async fn injectable_child_runs_with_base_config_and_completes_check() {
             &script,
             r#"#!/bin/sh
 [ "$CUSTOM_TOKEN" = 'installation-token' ] || exit 1
-[ "$GIT_CONFIG_COUNT" = 1 ] || exit 1
+[ "$GIT_CONFIG_COUNT" = 3 ] || exit 1
 profile=standard
+guidance=inherit
+notes=unset
 while [ $# -gt 0 ]; do
   case $1 in
     --out) out=$2; shift;;
     --bot-login) [ "$2" = 'revera-test[bot]' ] || exit 1; shift;;
     --config) [ "$2" = revera.yaml ] || exit 1; shift;;
     --profile) profile=$2; shift;;
+    --guidance) guidance=$2; shift;;
+    --notes-file) [ -f "$2" ] || exit 1; notes=$(cat "$2"); shift;;
   esac
   shift
 done
 [ "$profile" = "$EXPECTED_PROFILE" ] || exit 1
+case $profile in
+  quick) [ "$guidance" = inherit ] && [ "$notes" = unset ] || exit 1;;
+  standard) [ "$guidance" = skills ] && [ "$notes" = 'inspect migrations' ] || exit 1;;
+  deep) [ "$guidance" = agents ] && [ "$notes" = unset ] || exit 1;;
+esac
 echo installation-token
 cat > "$out" <<'JSON'
 {"status":"complete","findings":[],
@@ -664,6 +675,18 @@ JSON
             prefix: vec![script.display().to_string()],
         };
         let (data, server) = server(&mock, runner, true).await;
+        server.dashboard.lock().await.preferences.repos.insert(
+            "owner/repo".into(),
+            dashboard::RepoPreference {
+                guidance: match mode {
+                    dashboard::Mode::Quick => None,
+                    dashboard::Mode::Standard => Some(crate::config::GuidanceMode::Skills),
+                    dashboard::Mode::Deep => Some(crate::config::GuidanceMode::Agents),
+                },
+                notes: (mode == dashboard::Mode::Standard).then(|| "inspect migrations".into()),
+                ..Default::default()
+            },
+        );
         server.dashboard.lock().await.secrets.insert(
             "EXPECTED_PROFILE".into(),
             mode.profile().unwrap_or("standard").into(),
@@ -922,6 +945,387 @@ async fn administrator(server: &Server) -> (String, String) {
         ),
         csrf,
     )
+}
+
+fn guidance_repo(dashboard: &mut dashboard::Dashboard) {
+    dashboard.repos.insert(
+        "owner/repo".into(),
+        dashboard::RepoInfo {
+            repo: events::Repo::parse(&repository(), 9).unwrap(),
+            private: false,
+            html_url: "https://github.com/owner/repo".into(),
+            has_override: false,
+            open_prs: None,
+        },
+    );
+}
+
+#[test]
+fn repository_guidance_preferences_round_trip_old_settings() {
+    let data = tempfile::tempdir().unwrap();
+    crate::fsutil::write_atomic_in(
+        data.path(),
+        "settings.json",
+        br#"{"repos":{"owner/repo":{"trigger":"auto","mode":"quick"}}}"#,
+    )
+    .unwrap();
+    let mut prefs: dashboard::Preferences =
+        serde_json::from_slice(&std::fs::read(data.path().join("settings.json")).unwrap()).unwrap();
+    let old = &prefs.repos["owner/repo"];
+    assert!(old.guidance.is_none() && old.notes.is_none());
+    let repo = prefs.repos.get_mut("owner/repo").unwrap();
+    repo.guidance = Some(crate::config::GuidanceMode::Skills);
+    repo.notes = Some("operator focus".into());
+    dashboard::write_preferences(data.path(), &prefs).unwrap();
+    let roundtrip: dashboard::Preferences =
+        serde_json::from_slice(&std::fs::read(data.path().join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        roundtrip.repos["owner/repo"].guidance,
+        Some(crate::config::GuidanceMode::Skills)
+    );
+    assert_eq!(
+        roundtrip.repos["owner/repo"].notes.as_deref(),
+        Some("operator focus")
+    );
+    assert_eq!(
+        roundtrip.repos["owner/repo"].mode,
+        Some(dashboard::Mode::Quick)
+    );
+}
+
+#[tokio::test]
+async fn repository_guidance_patch_validates_trims_and_resets() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, csrf) = administrator(&server).await;
+    guidance_repo(&mut *server.dashboard.lock().await);
+    let mut events = server.events.subscribe();
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::new();
+    let target = format!("{url}/api/repos/owner/repo");
+    assert_eq!(
+        client
+            .patch(&target)
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"guidance":"skills","notes":"x".repeat(8001)}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    assert!(
+        !server
+            .dashboard
+            .lock()
+            .await
+            .preferences
+            .repos
+            .contains_key("owner/repo")
+    );
+    for (input, guidance, notes) in [
+        (
+            json!({"guidance":"skills","notes":"  inspect contracts  ","mode":"deep"}),
+            Some(crate::config::GuidanceMode::Skills),
+            Some("inspect contracts"),
+        ),
+        (
+            json!({"notes":" \n "}),
+            Some(crate::config::GuidanceMode::Skills),
+            None,
+        ),
+        (json!({"guidance":null,"notes":null}), None, None),
+    ] {
+        assert_eq!(
+            client
+                .patch(&target)
+                .header("Cookie", &cookie)
+                .header("X-Revera-CSRF", &csrf)
+                .json(&input)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        assert_eq!(events.recv().await.unwrap().0, "repos");
+        let prefs: dashboard::Preferences =
+            serde_json::from_slice(&std::fs::read(data.path().join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(prefs.repos["owner/repo"].guidance, guidance);
+        assert_eq!(prefs.repos["owner/repo"].notes.as_deref(), notes);
+        let rows: Value = client
+            .get(format!("{url}/api/repos"))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(rows[0]["guidance"], json!(guidance));
+        assert_eq!(rows[0]["has_notes"], notes.is_some());
+        assert!(rows[0].get("notes").is_none());
+    }
+    assert_eq!(
+        client
+            .patch(&target)
+            .header("Cookie", &cookie)
+            .header("X-Revera-CSRF", &csrf)
+            .json(&json!({"guidance":"invalid"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        422
+    );
+    // the whole-preferences save applies the same notes rules
+    crate::redact::register("guidance-notes-secret-value");
+    let settings = format!("{url}/api/settings/server");
+    let mut preferences: Value = client
+        .get(&settings)
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for (notes, status) in [
+        (json!("x".repeat(8001)), 400),
+        (json!("  key guidance-notes-secret-value  "), 200),
+    ] {
+        preferences["repos"]["owner/repo"] = json!({"notes": notes});
+        assert_eq!(
+            client
+                .put(&settings)
+                .header("Cookie", &cookie)
+                .header("X-Revera-CSRF", &csrf)
+                .json(&preferences)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+    }
+    let saved = std::fs::read_to_string(data.path().join("settings.json")).unwrap();
+    assert!(!saved.contains("guidance-notes-secret-value"), "{saved}");
+    let prefs: dashboard::Preferences = serde_json::from_str(&saved).unwrap();
+    let notes = prefs.repos["owner/repo"].notes.as_deref().unwrap();
+    assert!(
+        notes.starts_with("key ") && !notes.ends_with(' '),
+        "{notes}"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn guidance_preview_uses_default_tree_caches_skills_and_gates_file_reads() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, _) = administrator(&server).await;
+    guidance_repo(&mut *server.dashboard.lock().await);
+    crate::fsutil::write_atomic_in(
+        data.path(),
+        "revera.yaml",
+        format!("{CONFIG}review:\n  guidance: agents\n  notes: global focus\n").as_bytes(),
+    )
+    .unwrap();
+    let tree_sha = "a".repeat(40);
+    let agent_sha = "b".repeat(40);
+    let skill_sha = "c".repeat(40);
+    Mock::given(method("POST")).and(path("/app/installations/9/access_tokens"))
+        .and(body_json(json!({"repository_ids":[1],"permissions":{"contents":"read","pull_requests":"read","metadata":"read"}})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"token":"guidance-read-token"}))).mount(&mock).await;
+    let entry = |path: &str, sha: &str, size| json!({"path":path,"type":"blob","mode":"100644","sha":sha,"size":size});
+    Mock::given(method("GET")).and(path("/repos/owner/repo/git/trees/main"))
+        .and(wiremock::matchers::query_param("recursive", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sha":tree_sha,"truncated":true,"tree":[
+            entry("AGENTS.md", &agent_sha, 38), entry("docs/CLAUDE.md", &agent_sha, 38),
+            entry("node_modules/x/AGENTS.md", &agent_sha, 38), entry("secrets.key/AGENTS.md", &agent_sha, 38),
+            entry(".agents/skills/rust/SKILL.md", &skill_sha, 100),
+            entry(".agents/skills/id_rsa-secret/SKILL.md", &agent_sha, 100),
+            entry("src/lib.rs", &agent_sha, 38)
+        ]}))).expect(4).mount(&mock).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{skill_sha}")))
+        .and(header("Accept", "application/vnd.github.raw+json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "---\nname: rust\ndescription: >\n  Check Rust\n  invariants.\n---\nSkill body",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    crate::redact::register("guidance-preview-secret");
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{agent_sha}")))
+        .and(header("Accept", "application/vnd.github.raw+json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "base guidance guidance-preview-secret\n{}",
+            "é".repeat(140000)
+        )))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::new();
+    let target = format!("{url}/api/repos/owner/repo/guidance");
+    assert_eq!(client.get(&target).send().await.unwrap().status(), 401);
+    let first: Value = client
+        .get(&target)
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["tree"], tree_sha);
+    assert_eq!(first["default_branch"], "main");
+    assert_eq!(first["truncated_tree"], true);
+    assert_eq!(first["global"]["guidance"], "agents");
+    assert_eq!(first["global"]["notes_chars"], 12);
+    assert_eq!(first["effective_guidance"], "agents");
+    assert_eq!(first["files"].as_array().unwrap().len(), 2);
+    assert_eq!(first["files_omitted"], 0);
+    assert_eq!(first["skills"][0]["name"], "rust");
+    assert_eq!(first["skills"][0]["description"], "Check Rust invariants.");
+    assert_eq!(first["skills_omitted"], 0);
+    server.dashboard.lock().await.preferences.repos.insert(
+        "owner/repo".into(),
+        dashboard::RepoPreference {
+            guidance: Some(crate::config::GuidanceMode::Skills),
+            notes: Some("repo focus".into()),
+            ..Default::default()
+        },
+    );
+    let second: Value = client
+        .get(&target)
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["effective_guidance"], "skills");
+    assert_eq!(second["repo"]["notes"], "repo focus");
+    let response = client
+        .get(format!("{target}/file?path=AGENTS.md"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain")
+    );
+    let body = response.text().await.unwrap();
+    assert!(body.len() <= 256 * 1024);
+    assert!(body.contains("base guidance") && !body.contains("guidance-preview-secret"));
+    for path in [
+        "src/lib.rs",
+        "not-present/AGENTS.md",
+        ".agents/skills/id_rsa-secret/SKILL.md",
+    ] {
+        assert_eq!(
+            client
+                .get(format!("{target}/file?path={path}"))
+                .header("Cookie", &cookie)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn guidance_preview_caps_skill_blob_requests() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, _) = administrator(&server).await;
+    guidance_repo(&mut *server.dashboard.lock().await);
+    Mock::given(method("POST"))
+        .and(path("/app/installations/9/access_tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"token":"t"})))
+        .mount(&mock)
+        .await;
+    let skill_sha = "c".repeat(40);
+    let (big_sha, missing_sha) = ("d".repeat(40), "e".repeat(40));
+    let mut tree: Vec<Value> = (0..170)
+        .map(|i| {
+            json!({"path": format!(".agents/skills/s{i:03}/SKILL.md"), "type":"blob",
+            "mode":"100644", "sha": skill_sha, "size": 10})
+        })
+        .collect();
+    // an oversized skill is never fetched and an unreadable one does not
+    // fail the preview; both keep their directory-name entries
+    tree.push(
+        json!({"path": ".agents/skills/aaa-big/SKILL.md", "type":"blob",
+        "mode":"100644", "sha": big_sha, "size": crate::guidance::MAX_BLOB_BYTES + 1}),
+    );
+    tree.push(
+        json!({"path": ".agents/skills/aaa-missing/SKILL.md", "type":"blob",
+        "mode":"100644", "sha": missing_sha, "size": 10}),
+    );
+    tree.extend((0..70).map(|i| {
+        json!({"path": format!("d{i:03}/AGENTS.md"), "type":"blob",
+        "mode":"100644", "sha": "f".repeat(40), "size": 10})
+    }));
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/git/trees/main"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sha":"a".repeat(40),"tree":tree})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{skill_sha}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Skill body"))
+        .expect(crate::guidance::MAX_SKILL_READS as u64 - 2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{big_sha}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Big body"))
+        .expect(0)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{missing_sha}")))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&mock)
+        .await;
+    let (url, task) = http(server.clone()).await;
+    let preview: Value = reqwest::Client::new()
+        .get(format!("{url}/api/repos/owner/repo/guidance"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let shown = preview["skills"].as_array().unwrap().len();
+    assert!(shown > 0 && shown <= crate::guidance::MAX_SKILLS);
+    assert_eq!(
+        shown as u64 + preview["skills_omitted"].as_u64().unwrap(),
+        172
+    );
+    assert_eq!(preview["skills"][0]["name"], "aaa-big");
+    assert_eq!(preview["skills"][1]["name"], "aaa-missing");
+    assert_eq!(preview["skills"][2]["name"], "s000");
+    assert_eq!(preview["files"].as_array().unwrap().len(), 64);
+    assert_eq!(preview["files_omitted"], 6);
+    task.abort();
 }
 
 #[test]
@@ -1316,6 +1720,7 @@ async fn disabled_repository_suppresses_webhook_and_reconcile_jobs() {
             trigger: Some(dashboard::Trigger::Off),
             mode: None,
             fixes: None,
+            ..Default::default()
         },
     );
     let (url, task) = http(server.clone()).await;
@@ -2017,3 +2422,5 @@ mod external_tests;
 mod handoff_tests;
 #[path = "installation_tests.rs"]
 mod installation_tests;
+#[path = "pulls_tests.rs"]
+mod pulls_tests;

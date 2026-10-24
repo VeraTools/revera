@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { checkFixes, fixScreenshots } from './browser-fixes.mjs';
 import { checkReviewRegressions } from './browser-review-regressions.mjs';
+import { checkPullRegressions } from './browser-pull-regressions.mjs';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
@@ -1360,6 +1361,8 @@ async function checkManifestChoices() {
 
 try {
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
+    await checkPullRegressions({ open, output });
+  if (!emptyYaml && !process.argv.includes('--screenshots-only'))
     await checkReviewRegressions({ open, choose, edit });
   if (!emptyYaml && !process.argv.includes('--screenshots-only')) await checkExternalReviews();
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
@@ -1716,7 +1719,7 @@ try {
       await page.getByRole('button', { name: /251 Handle connection timeouts/ }).click();
       await page.getByText('Review queued for northstar/api #251.', { exact: true }).waitFor();
       await page.getByRole('link', { name: 'Reviews', exact: true }).click();
-      await page.getByRole('link', { name: 'Manual review', exact: true }).waitFor();
+      await page.getByRole('link', { name: 'Handle connection timeouts', exact: true }).waitFor();
       const saved = await page.evaluate(async () => {
         const { api } = await window.importDashboard('/src/lib/api.ts');
         return api.jobs();

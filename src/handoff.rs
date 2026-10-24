@@ -49,7 +49,7 @@ pub fn build(context: &Context<'_>, findings: &[Finding], finding: Option<&str>)
         }
         let heading = if f.is_carried() { "###" } else { "##" };
         part.push_str(&format!(
-            "\n{heading} {} [{}] {}\n\nLocation: {}:{}-{}\nClaim: {}\nTrigger: {}\nImpact: {}\n",
+            "\n{heading} {} [{}] {}\n\nLocation: {}:{}-{}\nClaim: {}\n",
             f.id(),
             f.severity,
             line(&f.title, 500),
@@ -57,9 +57,13 @@ pub fn build(context: &Context<'_>, findings: &[Finding], finding: Option<&str>)
             f.start_line,
             f.end_line.unwrap_or(f.start_line),
             text(&f.claim, 4000),
-            text(&f.trigger, 2000),
-            text(&f.impact, 2000)
         ));
+        if !f.trigger.trim().is_empty() {
+            part.push_str(&format!("Trigger: {}\n", text(&f.trigger, 2000)));
+        }
+        if !f.impact.trim().is_empty() {
+            part.push_str(&format!("Impact: {}\n", text(&f.impact, 2000)));
+        }
         for e in f.supporting_evidence.iter().take(10) {
             let lines = if e.end_line > e.start_line {
                 format!("{}-{}", e.start_line, e.end_line)

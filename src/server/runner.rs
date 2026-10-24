@@ -46,12 +46,18 @@ pub fn child_env(token_env: &str, token: &str, data: &Path, repo: &str) -> Vec<(
     crate::redact::register(&header);
     vec![
         (token_env.into(), token.into()),
-        ("GIT_CONFIG_COUNT".into(), "1".into()),
+        ("GIT_CONFIG_COUNT".into(), "3".into()),
         (
             "GIT_CONFIG_KEY_0".into(),
             "http.https://github.com/.extraheader".into(),
         ),
         ("GIT_CONFIG_VALUE_0".into(), header),
+        // auto-maintenance after fetch daemonizes by default; the detached
+        // process outlives the job and is left unreaped by the server
+        ("GIT_CONFIG_KEY_1".into(), "gc.autoDetach".into()),
+        ("GIT_CONFIG_VALUE_1".into(), "false".into()),
+        ("GIT_CONFIG_KEY_2".into(), "maintenance.autoDetach".into()),
+        ("GIT_CONFIG_VALUE_2".into(), "false".into()),
         ("GIT_TERMINAL_PROMPT".into(), "0".into()),
         (
             "XDG_CACHE_HOME".into(),
@@ -290,6 +296,8 @@ fn anonymous_env(data: &Path, repo_id: u64) -> Vec<(String, String)> {
         ("http.followRedirects", "false"),
         ("protocol.allow", "never"),
         ("protocol.https.allow", "always"),
+        ("gc.autoDetach", "false"),
+        ("maintenance.autoDetach", "false"),
     ];
     env.push(("GIT_CONFIG_COUNT".into(), settings.len().to_string()));
     for (i, (key, value)) in settings.into_iter().enumerate() {
@@ -699,6 +707,35 @@ async fn execute(
             if let Some(profile) = job.mode.profile() {
                 command.arg("--profile").arg(profile);
             }
+            let preference = server
+                .dashboard
+                .lock()
+                .await
+                .preferences
+                .repos
+                .get(&job.repo.full_name)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(guidance) = preference.guidance {
+                command.arg("--guidance").arg(guidance.as_str());
+            }
+            if let Some(notes) = preference.notes {
+                // the review's configuration (base-commit or server) and
+                // repository notes share one limit; trim the repository part
+                // instead of failing the review, after redaction so a cut
+                // cannot split a secret
+                let notes = crate::redact::text(notes.trim()).into_owned();
+                let fitted = crate::guidance::fit_notes(&cfg.review.notes, &notes);
+                if fitted.len() < notes.len() {
+                    tracing::warn!(
+                        "{}: repository notes trimmed to fit the 8000-character notes limit",
+                        job.repo.full_name
+                    );
+                }
+                let path = execution.report.parent().unwrap().join("notes.md");
+                crate::fsutil::write_output(&server.settings.data_dir, &path, fitted.as_bytes())?;
+                command.arg("--notes-file").arg(path);
+            }
         }
         Kind::Index => {
             command.arg("index").arg("--repo").arg(&ws);
@@ -1021,6 +1058,9 @@ async fn finish_summary(
             high: counts.high,
             medium: counts.medium,
             low: counts.low,
+            carried: report["carried"]
+                .as_array()
+                .map_or(0, |items| items.len() as u64),
         };
         if !report["ledger"].is_null() {
             summary.tokens = Some(json!({
@@ -1108,9 +1148,18 @@ mod external_tests {
         let ws = crate::fsutil::ensure_dir(scratch.path(), Path::new("checkout")).unwrap();
         let mut env = anonymous_env(scratch.path(), 701);
         // Test transport only; production environment permits HTTPS and nothing else.
-        env.push(("GIT_CONFIG_COUNT".into(), "8".into()));
-        env.push(("GIT_CONFIG_KEY_7".into(), "protocol.file.allow".into()));
-        env.push(("GIT_CONFIG_VALUE_7".into(), "always".into()));
+        let count: usize = env
+            .iter()
+            .find(|(k, _)| k == "GIT_CONFIG_COUNT")
+            .map(|(_, v)| v.parse().unwrap())
+            .unwrap();
+        env.retain(|(k, _)| k != "GIT_CONFIG_COUNT");
+        env.push(("GIT_CONFIG_COUNT".into(), (count + 1).to_string()));
+        env.push((
+            format!("GIT_CONFIG_KEY_{count}"),
+            "protocol.file.allow".into(),
+        ));
+        env.push((format!("GIT_CONFIG_VALUE_{count}"), "always".into()));
         let log = Arc::new(Mutex::new(
             crate::fsutil::create_private(scratch.path(), "git.log").unwrap(),
         ));

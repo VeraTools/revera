@@ -24,7 +24,10 @@ import type {
   FixPolicy,
   FixOverride,
   FixDelivery,
+  PullInbox,
+  PullDetail,
 } from './types';
+import type { GuidancePreview, RepoGuidanceSettings } from './types';
 
 export const mockMode = import.meta.env.VITE_MOCK === '1';
 let csrf = '';
@@ -64,6 +67,12 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
 }
 
 const repoPath = (repo: string) => repo.split('/').map(encodeURIComponent).join('/');
+// The repository chooser retains its live per-repository listing.
+function pulls(): Promise<PullInbox>;
+function pulls(repo: string): Promise<PullRequest[]>;
+function pulls(repo?: string): Promise<PullInbox | PullRequest[]> {
+  return request(repo === undefined ? '/api/pulls' : `/api/repos/${repoPath(repo)}/pulls`);
+}
 export const api = {
   async session() {
     const session = await request<Session>('/api/session');
@@ -116,10 +125,15 @@ export const api = {
     repos: string[],
     settings: { trigger?: Trigger | null; mode?: ReviewMode | null },
   ) => request<{ ok: boolean; updated: number }>('/api/repos', 'PATCH', { repos, ...settings }),
-  repoSettings: (repo: string, settings: { trigger?: Trigger | null; mode?: ReviewMode | null }) =>
-    request<void>(`/api/repos/${repoPath(repo)}`, 'PATCH', settings),
+  repoSettings: (
+    repo: string,
+    settings: { trigger?: Trigger | null; mode?: ReviewMode | null } & RepoGuidanceSettings,
+  ) => request<void>(`/api/repos/${repoPath(repo)}`, 'PATCH', settings),
   index: (repo: string) => request<void>(`/api/repos/${repoPath(repo)}/index`, 'POST'),
-  pulls: (repo: string) => request<PullRequest[]>(`/api/repos/${repoPath(repo)}/pulls`),
+  // Installed pull-request inbox and conversation.
+  pulls,
+  pull: (owner: string, repo: string, number: number) =>
+    request<PullDetail>(`/api/repos/${repoPath(`${owner}/${repo}`)}/pulls/${number}`),
   review: (repo: string, number: number, mode: ReviewMode | null = null) =>
     request<{ id: string }>(`/api/repos/${repoPath(repo)}/pulls/${number}/review`, 'POST', {
       mode,
@@ -156,6 +170,10 @@ export const api = {
   saveFixSettings: (fixes: FixPolicy) => request<void>('/api/settings/fixes', 'PUT', { fixes }),
   repoFixSettings: (repo: string, override: FixOverride | null) =>
     request<void>(`/api/repos/${repoPath(repo)}/fixes`, 'PUT', override),
+  // Repository guidance preview; file contents are fetched lazily as plain text.
+  repoGuidance: (repo: string) => request<GuidancePreview>(`/api/repos/${repoPath(repo)}/guidance`),
+  repoGuidanceFile: (repo: string, path: string) =>
+    request<string>(`/api/repos/${repoPath(repo)}/guidance/file?${new URLSearchParams({ path })}`),
 };
 
 export function errorMessage(error: unknown) {

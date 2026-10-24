@@ -29,6 +29,7 @@ struct Stats {
     by_tool: BTreeMap<String, ToolStat>,
     /// distinct repository files read via `read_file`
     files_read: std::collections::BTreeSet<String>,
+    skills_read: std::collections::BTreeSet<String>,
 }
 
 /// Cancellation is an error too: record a tool batch cut by an agent deadline.
@@ -69,6 +70,9 @@ pub struct ToolBox {
     /// Reviewed head commit: file reads come from this immutable tree
     /// (tracked regular files only) rather than the working directory.
     head: Option<String>,
+    skill_base: Option<String>,
+    skills: Vec<crate::guidance::Skill>,
+    guidance_block: String,
     /// Corpus policy shared with Vera indexing and lexical tools.
     excluded: globset::GlobSet,
     /// Vera indexes the working tree, so hits may include paths absent at head.
@@ -229,6 +233,9 @@ impl ToolBox {
             allowed: None,
             stats: Arc::new(Mutex::new(Stats::default())),
             head: None,
+            skill_base: None,
+            skills: vec![],
+            guidance_block: String::new(),
             excluded,
             head_files: Arc::new(OnceCell::new()),
             web: None,
@@ -240,6 +247,34 @@ impl ToolBox {
     pub fn with_head(mut self, head: &str) -> Self {
         self.head = Some(head.to_string());
         self
+    }
+
+    pub fn with_skills(mut self, base: &str, skills: &[crate::guidance::Skill]) -> Self {
+        self.skill_base = Some(base.to_owned());
+        self.skills = skills.to_vec();
+        self
+    }
+
+    pub fn with_guidance(mut self, guidance: &crate::guidance::Guidance) -> Self {
+        self.guidance_block = guidance.prompt_block();
+        if guidance.mode == "skills" {
+            self = self.with_skills(&guidance.base, &guidance.skills);
+        }
+        self
+    }
+
+    pub fn guidance_prompt(&self) -> &str {
+        &self.guidance_block
+    }
+
+    pub fn skills_read(&self) -> Vec<String> {
+        self.stats
+            .lock()
+            .unwrap()
+            .skills_read
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub fn with_web(mut self, web: Option<Arc<crate::web::WebResearch>>) -> Self {
@@ -310,6 +345,9 @@ impl ToolBox {
             allowed: Some(names.iter().map(|s| s.to_string()).collect()),
             stats: self.stats.clone(),
             head: self.head.clone(),
+            skill_base: self.skill_base.clone(),
+            skills: self.skills.clone(),
+            guidance_block: self.guidance_block.clone(),
             excluded: self.excluded.clone(),
             head_files: self.head_files.clone(),
             web: self.web.clone(),
@@ -443,6 +481,13 @@ impl ToolBox {
                     parameters: obj_schema(json!({"result_id":{"type":"string", "pattern":"^r[1-9][0-9]*$"}}), &["result_id"]),
                 },
             ]);
+        }
+        if !self.skills.is_empty() {
+            all.push(ToolSpec {
+                name: "read_skill".into(),
+                description: "Read a listed project skill or a relative file inside it, from the immutable base commit (not the PR head).".into(),
+                parameters: obj_schema(json!({"name": {"type": "string"}, "file": {"type": "string"}}), &["name"]),
+            });
         }
         match &self.allowed {
             Some(names) => all
@@ -646,6 +691,7 @@ impl ToolBox {
 
     async fn call_inner(&self, name: &str, args: &Value) -> Result<String, String> {
         match name {
+            "read_skill" => self.read_skill(args).await,
             "web_search" => {
                 let web = self
                     .web
@@ -789,6 +835,51 @@ impl ToolBox {
             }
             Err(e) => (json!({"error": crate::redact::text(&e)}).to_string(), true),
         }
+    }
+
+    async fn read_skill(&self, args: &Value) -> Result<String, String> {
+        let name = args["name"].as_str().ok_or("missing name")?;
+        let skill = self
+            .skills
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or("unknown skill")?;
+        let file = match args.get("file") {
+            None => "SKILL.md",
+            Some(v) => v.as_str().ok_or("file must be a relative path")?,
+        };
+        if file.is_empty()
+            || file.starts_with('/')
+            || file.contains('\\')
+            || file.split('/').any(|c| matches!(c, ".." | "." | ""))
+            || std::path::Path::new(file).is_absolute()
+        {
+            return Err("file must be relative to the skill directory, without ..".into());
+        }
+        let dir = skill
+            .path
+            .strip_suffix("/SKILL.md")
+            .ok_or("invalid skill")?;
+        let path = format!("{dir}/{file}");
+        if crate::guidance::sensitive(&path) || self.is_excluded(&path) {
+            return Err("file is excluded by content policy".into());
+        }
+        let bytes = crate::git::read_blob(
+            &self.repo_root,
+            self.skill_base.as_deref().ok_or("skills unavailable")?,
+            &path,
+            64 * 1024,
+        )
+        .await
+        .map_err(|_| "skill file unavailable or exceeds 64 KiB")?
+        .ok_or("skill file not found")?;
+        let text = String::from_utf8(bytes).map_err(|_| "skill file is not UTF-8")?;
+        self.stats
+            .lock()
+            .unwrap()
+            .skills_read
+            .insert(name.to_owned());
+        Ok(text)
     }
 }
 

@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub struct Error(StatusCode, String);
+pub struct Error(pub(super) StatusCode, pub(super) String);
 impl<E: Into<anyhow::Error>> From<E> for Error {
     fn from(error: E) -> Self {
         let error = error.into();
@@ -62,6 +62,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/logout", post(auth::logout))
         .route("/api/overview", get(overview))
         .route("/api/jobs", get(jobs))
+        .route("/api/pulls", get(super::pulls::inbox))
         .route("/api/jobs/{id}", get(job))
         .route("/api/jobs/{id}/instructions.md", get(instructions))
         .route("/api/jobs/{id}/log", get(log))
@@ -85,6 +86,10 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/repos/{owner}/{repo}/index", post(index))
         .route("/api/repos/{owner}/{repo}/pulls", get(pulls))
         .route(
+            "/api/repos/{owner}/{repo}/pulls/{number}",
+            get(super::pulls::detail),
+        )
+        .route(
             "/api/repos/{owner}/{repo}/pulls/{number}/review",
             post(review),
         )
@@ -99,6 +104,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/settings/models", post(models))
         .merge(super::external::router())
         .merge(super::fixes::router())
+        .merge(super::guidance::router())
         .route("/api/events", get(events))
         .route("/api", any(|| async { StatusCode::NOT_FOUND }))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
@@ -902,7 +908,7 @@ async fn log(
     Ok(crate::redact::text(&text).into_owned().into_response())
 }
 
-async fn repo(server: &Server, name: &str) -> std::result::Result<Repo, Error> {
+pub(super) async fn repo(server: &Server, name: &str) -> std::result::Result<Repo, Error> {
     server
         .dashboard
         .lock()
@@ -990,8 +996,7 @@ async fn submit_review(
         trigger,
     );
     job.mode = mode;
-    let id = job.id.clone();
-    server.enqueue(job).await;
+    let id = super::pulls::enqueue_review(server, job).await?;
     Ok(output(json!({"id": id})))
 }
 async fn rerun(
@@ -1095,6 +1100,10 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 .and_then(|r| r.trigger),
             "mode_override": dashboard.preferences.repos.get(&info.repo.full_name)
                 .and_then(|r| r.mode),
+            "guidance": dashboard.preferences.repos.get(&info.repo.full_name)
+                .and_then(|r| r.guidance),
+            "has_notes": dashboard.preferences.repos.get(&info.repo.full_name)
+                .is_some_and(|r| r.notes.is_some()),
             "has_override": info.has_override, "index": index, "html_url": info.html_url,
             "review_count": reviews.len(),
             "finding_count": reviews.iter().map(|job| job.findings.total).sum::<u64>()});
@@ -1129,6 +1138,10 @@ struct RepoSettings {
     trigger: Option<Option<Trigger>>,
     #[serde(deserialize_with = "nullable")]
     mode: Option<Option<Mode>>,
+    #[serde(deserialize_with = "nullable")]
+    guidance: Option<Option<crate::config::GuidanceMode>>,
+    #[serde(deserialize_with = "nullable")]
+    notes: Option<Option<String>>,
     enabled: Option<bool>,
 }
 fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -1184,11 +1197,27 @@ async fn bulk_repo_settings(
     Ok(output(json!({"ok": true, "updated": names.len()})))
 }
 
+/// Trimmed, length-checked and redacted repository notes (`None` when blank).
+fn normalize_notes(notes: Option<String>) -> Result<Option<String>, Error> {
+    let notes = notes.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    if notes
+        .as_ref()
+        .is_some_and(|s| s.chars().count() > crate::guidance::MAX_NOTES_CHARS)
+    {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "notes must be at most 8000 characters".into(),
+        ));
+    }
+    Ok(notes.map(|s| crate::redact::text(&s).into_owned()))
+}
+
 async fn repo_settings(
     State(server): State<Arc<Server>>,
     Path((owner, name)): Path<(String, String)>,
     Json(input): Json<RepoSettings>,
 ) -> ApiResult {
+    let notes = input.notes.map(normalize_notes).transpose()?;
     let full_name = format!("{owner}/{name}");
     repo(&server, &full_name).await?;
     let mut dashboard = server.dashboard.lock().await;
@@ -1201,6 +1230,12 @@ async fn repo_settings(
     }
     if let Some(mode) = input.mode {
         settings.mode = mode;
+    }
+    if let Some(guidance) = input.guidance {
+        settings.guidance = guidance;
+    }
+    if let Some(notes) = notes {
+        settings.notes = notes;
     }
     dashboard::write_preferences(&server.settings.data_dir, &preferences)?;
     dashboard.preferences = preferences;
@@ -1341,9 +1376,10 @@ async fn server_settings(
             "administrator logins must not be blank".into(),
         ));
     }
-    for name in input.repos.keys() {
+    for (name, settings) in &mut input.repos {
         let value = json!({"id": 1, "full_name": name});
         Repo::parse(&value, 1).map_err(invalid)?;
+        settings.notes = normalize_notes(settings.notes.take())?;
     }
     let _guard = server.reconcile_lock.lock().await;
     let mut dashboard = server.dashboard.lock().await;

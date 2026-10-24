@@ -1,5 +1,7 @@
 import { parseDocument } from 'yaml';
 import { mockFixRequest, updateMockFix } from './mock-fixes';
+import { applyMockGuidance, mockGuidanceNotes, mockGuidanceRequest } from './mock-guidance';
+import { mockPullRequest, annotatePullJob } from './mock-pulls';
 import type {
   JobSummary,
   JobDetail,
@@ -160,21 +162,22 @@ export function setMockReviewCarried(id: string) {
   if (job) emit('job', job);
 }
 function carriedFindings(job: JobSummary): Finding[] {
-  if (!carriedReviews.has(job.id)) return [];
+  const count = job.findings.carried ?? (carriedReviews.has(job.id) ? 1 : 0);
+  if (!count) return [];
   const currentIds = new Set(handoffFindings(job).map((finding) => finding.id));
-  const finding = handoffFindings({ ...job, findings: { ...job.findings, total: 2 } }).find(
-    (finding) => !currentIds.has(finding.id),
-  );
-  if (!finding) return [];
-  return [
-    {
+  return handoffFindings({
+    ...job,
+    findings: { ...job.findings, total: job.findings.total + count },
+  })
+    .filter((finding) => !currentIds.has(finding.id))
+    .slice(0, count)
+    .map((finding) => ({
       ...finding,
       carried: true,
       validation_status: null,
       validated_fix: null,
       prompt: `# Fix instructions\n\n## Still open from earlier reviews\n\nReported at an earlier commit; line numbers may have moved. Re-validate against the current code before making changes.\n\n${finding.id}: ${finding.title}\n${finding.claim}\nEvidence: ${finding.file}:${finding.start_line}\n`,
-    },
-  ];
+    }));
 }
 let jobs: JobSummary[] = titles.map((title, i) => ({
   source: 'installed',
@@ -214,6 +217,8 @@ let jobs: JobSummary[] = titles.map((title, i) => ({
 let repos: Repository[] = [
   {
     full_name: 'northstar/api',
+    guidance: 'skills',
+    has_notes: true,
     private: true,
     default_branch: 'main',
     trigger: 'mention',
@@ -231,6 +236,8 @@ let repos: Repository[] = [
   },
   {
     full_name: 'northstar/web',
+    guidance: null,
+    has_notes: false,
     private: false,
     default_branch: 'main',
     trigger: 'auto',
@@ -248,6 +255,8 @@ let repos: Repository[] = [
   },
   {
     full_name: 'northstar/worker',
+    guidance: null,
+    has_notes: false,
     private: true,
     default_branch: 'main',
     trigger: 'mention',
@@ -265,6 +274,8 @@ let repos: Repository[] = [
   },
   {
     full_name: 'northstar/docs',
+    guidance: null,
+    has_notes: false,
     private: false,
     default_branch: 'main',
     trigger: 'off',
@@ -281,6 +292,8 @@ let repos: Repository[] = [
   },
   {
     full_name: 'northstar/internal-tools',
+    guidance: null,
+    has_notes: false,
     private: true,
     default_branch: 'main',
     trigger: 'auto',
@@ -298,6 +311,8 @@ let repos: Repository[] = [
   ...['billing', 'cli', 'design-system', 'gateway', 'mobile', 'notifications', 'sdk'].map(
     (name, i): Repository => ({
       full_name: `northstar/${name}`,
+      guidance: null,
+      has_notes: false,
       private: i % 2 === 0,
       default_branch: i === 2 ? 'develop' : 'main',
       trigger: i === 6 ? 'off' : i === 3 ? 'auto' : 'mention',
@@ -388,10 +403,17 @@ let settings: Settings = {
     default_mode: 'standard',
     repos: Object.fromEntries(
       repos
-        .filter((repo) => repo.trigger_override || repo.mode_override)
+        .filter(
+          (repo) => repo.trigger_override || repo.mode_override || repo.guidance || repo.has_notes,
+        )
         .map((repo) => [
           repo.full_name,
-          { trigger: repo.trigger_override, mode: repo.mode_override },
+          {
+            trigger: repo.trigger_override,
+            mode: repo.mode_override,
+            guidance: repo.guidance,
+            notes: repo.has_notes ? mockGuidanceNotes : null,
+          },
         ]),
     ),
     review_drafts: false,
@@ -474,6 +496,7 @@ function enqueue(
     queued_at: ago(0),
   };
   jobs = [job, ...jobs];
+  annotatePullJob(job);
   emit('job', job);
   return job;
 }
@@ -577,6 +600,22 @@ export async function mockRequest(path: string, method: string, body?: unknown):
   const data = body as Record<string, unknown> | undefined;
   const external = await externalRequest(url.pathname, method, data);
   if (external.handled) return external.value;
+  // Base-branch guidance previews are separate from pull-request inventory.
+  const guidance = mockGuidanceRequest(url, method, repos, settings.server.repos, settings.yaml);
+  if (guidance.handled) return guidance.value;
+  // Installed PR fixtures stay separate from history, guidance and fix fixtures.
+  const pull = await mockPullRequest(url, method, data, {
+    jobs,
+    repos,
+    enqueue,
+    fixes: async (repo, number) => {
+      const result = (await mockRequest(`/api/fixes?repo=${encodeURIComponent(repo)}`, 'GET')) as {
+        fixes: FixSummary[];
+      };
+      return result.fixes.filter((fix) => fix.repo_source === 'installed' && fix.pr === number);
+    },
+  });
+  if (pull.handled) return pull.value;
   // Fixes product API; kept separate from external-review and inventory fixtures.
   if (
     url.pathname.startsWith('/api/fixes') ||
@@ -920,6 +959,7 @@ _Timing: total 182s · index 0.1s · lanes 112s · validation 68s (p50 16s, p95 
     if (!repo) throw new Error('Repository not found.');
     if (method === 'PATCH') {
       const override = { ...settings.server.repos[name] };
+      if (data) applyMockGuidance(override, data);
       if (data && 'trigger' in data) override.trigger = data.trigger as Trigger | null;
       if (data && 'mode' in data) override.mode = data.mode as ReviewMode | null;
       settings.server.repos[name] = override;
@@ -1012,5 +1052,7 @@ function syncRepos() {
     repo.mode_override = override?.mode ?? null;
     repo.trigger = repo.trigger_override ?? settings.server.default_trigger;
     repo.mode = repo.mode_override ?? settings.server.default_mode;
+    repo.guidance = override?.guidance ?? null;
+    repo.has_notes = !!override?.notes;
   }
 }

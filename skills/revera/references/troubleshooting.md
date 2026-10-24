@@ -5,10 +5,10 @@ Read the JSON report (`report-path` output or `--out`). Key fields:
 | field | meaning |
 |---|---|
 | `status` | `complete`, `partial` (budget/provider/coverage problem) or `failed` |
-| `stats.validation` | `fresh`, `reused` (identical content, `stats.reused: true`) or `disabled` |
+| `stats.validation` | `fresh`, `reused` (identical content, `stats.reused: true`), `not needed` (nothing reviewable in the diff) or `disabled` |
 | `stats.accepted` / `rejected` / `uncertain` / `unvalidated` | verdict counts |
 | `coverage_gaps` | files not reviewed (content policy, `max_diff_bytes`, budget) |
-| `stats.retrieval` | `lexical-only`, `vera`, `vera+rerank`, `vera (rerank degraded)`, `unavailable: …`; a `(keyword-only on N searches)` or `(rerank fell back on N searches)` suffix counts degraded searches |
+| `stats.retrieval` | `lexical-only`, `vera`, `vera+rerank`, `vera (rerank degraded)`, `unavailable: …` or `not needed`; a `(keyword-only on N searches)` or `(rerank fell back on N searches)` suffix counts degraded searches |
 | `ledger.by_route` | requests and tokens per route |
 
 Common causes:

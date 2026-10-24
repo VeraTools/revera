@@ -45,7 +45,7 @@ LABEL org.opencontainers.image.source="https://github.com/VeraTools/revera" \
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates bubblewrap util-linux \
+    && apt-get install -y --no-install-recommends git ca-certificates bubblewrap util-linux tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 revera \
     && useradd --uid 10001 --gid revera --home-dir /data --no-create-home --shell /usr/sbin/nologin revera \
@@ -60,4 +60,5 @@ ENV HOME=/data XDG_CACHE_HOME=/data/cache \
 USER 10001:10001
 VOLUME /data
 EXPOSE 8080
-ENTRYPOINT ["revera", "serve"]
+# tini reaps orphaned descendants (revera would otherwise run as PID 1).
+ENTRYPOINT ["tini", "--", "revera", "serve"]

@@ -164,21 +164,31 @@ both per route and in the totals.
 | `concurrency` | `4` | concurrent lanes / validations |
 | `max_tool_output_bytes` | `12000` | truncation cap on each tool result |
 | `max_diff_bytes` | `200000` | cumulative diff budget; files that do not fit are omitted with a note and mark the review `partial` |
-| `guidance` | `off` | `off` · `review` · `agents`; see below |
-| `guidance_max_bytes` | `16384` | cap on guidance text given to the investigator |
+| `guidance` | `off` | `off` · `review` · `agents` · `skills`; see below |
+| `guidance_max_bytes` | `16384` | cap on repository guidance text |
+| `notes` | `""` | operator review focus/instructions; at most 8000 characters |
 
-`guidance` gives the investigator repository review conventions read from
+`guidance` gives investigators and fresh validators repository conventions read from
 the **base commit** (never the PR head): the root directory and each
 ancestor directory of a changed file are searched; `review` reads
-`REVIEW.md`, `agents` reads `REVIEW.md` or, when a directory has none,
-`AGENTS.md`. A `REVIEW.md` that exists but cannot be used (over 256 KiB,
+`REVIEW.md`; `agents` reads the first existing file in each directory:
+`REVIEW.md`, `AGENTS.md`, then `CLAUDE.md`. `skills` adds an index of
+`.agents/skills/*/SKILL.md`, `.claude/skills/*/SKILL.md` and
+`.opencode/skills/*/SKILL.md` (in that priority, deduplicated by name).
+Matching skills can be read with `read_skill`, including relative reference
+files, always from the base commit. The index is capped at 80 skills / 8 KiB;
+individual skill reads are capped at 64 KiB and the tool output limit.
+A guidance file that exists but cannot be used (over 256 KiB,
 unreadable or not UTF-8) is recorded as `skipped` and its directory
-contributes nothing; it never falls back to `AGENTS.md`. Sources, their
+contributes nothing; it never falls back to a lower-priority file. Sources, their
 sha256 and truncation are recorded under
-`stats.guidance` in the run report and are never rendered into PR comments.
-The mode is part of the review fingerprint, not the Vera index identity.
+`stats.guidance` in the run report, along with listed/read skills and whether
+notes were included; guidance and note text are not rendered into PR comments.
+Operator `notes` apply independently of the guidance mode. CLI `--guidance`
+overrides the mode; `--notes-file` appends notes (8000 characters total).
+These settings affect the review fingerprint, not the Vera index identity.
 It stays `off` by default; evaluation found no benefit so far
-([evaluation](evaluation.md)). Guidance is text the investigator may
+([evaluation](evaluation.md)). Guidance is text the models may
 follow: in one evaluation run, a base `AGENTS.md` claiming a file was
 externally audited and out of scope made it skip a real high-severity defect while the
 review still reported `complete`. Enable it only for guidance you would

@@ -29,7 +29,9 @@
   import Status from '#lib/components/Status.svelte';
   import Notice from '#lib/components/Notice.svelte';
   import RepoFixSettings from '#lib/components/RepoFixSettings.svelte';
+  import RepoGuidanceSettings from '#lib/components/RepoGuidanceSettings.svelte';
   let fixRepo = $state('');
+  let guidanceRepo = $state<Repository>();
   let repos = $state<Repository[]>([]);
   let search = $state('');
   let triggerFilter = $state('');
@@ -492,7 +494,11 @@
                 options={modeOptions}
                 disabled={!!busy}
                 onchange={(value) => void update(repo, 'mode', value)}
-              /></td
+              />{#if repo.guidance !== null || repo.has_notes}<div class="row-meta guidance-marker">
+                  {#if repo.guidance !== null}<span class="badge">Guidance: {repo.guidance}</span
+                    >{/if}
+                  {#if repo.has_notes}<span class="badge">Notes</span>{/if}
+                </div>{/if}</td
             ><td
               >{#if repo.last_review}<a href={`/reviews/${repo.last_review.id}`}
                   ><Status status={repo.last_review.status} />
@@ -552,6 +558,8 @@
                     ><DropdownMenu.Item
                       class="menu-item"
                       onSelect={() => (fixRepo = repo.full_name)}>Fix settings</DropdownMenu.Item
+                    ><DropdownMenu.Item class="menu-item" onSelect={() => (guidanceRepo = repo)}
+                      >Review guidance…</DropdownMenu.Item
                     ></DropdownMenu.Content
                   ></DropdownMenu.Portal
                 ></DropdownMenu.Root
@@ -646,7 +654,20 @@
       onclose={() => (fixRepo = '')}
     />{/key}{/if}
 
+{#if guidanceRepo}{#key guidanceRepo.full_name}<RepoGuidanceSettings
+      repo={guidanceRepo}
+      onclose={() => (guidanceRepo = undefined)}
+      onsaved={(repo) => {
+        notice.success(`${repo}: review guidance saved.`);
+        void load();
+      }}
+    />{/key}{/if}
+
 <style>
+  .guidance-marker {
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
   .connected-accounts {
     margin-bottom: 24px;
     border: 1px solid var(--border);

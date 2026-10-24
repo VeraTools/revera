@@ -54,6 +54,23 @@ callback then close. The `/setup` page remains available for configuration
 and recovery. Until model configuration is saved, jobs are skipped without
 creating PR checks. The dashboard writes `/data/revera.yaml` when you save models.
 
+## Review guidance
+
+Set a per-repository guidance level and operator notes in **Repositories →
+Review guidance**, and preview the files and skills on the default branch.
+An unset level inherits the review configuration; notes supplement its
+`review.notes` (8000 characters total; a review trims the repository notes to
+fit and logs a warning). Repository preferences apply even when
+the repository has its own base-commit `revera.yaml`. The preview uses the
+server configuration for its global defaults; a repository's YAML can differ.
+Reviews read guidance and skills from the PR's immutable base commit, not its
+head. External/private reviews ignore these preferences and notes.
+
+The admin-only read APIs are `GET /api/repos/{owner}/{repo}/guidance` and
+`GET /api/repos/{owner}/{repo}/guidance/file?path=AGENTS.md`. The file endpoint
+only serves preview candidates. A truncated GitHub tree is marked in the
+preview. Guidance stays `off` by default; see [configuration](configuration.md#review).
+
 ## Connected accounts and organizations
 
 GitHub decides who may install an App on an account or organization. Revera
@@ -245,6 +262,27 @@ The server tests unchecked roles at startup and each reconciliation tick;
 **Test** runs a probe immediately. Setup waits for required model checks and
 active retrieval keys. Results survive restarts; unchanged saves and unrelated
 keys do not clear them.
+
+## Pull requests
+
+**Pull requests** shows open PRs across approved installed repositories and their
+Revera review state. Search by title, author, repository or `#number`; combine
+repository and review-state filters with draft and bot-author toggles. Filters
+stay in the URL. **Refresh** reconciles installed repositories with GitHub.
+Review a PR using its repository default or choose Quick, Standard or Deep from
+the row menu. Cancel active reviews or open **Fix findings** for current results.
+Repositories with reviews off remain visible but cannot queue new reviews.
+
+Open a PR for its description and conversation, with review threads grouped under
+their reviews. Resolved threads and Revera summaries start collapsed; expand
+diff context or filter to unresolved threads and hide bots. The Revera sidebar
+keeps review status, job history, fixes and repository settings together. A notice
+links to GitHub when a conversation exceeds the response limits.
+
+The administrator-only APIs are `GET /api/pulls` and
+`GET /api/repos/{owner}/{repo}/pulls/{number}`; GitHub conversation data is cached
+for 20 seconds, bodies are redacted, and external images are links rather than
+automatically loaded content.
 
 ## External public PR reviews
 
@@ -774,6 +812,13 @@ Back up the data directory, then update with the same volume:
 
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
+
+### From 0.9.x to 0.10.0
+
+No change is required. The **Pull requests** page uses the App's existing
+read permissions. Repository guidance stays off until you choose a level in
+**Settings → Review** or per repository under **Repositories → Review
+guidance**.
 
 ### From 0.8.x to 0.9.0
 

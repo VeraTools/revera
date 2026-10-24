@@ -111,7 +111,8 @@ pub struct RunStats {
     pub reopened: usize,
     /// Completed prior review of identical content was reused.
     pub reused: bool,
-    /// "vera" | "disabled" | "unavailable: <why>"
+    /// "lexical-only" | "vera" | "vera+rerank" | "vera (rerank degraded)" |
+    /// "unavailable: <why>" | "not needed", with an optional fallback suffix.
     pub retrieval: String,
     /// Distinct files read with `read_file` across all agents.
     pub files_read: usize,
@@ -123,7 +124,8 @@ pub struct RunStats {
     /// Findings without any validator verdict (validation disabled).
     #[serde(default)]
     pub unvalidated: usize,
-    /// "fresh" (per-candidate validator) | "disabled" (evaluation-only).
+    /// "fresh" (per-candidate validator) | "reused" (identical content) |
+    /// "not needed" (nothing reviewable) | "disabled" (evaluation-only).
     #[serde(default)]
     pub validation: String,
     /// Findings dropped because validator-corrected severity fell below
@@ -511,16 +513,17 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
         ));
     }
     s.push('\n');
-    if !accepted.is_empty() {
-        for f in &accepted {
-            s.push_str(&format!(
-                "- **[{}]** {}:{} — {}\n",
-                f.severity,
-                public_code_span(&f.file),
-                f.start_line,
-                public_line(&f.title)
-            ));
-        }
+    // findings that cannot anchor inline are listed once, in their own section
+    let outside_ids: std::collections::HashSet<String> =
+        inp.outside_diff.iter().map(|f| f.id()).collect();
+    for f in accepted.iter().filter(|f| !outside_ids.contains(&f.id())) {
+        s.push_str(&format!(
+            "- **[{}]** {}:{} — {}\n",
+            f.severity,
+            public_code_span(&f.file),
+            f.start_line,
+            public_line(&f.title)
+        ));
     }
     if inp.publish_uncertain {
         for f in inp

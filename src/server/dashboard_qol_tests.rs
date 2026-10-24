@@ -352,6 +352,7 @@ async fn overview_windows_sum_review_findings_failures_tokens_and_median() {
             high,
             medium,
             low,
+            carried: 0,
         };
         summary.tokens = tokens;
         entries.push(summary);
