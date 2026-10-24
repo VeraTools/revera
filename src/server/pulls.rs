@@ -293,7 +293,7 @@ const DETAIL_QUERY: &str = r#"
 query PullDetail($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      number title body url state isDraft merged createdAt updatedAt headRefName
+      number title body url state isDraft merged isCrossRepository createdAt updatedAt headRefName
       baseRefName headRefOid additions deletions changedFiles reviewDecision
       author { login __typename }
       labels(first: 20) { totalCount nodes { name color } }
@@ -346,7 +346,8 @@ fn map_detail(pr: &Value, repo: &Repo, bot: &str) -> Value {
         "number": pr["number"], "title": pr["title"],
         "body": super::runner::strip_state(pr["body"].as_str().unwrap_or("")),
         "url": pr["url"], "state": pr["state"].as_str().unwrap_or("").to_ascii_lowercase(),
-        "draft": pr["isDraft"], "merged": pr["merged"], "created_at": pr["createdAt"], "updated_at": pr["updatedAt"],
+        "draft": pr["isDraft"], "merged": pr["merged"], "fork": pr["isCrossRepository"].as_bool().unwrap_or(false),
+        "created_at": pr["createdAt"], "updated_at": pr["updatedAt"],
         "head_ref": pr["headRefName"], "base_ref": pr["baseRefName"], "head_sha": pr["headRefOid"],
         "additions": pr["additions"], "deletions": pr["deletions"], "changed_files": pr["changedFiles"],
         "review_decision": pr["reviewDecision"], "author": author(&pr["author"], bot),

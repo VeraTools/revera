@@ -69,3 +69,112 @@ export function renderSummary(md: string): string {
   flush();
   return blocks.join('\n');
 }
+
+// GitHub bodies are data, never HTML. Tokenize raw text and escape each leaf;
+// generated markup never re-enters the parser (including links and code).
+function githubInline(text: string, depth = 0): string {
+  if (depth > 8) return escape(text);
+  const token =
+    /`([^`\n]+)`|!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|(?<!\w)(?:\*([^*\n]+)\*|_([^_\n]+)_)(?!\w)|https?:\/\/[^\s<>]+/g;
+  let result = '',
+    start = 0;
+  for (const match of text.matchAll(token)) {
+    result += escape(text.slice(start, match.index));
+    const [, code, image, imageUrl, label, linkUrl, bold, starItalic, underscoreItalic] = match;
+    if (code !== undefined) result += `<code>${escape(code)}</code>`;
+    else if (image !== undefined || label !== undefined) {
+      const href = imageUrl || linkUrl;
+      result += `<a href="${escape(href)}" rel="noreferrer" target="_blank">${image !== undefined ? 'image' : githubInline(label, depth + 1)}</a>`;
+    } else if (bold !== undefined) result += `<strong>${githubInline(bold, depth + 1)}</strong>`;
+    else if (starItalic !== undefined || underscoreItalic !== undefined)
+      result += `<em>${githubInline(starItalic ?? underscoreItalic, depth + 1)}</em>`;
+    else {
+      const href = match[0].replace(/[.,;:!?)\]]+$/, '');
+      result += `<a href="${escape(href)}" rel="noreferrer" target="_blank">${escape(href)}</a>${escape(match[0].slice(href.length))}`;
+    }
+    start = match.index + match[0].length;
+  }
+  return result + escape(text.slice(start));
+}
+
+export function renderGithub(md: string): string {
+  // An unterminated HTML comment also hides everything following it.
+  const lines = md.replace(/<!--(?:[\s\S]*?-->|[\s\S]*$)/g, '').split(/\r?\n/);
+  const blocks: string[] = [];
+  let group: string[] = [],
+    kind = '',
+    fence: string[] | null = null,
+    details = 0;
+  function flush() {
+    if (!group.length) return;
+    const content = group.map((line) => githubInline(line));
+    blocks.push(
+      kind === 'ul' || kind === 'ol'
+        ? `<${kind}>${content.map((line) => `<li>${line}</li>`).join('')}</${kind}>`
+        : kind === 'quote'
+          ? `<blockquote><p>${content.join('<br>')}</p></blockquote>`
+          : `<p>${content.join('<br>')}</p>`,
+    );
+    group = [];
+  }
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      flush();
+      kind = '';
+      if (fence) {
+        blocks.push(`<pre><code>${escape(fence.join('\n'))}</code></pre>`);
+        fence = null;
+      } else fence = [];
+      continue;
+    }
+    if (fence) {
+      fence.push(line);
+      continue;
+    }
+    const opening = line.match(/^\s*<details(?:\s+open)?>\s*(?:<summary>(.*?)<\/summary>)?\s*$/i);
+    const summary = line.match(/^\s*<summary>(.*?)<\/summary>\s*$/i);
+    if (opening || (summary && details)) {
+      flush();
+      kind = '';
+      if (opening) {
+        blocks.push('<details>');
+        details++;
+      }
+      const label = opening?.[1] ?? summary?.[1];
+      if (label !== undefined)
+        blocks.push(`<summary>${escape(label.replace(/<[^>]*>/g, ''))}</summary>`);
+      continue;
+    }
+    if (/^\s*<\/details>\s*$/i.test(line) && details) {
+      flush();
+      kind = '';
+      blocks.push('</details>');
+      details--;
+      continue;
+    }
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    if (!line.trim() || heading || /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flush();
+      kind = '';
+      if (heading) blocks.push(`<h4>${githubInline(heading[1])}</h4>`);
+      else if (line.trim()) blocks.push('<hr>');
+      continue;
+    }
+    const list = line.match(/^\s*(?:[-+*]|\d+[.)])\s+(.+)$/);
+    const quote = line.match(/^>\s?(.*)$/);
+    const next = list ? (/^\s*\d/.test(line) ? 'ol' : 'ul') : quote ? 'quote' : 'p';
+    if (next !== kind) flush();
+    kind = next;
+    group.push(
+      list
+        ? list[1].replace(/^\[([ xX])\]\s*/, (_, checked) => (checked === ' ' ? '☐ ' : '☑ '))
+        : quote
+          ? quote[1]
+          : line,
+    );
+  }
+  flush();
+  if (fence) blocks.push(`<pre><code>${escape(fence.join('\n'))}</code></pre>`);
+  while (details-- > 0) blocks.push('</details>');
+  return blocks.join('\n');
+}

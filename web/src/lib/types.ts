@@ -174,6 +174,118 @@ export interface PullRequest {
   updated_at: string;
   last_job?: JobSummary;
 }
+
+// Installed pull-request inbox and GitHub conversation (separate from job history).
+export type PullReviewState =
+  | 'reviewing'
+  | 'not_reviewed'
+  | 'outdated'
+  | 'failed'
+  | 'partial'
+  | 'findings'
+  | 'clean'
+  | 'skipped';
+export interface PullReview {
+  latest: {
+    id: string;
+    status: JobStatus;
+    mode: ReviewMode;
+    head_sha: string | null;
+    findings: JobSummary['findings'];
+    finished_at: string | null;
+    queued_at: string;
+  } | null;
+  state: PullReviewState;
+  active_job: string | null;
+}
+export interface PullSummary {
+  repo: string;
+  repo_id: number;
+  number: number;
+  title: string;
+  author: string;
+  author_is_bot: boolean;
+  draft: boolean;
+  fork: boolean;
+  head_sha: string;
+  head_ref: string;
+  base_ref: string;
+  created_at: string;
+  updated_at: string;
+  url: string;
+  labels: string[];
+  trigger: Trigger;
+  mode: ReviewMode;
+  review: PullReview;
+}
+export interface PullInbox {
+  refreshed_at: string | null;
+  pulls: PullSummary[];
+}
+export interface PullAuthor {
+  login: string | null;
+  bot: boolean;
+  revera: boolean;
+}
+export interface PullComment {
+  id: string;
+  author: PullAuthor;
+  body: string;
+  created_at: string;
+  url: string;
+}
+export interface PullGitHubReview {
+  id: string;
+  author: PullAuthor;
+  state: string;
+  body: string;
+  submitted_at: string | null;
+  url: string;
+}
+export interface PullThread {
+  id: string;
+  review_id: string | null;
+  is_resolved: boolean;
+  is_outdated: boolean;
+  path: string;
+  line: number | null;
+  original_line: number | null;
+  diff_hunk: string;
+  comments: PullComment[];
+  truncated: boolean;
+}
+export interface PullDetail {
+  repo: string;
+  repo_id: number;
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+  fork: boolean;
+  created_at: string;
+  updated_at: string;
+  head_ref: string;
+  base_ref: string;
+  head_sha: string;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  review_decision: string | null;
+  author: PullAuthor;
+  labels: { name: string; color: string }[];
+  comments: PullComment[];
+  reviews: PullGitHubReview[];
+  threads: PullThread[];
+  truncated: { labels: boolean; comments: boolean; reviews: boolean; threads: boolean };
+  jobs: JobSummary[];
+  fixes: FixSummary[];
+  trigger: Trigger;
+  mode: ReviewMode;
+  review: PullReview;
+}
 export interface ServerSettings {
   external: ExternalPolicy;
   admins: string[];

@@ -331,7 +331,7 @@ fn conversation() -> Value {
     }, {"id":"T2", "isResolved":false, "isOutdated":false, "path":"file", "line":2, "originalLine":2, "comments":{"totalCount":0, "nodes":[]}}]});
     let pr = json!({
         "number":7, "title":"Title", "body":"Description<!-- revera-state:hidden --> done",
-        "url":"https://github.com/owner/repo/pull/7", "state":"OPEN", "isDraft":false, "merged":false,
+        "url":"https://github.com/owner/repo/pull/7", "state":"OPEN", "isDraft":false, "merged":false, "isCrossRepository":true,
         "createdAt":"2026-10-01T00:00:00Z", "updatedAt":"2026-10-02T00:00:00Z",
         "headRefName":"topic", "baseRefName":"main", "headRefOid":"current",
         "additions":4, "deletions":2, "changedFiles":1, "reviewDecision":"CHANGES_REQUESTED",
@@ -442,6 +442,7 @@ async fn detail_maps_graphql_threads_redacts_bodies_and_joins_live_jobs_fixes_an
         json!({"login":"human","bot":false,"revera":false})
     );
     assert_eq!(value["state"], "open");
+    assert_eq!(value["fork"], true);
     assert_eq!(value["head_sha"], "current");
     assert_eq!(value["changed_files"], 1);
     assert_eq!(value["fixes"].as_array().unwrap().len(), 1);

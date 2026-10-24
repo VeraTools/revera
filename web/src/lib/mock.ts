@@ -1,5 +1,6 @@
 import { parseDocument } from 'yaml';
 import { mockFixRequest, updateMockFix } from './mock-fixes';
+import { mockPullRequest, annotatePullJob } from './mock-pulls';
 import type {
   JobSummary,
   JobDetail,
@@ -474,6 +475,7 @@ function enqueue(
     queued_at: ago(0),
   };
   jobs = [job, ...jobs];
+  annotatePullJob(job);
   emit('job', job);
   return job;
 }
@@ -577,6 +579,19 @@ export async function mockRequest(path: string, method: string, body?: unknown):
   const data = body as Record<string, unknown> | undefined;
   const external = await externalRequest(url.pathname, method, data);
   if (external.handled) return external.value;
+  // Installed PR fixtures stay separate from history, guidance and fix fixtures.
+  const pull = await mockPullRequest(url, method, data, {
+    jobs,
+    repos,
+    enqueue,
+    fixes: async (repo, number) => {
+      const result = (await mockRequest(`/api/fixes?repo=${encodeURIComponent(repo)}`, 'GET')) as {
+        fixes: FixSummary[];
+      };
+      return result.fixes.filter((fix) => fix.repo_source === 'installed' && fix.pr === number);
+    },
+  });
+  if (pull.handled) return pull.value;
   // Fixes product API; kept separate from external-review and inventory fixtures.
   if (
     url.pathname.startsWith('/api/fixes') ||

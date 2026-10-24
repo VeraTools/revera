@@ -54,6 +54,7 @@
   const currentTheme = $derived(themes.find((item) => item.value === theme.choice)!);
   const nav = [
     { href: '/', name: 'Overview', icon: LayoutDashboard },
+    { href: '/pulls', name: 'Pull requests', icon: GitPullRequest },
     { href: '/reviews', name: 'Reviews', icon: GitPullRequest },
     { href: '/fixes', name: 'Fixes', icon: Wrench },
     { href: '/repositories', name: 'Repositories', icon: FolderGit2 },

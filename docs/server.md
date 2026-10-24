@@ -248,20 +248,24 @@ keys do not clear them.
 
 ## Pull requests
 
-The backend provides an administrator-only inbox at `GET /api/pulls` for open
-PRs across approved installed repositories, including repositories with trigger
-off. Reconciliation and PR webhooks maintain its in-memory cache; the response
-includes its oldest repository refresh time and each PR's effective trigger,
-mode and Revera review state (including active, outdated and failed reviews).
+**Pull requests** shows open PRs across approved installed repositories and their
+Revera review state. Search by title, author, repository or `#number`; combine
+repository and review-state filters with draft and bot-author toggles. Filters
+stay in the URL. **Refresh** reconciles installed repositories with GitHub.
+Review a PR using its repository default or choose Quick, Standard or Deep from
+the row menu. Cancel active reviews or open **Fix findings** for current results.
+Repositories with reviews off remain visible but cannot queue new reviews.
 
-The planned **Pull requests** dashboard will filter this inbox by repository,
-author and review state, with review and fix actions on the existing endpoints.
-Its detail page will show the GitHub description, comments, reviews and review
-threads, including resolved/outdated state, alongside Revera jobs and fixes.
-`GET /api/repos/{owner}/{repo}/pulls/{number}` supplies this conversation with
-20-second GitHub caching, redacted bodies and bounded thread context. Truncation
-flags identify conversations that exceed the response limits. The UI arrives
-in the next phase; existing review and fix pages are unchanged.
+Open a PR for its description and conversation, with review threads grouped under
+their reviews. Resolved threads and Revera summaries start collapsed; expand
+diff context or filter to unresolved threads and hide bots. The Revera sidebar
+keeps review status, job history, fixes and repository settings together. A notice
+links to GitHub when a conversation exceeds the response limits.
+
+The administrator-only APIs are `GET /api/pulls` and
+`GET /api/repos/{owner}/{repo}/pulls/{number}`; GitHub conversation data is cached
+for 20 seconds, bodies are redacted, and external images are links rather than
+automatically loaded content.
 
 ## External public PR reviews
 
