@@ -366,7 +366,8 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     if diff.files.is_empty() {
         let excluded = !policy_gaps.is_empty();
         let mut resolved = vec![];
-        if !excluded {
+        // evaluation-only runs never change stored tracking
+        if !excluded && cfg.review.validate {
             let open: Vec<(String, String)> = state
                 .open_findings()
                 .iter()
@@ -390,8 +391,10 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
                 "no changes between base and head",
             )
         };
-        state.record_outcome(&base_sha, &head_sha, &patch_id, &key, status);
-        state.save(&repo)?;
+        if cfg.review.validate {
+            state.record_outcome(&base_sha, &head_sha, &patch_id, &key, status);
+            state.save(&repo)?;
+        }
         let plan_state = state.public_projection(cfg.review.publish_uncertain);
         let carried = crate::report::carried_findings(&state, &[]);
         let summary = summary_markdown(&Summary {
@@ -1024,6 +1027,24 @@ mod tests {
         let md = &report.plan.summary_markdown;
         assert!(md.contains("Resolved since last review"), "{md}");
         assert!(md.contains("no changes between base and head"), "{md}");
+    }
+
+    #[tokio::test]
+    async fn empty_diff_without_validation_leaves_stored_state_alone() {
+        let (dir, mut cfg, mut req) = carried_fixture();
+        cfg.review.validate = false;
+        req.base = "HEAD".into();
+        carried_state().save(dir.path()).unwrap();
+        let before = std::fs::read(ReviewState::path(dir.path())).unwrap();
+        let PrepareOut::ShortCircuit(report, _) = prepare(&cfg, &req, "baseline").await.unwrap()
+        else {
+            panic!("an empty diff must not reach the models")
+        };
+        assert_eq!(report.stats.resolved, 0);
+        assert_eq!(
+            std::fs::read(ReviewState::path(dir.path())).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]

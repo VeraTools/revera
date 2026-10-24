@@ -523,6 +523,21 @@ async fn review(a: ReviewArgs) -> i32 {
     if let Some(login) = &a.bot_login {
         cfg.github.bot_login.clone_from(login);
     }
+    // event mode: a notes file inside the checkout is PR content, and notes
+    // are trusted operator instructions
+    if ev.is_some()
+        && !a.private
+        && let Some(path) = a.notes_file.as_deref()
+    {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let abs = lexical_abs(&cwd, path);
+        let root = repo.canonicalize().unwrap_or_else(|_| repo.clone());
+        let inside = |p: &std::path::Path| p.starts_with(&repo) || p.starts_with(&root);
+        if inside(&abs) || abs.canonicalize().is_ok_and(|p| inside(&p)) {
+            eprintln!("error: in event mode --notes-file must be outside the checkout");
+            return 1;
+        }
+    }
     if let Err(error) =
         apply_guidance_overrides(&mut cfg, a.guidance, a.notes_file.as_deref(), a.private)
     {

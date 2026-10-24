@@ -101,6 +101,10 @@ async fn blob(server: &Server, repo: &Repo, token: &str, sha: &str, cap: usize) 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Skill files read for one preview; duplicates by name still leave room
+/// for a full index.
+const MAX_SKILL_FETCHES: usize = 2 * guidance::MAX_SKILLS;
+
 async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot> {
     let branch: String =
         url::form_urlencoded::byte_serialize(repo.default_branch.as_bytes()).collect();
@@ -157,6 +161,13 @@ async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot>
             })
         })
         .collect();
+    // one blob request per skill: fetch only the candidates the index could
+    // use, in the loader's order, and count the rest as omitted
+    let mut ordered: Vec<_> = skill_files.into_iter().collect();
+    ordered.sort_by_key(|(path, _)| (guidance::skill_path(path).map(|(r, _)| r), path.clone()));
+    let unfetched = ordered.len().saturating_sub(MAX_SKILL_FETCHES);
+    ordered.truncate(MAX_SKILL_FETCHES);
+    let skill_files: BTreeMap<_, _> = ordered.into_iter().collect();
     let parsed: Vec<Skill> = stream::iter(skill_files.clone())
         .map(|(path, file)| async move {
             let text = blob(server, repo, token, &file.sha, guidance::FRONT_MATTER_BYTES).await?;
@@ -168,6 +179,7 @@ async fn snapshot(server: &Server, repo: &Repo, token: &str) -> Result<Snapshot>
         .into_iter()
         .collect::<Result<_>>()?;
     let (skills, omitted) = guidance::select_skills(parsed);
+    let omitted = omitted + unfetched;
     let skills: Vec<_> = skills.iter().map(|skill| {
         let file = skill_files[&skill.path].clone();
         let value = json!({"name": skill.name, "path": skill.path, "description": skill.description, "bytes": file.bytes});

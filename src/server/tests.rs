@@ -1208,6 +1208,57 @@ async fn guidance_preview_uses_default_tree_caches_skills_and_gates_file_reads()
     task.abort();
 }
 
+#[tokio::test]
+async fn guidance_preview_caps_skill_blob_requests() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let (cookie, _) = administrator(&server).await;
+    guidance_repo(&mut *server.dashboard.lock().await);
+    Mock::given(method("POST"))
+        .and(path("/app/installations/9/access_tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"token":"t"})))
+        .mount(&mock)
+        .await;
+    let skill_sha = "c".repeat(40);
+    let tree: Vec<Value> = (0..170)
+        .map(|i| {
+            json!({"path": format!(".agents/skills/s{i:03}/SKILL.md"), "type":"blob",
+            "mode":"100644", "sha": skill_sha, "size": 10})
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/git/trees/main"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sha":"a".repeat(40),"tree":tree})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/git/blobs/{skill_sha}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Skill body"))
+        .expect(2 * crate::guidance::MAX_SKILLS as u64)
+        .mount(&mock)
+        .await;
+    let (url, task) = http(server.clone()).await;
+    let preview: Value = reqwest::Client::new()
+        .get(format!("{url}/api/repos/owner/repo/guidance"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let shown = preview["skills"].as_array().unwrap().len();
+    assert!(shown > 0 && shown <= crate::guidance::MAX_SKILLS);
+    assert_eq!(
+        shown as u64 + preview["skills_omitted"].as_u64().unwrap(),
+        170
+    );
+    assert_eq!(preview["skills"][0]["name"], "s000");
+    task.abort();
+}
+
 #[test]
 fn session_sign_verify_and_tamper() {
     let key = [7; 32];
