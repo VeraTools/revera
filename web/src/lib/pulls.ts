@@ -3,11 +3,15 @@ import type { PullDetail, PullReview, PullSummary } from './types';
 export type PullTarget = Pick<
   PullSummary,
   'repo' | 'number' | 'url' | 'head_sha' | 'trigger' | 'mode' | 'review'
->;
+> &
+  Partial<Pick<PullDetail, 'state' | 'merged'>>;
+export const isOpen = (pull: PullTarget) => (!pull.state || pull.state === 'open') && !pull.merged;
 export const pullPath = (pull: { repo: string; number: number }) =>
   `/pulls/${pull.repo.split('/').map(encodeURIComponent).join('/')}/${pull.number}`;
 export const canFix = (pull: PullTarget) =>
-  pull.review.state === 'findings' && pull.review.latest?.head_sha === pull.head_sha;
+  isOpen(pull) &&
+  pull.review.state === 'findings' &&
+  pull.review.latest?.head_sha === pull.head_sha;
 export function reviewing(review: PullReview, id: string): PullReview {
   return { ...review, state: 'reviewing', active_job: id };
 }

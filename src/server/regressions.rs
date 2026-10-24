@@ -802,7 +802,7 @@ async fn rejected_candidates_do_not_count_as_findings() {
     runner::run(server.clone(), &running, cancel).await;
     assert_eq!(
         job_metadata(data.path(), &current)["findings"],
-        json!({"total": 0, "high": 0, "medium": 0, "low": 0})
+        json!({"total": 0, "high": 0, "medium": 0, "low": 0, "carried": 0})
     );
     let mixed = json!({"status": "complete", "findings": [
         {"validation_status": "accepted", "severity": "low"},

@@ -6,7 +6,7 @@
   import { live } from '#lib/events';
   import { createNotices } from '#lib/notices.svelte';
   import { labelStyle, reviewDecision, reviewing } from '../../../../../lib/pulls';
-  import type { PullDetail } from '#lib/types';
+  import type { PullDetail, JobSummary, FixSummary } from '#lib/types';
   import Notice from '#lib/components/Notice.svelte';
   import PullActions from '#lib/components/PullActions.svelte';
   import PullRevera from '#lib/components/PullRevera.svelte';
@@ -18,6 +18,10 @@
     error = $state(''),
     notFound = $state(false);
   let generation = 0;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let seenJob: JobSummary | undefined,
+    seenFix: FixSummary | undefined,
+    seenRepos = 0;
   const route = $derived({
     owner: page.params.owner!,
     repo: page.params.repo!,
@@ -55,28 +59,39 @@
       notice.state.message = '';
       void load();
     });
+    return () => {
+      clearTimeout(refreshTimer);
+      refreshTimer = undefined;
+      generation++;
+    };
   });
-  const liveJob = $derived(
-    $live.job && detail && $live.job.repo_id === detail.repo_id && $live.job.pr === detail.number
-      ? $live.job
-      : undefined,
-  );
-  // Fix events carry the canonical repository name rather than a repository ID.
-  const liveFix = $derived(
-    $live.fix &&
-      detail &&
-      $live.fix.repo_source === 'installed' &&
-      $live.fix.repo === detail.repo &&
-      $live.fix.pr === detail.number
-      ? $live.fix
-      : undefined,
-  );
   $effect(() => {
-    const job = liveJob,
-      fix = liveFix;
-    if (!job && !fix) return;
-    const timer = setTimeout(() => untrack(() => void load()), 500);
-    return () => clearTimeout(timer);
+    const { job, fix, repos } = $live;
+    untrack(() => {
+      // Fix events use the canonical repository name, not its numeric ID.
+      const changed =
+        repos !== seenRepos ||
+        (job !== seenJob &&
+          job &&
+          detail &&
+          job.repo_id === detail.repo_id &&
+          job.pr === detail.number) ||
+        (fix !== seenFix &&
+          fix &&
+          detail &&
+          fix.repo_source === 'installed' &&
+          fix.repo === detail.repo &&
+          fix.pr === detail.number);
+      seenJob = job;
+      seenFix = fix;
+      seenRepos = repos;
+      if (!changed || !detail || refreshTimer !== undefined) return;
+      // Event churn must not cancel a pending refresh. Route cleanup owns this timer.
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        void load();
+      }, 500);
+    });
   });
   function queued(id: string) {
     if (detail) detail = { ...detail, review: reviewing(detail.review, id) };

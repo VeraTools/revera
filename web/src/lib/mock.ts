@@ -162,21 +162,22 @@ export function setMockReviewCarried(id: string) {
   if (job) emit('job', job);
 }
 function carriedFindings(job: JobSummary): Finding[] {
-  if (!carriedReviews.has(job.id)) return [];
+  const count = job.findings.carried ?? (carriedReviews.has(job.id) ? 1 : 0);
+  if (!count) return [];
   const currentIds = new Set(handoffFindings(job).map((finding) => finding.id));
-  const finding = handoffFindings({ ...job, findings: { ...job.findings, total: 2 } }).find(
-    (finding) => !currentIds.has(finding.id),
-  );
-  if (!finding) return [];
-  return [
-    {
+  return handoffFindings({
+    ...job,
+    findings: { ...job.findings, total: job.findings.total + count },
+  })
+    .filter((finding) => !currentIds.has(finding.id))
+    .slice(0, count)
+    .map((finding) => ({
       ...finding,
       carried: true,
       validation_status: null,
       validated_fix: null,
       prompt: `# Fix instructions\n\n## Still open from earlier reviews\n\nReported at an earlier commit; line numbers may have moved. Re-validate against the current code before making changes.\n\n${finding.id}: ${finding.title}\n${finding.claim}\nEvidence: ${finding.file}:${finding.start_line}\n`,
-    },
-  ];
+    }));
 }
 let jobs: JobSummary[] = titles.map((title, i) => ({
   source: 'installed',

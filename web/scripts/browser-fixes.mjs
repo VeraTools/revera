@@ -10,7 +10,7 @@ export async function checkFixes({ open, choose, edit, savedConfig }) {
     const navigation = await page.locator('nav a').allTextContents();
     assert.deepEqual(
       navigation.map((value) => value.trim()),
-      ['Overview', 'Reviews', 'Fixes', 'Repositories', 'Settings'],
+      ['Overview', 'Pull requests', 'Reviews', 'Fixes', 'Repositories', 'Settings'],
     );
     await choose(page, 'Fix state', 'ready');
     assert.equal(await page.locator('tbody tr').count(), 4);

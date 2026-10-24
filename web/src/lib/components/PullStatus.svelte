@@ -14,6 +14,7 @@
     skipped: 'Skipped',
   };
   const counts = $derived(review.latest?.findings);
+  const total = $derived((counts?.total || 0) + (counts?.carried || 0));
   const status = $derived(
     review.state === 'findings'
       ? counts?.high
@@ -35,7 +36,7 @@
   <Status
     {status}
     label={review.state === 'findings'
-      ? `${counts?.total || 0} ${counts?.total === 1 ? 'finding' : 'findings'}`
+      ? `${total} ${total === 1 ? 'finding' : 'findings'}`
       : labels[review.state]}
   />
 {/if}

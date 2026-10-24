@@ -15,7 +15,7 @@ const escape = (text: string) =>
 function inline(text: string, depth = 0): string {
   if (depth > 8) return text;
   return text.replace(
-    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<!\w)_([^_\n]+)_(?!\w)|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<!\w)_([^_\n]+)_(?!\w)|\[([^\[\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_match, code, bold, italic, label, href) => {
       if (code !== undefined) return `<code>${code}</code>`;
       if (bold !== undefined) return `<strong>${inline(bold, depth + 1)}</strong>`;
@@ -75,7 +75,7 @@ export function renderSummary(md: string): string {
 function githubInline(text: string, depth = 0): string {
   if (depth > 8) return escape(text);
   const token =
-    /`([^`\n]+)`|!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|(?<!\w)(?:\*([^*\n]+)\*|_([^_\n]+)_)(?!\w)|https?:\/\/[^\s<>]+/g;
+    /`([^`\n]+)`|!\[([^\[\]\n]*)\]\((https?:\/\/[^\s)]+)\)|\[([^\[\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|(?<!\w)(?:\*([^*\n]+)\*|_([^_\n]+)_)(?!\w)|https?:\/\/[^\s<>]+/g;
   let result = '',
     start = 0;
   for (const match of text.matchAll(token)) {
@@ -98,13 +98,35 @@ function githubInline(text: string, depth = 0): string {
 }
 
 export function renderGithub(md: string): string {
-  // An unterminated HTML comment also hides everything following it.
-  const lines = md.replace(/<!--(?:[\s\S]*?-->|[\s\S]*$)/g, '').split(/\r?\n/);
+  const lines = md.split(/\r?\n/);
   const blocks: string[] = [];
   let group: string[] = [],
     kind = '',
     fence: string[] | null = null,
     details = 0;
+  let comment = false;
+  function stripComments(line: string): string {
+    const token = /`[^`\n]+`|<!--/g;
+    let result = '',
+      cursor = 0;
+    while (cursor < line.length) {
+      if (comment) {
+        const end = line.indexOf('-->', cursor);
+        if (end === -1) return result;
+        cursor = end + 3;
+        comment = false;
+      } else {
+        token.lastIndex = cursor;
+        const next = token.exec(line);
+        if (!next) return result + line.slice(cursor);
+        result += line.slice(cursor, next.index);
+        if (next[0] === '<!--') comment = true;
+        else result += next[0]; // Inline code, including comment markers, stays literal.
+        cursor = token.lastIndex;
+      }
+    }
+    return result;
+  }
   function flush() {
     if (!group.length) return;
     const content = group.map((line) => githubInline(line));
@@ -117,7 +139,8 @@ export function renderGithub(md: string): string {
     );
     group = [];
   }
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = fence ? rawLine : stripComments(rawLine);
     if (/^\s*```/.test(line)) {
       flush();
       kind = '';

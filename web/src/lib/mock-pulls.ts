@@ -113,7 +113,7 @@ function reviewFor(pull: PullSummary, jobs: JobSummary[]): PullReview {
           : ['failed', 'cancelled'].includes(job.status)
             ? 'failed'
             : job.status === 'complete'
-              ? job.findings.total
+              ? job.findings.total + (job.findings.carried || 0)
                 ? 'findings'
                 : 'clean'
               : job.status === 'partial'
@@ -138,7 +138,7 @@ function seed(jobs: JobSummary[]) {
       pull.number === 253
         ? { total: 1, high: 0, medium: 1, low: 0 }
         : pull.number === 254
-          ? { total: 1, high: 0, medium: 0, low: 1 }
+          ? { total: 0, high: 0, medium: 0, low: 0, carried: 2 }
           : zero();
     jobs.push({
       source: 'installed',

@@ -1050,6 +1050,9 @@ async fn finish_summary(
             high: counts.high,
             medium: counts.medium,
             low: counts.low,
+            carried: report["carried"]
+                .as_array()
+                .map_or(0, |items| items.len() as u64),
         };
         if !report["ledger"].is_null() {
             summary.tokens = Some(json!({

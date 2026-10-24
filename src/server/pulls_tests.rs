@@ -1,5 +1,5 @@
 use super::*;
-use dashboard::{JobSummary, Mode, RepoInfo, Trigger};
+use dashboard::{FindingCounts, JobSummary, Mode, RepoInfo, Trigger};
 use std::sync::Mutex as StdMutex;
 
 fn open_pull(number: u64, head: &str) -> Value {
@@ -228,6 +228,7 @@ async fn inbox_computes_every_review_state_and_filters_source_inventory_and_revo
         (8, Some("complete"), "findings"),
         (9, Some("complete"), "clean"),
         (10, Some("skipped"), "skipped"),
+        (11, Some("complete"), "findings"),
     ];
     server.pulls.lock().unwrap().listing(
         &repo,
@@ -251,6 +252,9 @@ async fn inbox_computes_every_review_state_and_filters_source_inventory_and_revo
                 if number == 8 {
                     job.findings.total = 1;
                     job.findings.high = 1;
+                }
+                if number == 11 {
+                    job.findings.carried = 2;
                 }
                 dashboard.jobs.insert(job.id.clone(), job);
             }
@@ -284,12 +288,16 @@ async fn inbox_computes_every_review_state_and_filters_source_inventory_and_revo
         assert_eq!(pull["trigger"], "off");
         assert_eq!(pull["mode"], "quick");
         assert_eq!(pull["review"]["latest"].is_null(), status.is_none());
+        if number == 11 {
+            assert_eq!(pull["review"]["latest"]["findings"]["total"], 0);
+            assert_eq!(pull["review"]["latest"]["findings"]["carried"], 2);
+        }
         assert_eq!(
             pull["review"]["active_job"].is_string(),
             state == "reviewing"
         );
     }
-    assert_eq!(value["pulls"][0]["number"], 10);
+    assert_eq!(value["pulls"][0]["number"], 11);
     server
         .dashboard
         .lock()
@@ -312,6 +320,14 @@ async fn inbox_computes_every_review_state_and_filters_source_inventory_and_revo
         404
     );
     task.abort();
+}
+
+#[test]
+fn legacy_finding_counts_default_to_no_carried_findings() {
+    let counts: FindingCounts =
+        serde_json::from_value(json!({"total": 1, "high": 0, "medium": 1, "low": 0})).unwrap();
+    assert_eq!(counts.total, 1);
+    assert_eq!(counts.carried, 0);
 }
 
 fn conversation() -> Value {

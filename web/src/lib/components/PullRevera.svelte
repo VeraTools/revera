@@ -37,6 +37,9 @@
                 class={severity}>{count} {severity}</span
               >{/if}{/each}
         </div>{/if}
+      {#if latest.findings.carried}<p class="helper reviewed">
+          {latest.findings.carried} still open from earlier reviews
+        </p>{/if}
       {#if detail.review.state === 'outdated'}<p class="helper stale">
           New commits since this review
         </p>{/if}

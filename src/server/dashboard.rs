@@ -285,6 +285,8 @@ pub struct FindingCounts {
     pub high: u64,
     pub medium: u64,
     pub low: u64,
+    #[serde(default)]
+    pub carried: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

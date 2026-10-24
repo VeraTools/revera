@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { MoreHorizontal, ArrowUpRight, GitPullRequest, Square } from '@lucide/svelte';
   import { api, errorMessage } from '../api';
-  import { canFix, needsReview, type PullTarget } from '../pulls';
+  import { canFix, isOpen, needsReview, type PullTarget } from '../pulls';
   import type { ReviewMode } from '../types';
   let {
     pull,
@@ -22,10 +22,16 @@
   } = $props();
   let busy = $state(false);
   const off = $derived(pull.trigger === 'off');
+  const inactive = $derived(closed || !isOpen(pull));
   const hint = $derived(
-    off ? 'Reviews are off for this repository' : closed ? 'This pull request is closed' : '',
+    inactive
+      ? `This pull request is ${pull.merged ? 'merged' : 'closed'}`
+      : off
+        ? 'Reviews are off for this repository'
+        : '',
   );
   async function queue(mode: ReviewMode | null = null) {
+    if (off || inactive) return;
     busy = true;
     try {
       const { id } = await api.review(pull.repo, pull.number, mode);
@@ -54,7 +60,9 @@
 </script>
 
 <div class="pull-actions">
-  {#if pull.review.state === 'reviewing'}
+  {#if inactive}
+    <span class="helper">{pull.merged ? 'Merged' : 'Closed'}</span>
+  {:else if pull.review.state === 'reviewing'}
     <button class="button small danger" disabled={busy} onclick={() => void cancel()}
       ><Square size={12} />Cancel</button
     >
@@ -64,7 +72,7 @@
     >
   {:else if needsReview.has(pull.review.state)}
     <span title={hint}
-      ><button class="button small" disabled={busy || off || closed} onclick={() => void queue()}
+      ><button class="button small" disabled={busy || off} onclick={() => void queue()}
         >Review</button
       ></span
     >
@@ -77,15 +85,16 @@
     >
     <DropdownMenu.Portal
       ><DropdownMenu.Content class="menu pull-menu" sideOffset={4} align="end">
-        <div class="menu-heading helper">Review with mode</div>
-        {#each ['quick', 'standard', 'deep'] as mode}
-          <DropdownMenu.Item
-            class="menu-item"
-            disabled={busy || off || closed}
-            onSelect={() => void queue(mode as ReviewMode)}
-            ><GitPullRequest size={14} />{mode[0].toUpperCase() + mode.slice(1)}</DropdownMenu.Item
-          >
-        {/each}
+        {#if !inactive}<div class="menu-heading helper">Review with mode</div>
+          {#each ['quick', 'standard', 'deep'] as mode}
+            <DropdownMenu.Item
+              class="menu-item"
+              disabled={busy || off}
+              onSelect={() => void queue(mode as ReviewMode)}
+              ><GitPullRequest size={14} />{mode[0].toUpperCase() +
+                mode.slice(1)}</DropdownMenu.Item
+            >
+          {/each}{/if}
         {#if hint}<p class="menu-hint helper">{hint}</p>{/if}
         {#if pull.review.latest}<DropdownMenu.Item
             class="menu-item"

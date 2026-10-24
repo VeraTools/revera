@@ -225,7 +225,9 @@ fn review(jobs: &[JobSummary], head: &str) -> Value {
             match job.status.as_str() {
                 "failed" | "cancelled" => "failed",
                 "partial" => "partial",
-                "complete" if job.findings.total > 0 => "findings",
+                "complete" if job.findings.total.saturating_add(job.findings.carried) > 0 => {
+                    "findings"
+                }
                 "complete" => "clean",
                 "skipped" => "skipped",
                 _ => "failed",

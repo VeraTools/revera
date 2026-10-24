@@ -27,7 +27,7 @@ export interface JobSummary {
   mode: ReviewMode;
   status: JobStatus;
   reason?: string;
-  findings: { total: number; high: number; medium: number; low: number };
+  findings: { total: number; high: number; medium: number; low: number; carried?: number };
   queued_at: string;
   started_at?: string;
   finished_at?: string;

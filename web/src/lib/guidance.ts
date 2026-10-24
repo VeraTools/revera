@@ -50,7 +50,7 @@ export function guidanceGroups(files: GuidanceFile[], mode: GuidanceMode) {
         used: file === winner,
         reason:
           file === winner
-            ? 'Will be read'
+            ? 'Eligible'
             : !priority.includes(file.kind) || !winner
               ? 'not read at this level'
               : `${winner.path.split('/').at(-1)} takes priority`,

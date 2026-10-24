@@ -206,6 +206,9 @@
             What a review would read from <code>{data?.default_branch || repo.default_branch}</code>
           </h3>
           <p class="helper">
+            Root files come first; nested files share the remaining {guidanceSize(maxBytes)} budget.
+          </p>
+          <p class="helper">
             Preview uses server defaults; the repository’s base-commit revera.yaml may differ.
           </p>
           {#if previewLoading}<p class="loading" role="status">Loading guidance preview…</p>
@@ -248,8 +251,7 @@
                       >
                     </button>
                     <div class="file-reason">
-                      {#if file.used}<span class="badge">Will be read</span
-                        >{:else}{file.reason}{/if}
+                      {#if file.used}<span class="badge">Eligible</span>{:else}{file.reason}{/if}
                     </div>
                   </div>
                   {@render fileContent(file.path)}
