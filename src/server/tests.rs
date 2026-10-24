@@ -2302,3 +2302,5 @@ mod external_tests;
 mod handoff_tests;
 #[path = "installation_tests.rs"]
 mod installation_tests;
+#[path = "pulls_tests.rs"]
+mod pulls_tests;

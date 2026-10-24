@@ -380,6 +380,20 @@ fn persist(data: &FsPath, entry: &Entry) -> Result<()> {
     crate::fsutil::write_atomic_in(&root, "log.txt", crate::redact::text(&log).as_bytes())
 }
 impl Store {
+    pub(super) fn for_pull(&self, repo_id: u64, number: u64) -> Vec<Value> {
+        let mut entries: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.context.repo.source() == Source::Installed
+                    && entry.context.repo.id == repo_id
+                    && entry.record.pr == number
+            })
+            .collect();
+        entries.sort_by(|a, b| b.record.updated_at.cmp(&a.record.updated_at));
+        entries.iter().map(|entry| entry.record.summary()).collect()
+    }
+
     pub fn load(data: &FsPath) -> Result<Self> {
         let root = crate::fsutil::ensure_dir(data, FsPath::new("fixes"))?;
         let mut store = Self {

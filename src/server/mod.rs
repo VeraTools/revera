@@ -9,6 +9,7 @@ mod external;
 mod fixes;
 mod guidance;
 mod mentions;
+mod pulls;
 mod queue;
 mod reconcile;
 mod runner;
@@ -85,6 +86,7 @@ pub(super) struct Server {
     fixes: Mutex<fixes::Store>,
     fix_notify: Notify,
     guidance_cache: Mutex<guidance::Cache>,
+    pulls: std::sync::Mutex<pulls::Cache>,
 }
 
 impl Server {
@@ -274,6 +276,7 @@ impl Server {
                 &dashboard.repos,
             )?;
         }
+        self.pulls.lock().unwrap().remove_repo(repo.id);
         let mut queue = self.queue.lock().await;
         for job in queue.remove_repo(repo) {
             self.transition(&job, "cancelled", Some("repository removed".into()))
@@ -552,6 +555,7 @@ async fn initialize(
         fixes: Mutex::new(fixes),
         fix_notify: Notify::new(),
         guidance_cache: Mutex::new(guidance::Cache::default()),
+        pulls: std::sync::Mutex::new(pulls::Cache::default()),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(
@@ -868,6 +872,9 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
         return StatusCode::ACCEPTED;
     }
     let preferences = server.dashboard.lock().await.preferences.clone();
+    if event == "pull_request" {
+        server.pulls.lock().unwrap().webhook(&payload);
+    }
     if event == "check_run" && payload["action"] == "requested_action" {
         tokio::spawn(async move {
             if let Err(error) = fixes::check_action(&server, &app, &payload).await {

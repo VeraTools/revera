@@ -24,6 +24,8 @@ import type {
   FixPolicy,
   FixOverride,
   FixDelivery,
+  PullInbox,
+  PullDetail,
 } from './types';
 import type { GuidancePreview, RepoGuidanceSettings } from './types';
 
@@ -65,6 +67,12 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
 }
 
 const repoPath = (repo: string) => repo.split('/').map(encodeURIComponent).join('/');
+// The repository chooser retains its live per-repository listing.
+function pulls(): Promise<PullInbox>;
+function pulls(repo: string): Promise<PullRequest[]>;
+function pulls(repo?: string): Promise<PullInbox | PullRequest[]> {
+  return request(repo === undefined ? '/api/pulls' : `/api/repos/${repoPath(repo)}/pulls`);
+}
 export const api = {
   async session() {
     const session = await request<Session>('/api/session');
@@ -122,7 +130,10 @@ export const api = {
     settings: { trigger?: Trigger | null; mode?: ReviewMode | null } & RepoGuidanceSettings,
   ) => request<void>(`/api/repos/${repoPath(repo)}`, 'PATCH', settings),
   index: (repo: string) => request<void>(`/api/repos/${repoPath(repo)}/index`, 'POST'),
-  pulls: (repo: string) => request<PullRequest[]>(`/api/repos/${repoPath(repo)}/pulls`),
+  // Installed pull-request inbox and conversation.
+  pulls,
+  pull: (owner: string, repo: string, number: number) =>
+    request<PullDetail>(`/api/repos/${repoPath(`${owner}/${repo}`)}/pulls/${number}`),
   review: (repo: string, number: number, mode: ReviewMode | null = null) =>
     request<{ id: string }>(`/api/repos/${repoPath(repo)}/pulls/${number}/review`, 'POST', {
       mode,

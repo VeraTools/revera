@@ -262,6 +262,27 @@ The server tests unchecked roles at startup and each reconciliation tick;
 active retrieval keys. Results survive restarts; unchanged saves and unrelated
 keys do not clear them.
 
+## Pull requests
+
+**Pull requests** shows open PRs across approved installed repositories and their
+Revera review state. Search by title, author, repository or `#number`; combine
+repository and review-state filters with draft and bot-author toggles. Filters
+stay in the URL. **Refresh** reconciles installed repositories with GitHub.
+Review a PR using its repository default or choose Quick, Standard or Deep from
+the row menu. Cancel active reviews or open **Fix findings** for current results.
+Repositories with reviews off remain visible but cannot queue new reviews.
+
+Open a PR for its description and conversation, with review threads grouped under
+their reviews. Resolved threads and Revera summaries start collapsed; expand
+diff context or filter to unresolved threads and hide bots. The Revera sidebar
+keeps review status, job history, fixes and repository settings together. A notice
+links to GitHub when a conversation exceeds the response limits.
+
+The administrator-only APIs are `GET /api/pulls` and
+`GET /api/repos/{owner}/{repo}/pulls/{number}`; GitHub conversation data is cached
+for 20 seconds, bodies are redacted, and external images are links rather than
+automatically loaded content.
+
 ## External public PR reviews
 
 An external review reads an open public PR on `github.com` without requiring

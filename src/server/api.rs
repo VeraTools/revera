@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub struct Error(StatusCode, String);
+pub struct Error(pub(super) StatusCode, pub(super) String);
 impl<E: Into<anyhow::Error>> From<E> for Error {
     fn from(error: E) -> Self {
         let error = error.into();
@@ -62,6 +62,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .route("/api/logout", post(auth::logout))
         .route("/api/overview", get(overview))
         .route("/api/jobs", get(jobs))
+        .route("/api/pulls", get(super::pulls::inbox))
         .route("/api/jobs/{id}", get(job))
         .route("/api/jobs/{id}/instructions.md", get(instructions))
         .route("/api/jobs/{id}/log", get(log))
@@ -84,6 +85,10 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         )
         .route("/api/repos/{owner}/{repo}/index", post(index))
         .route("/api/repos/{owner}/{repo}/pulls", get(pulls))
+        .route(
+            "/api/repos/{owner}/{repo}/pulls/{number}",
+            get(super::pulls::detail),
+        )
         .route(
             "/api/repos/{owner}/{repo}/pulls/{number}/review",
             post(review),
@@ -903,7 +908,7 @@ async fn log(
     Ok(crate::redact::text(&text).into_owned().into_response())
 }
 
-async fn repo(server: &Server, name: &str) -> std::result::Result<Repo, Error> {
+pub(super) async fn repo(server: &Server, name: &str) -> std::result::Result<Repo, Error> {
     server
         .dashboard
         .lock()
@@ -991,8 +996,7 @@ async fn submit_review(
         trigger,
     );
     job.mode = mode;
-    let id = job.id.clone();
-    server.enqueue(job).await;
+    let id = super::pulls::enqueue_review(server, job).await?;
     Ok(output(json!({"id": id})))
 }
 async fn rerun(
