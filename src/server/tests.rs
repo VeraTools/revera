@@ -660,7 +660,8 @@ done
 case $profile in
   quick) [ "$guidance" = inherit ] && [ "$notes" = unset ] || exit 1;;
   standard) [ "$guidance" = skills ] && [ "$notes" = 'inspect migrations' ] || exit 1;;
-  deep) [ "$guidance" = agents ] && [ "$notes" = unset ] || exit 1;;
+  deep) [ "$guidance" = agents ] && [ "$(printf %s "$notes" | head -c 6)" = xxxxxx ] \
+    && [ "$(printf %s "$notes" | wc -c)" = 7986 ] || exit 1;;
 esac
 echo installation-token
 cat > "$out" <<'JSON'
@@ -683,7 +684,12 @@ JSON
                     dashboard::Mode::Standard => Some(crate::config::GuidanceMode::Skills),
                     dashboard::Mode::Deep => Some(crate::config::GuidanceMode::Agents),
                 },
-                notes: (mode == dashboard::Mode::Standard).then(|| "inspect migrations".into()),
+                notes: match mode {
+                    dashboard::Mode::Quick => None,
+                    dashboard::Mode::Standard => Some("inspect migrations".into()),
+                    // trimmed to fit after the base config's 12-character notes
+                    _ => Some("x".repeat(crate::guidance::MAX_NOTES_CHARS)),
+                },
                 ..Default::default()
             },
         );
@@ -696,9 +702,14 @@ JSON
         git(&source, &["init", "-q"]);
         git(&source, &["config", "user.email", "test@example.com"]);
         git(&source, &["config", "user.name", "test"]);
+        let review = if mode == dashboard::Mode::Deep {
+            "review:\n  notes: global focus\n"
+        } else {
+            ""
+        };
         std::fs::write(
             source.join("revera.yaml"),
-            format!("{CONFIG}github:\n  token_env: CUSTOM_TOKEN\n"),
+            format!("{CONFIG}{review}github:\n  token_env: CUSTOM_TOKEN\n"),
         )
         .unwrap();
         git(&source, &["add", "."]);
