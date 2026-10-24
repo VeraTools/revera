@@ -722,7 +722,9 @@ async fn execute(
             if let Some(notes) = preference.notes {
                 // the review's configuration (base-commit or server) and
                 // repository notes share one limit; trim the repository part
-                // instead of failing the review
+                // instead of failing the review, after redaction so a cut
+                // cannot split a secret
+                let notes = crate::redact::text(notes.trim()).into_owned();
                 let fitted = crate::guidance::fit_notes(&cfg.review.notes, &notes);
                 if fitted.len() < notes.len() {
                     tracing::warn!(
@@ -730,13 +732,8 @@ async fn execute(
                         job.repo.full_name
                     );
                 }
-                let notes = fitted;
                 let path = execution.report.parent().unwrap().join("notes.md");
-                crate::fsutil::write_output(
-                    &server.settings.data_dir,
-                    &path,
-                    crate::redact::text(&notes).as_bytes(),
-                )?;
+                crate::fsutil::write_output(&server.settings.data_dir, &path, fitted.as_bytes())?;
                 command.arg("--notes-file").arg(path);
             }
         }

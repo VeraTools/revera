@@ -58,6 +58,9 @@
       notFound = false;
       notice.state.error = '';
       notice.state.message = '';
+      // Events already in the live store are not changes to this page;
+      // ones that arrive while the first load runs are.
+      ({ job: seenJob, fix: seenFix, repos: seenRepos } = $live);
       void load();
     });
     return () => {
@@ -142,7 +145,8 @@
         {#if detail.labels.length}<div class="labels">
             {#each detail.labels as label}<span class="badge" style={labelStyle(label.color)}
                 >{label.name}</span
-              >{/each}
+              >{/each}{#if detail.truncated.labels}<span class="muted">more labels on GitHub</span
+              >{/if}
           </div>{/if}
       </div>
       <div class="header-actions">
