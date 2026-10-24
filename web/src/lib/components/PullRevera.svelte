@@ -158,7 +158,9 @@
     font-size: 11px;
     color: var(--muted);
     line-height: 1.6;
-    text-transform: capitalize;
+  }
+  .history-meta::first-letter {
+    text-transform: uppercase;
   }
   summary {
     color: var(--muted);
