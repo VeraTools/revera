@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
 
 - The dashboard has a **Pull requests** page listing open PRs across your
   repositories with their Revera review state: not reviewed, new commits since

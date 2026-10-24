@@ -812,6 +812,13 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
+### From 0.9.x to 0.10.0
+
+No change is required. The **Pull requests** page uses the App's existing
+read permissions. Repository guidance stays off until you choose a level in
+**Settings → Review** or per repository under **Repositories → Review
+guidance**.
+
 ### From 0.8.x to 0.9.0
 
 Default-branch push indexing is now **off by default**, including for existing
