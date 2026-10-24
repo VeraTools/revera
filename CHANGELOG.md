@@ -9,7 +9,8 @@
   running review from the list. A PR's page shows its description and the
   whole GitHub conversation, with review threads nested under their review
   and resolved threads and Revera's own comments collapsed, next to its
-  Revera reviews, job history and fix requests.
+  Revera reviews, job history and fix requests. Findings still open from
+  earlier reviews count toward a PR's findings and can be fixed from there.
 - Repository guidance can use `AGENTS.md` and `CLAUDE.md` (after `REVIEW.md`)
   and a new `skills` level that lists the repository's agent skills
   (`.agents/skills`, `.claude/skills`, `.opencode/skills`) for the reviewer
