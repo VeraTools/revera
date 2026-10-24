@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- The dashboard has a **Pull requests** page listing open PRs across your
+  repositories with their Revera review state: not reviewed, new commits since
+  the last review, reviewing, findings, clean, partial or failed. Filter by
+  repository and state, then review (with a mode), fix findings or cancel a
+  running review from the list. A PR's page shows its description and the
+  whole GitHub conversation, with review threads nested under their review
+  and resolved threads and Revera's own comments collapsed, next to its
+  Revera reviews, job history and fix requests.
+- Repository guidance can use `AGENTS.md` and `CLAUDE.md` (after `REVIEW.md`)
+  and a new `skills` level that lists the repository's agent skills
+  (`.agents/skills`, `.claude/skills`, `.opencode/skills`) for the reviewer
+  to open with `read_skill`. Everything is read from the base commit.
+  Validators now see the same guidance as the investigator. Guidance stays
+  `off` by default.
+- `review.notes` and `revera review --notes-file` add operator review notes;
+  `--guidance` overrides the level. In the App, **Repositories → Review
+  guidance** sets the level and notes per repository and previews which files
+  and skills a review would read.
+- A PR whose diff is empty finishes without model calls and resolves earlier
+  findings; a diff made only of policy-excluded files is reported partial.
+- The review summary lists findings outside the diff once, in their own
+  section, and fix instructions omit empty `Trigger:`/`Impact:` lines.
+- The container image runs Revera under `tini`, and Git maintenance no longer
+  detaches, so finished Git processes no longer pile up as zombies.
+
 ## v0.9.0
 
 - The GitHub App no longer indexes on every push. Reviews update their own
