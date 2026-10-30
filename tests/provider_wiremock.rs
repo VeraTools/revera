@@ -400,6 +400,18 @@ vera: {enabled: false}
         );
         assert!(text.contains("investigator.fallback[0]"), "{text}");
         assert!(text.contains("investigator.fallback[1]"), "{text}");
+        assert!(
+            text.contains("investigator.fallback[0]: reasoning effort=medium (adaptive; budget 8192 on models without adaptive thinking)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("investigator: reasoning effort=medium (budget 8192)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("investigator.fallback[1]: reasoning effort=medium (budget 8192)"),
+            "{text}"
+        );
         if available {
             assert!(
                 text.contains("UNAVAILABLE (skipped; another route has a key)"),
@@ -2079,7 +2091,8 @@ async fn anthropic_thinking_emitted_and_temp_omitted() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({
-            "thinking": {"type": "enabled", "budget_tokens": 16384},
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
             "max_tokens": 20000
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -2089,7 +2102,6 @@ async fn anthropic_thinking_emitted_and_temp_omitted() {
         .expect(1)
         .mount(&server)
         .await;
-    // max_output_tokens 20000: budget 16384 leaves 3616 > 1024 headroom
     anth_adapter(
         &server.uri(),
         spec(ReasoningEffort::High, None, ReasoningField::Auto),
@@ -2101,7 +2113,303 @@ async fn anthropic_thinking_emitted_and_temp_omitted() {
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}");
     assert!(body.get("temperature").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn anthropic_adaptive_max_caps_thinking_and_answer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    anth_adapter(&server.uri(), Reasoning::Effort(ReasoningEffort::Max), 4000)
+        .complete(&[ChatMessage::user("x")], &[])
+        .await
+        .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}");
+    assert_eq!(body["output_config"], json!({"effort": "max"}), "{body}");
+    assert_eq!(body["max_tokens"], 4000, "{body}");
+    assert!(body.get("temperature").is_none(), "{body}");
+    assert!(reqs[0].headers.get("anthropic-beta").is_none());
+}
+
+#[tokio::test]
+async fn anthropic_adaptive_minimal_maps_to_low() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    anth_adapter(
+        &server.uri(),
+        Reasoning::Effort(ReasoningEffort::Minimal),
+        4000,
+    )
+    .complete(&[ChatMessage::user("x")], &[])
+    .await
+    .unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}");
+    assert_eq!(body["output_config"], json!({"effort": "low"}), "{body}");
+    assert_eq!(body["max_tokens"], 4000, "{body}");
+    assert!(body.get("temperature").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn anthropic_adaptive_unsupported_learns_budget() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"thinking": {"type": "adaptive"}})))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string("adaptive thinking is not supported on this model"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "thinking": {"type": "enabled", "budget_tokens": 16384},
+            "max_tokens": 20000
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        20000,
+    );
+    for _ in 0..2 {
+        c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    }
+    server.verify().await;
+    assert_eq!(c.transport.ledger.request_count(), 3);
+    let reqs = server.received_requests().await.unwrap();
+    let first: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(first["output_config"], json!({"effort": "high"}));
+    for req in &reqs[1..] {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(
+            body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 16384})
+        );
+        assert!(body.get("output_config").is_none(), "{body}");
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+    let entries = &c.transport.ledger.0.lock().unwrap().entries;
+    assert_eq!(entries.iter().filter(|e| e.error.is_some()).count(), 1);
+    assert_eq!(
+        entries[0].error.as_deref(),
+        Some("400: model does not support adaptive thinking; retrying with a thinking budget")
+    );
+}
+
+async fn assert_anthropic_budget_rejection_learns_adaptive(error: &str) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+            "max_tokens": 4000
+        })))
+        .respond_with(ResponseTemplate::new(400).set_body_string(error))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "max"},
+            "max_tokens": 4000
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::Max, Some(2048), ReasoningField::Auto),
+        4000,
+    );
+    for _ in 0..2 {
+        c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    }
+    server.verify().await;
+    assert_eq!(c.transport.ledger.request_count(), 3);
+    let reqs = server.received_requests().await.unwrap();
+    let first: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(first.get("output_config").is_none(), "{first}");
+    for req in &reqs[1..] {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}");
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+    let entries = &c.transport.ledger.0.lock().unwrap().entries;
+    assert_eq!(entries.iter().filter(|e| e.error.is_some()).count(), 1);
+    assert_eq!(
+        entries[0].error.as_deref(),
+        Some("400: model does not support thinking budgets; retrying with adaptive thinking")
+    );
+}
+
+#[tokio::test]
+async fn anthropic_budget_enabled_rejection_learns_adaptive() {
+    assert_anthropic_budget_rejection_learns_adaptive(
+        "\"thinking.type.enabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior.",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn anthropic_budget_rejection_of_adaptive_budget_learns_adaptive() {
+    assert_anthropic_budget_rejection_learns_adaptive(
+        "thinking.adaptive.budget_tokens: Extra inputs are not permitted",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn anthropic_adaptive_rejected_effort_steps_down_to_high() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"output_config": {"effort": "xhigh"}}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_string("unsupported effort: xhigh"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"output_config": {"effort": "high"}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(
+        &server.uri(),
+        Reasoning::Effort(ReasoningEffort::Xhigh),
+        4000,
+    );
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    for req in reqs {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{body}");
+        assert_eq!(body["max_tokens"], 4000, "{body}");
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+    let entries = &c.transport.ledger.0.lock().unwrap().entries;
+    assert_eq!(entries[0].effective_reasoning, "xhigh");
+    assert_eq!(entries[1].effective_reasoning, "high");
+}
+
+#[tokio::test]
+async fn anthropic_adaptive_generic_thinking_rejection_steps_down_then_drops() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"thinking": {"type": "adaptive"}})))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid field: thinking"))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"temperature": 0.2})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(&server.uri(), Reasoning::Effort(ReasoningEffort::Max), 4000);
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 3);
+    for (req, effort) in reqs[..2].iter().zip(["max", "high"]) {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["output_config"]["effort"], effort, "{body}");
+    }
+    let dropped: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert!(dropped.get("thinking").is_none(), "{dropped}");
+    assert!(dropped.get("output_config").is_none(), "{dropped}");
+    assert_eq!(dropped["max_tokens"], 4000, "{dropped}");
+}
+
+#[tokio::test]
+async fn anthropic_thinking_mode_switches_only_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"thinking": {"type": "adaptive"}})))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string("adaptive thinking is not supported on this model"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"thinking": {"type": "enabled"}})))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("thinking.type.enabled is not supported"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"temperature": 0.2})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type":"text","text":"ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = anth_adapter(
+        &server.uri(),
+        Reasoning::Effort(ReasoningEffort::High),
+        20000,
+    );
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    server.verify().await;
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 3);
+    let first: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    let third: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert_eq!(first["thinking"]["type"], "adaptive");
+    assert_eq!(second["thinking"]["type"], "enabled");
+    assert!(third.get("thinking").is_none(), "{third}");
+    assert!(third.get("output_config").is_none(), "{third}");
 }
 
 #[tokio::test]
@@ -2122,7 +2430,7 @@ async fn anthropic_thinking_budget_clamps_and_raises_max() {
         .await;
     anth_adapter(
         &server.uri(),
-        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+        spec(ReasoningEffort::High, Some(16384), ReasoningField::Auto),
         4000,
     )
     .complete(&[ChatMessage::user("x")], &[])
@@ -2154,6 +2462,7 @@ async fn anthropic_thinking_none_emits_nothing() {
     let reqs = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert!(body.get("thinking").is_none(), "{body}");
+    assert!(body.get("output_config").is_none(), "{body}");
     assert_eq!(body["temperature"], json!(0.2), "{body}");
 }
 
@@ -2161,7 +2470,7 @@ async fn anthropic_thinking_none_emits_nothing() {
 async fn anthropic_thinking_400_retries_without() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"thinking": {"type": "enabled"}})))
+        .and(body_partial_json(json!({"thinking": {"type": "adaptive"}})))
         .respond_with(ResponseTemplate::new(400).set_body_string("invalid field: thinking"))
         .expect(1)
         .mount(&server)
@@ -2192,6 +2501,7 @@ async fn anthropic_thinking_400_retries_without() {
     let reqs = server.received_requests().await.unwrap();
     let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
     assert!(body2.get("thinking").is_none(), "{body2}");
+    assert!(body2.get("output_config").is_none(), "{body2}");
 }
 
 #[tokio::test]
@@ -2548,7 +2858,7 @@ async fn anthropic_400_thinking_drops_provider_state_blocks() {
     // request 2 (echoes the thinking block): 400 mentions thinking
     Mock::given(method("POST"))
         .and(body_partial_json(json!({
-            "thinking": {"type": "enabled"}
+            "thinking": {"type": "adaptive"}
         })))
         .respond_with(ResponseTemplate::new(400).set_body_string("invalid field: thinking"))
         .expect(1)
@@ -2578,6 +2888,7 @@ async fn anthropic_400_thinking_drops_provider_state_blocks() {
     assert_eq!(reqs.len(), 3);
     let body3: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
     assert!(body3.get("thinking").is_none(), "{body3}");
+    assert!(body3.get("output_config").is_none(), "{body3}");
     let asst = &body3["messages"][1];
     assert!(
         !asst["content"]

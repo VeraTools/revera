@@ -79,15 +79,23 @@ Reasoning long form:
 ```yaml
 reasoning:
   effort: high
-  budget_tokens: 16384      # optional; overrides the effort→budget mapping where budgets are the native knob
+  budget_tokens: 16384      # optional; selects budget thinking on Anthropic, overrides the effort→budget mapping
   field: auto               # openai-chat only; detect the provider's reasoning format
 ```
 
 Effort maps to a thinking budget where the provider takes one: minimal 1024,
-low 2048, medium 8192, high 16384, xhigh 32768, max 65536. If a provider
-rejects the reasoning field with HTTP 400, the route first steps `xhigh`/
-`max` down to `high`, then drops reasoning; the ledger records requested vs
-effective effort per route.
+low 2048, medium 8192, high 16384, xhigh 32768, max 65536. Anthropic uses
+adaptive thinking by default, sending the effort directly (`minimal` maps to
+`low`). An explicit `budget_tokens` selects budget thinking instead. If the
+model answers HTTP 400 saying it does not support the selected thinking mode,
+Revera switches once to the other mode and remembers it for later calls on
+the same client; other 400s about thinking follow the fallback below. In
+adaptive mode, `max_output_tokens` caps thinking plus the answer; Revera does
+not raise it to accommodate a separate thinking budget.
+
+If a provider rejects the reasoning field or effort with HTTP 400, the route
+first steps `xhigh`/`max` down to `high`, then drops reasoning; the ledger
+records requested vs effective effort per route.
 
 Protocol wire formats:
 
@@ -95,7 +103,7 @@ Protocol wire formats:
 |---|---|---|
 | `openai-chat` | `POST {base_url}/chat/completions` | `reasoning_effort` or `reasoning: {effort}` |
 | `openai-responses` | `POST {base_url}/responses` | `reasoning.effort`; encrypted reasoning items echoed back |
-| `anthropic` | `POST {base_url}/v1/messages` (default `https://api.anthropic.com`) | `thinking.budget_tokens` |
+| `anthropic` | `POST {base_url}/v1/messages` (default `https://api.anthropic.com`) | `thinking: {type: adaptive}` + `output_config.effort` by default; `thinking.budget_tokens` for explicit budgets or models without adaptive thinking |
 | `gemini` | `POST {base_url}/v1beta/models/{model}:generateContent` | `thinkingConfig` |
 
 All HTTP protocols share one transport: retries with `Retry-After`, the run

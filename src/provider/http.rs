@@ -42,6 +42,8 @@ pub struct AttemptState {
     /// After a 400 that rejected the requested effort, cap subsequent
     /// attempts to this level before falling back to dropping reasoning.
     pub reasoning_cap: Option<ReasoningEffort>,
+    /// An Anthropic thinking-mode rejection was already retried in the other mode.
+    pub thinking_mode_retried: bool,
 }
 
 impl Default for AttemptState {
@@ -52,6 +54,7 @@ impl Default for AttemptState {
             drop_reasoning: false,
             drop_cache_hint: false,
             reasoning_cap: None,
+            thinking_mode_retried: false,
         }
     }
 }

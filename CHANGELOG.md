@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.2
+
+- `anthropic` routes use adaptive thinking (`thinking: {type: adaptive}` with
+  `output_config.effort`) by default. Claude 4.7 and newer models, including
+  Haiku 5.5, reject thinking budgets, so each request was rejected and
+  retried several times and ended up without the configured effort. Older
+  models that lack adaptive thinking switch to a thinking budget after one
+  rejected request, and an explicit `reasoning.budget_tokens` still selects
+  budget thinking. In adaptive mode `max_output_tokens` caps thinking plus
+  the answer.
+
 ## v0.10.1
 
 - `revera serve` no longer slows down the longer it runs. Every GitHub App

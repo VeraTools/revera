@@ -970,11 +970,21 @@ async fn doctor(
                     ok &= usable;
                 }
                 if r.reasoning.enabled() {
-                    println!(
-                        "{name}: reasoning effort={} (budget {})",
-                        r.reasoning.effort().as_str(),
-                        r.reasoning.effective_budget()
-                    );
+                    if r.protocol == crate::config::Protocol::Anthropic
+                        && r.reasoning.budget_tokens().is_none()
+                    {
+                        println!(
+                            "{name}: reasoning effort={} (adaptive; budget {} on models without adaptive thinking)",
+                            r.reasoning.effort().as_str(),
+                            r.reasoning.effective_budget()
+                        );
+                    } else {
+                        println!(
+                            "{name}: reasoning effort={} (budget {})",
+                            r.reasoning.effort().as_str(),
+                            r.reasoning.effective_budget()
+                        );
+                    }
                 }
             } else {
                 match &r.script {
