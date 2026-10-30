@@ -3,14 +3,23 @@ use super::http::{
     detect_400_fallback, route_headers,
 };
 use super::{ChatMessage, LedgerHandle, ProviderError, Role, ToolCall, ToolSpec, Usage};
-use crate::config::ModelRoute;
+use crate::config::{ModelRoute, ReasoningEffort};
 use serde_json::{Value, json};
+use std::sync::OnceLock;
+
+#[derive(Clone, Copy)]
+enum ThinkingMode {
+    Adaptive,
+    Budget,
+}
 
 /// Anthropic Messages API adapter (POST {base}/v1/messages).
 pub struct AnthropicAdapter {
     route: ModelRoute,
     api_key: String,
     base: String,
+    /// A rejected preferred mode can switch once, for this client's lifetime.
+    learned_thinking_mode: OnceLock<ThinkingMode>,
 }
 
 pub type AnthropicClient = HttpClient<AnthropicAdapter>;
@@ -37,6 +46,7 @@ impl AnthropicAdapter {
             route,
             api_key,
             base,
+            learned_thinking_mode: OnceLock::new(),
         }
     }
 }
@@ -136,6 +146,19 @@ fn push_role(out: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
 }
 
 impl AnthropicAdapter {
+    fn thinking_mode(&self) -> ThinkingMode {
+        self.learned_thinking_mode
+            .get()
+            .copied()
+            .unwrap_or_else(|| {
+                if self.route.reasoning.budget_tokens().is_some() {
+                    ThinkingMode::Budget
+                } else {
+                    ThinkingMode::Adaptive
+                }
+            })
+    }
+
     /// Thinking budget `build()` emits for this attempt state. Effort is
     /// mapped to a budget (capped by `attempt.reasoning_cap` like the
     /// openai adapters); explicit budget_tokens still wins.
@@ -222,13 +245,28 @@ impl ProtocolAdapter for AnthropicAdapter {
             "tool_choice": {"type": "auto"},
         });
         if thinking_on {
-            // thinking budget counts toward max_tokens; raise max_tokens
-            // when the budget leaves too little headroom for the answer
-            let b = self.budget(attempt).min(max_out.saturating_sub(1024));
-            if max_out <= b + 1024 {
-                max_tokens = b + max_out;
+            match self.thinking_mode() {
+                ThinkingMode::Adaptive => {
+                    let effort = super::http::capped_effort(r.effort(), attempt);
+                    let effort = if effort == ReasoningEffort::Minimal {
+                        "low"
+                    } else {
+                        effort.as_str()
+                    };
+                    body["thinking"] = json!({"type": "adaptive"});
+                    body["output_config"] = json!({"effort": effort});
+                    // max_output_tokens caps thinking plus the answer.
+                }
+                ThinkingMode::Budget => {
+                    // thinking budget counts toward max_tokens; raise max_tokens
+                    // when the budget leaves too little headroom for the answer
+                    let b = self.budget(attempt).min(max_out.saturating_sub(1024));
+                    if max_out <= b + 1024 {
+                        max_tokens = b + max_out;
+                    }
+                    body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
+                }
             }
-            body["thinking"] = json!({"type": "enabled", "budget_tokens": b});
         }
         if !thinking_on && !attempt.drop_temperature {
             // temperature is rejected when extended thinking is enabled
@@ -263,6 +301,31 @@ impl ProtocolAdapter for AnthropicAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
+        if status == 400 && self.route.reasoning.enabled() && !attempt.drop_reasoning {
+            let fallback = match self.thinking_mode() {
+                ThinkingMode::Adaptive if body.contains("adaptive thinking is not supported") => {
+                    Some((
+                        ThinkingMode::Budget,
+                        "400: model does not support adaptive thinking; retrying with a thinking budget",
+                    ))
+                }
+                ThinkingMode::Budget
+                    if body.contains("thinking.type.enabled")
+                        || body.contains("thinking.adaptive") =>
+                {
+                    Some((
+                        ThinkingMode::Adaptive,
+                        "400: model does not support thinking budgets; retrying with adaptive thinking",
+                    ))
+                }
+                _ => None,
+            };
+            if let Some((mode, reason)) = fallback
+                && self.learned_thinking_mode.set(mode).is_ok()
+            {
+                return Parse::RetrySameSlot(reason.into());
+            }
+        }
         if status == 400
             && self.route.cache
             && !attempt.drop_cache_hint
@@ -275,7 +338,7 @@ impl ProtocolAdapter for AnthropicAdapter {
             status,
             body,
             attempt,
-            &["thinking"],
+            &["thinking", "output_config", "effort"],
             self.route.reasoning.effort(),
         ) {
             return p;
