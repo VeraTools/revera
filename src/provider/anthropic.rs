@@ -7,10 +7,26 @@ use crate::config::{ModelRoute, ReasoningEffort};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThinkingMode {
     Adaptive,
     Budget,
+}
+
+/// The thinking mode a 400 response says the model does not support, if any.
+fn rejected_thinking_mode(body: &str) -> Option<ThinkingMode> {
+    // `"thinking.type.enabled" is not supported ... Use "thinking.type.adaptive"`,
+    // or a gateway that rewrote the request: `thinking.adaptive.budget_tokens`
+    if body.contains("thinking.type.enabled") || body.contains("thinking.adaptive.") {
+        return Some(ThinkingMode::Budget);
+    }
+    // `adaptive thinking is not supported on this model` and similar; a
+    // rejected effort level is left to the effort step-down instead
+    let lower = body.to_ascii_lowercase();
+    (lower.contains("adaptive")
+        && (lower.contains("not supported") || lower.contains("unsupported"))
+        && !lower.contains("effort"))
+    .then_some(ThinkingMode::Adaptive)
 }
 
 /// Anthropic Messages API adapter (POST {base}/v1/messages).
@@ -159,6 +175,15 @@ impl AnthropicAdapter {
             })
     }
 
+    /// Effort as sent: adaptive thinking has no `minimal`, so it sends `low`.
+    fn sent_effort(&self, attempt: &AttemptState) -> &'static str {
+        let effort = super::http::capped_effort(self.route.reasoning.effort(), attempt);
+        match (self.thinking_mode(), effort) {
+            (ThinkingMode::Adaptive, ReasoningEffort::Minimal) => "low",
+            _ => effort.as_str(),
+        }
+    }
+
     /// Thinking budget `build()` emits for this attempt state. Effort is
     /// mapped to a budget (capped by `attempt.reasoning_cap` like the
     /// openai adapters); explicit budget_tokens still wins.
@@ -192,9 +217,7 @@ impl ProtocolAdapter for AnthropicAdapter {
         if !self.route.reasoning.enabled() || attempt.drop_reasoning {
             "none".into()
         } else {
-            super::http::capped_effort(self.route.reasoning.effort(), attempt)
-                .as_str()
-                .to_string()
+            self.sent_effort(attempt).to_string()
         }
     }
 
@@ -247,14 +270,8 @@ impl ProtocolAdapter for AnthropicAdapter {
         if thinking_on {
             match self.thinking_mode() {
                 ThinkingMode::Adaptive => {
-                    let effort = super::http::capped_effort(r.effort(), attempt);
-                    let effort = if effort == ReasoningEffort::Minimal {
-                        "low"
-                    } else {
-                        effort.as_str()
-                    };
                     body["thinking"] = json!({"type": "adaptive"});
-                    body["output_config"] = json!({"effort": effort});
+                    body["output_config"] = json!({"effort": self.sent_effort(attempt)});
                     // max_output_tokens caps thinking plus the answer.
                 }
                 ThinkingMode::Budget => {
@@ -301,29 +318,30 @@ impl ProtocolAdapter for AnthropicAdapter {
     }
 
     fn parse(&self, status: u16, body: &str, attempt: &mut AttemptState) -> Parse {
-        if status == 400 && self.route.reasoning.enabled() && !attempt.drop_reasoning {
-            let fallback = match self.thinking_mode() {
-                ThinkingMode::Adaptive if body.contains("adaptive thinking is not supported") => {
-                    Some((
-                        ThinkingMode::Budget,
-                        "400: model does not support adaptive thinking; retrying with a thinking budget",
-                    ))
-                }
-                ThinkingMode::Budget
-                    if body.contains("thinking.type.enabled")
-                        || body.contains("thinking.adaptive") =>
-                {
-                    Some((
-                        ThinkingMode::Adaptive,
-                        "400: model does not support thinking budgets; retrying with adaptive thinking",
-                    ))
-                }
-                _ => None,
+        if status == 400
+            && self.route.reasoning.enabled()
+            && !attempt.drop_reasoning
+            && !attempt.thinking_mode_retried
+            && let Some(rejected) = rejected_thinking_mode(body)
+        {
+            let target = match rejected {
+                ThinkingMode::Adaptive => ThinkingMode::Budget,
+                ThinkingMode::Budget => ThinkingMode::Adaptive,
             };
-            if let Some((mode, reason)) = fallback
-                && self.learned_thinking_mode.set(mode).is_ok()
-            {
-                return Parse::RetrySameSlot(reason.into());
+            if self.thinking_mode() == rejected {
+                // Switch at most once per client; a second rejection falls through.
+                let _ = self.learned_thinking_mode.set(target);
+            }
+            // Also retries a request built before a concurrent call switched.
+            if self.thinking_mode() == target {
+                attempt.thinking_mode_retried = true;
+                return Parse::RetrySameSlot(
+                    match target {
+                        ThinkingMode::Budget => "400: model does not support adaptive thinking; retrying with a thinking budget",
+                        ThinkingMode::Adaptive => "400: model does not support thinking budgets; retrying with adaptive thinking",
+                    }
+                    .into(),
+                );
             }
         }
         if status == 400
@@ -435,5 +453,101 @@ impl ProtocolAdapter for AnthropicAdapter {
             },
             usage,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn adapter(reasoning: &str) -> AnthropicAdapter {
+        let route: ModelRoute = serde_saphyr::from_str(&format!(
+            "protocol: anthropic\nmodel: claude-test\napi_key_env: ANTHROPIC_TEST_KEY\nreasoning: {reasoning}\n"
+        ))
+        .unwrap();
+        AnthropicAdapter::with_api_key(route, "anthropic-unit-test-key".into())
+    }
+
+    #[test]
+    fn classifies_thinking_mode_rejections() {
+        for body in [
+            "adaptive thinking is not supported on this model",
+            "thinking.type.adaptive is not supported for this model",
+            "Adaptive thinking unsupported",
+        ] {
+            assert_eq!(
+                rejected_thinking_mode(body),
+                Some(ThinkingMode::Adaptive),
+                "{body}"
+            );
+        }
+        for body in [
+            r#""thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior."#,
+            "thinking.adaptive.budget_tokens: Extra inputs are not permitted",
+        ] {
+            assert_eq!(
+                rejected_thinking_mode(body),
+                Some(ThinkingMode::Budget),
+                "{body}"
+            );
+        }
+        for body in [
+            "output_config.effort: xhigh is not supported with adaptive thinking on this model",
+            "invalid field: thinking",
+            "temperature may only be set to 1 when thinking is enabled or in adaptive mode",
+        ] {
+            assert_eq!(rejected_thinking_mode(body), None, "{body}");
+        }
+    }
+
+    #[test]
+    fn a_request_built_before_a_concurrent_switch_retries_in_the_learned_mode() {
+        let adapter = adapter("max");
+        // Another call already learned that this model needs a budget.
+        adapter
+            .learned_thinking_mode
+            .set(ThinkingMode::Budget)
+            .unwrap();
+        let mut attempt = AttemptState::default();
+        let parsed = adapter.parse(
+            400,
+            "adaptive thinking is not supported on this model",
+            &mut attempt,
+        );
+        assert!(matches!(parsed, Parse::RetrySameSlot(_)));
+        assert!(!attempt.drop_reasoning);
+        assert_eq!(attempt.reasoning_cap, None);
+    }
+
+    #[test]
+    fn a_second_mode_rejection_in_one_request_falls_back_normally() {
+        let adapter = adapter("high");
+        let mut attempt = AttemptState::default();
+        let body = "adaptive thinking is not supported on this model";
+        assert!(matches!(
+            adapter.parse(400, body, &mut attempt),
+            Parse::RetrySameSlot(_)
+        ));
+        assert_eq!(adapter.thinking_mode(), ThinkingMode::Budget);
+        // The budget request is rejected the other way: no flip back, normal fallback.
+        let body = r#""thinking.type.enabled" is not supported for this model"#;
+        assert!(matches!(
+            adapter.parse(400, body, &mut attempt),
+            Parse::RetrySameSlot(_)
+        ));
+        assert!(attempt.drop_reasoning);
+        assert_eq!(adapter.thinking_mode(), ThinkingMode::Budget);
+    }
+
+    #[test]
+    fn adaptive_minimal_is_recorded_as_the_low_effort_it_sends() {
+        let adapter = adapter("minimal");
+        let attempt = AttemptState::default();
+        assert_eq!(adapter.effective_reasoning(&attempt), "low");
+        adapter
+            .learned_thinking_mode
+            .set(ThinkingMode::Budget)
+            .unwrap();
+        assert_eq!(adapter.effective_reasoning(&attempt), "minimal");
     }
 }

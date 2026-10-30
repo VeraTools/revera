@@ -87,10 +87,11 @@ Effort maps to a thinking budget where the provider takes one: minimal 1024,
 low 2048, medium 8192, high 16384, xhigh 32768, max 65536. Anthropic uses
 adaptive thinking by default, sending the effort directly (`minimal` maps to
 `low`). An explicit `budget_tokens` selects budget thinking instead. If the
-model rejects the selected thinking mode with HTTP 400, Revera automatically
-switches once to the other mode and remembers it for later calls on the same
-client. In adaptive mode, `max_output_tokens` caps thinking plus the answer;
-Revera does not raise it to accommodate a separate thinking budget.
+model answers HTTP 400 saying it does not support the selected thinking mode,
+Revera switches once to the other mode and remembers it for later calls on
+the same client; other 400s about thinking follow the fallback below. In
+adaptive mode, `max_output_tokens` caps thinking plus the answer; Revera does
+not raise it to accommodate a separate thinking budget.
 
 If a provider rejects the reasoning field or effort with HTTP 400, the route
 first steps `xhigh`/`max` down to `high`, then drops reasoning; the ledger
