@@ -1506,8 +1506,9 @@ dependencies = [
 
 [[package]]
 name = "revera"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "aws-lc-rs",

@@ -81,7 +81,11 @@ pub(super) struct Server {
     // Connected-account inventory and policy mutations are serialized, never
     // holding a dashboard/queue lock across GitHub requests.
     reconcile_lock: Mutex<()>,
+    /// The in-memory seen state has a change whose write to disk failed.
+    seen_unsaved: std::sync::atomic::AtomicBool,
     reconcile_request: watch::Sender<u64>,
+    /// One refresh shared by concurrent first sign-ins (see `auth::callback`).
+    sign_in_refresh: std::sync::Mutex<Option<auth::Refresh>>,
     installations: Mutex<reconcile::Installations>,
     fixes: Mutex<fixes::Store>,
     fix_notify: Notify,
@@ -550,7 +554,9 @@ async fn initialize(
         external_poll: Mutex::new(()),
         external_heads: Mutex::new(std::collections::BTreeMap::new()),
         reconcile_lock: Mutex::new(()),
+        seen_unsaved: std::sync::atomic::AtomicBool::new(false),
         reconcile_request: watch::channel(0).0,
+        sign_in_refresh: std::sync::Mutex::new(None),
         installations: Mutex::new(reconcile::Installations::default()),
         fixes: Mutex::new(fixes),
         fix_notify: Notify::new(),

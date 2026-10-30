@@ -2,47 +2,234 @@
 //! GitHub comments, reports, state, logs): exact configured secret values
 //! plus conservative detection of recognizable credential material.
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use regex::Regex;
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
+use std::time::{Duration, Instant};
 
 pub const REDACTED: &str = "[REDACTED]";
 
 /// Shorter values are too likely to collide with ordinary text.
 const MIN_SECRET_LEN: usize = 8;
 
-fn registry() -> &'static RwLock<Vec<String>> {
-    static R: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
-    R.get_or_init(|| RwLock::new(Vec::new()))
+/// How long an expired credential stays masked, so output written after its
+/// expiry (late logs, child process errors) still cannot show it.
+const EXPIRED_GRACE: Duration = Duration::from_secs(3600);
+
+/// Every registered value, plus a matcher compiled from them. Credentials
+/// minted per request expire, so a long-running server holds only the
+/// values that are still live (or recently expired) instead of every token
+/// it ever minted.
+#[derive(Default)]
+struct Registry {
+    permanent: HashSet<String>,
+    expiring: HashMap<String, Instant>,
+    scoped: HashMap<String, usize>,
+    /// Dropped on every change and rebuilt on the next [`text`] call.
+    matcher: Option<Arc<Matcher>>,
 }
 
-fn scoped_registry() -> &'static RwLock<HashMap<String, usize>> {
-    static R: OnceLock<RwLock<HashMap<String, usize>>> = OnceLock::new();
-    R.get_or_init(|| RwLock::new(HashMap::new()))
+impl Registry {
+    fn register(&mut self, value: &str) {
+        let removed = self.expiring.remove(value).is_some();
+        if self.permanent.insert(value.into()) || removed {
+            self.matcher = None;
+        }
+    }
+
+    fn register_until(&mut self, value: &str, until: Instant, now: Instant) {
+        self.prune(now);
+        if self.permanent.contains(value) {
+            return;
+        }
+        let mut inserted = false;
+        let entry = self.expiring.entry(value.into()).or_insert_with(|| {
+            inserted = true;
+            until
+        });
+        // Extending a live value keeps the compiled matcher: its secret set is
+        // unchanged, and its validity uses the earlier expiry, so it is only
+        // rebuilt sooner than needed.
+        if *entry < until {
+            *entry = until;
+        }
+        if inserted {
+            self.matcher = None;
+        }
+    }
+
+    fn add_scoped(&mut self, value: &str) {
+        let count = self.scoped.entry(value.into()).or_default();
+        *count += 1;
+        if *count == 1 {
+            self.matcher = None;
+        }
+    }
+
+    fn remove_scoped(&mut self, value: &str) {
+        if let Some(count) = self.scoped.get_mut(value) {
+            *count -= 1;
+            if *count == 0 {
+                self.scoped.remove(value);
+                self.matcher = None;
+            }
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        let before = self.expiring.len();
+        self.expiring.retain(|_, until| *until > now);
+        if self.expiring.len() != before {
+            self.matcher = None;
+        }
+    }
+
+    fn matcher(&mut self, now: Instant) -> Arc<Matcher> {
+        self.prune(now);
+        if let Some(matcher) = self.matcher.as_ref().filter(|m| m.current(now)) {
+            return matcher.clone();
+        }
+        let secrets = self
+            .permanent
+            .iter()
+            .chain(self.expiring.keys())
+            .chain(self.scoped.keys())
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+        let matcher = Arc::new(Matcher::new(secrets, self.expiring.values().min().copied()));
+        self.matcher = Some(matcher.clone());
+        matcher
+    }
+}
+
+struct Matcher {
+    automaton: Option<AhoCorasick>,
+    /// Used only if the automaton cannot be built.
+    secrets: Vec<String>,
+    /// The earliest expiry among the compiled values.
+    valid_until: Option<Instant>,
+}
+
+impl Matcher {
+    fn new(mut secrets: Vec<String>, valid_until: Option<Instant>) -> Self {
+        // longest first so a secret containing another is masked whole
+        secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        secrets.dedup();
+        let automaton = (!secrets.is_empty())
+            .then(|| {
+                AhoCorasick::builder()
+                    .match_kind(MatchKind::Standard)
+                    .build(&secrets)
+                    .ok()
+            })
+            .flatten();
+        Self {
+            automaton,
+            secrets,
+            valid_until,
+        }
+    }
+
+    fn current(&self, now: Instant) -> bool {
+        self.valid_until.is_none_or(|until| now < until)
+    }
+
+    /// Masks every byte covered by any occurrence of any secret; overlapping
+    /// occurrences become a single marker, so no part of either is visible.
+    /// Memory is bounded by the text length, however many occurrences match.
+    fn mask<'a>(&self, s: &'a str) -> Cow<'a, str> {
+        // reach[i]: furthest end of any occurrence starting at byte i (0 = none)
+        let mut reach: Vec<usize> = Vec::new();
+        let mut cover = |start: usize, end: usize| {
+            if reach.is_empty() {
+                reach.resize(s.len(), 0);
+            }
+            reach[start] = reach[start].max(end);
+        };
+        match &self.automaton {
+            Some(automaton) => {
+                for m in automaton.find_overlapping_iter(s) {
+                    cover(m.start(), m.end());
+                }
+            }
+            None => {
+                for secret in &self.secrets {
+                    let mut from = 0;
+                    while let Some(found) =
+                        s.get(from..).and_then(|rest| rest.find(secret.as_str()))
+                    {
+                        let start = from + found;
+                        cover(start, start + secret.len());
+                        // Next char boundary, so overlapping occurrences are found too.
+                        from = start + s[start..].chars().next().map_or(1, char::len_utf8);
+                    }
+                }
+            }
+        }
+        if reach.is_empty() {
+            return Cow::Borrowed(s);
+        }
+        let mut out = String::with_capacity(s.len());
+        let mut copied = 0;
+        let mut start = 0;
+        while start < s.len() {
+            if reach[start] == 0 {
+                start += 1;
+                continue;
+            }
+            let mut end = reach[start];
+            let mut i = start + 1;
+            while i < end {
+                end = end.max(reach[i]);
+                i += 1;
+            }
+            out.push_str(&s[copied..start]);
+            out.push_str(REDACTED);
+            copied = end;
+            start = end;
+        }
+        out.push_str(&s[copied..]);
+        Cow::Owned(out)
+    }
+}
+
+fn registry() -> &'static RwLock<Registry> {
+    static R: OnceLock<RwLock<Registry>> = OnceLock::new();
+    R.get_or_init(|| RwLock::new(Registry::default()))
+}
+
+fn write_registry() -> std::sync::RwLockWriteGuard<'static, Registry> {
+    registry().write().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn matcher() -> Arc<Matcher> {
+    let now = Instant::now();
+    if let Some(matcher) = registry()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .matcher
+        .as_ref()
+        .filter(|m| m.current(now))
+    {
+        return matcher.clone();
+    }
+    write_registry().matcher(now)
 }
 
 /// Keep a short-lived credential redacted without retaining it after its use.
 pub struct ScopedSecret(String);
 impl ScopedSecret {
     pub fn new(value: &str) -> Self {
-        *scoped_registry()
-            .write()
-            .unwrap()
-            .entry(value.into())
-            .or_default() += 1;
+        write_registry().add_scoped(value);
         Self(value.into())
     }
 }
 impl Drop for ScopedSecret {
     fn drop(&mut self) {
-        let mut registry = scoped_registry().write().unwrap();
-        if let Some(count) = registry.get_mut(&self.0) {
-            *count -= 1;
-            if *count == 0 {
-                registry.remove(&self.0);
-            }
-        }
+        write_registry().remove_scoped(&self.0);
     }
 }
 
@@ -77,12 +264,20 @@ pub fn register(value: &str) {
     if v.len() < MIN_SECRET_LEN {
         return;
     }
-    let mut r = registry().write().unwrap();
-    if !r.iter().any(|x| x == v) {
-        r.push(v.to_string());
-        // longest first so a secret containing another is masked whole
-        r.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    write_registry().register(v);
+}
+
+/// Register a credential that stops working after `valid_for`, such as a
+/// GitHub App JWT or installation token. It stays masked for that long plus
+/// a grace period, then is forgotten so a long-running server does not keep
+/// (and scan for) every credential it ever minted.
+pub fn register_expiring(value: &str, valid_for: Duration) {
+    let v = value.trim();
+    if v.len() < MIN_SECRET_LEN {
+        return;
     }
+    let now = Instant::now();
+    write_registry().register_until(v, now + valid_for + EXPIRED_GRACE, now);
 }
 
 /// Read an environment variable holding a credential and register it.
@@ -94,17 +289,7 @@ pub fn secret_env(name: &str) -> Option<String> {
 
 /// Mask registered secrets and recognizable credential material.
 pub fn text(s: &str) -> Cow<'_, str> {
-    let mut out: Cow<'_, str> = Cow::Borrowed(s);
-    {
-        let mut secrets = registry().read().unwrap().clone();
-        secrets.extend(scoped_registry().read().unwrap().keys().cloned());
-        secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
-        for secret in &secrets {
-            if out.contains(secret.as_str()) {
-                out = Cow::Owned(out.replace(secret.as_str(), REDACTED));
-            }
-        }
-    }
+    let mut out = matcher().mask(s);
     for p in patterns() {
         if p.is_match(&out) {
             out = Cow::Owned(p.replace_all(&out, REDACTED).into_owned());
@@ -144,5 +329,145 @@ mod tests {
         assert!(!out.contains("a(b)c"), "{out}");
         assert!(!out.contains("x=1"), "{out}");
         assert!(out.contains("https://h/v1?[query removed]"), "{out}");
+    }
+
+    fn masked(registry: &mut super::Registry, s: &str) -> String {
+        registry
+            .matcher(std::time::Instant::now())
+            .mask(s)
+            .into_owned()
+    }
+
+    #[test]
+    fn overlapping_and_nested_secrets_are_masked_whole() {
+        let mut registry = super::Registry::default();
+        registry.register("xxabcdefgh");
+        registry.register("abcdefghijklmn");
+        registry.register("cdefgh12");
+        assert_eq!(masked(&mut registry, "<xxabcdefghijklmn>"), "<[REDACTED]>");
+        assert_eq!(
+            masked(&mut registry, "abcdefghijklmn abcdefghijklmn"),
+            "[REDACTED] [REDACTED]"
+        );
+        assert_eq!(
+            masked(&mut registry, "xxabcdefghxxabcdefgh"),
+            "[REDACTED][REDACTED]"
+        );
+        assert_eq!(masked(&mut registry, "é cdefgh12 ü"), "é [REDACTED] ü");
+        assert_eq!(masked(&mut registry, "nothing here"), "nothing here");
+    }
+
+    #[test]
+    fn fallback_without_an_automaton_masks_the_same_spans() {
+        let secrets = ["xxabcdefgh", "abcdefghijklmn", "cdefgh12", "aaaaaaaa"];
+        let compiled = super::Matcher::new(secrets.map(String::from).to_vec(), None);
+        let fallback = super::Matcher {
+            automaton: None,
+            ..super::Matcher::new(secrets.map(String::from).to_vec(), None)
+        };
+        for text in [
+            "<xxabcdefghijklmn>",
+            "abcdefghijklmn abcdefghijklmn",
+            "xxabcdefghxxabcdefgh",
+            "é cdefgh12 ü",
+            "aaaaaaaaa",
+            "nothing here",
+        ] {
+            assert_eq!(fallback.mask(text), compiled.mask(text), "{text}");
+        }
+        assert_eq!(fallback.mask("<xxabcdefghijklmn>"), "<[REDACTED]>");
+        let repetitive = "a".repeat(100_000);
+        assert_eq!(compiled.mask(&repetitive), "[REDACTED]");
+        assert_eq!(fallback.mask(&repetitive), "[REDACTED]");
+    }
+
+    #[test]
+    fn expiring_secrets_are_forgotten_after_expiry_and_matcher_rebuilds() {
+        use std::time::{Duration, Instant};
+        let mut registry = super::Registry::default();
+        let now = Instant::now();
+        registry.register("permanent-secret");
+        registry.register_until("short-lived-token", now + Duration::from_secs(60), now);
+        let text = "permanent-secret short-lived-token";
+        assert_eq!(registry.matcher(now).mask(text), "[REDACTED] [REDACTED]");
+        let later = now + Duration::from_secs(61);
+        assert_eq!(
+            registry.matcher(later).mask(text),
+            "[REDACTED] short-lived-token"
+        );
+        assert!(registry.expiring.is_empty());
+        // Re-registering a value permanently promotes it and is never pruned.
+        registry.register_until("permanent-secret", later, later);
+        assert!(registry.expiring.is_empty());
+    }
+
+    #[test]
+    fn extending_a_live_expiry_keeps_the_matcher_and_the_later_expiry() {
+        use std::time::{Duration, Instant};
+        let mut registry = super::Registry::default();
+        let now = Instant::now();
+        registry.register_until("extended-token", now + Duration::from_secs(60), now);
+        registry.matcher(now);
+        registry.register_until("extended-token", now + Duration::from_secs(120), now);
+        assert!(
+            registry.matcher.is_some(),
+            "extension must not force a rebuild"
+        );
+        // The stale matcher expires at the first deadline, then a rebuild keeps the value.
+        let later = now + Duration::from_secs(90);
+        assert_eq!(registry.matcher(later).mask("extended-token"), "[REDACTED]");
+        let expired = now + Duration::from_secs(121);
+        assert_eq!(
+            registry.matcher(expired).mask("extended-token"),
+            "extended-token"
+        );
+    }
+
+    #[test]
+    fn registering_many_expiring_tokens_stays_bounded() {
+        use std::time::{Duration, Instant};
+        let mut registry = super::Registry::default();
+        let start = Instant::now();
+        for i in 0..10_000u64 {
+            let now = start + Duration::from_secs(i);
+            registry.register_until(
+                &format!("token-{i:08}"),
+                now + Duration::from_secs(100),
+                now,
+            );
+        }
+        assert!(
+            registry.expiring.len() <= 101,
+            "{}",
+            registry.expiring.len()
+        );
+    }
+
+    #[test]
+    fn scoped_secrets_are_masked_only_while_held() {
+        let mut registry = super::Registry::default();
+        registry.add_scoped("oauth-user-token");
+        registry.add_scoped("oauth-user-token");
+        assert_eq!(masked(&mut registry, "oauth-user-token"), "[REDACTED]");
+        registry.remove_scoped("oauth-user-token");
+        assert_eq!(masked(&mut registry, "oauth-user-token"), "[REDACTED]");
+        registry.remove_scoped("oauth-user-token");
+        assert_eq!(
+            masked(&mut registry, "oauth-user-token"),
+            "oauth-user-token"
+        );
+    }
+
+    #[test]
+    fn global_text_masks_registered_and_expiring_values() {
+        super::register("redact-module-permanent-test-secret");
+        super::register_expiring(
+            "redact-module-expiring-test-secret",
+            std::time::Duration::from_secs(60),
+        );
+        let out = super::text(
+            "a redact-module-permanent-test-secret b redact-module-expiring-test-secret c",
+        );
+        assert_eq!(out, "a [REDACTED] b [REDACTED] c");
     }
 }
