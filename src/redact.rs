@@ -139,51 +139,57 @@ impl Matcher {
 
     /// Masks every byte covered by any occurrence of any secret; overlapping
     /// occurrences become a single marker, so no part of either is visible.
+    /// Memory is bounded by the text length, however many occurrences match.
     fn mask<'a>(&self, s: &'a str) -> Cow<'a, str> {
-        let mut spans: Vec<(usize, usize)> = match &self.automaton {
-            Some(automaton) => automaton
-                .find_overlapping_iter(s)
-                .map(|m| (m.start(), m.end()))
-                .collect(),
-            None => self
-                .secrets
-                .iter()
-                .flat_map(|secret| {
+        // reach[i]: furthest end of any occurrence starting at byte i (0 = none)
+        let mut reach: Vec<usize> = Vec::new();
+        let mut cover = |start: usize, end: usize| {
+            if reach.is_empty() {
+                reach.resize(s.len(), 0);
+            }
+            reach[start] = reach[start].max(end);
+        };
+        match &self.automaton {
+            Some(automaton) => {
+                for m in automaton.find_overlapping_iter(s) {
+                    cover(m.start(), m.end());
+                }
+            }
+            None => {
+                for secret in &self.secrets {
                     let mut from = 0;
-                    std::iter::from_fn(move || {
-                        let start = from + s.get(from..)?.find(secret.as_str())?;
+                    while let Some(found) =
+                        s.get(from..).and_then(|rest| rest.find(secret.as_str()))
+                    {
+                        let start = from + found;
+                        cover(start, start + secret.len());
                         // Next char boundary, so overlapping occurrences are found too.
                         from = start + s[start..].chars().next().map_or(1, char::len_utf8);
-                        Some((start, start + secret.len()))
-                    })
-                })
-                .collect(),
-        };
-        if spans.is_empty() {
-            return Cow::Borrowed(s);
-        }
-        spans.sort_unstable();
-        let mut out = String::with_capacity(s.len());
-        let mut copied = 0;
-        let mut current: Option<(usize, usize)> = None;
-        for (start, end) in spans {
-            match &mut current {
-                Some((_, current_end)) if start < *current_end => {
-                    *current_end = (*current_end).max(end);
-                }
-                _ => {
-                    if let Some((span_start, span_end)) = current.replace((start, end)) {
-                        out.push_str(&s[copied..span_start]);
-                        out.push_str(REDACTED);
-                        copied = span_end;
                     }
                 }
             }
         }
-        if let Some((span_start, span_end)) = current {
-            out.push_str(&s[copied..span_start]);
+        if reach.is_empty() {
+            return Cow::Borrowed(s);
+        }
+        let mut out = String::with_capacity(s.len());
+        let mut copied = 0;
+        let mut start = 0;
+        while start < s.len() {
+            if reach[start] == 0 {
+                start += 1;
+                continue;
+            }
+            let mut end = reach[start];
+            let mut i = start + 1;
+            while i < end {
+                end = end.max(reach[i]);
+                i += 1;
+            }
+            out.push_str(&s[copied..start]);
             out.push_str(REDACTED);
-            copied = span_end;
+            copied = end;
+            start = end;
         }
         out.push_str(&s[copied..]);
         Cow::Owned(out)
@@ -370,6 +376,9 @@ mod tests {
             assert_eq!(fallback.mask(text), compiled.mask(text), "{text}");
         }
         assert_eq!(fallback.mask("<xxabcdefghijklmn>"), "<[REDACTED]>");
+        let repetitive = "a".repeat(100_000);
+        assert_eq!(compiled.mask(&repetitive), "[REDACTED]");
+        assert_eq!(fallback.mask(&repetitive), "[REDACTED]");
     }
 
     #[test]

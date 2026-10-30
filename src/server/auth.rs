@@ -284,6 +284,10 @@ pub async fn callback(
                     }
                     .boxed()
                     .shared();
+                    // Drive it to completion even after every waiter times out,
+                    // so `peek` reports a finished pass and the next first
+                    // sign-in starts a new one.
+                    tokio::spawn(refresh.clone());
                     *slot = Some(refresh.clone());
                     refresh
                 }
