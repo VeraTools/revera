@@ -376,13 +376,20 @@ impl Seen {
 }
 
 pub async fn save(server: &Server, seen: &Seen) -> Result<()> {
-    let mut value = serde_json::to_value(seen)?;
-    crate::redact::json(&mut value);
-    crate::fsutil::write_atomic_in(
-        &server.settings.data_dir,
-        "seen.json",
-        &serde_json::to_vec_pretty(&value)?,
-    )
+    use std::sync::atomic::Ordering;
+    let written: Result<()> = (|| {
+        let mut value = serde_json::to_value(seen)?;
+        crate::redact::json(&mut value);
+        crate::fsutil::write_atomic_in(
+            &server.settings.data_dir,
+            "seen.json",
+            &serde_json::to_vec_pretty(&value)?,
+        )
+    })();
+    server
+        .seen_unsaved
+        .store(written.is_err(), Ordering::Relaxed);
+    written
 }
 
 pub(super) async fn once(server: &Server) -> Result<()> {
@@ -549,6 +556,7 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 .await?;
             server.pulls.lock().unwrap().listing(&repo, &prs);
             let mut seen = server.seen.lock().await;
+            let before = seen.0.get(&repo.id).map(serde_json::to_value).transpose()?;
             let (preferences, retry, retry_at) = {
                 let dashboard = server.dashboard.lock().await;
                 (
@@ -568,7 +576,15 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 &retry,
                 retry_at.is_some(),
             );
-            save(server, &seen).await?;
+            // An unchanged repository needs no rewrite of the whole seen state,
+            // unless an earlier write failed and memory is ahead of disk.
+            if server
+                .seen_unsaved
+                .load(std::sync::atomic::Ordering::Relaxed)
+                || seen.0.get(&repo.id).map(serde_json::to_value).transpose()? != before
+            {
+                save(server, &seen).await?;
+            }
             drop(seen);
             let workspace = server.settings.data_dir.join("repos").join(&repo.full_name);
             let reference = format!("refs/remotes/origin/{}", repo.default_branch);
@@ -728,5 +744,8 @@ pub async fn loop_forever(server: Arc<Server>) {
                 crate::redact::diagnostic(&format!("{e:#}"))
             );
         }
+        // The next periodic pass is a full interval after this one finished,
+        // so a pass longer than the interval never runs back to back.
+        interval.reset();
     }
 }

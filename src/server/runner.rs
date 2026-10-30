@@ -40,10 +40,12 @@ impl Runner {
 }
 
 pub fn child_env(token_env: &str, token: &str, data: &Path, repo: &str) -> Vec<(String, String)> {
+    // The server only hands children installation tokens, which expire.
+    let lifetime = super::app::INSTALLATION_TOKEN_LIFETIME;
     let encoded = BASE64_STANDARD.encode(format!("x-access-token:{token}"));
-    crate::redact::register(&encoded);
+    crate::redact::register_expiring(&encoded, lifetime);
     let header = format!("AUTHORIZATION: basic {encoded}");
-    crate::redact::register(&header);
+    crate::redact::register_expiring(&header, lifetime);
     vec![
         (token_env.into(), token.into()),
         ("GIT_CONFIG_COUNT".into(), "3".into()),

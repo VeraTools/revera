@@ -6,6 +6,11 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use std::time::Duration;
 
+/// An app JWT is issued 60 s in the past and expires 9 min ahead.
+const JWT_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// GitHub installation access tokens expire after one hour.
+pub const INSTALLATION_TOKEN_LIFETIME: Duration = Duration::from_secs(3600);
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct App {
     pub id: u64,
@@ -61,7 +66,7 @@ impl App {
             &json!({"iat": now - 60, "exp": now + 9 * 60, "iss": self.id.to_string()}),
             &EncodingKey::from_rsa_pem(self.pem.as_bytes())?,
         )?;
-        crate::redact::register(&jwt);
+        crate::redact::register_expiring(&jwt, JWT_LIFETIME);
         Ok(jwt)
     }
 }
@@ -341,7 +346,15 @@ impl Api {
             .as_str()
             .context("GitHub token response missing token")?
             .to_string();
-        crate::redact::register(&token);
+        let valid_for = response["expires_at"]
+            .as_str()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map_or(INSTALLATION_TOKEN_LIFETIME, |at| {
+                (at.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+            });
+        crate::redact::register_expiring(&token, valid_for);
         Ok(token)
     }
 }

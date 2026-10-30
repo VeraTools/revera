@@ -1,6 +1,6 @@
 [package]
 name = "revera"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 description = "Provider-agnostic AI code review for GitHub pull requests, with independent validation and optional repository-aware retrieval."
 license = "MIT"
@@ -27,6 +27,7 @@ webpki-root-certs = "1"
 base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+aho-corasick = "1"
 globset = "0.4"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"

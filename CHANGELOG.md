@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.1
+
+- `revera serve` no longer slows down the longer it runs. Every GitHub App
+  token it minted stayed in the redaction list forever, and each redaction
+  copied and scanned that whole list, so after a few days a reconcile pass
+  took many minutes. Short-lived tokens are now forgotten an hour after they
+  expire, and redaction uses one precompiled matcher that also masks
+  overlapping secrets completely.
+- Signing in to the dashboard no longer waits for a reconcile pass, which
+  could outlast a proxy's timeout and leave the sign-in page loading. A pass
+  that runs longer than the reconcile interval no longer starts the next one
+  straight away, and unchanged repositories no longer rewrite `seen.json`.
+
 ## v0.10.0
 
 - The dashboard has a **Pull requests** page listing open PRs across your

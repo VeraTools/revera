@@ -1691,6 +1691,82 @@ async fn oauth_sign_in_rejects_non_admin_and_discards_user_token() {
 }
 
 #[tokio::test]
+async fn oauth_sign_in_does_not_wait_for_a_running_reconcile() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    {
+        let mut dashboard = server.dashboard.lock().await;
+        dashboard.preferences.admins = vec!["admin".into()];
+        dashboard.installations = 1;
+    }
+    let reconcile = server.reconcile_request.subscribe();
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let login = client
+        .get(format!("{url}/auth/login"))
+        .send()
+        .await
+        .unwrap();
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let state: Value =
+        auth::verify(&server.session_key, cookie.split_once('=').unwrap().1).unwrap();
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"access_token": "user-token-value"})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "login": "admin", "avatar_url": "https://example.com/avatar"
+        })))
+        .mount(&mock)
+        .await;
+    // A slow reconcile pass holds this lock for its whole duration.
+    let held = server.reconcile_lock.lock().await;
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client
+            .get(format!(
+                "{url}/auth/callback?code=abc&state={}",
+                state["nonce"].as_str().unwrap()
+            ))
+            .header("Cookie", &cookie)
+            .send(),
+    )
+    .await
+    .expect("sign-in must not wait for the reconcile lock")
+    .unwrap();
+    drop(held);
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        response.headers()["location"],
+        format!("{}/", server.settings.public_url)
+    );
+    assert!(response.headers().get_all("set-cookie").iter().any(|c| {
+        c.to_str()
+            .unwrap()
+            .starts_with(&format!("{}=", auth::SESSION))
+    }));
+    assert!(
+        reconcile.has_changed().unwrap(),
+        "sign-in requests a background refresh"
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn job_metadata_lifecycle_and_pruning() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;

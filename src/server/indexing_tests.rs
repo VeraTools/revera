@@ -228,6 +228,8 @@ async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
             let mut seen = server.seen.lock().await;
             seen.observe(&previous, &[]);
             record_index(&mut seen, &previous, INDEXED);
+            // Production persists every seen change as it is made.
+            reconcile::save(&server, &seen).await.unwrap();
         }
         value["pushed_at"] = json!(pushed_at);
         inventory(&mock, value, vec![], 1).await;
@@ -264,6 +266,43 @@ async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
         );
         assert!(saved.index_current(1, INDEXED));
     }
+}
+
+#[tokio::test]
+async fn reconcile_rewrites_seen_state_only_when_a_repository_changed() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    inventory(&mock, repository(), vec![], 2).await;
+    reconcile::once(&server).await.unwrap();
+    let path = data.path().join("seen.json");
+    let saved: reconcile::Seen = dashboard::read_json(data.path(), "seen.json").unwrap();
+    assert!(saved.0[&1].initialized);
+    std::fs::remove_file(&path).unwrap();
+    reconcile::once(&server).await.unwrap();
+    assert!(
+        !path.exists(),
+        "an unchanged pass must not rewrite seen.json"
+    );
+}
+
+#[tokio::test]
+async fn reconcile_retries_a_failed_seen_write_even_without_new_changes() {
+    let mock = MockServer::start().await;
+    let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    inventory(&mock, repository(), vec![], 2).await;
+    reconcile::once(&server).await.unwrap();
+    let path = data.path().join("seen.json");
+    std::fs::remove_file(&path).unwrap();
+    // A directory in its place makes the atomic rename fail.
+    std::fs::create_dir(&path).unwrap();
+    {
+        let seen = server.seen.lock().await;
+        assert!(reconcile::save(&server, &seen).await.is_err());
+    }
+    std::fs::remove_dir(&path).unwrap();
+    reconcile::once(&server).await.unwrap();
+    let saved: reconcile::Seen = dashboard::read_json(data.path(), "seen.json").unwrap();
+    assert!(saved.0[&1].initialized);
 }
 
 #[tokio::test]

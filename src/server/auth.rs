@@ -16,6 +16,8 @@ use std::{path::Path, sync::Arc};
 pub const SESSION: &str = "revera_session";
 pub const SETUP: &str = "revera_setup";
 const STATE: &str = "revera_oauth";
+/// Well under common proxy timeouts (Cloudflare gives up after 100 s).
+const SIGN_IN_RECONCILE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
@@ -248,7 +250,27 @@ pub async fn callback(
         exp: chrono::Utc::now().timestamp() + 14 * 86400,
         kind: "session".into(),
     };
-    let _ = super::reconcile::once(&server).await;
+    // A full reconcile can take a while on a large inventory; the browser
+    // must never wait on one (proxies time out and the session cookie is
+    // lost). Only a server with no known installation waits, briefly, so a
+    // first sign-in can still go straight to installing the app. The pass runs
+    // as its own task: a reconcile is not cancel-safe mid-repository.
+    if server.dashboard.lock().await.installations == 0 {
+        let refresh = tokio::spawn({
+            let server = server.clone();
+            async move {
+                if let Err(error) = super::reconcile::once(&server).await {
+                    tracing::warn!(
+                        "reconcile after sign-in: {}",
+                        crate::redact::diagnostic(&format!("{error:#}"))
+                    );
+                }
+            }
+        });
+        let _ = tokio::time::timeout(SIGN_IN_RECONCILE_WAIT, refresh).await;
+    } else {
+        server.request_reconcile();
+    }
     let redirect = if server.dashboard.lock().await.installations == 0 {
         format!("https://github.com/apps/{}/installations/new", app.slug)
     } else {
