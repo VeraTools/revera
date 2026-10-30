@@ -44,16 +44,18 @@ impl Registry {
         if self.permanent.contains(value) {
             return;
         }
-        let mut changed = false;
+        let mut inserted = false;
         let entry = self.expiring.entry(value.into()).or_insert_with(|| {
-            changed = true;
+            inserted = true;
             until
         });
+        // Extending a live value keeps the compiled matcher: its secret set is
+        // unchanged, and its validity uses the earlier expiry, so it is only
+        // rebuilt sooner than needed.
         if *entry < until {
             *entry = until;
-            changed = true;
         }
-        if changed {
+        if inserted {
             self.matcher = None;
         }
     }
@@ -138,19 +140,25 @@ impl Matcher {
     /// Masks every byte covered by any occurrence of any secret; overlapping
     /// occurrences become a single marker, so no part of either is visible.
     fn mask<'a>(&self, s: &'a str) -> Cow<'a, str> {
-        let Some(automaton) = &self.automaton else {
-            let mut out: Cow<'_, str> = Cow::Borrowed(s);
-            for secret in &self.secrets {
-                if out.contains(secret.as_str()) {
-                    out = Cow::Owned(out.replace(secret.as_str(), REDACTED));
-                }
-            }
-            return out;
+        let mut spans: Vec<(usize, usize)> = match &self.automaton {
+            Some(automaton) => automaton
+                .find_overlapping_iter(s)
+                .map(|m| (m.start(), m.end()))
+                .collect(),
+            None => self
+                .secrets
+                .iter()
+                .flat_map(|secret| {
+                    let mut from = 0;
+                    std::iter::from_fn(move || {
+                        let start = from + s.get(from..)?.find(secret.as_str())?;
+                        // Next char boundary, so overlapping occurrences are found too.
+                        from = start + s[start..].chars().next().map_or(1, char::len_utf8);
+                        Some((start, start + secret.len()))
+                    })
+                })
+                .collect(),
         };
-        let mut spans: Vec<(usize, usize)> = automaton
-            .find_overlapping_iter(s)
-            .map(|m| (m.start(), m.end()))
-            .collect();
         if spans.is_empty() {
             return Cow::Borrowed(s);
         }
@@ -344,6 +352,27 @@ mod tests {
     }
 
     #[test]
+    fn fallback_without_an_automaton_masks_the_same_spans() {
+        let secrets = ["xxabcdefgh", "abcdefghijklmn", "cdefgh12", "aaaaaaaa"];
+        let compiled = super::Matcher::new(secrets.map(String::from).to_vec(), None);
+        let fallback = super::Matcher {
+            automaton: None,
+            ..super::Matcher::new(secrets.map(String::from).to_vec(), None)
+        };
+        for text in [
+            "<xxabcdefghijklmn>",
+            "abcdefghijklmn abcdefghijklmn",
+            "xxabcdefghxxabcdefgh",
+            "é cdefgh12 ü",
+            "aaaaaaaaa",
+            "nothing here",
+        ] {
+            assert_eq!(fallback.mask(text), compiled.mask(text), "{text}");
+        }
+        assert_eq!(fallback.mask("<xxabcdefghijklmn>"), "<[REDACTED]>");
+    }
+
+    #[test]
     fn expiring_secrets_are_forgotten_after_expiry_and_matcher_rebuilds() {
         use std::time::{Duration, Instant};
         let mut registry = super::Registry::default();
@@ -361,6 +390,28 @@ mod tests {
         // Re-registering a value permanently promotes it and is never pruned.
         registry.register_until("permanent-secret", later, later);
         assert!(registry.expiring.is_empty());
+    }
+
+    #[test]
+    fn extending_a_live_expiry_keeps_the_matcher_and_the_later_expiry() {
+        use std::time::{Duration, Instant};
+        let mut registry = super::Registry::default();
+        let now = Instant::now();
+        registry.register_until("extended-token", now + Duration::from_secs(60), now);
+        registry.matcher(now);
+        registry.register_until("extended-token", now + Duration::from_secs(120), now);
+        assert!(
+            registry.matcher.is_some(),
+            "extension must not force a rebuild"
+        );
+        // The stale matcher expires at the first deadline, then a rebuild keeps the value.
+        let later = now + Duration::from_secs(90);
+        assert_eq!(registry.matcher(later).mask("extended-token"), "[REDACTED]");
+        let expired = now + Duration::from_secs(121);
+        assert_eq!(
+            registry.matcher(expired).mask("extended-token"),
+            "extended-token"
+        );
     }
 
     #[test]

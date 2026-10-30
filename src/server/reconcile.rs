@@ -645,6 +645,13 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
         .into_values()
         .filter(|repo| !inventory.values().any(|info| info.repo.id == repo.id))
         .collect();
+    // The per-repository retry above never runs on an empty inventory.
+    if server
+        .seen_unsaved
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        save(server, &*server.seen.lock().await).await?;
+    }
     for repo in removed {
         server.remove_repo(repo).await?;
     }

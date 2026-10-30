@@ -9,7 +9,10 @@
   expire, and redaction uses one precompiled matcher that also masks
   overlapping secrets completely.
 - Signing in to the dashboard no longer waits for a reconcile pass, which
-  could outlast a proxy's timeout and leave the sign-in page loading. A pass
+  could outlast a proxy's timeout and leave the sign-in page loading. Only a
+  server with no known App installation still waits, at most 15 seconds and
+  sharing one pass across sign-ins, so a first sign-in can go straight to
+  installing the App. A pass
   that runs longer than the reconcile interval no longer starts the next one
   straight away, and unchanged repositories no longer rewrite `seen.json`.
 

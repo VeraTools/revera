@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
+use futures::FutureExt;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,6 +19,8 @@ pub const SETUP: &str = "revera_setup";
 const STATE: &str = "revera_oauth";
 /// Well under common proxy timeouts (Cloudflare gives up after 100 s).
 const SIGN_IN_RECONCILE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// A reconcile started by a first sign-in, which later sign-ins wait on.
+pub(super) type Refresh = futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
@@ -254,19 +257,38 @@ pub async fn callback(
     // must never wait on one (proxies time out and the session cookie is
     // lost). Only a server with no known installation waits, briefly, so a
     // first sign-in can still go straight to installing the app. The pass runs
-    // as its own task: a reconcile is not cancel-safe mid-repository.
+    // as its own task (a reconcile is not cancel-safe mid-repository) that
+    // concurrent first sign-ins share rather than each starting another.
     if server.dashboard.lock().await.installations == 0 {
-        let refresh = tokio::spawn({
-            let server = server.clone();
-            async move {
-                if let Err(error) = super::reconcile::once(&server).await {
-                    tracing::warn!(
-                        "reconcile after sign-in: {}",
-                        crate::redact::diagnostic(&format!("{error:#}"))
-                    );
+        let refresh = {
+            let mut slot = server
+                .sign_in_refresh
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match slot.as_ref().filter(|refresh| refresh.peek().is_none()) {
+                Some(refresh) => refresh.clone(),
+                None => {
+                    let task = tokio::spawn({
+                        let server = server.clone();
+                        async move {
+                            if let Err(error) = super::reconcile::once(&server).await {
+                                tracing::warn!(
+                                    "reconcile after sign-in: {}",
+                                    crate::redact::diagnostic(&format!("{error:#}"))
+                                );
+                            }
+                        }
+                    });
+                    let refresh = async move {
+                        let _ = task.await;
+                    }
+                    .boxed()
+                    .shared();
+                    *slot = Some(refresh.clone());
+                    refresh
                 }
             }
-        });
+        };
         let _ = tokio::time::timeout(SIGN_IN_RECONCILE_WAIT, refresh).await;
     } else {
         server.request_reconcile();

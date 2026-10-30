@@ -1767,6 +1767,75 @@ async fn oauth_sign_in_does_not_wait_for_a_running_reconcile() {
 }
 
 #[tokio::test]
+async fn first_sign_ins_share_one_refresh_and_go_to_the_install_page() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    server.dashboard.lock().await.preferences.admins = vec!["admin".into()];
+    let (url, task) = http(server.clone()).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"access_token": "user-token-value"})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "login": "admin", "avatar_url": "https://example.com/avatar"
+        })))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/app/installations"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([]))
+                .set_delay(std::time::Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut sign_ins = Vec::new();
+    for _ in 0..2 {
+        let login = client
+            .get(format!("{url}/auth/login"))
+            .send()
+            .await
+            .unwrap();
+        let cookie = login.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let state: Value =
+            auth::verify(&server.session_key, cookie.split_once('=').unwrap().1).unwrap();
+        let request = client
+            .get(format!(
+                "{url}/auth/callback?code=abc&state={}",
+                state["nonce"].as_str().unwrap()
+            ))
+            .header("Cookie", cookie);
+        sign_ins.push(tokio::spawn(request.send()));
+    }
+    for sign_in in sign_ins {
+        let response = sign_in.await.unwrap().unwrap();
+        assert_eq!(response.status(), 303);
+        assert_eq!(
+            response.headers()["location"],
+            "https://github.com/apps/revera-test/installations/new"
+        );
+    }
+    task.abort();
+}
+
+#[tokio::test]
 async fn job_metadata_lifecycle_and_pruning() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
