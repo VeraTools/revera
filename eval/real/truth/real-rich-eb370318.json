@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "rich/style.py",
+   "line_min": 239,
+   "line_max": 244,
+   "keywords": [
+    "self",
+    "classmethod",
+    "nameerror",
+    "style._meta",
+    "hash"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/Textualize/rich",
+  "intro": "eb370318731e33987908f297fe74a742a8984535",
+  "fix": "f70eb3cac24f47443cdc571a05b255519deea9b4"
+ }
+}

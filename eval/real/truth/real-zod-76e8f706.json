@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "packages/zod/src/v4/core/schemas.ts",
+   "line_min": 1852,
+   "line_max": 1858,
+   "keywords": [
+    "__proto__",
+    "strict",
+    "unrecognized",
+    "skipped",
+    "continue",
+    "silently accepted"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/colinhacks/zod",
+  "intro": "76e8f706bb554de82234106de8299d0139cb3b8e",
+  "fix": "e7029aa43b848a14d632bb99394a304a7f205bc9"
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/line_range.rs",
+   "line_min": 50,
+   "line_max": 56,
+   "keywords": [
+    "overflow",
+    "lower + more_lines",
+    "usize",
+    "checked_add",
+    "panic",
+    "+n"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/bat",
+  "intro": "07487834044a1e24247d4c1631447419fdd463d2",
+  "fix": "9fcc57e4967e56b53c4cd6c436073ec45a23c148"
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/client/utils.ts",
+   "line_min": 11,
+   "line_max": 15,
+   "keywords": [
+    "replacement pattern",
+    "$&",
+    "$'",
+    "special pattern",
+    "dollar",
+    "replacer function"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "331b3d8a96eacdf353019018242872b505010ba9",
+  "fix": "4eb022de6869b8d5a7ce4edb1489e384cd76b9fe"
+ }
+}

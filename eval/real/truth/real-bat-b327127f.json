@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/decorations.rs",
+   "line_min": 46,
+   "line_max": 52,
+   "keywords": [
+    "off-by-one",
+    ">=",
+    "10000",
+    "width",
+    "line number",
+    "wrap"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/bat",
+  "intro": "b327127f373b104b46d062caa5b7016bc02c3a77",
+  "fix": "9d77c1373c59f9998b9991f1a58ffc6bf679d087"
+ }
+}

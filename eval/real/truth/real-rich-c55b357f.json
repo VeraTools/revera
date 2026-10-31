@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "rich/console.py",
+   "line_min": 709,
+   "line_max": 711,
+   "keywords": [
+    "markup",
+    "emoji",
+    "ignored",
+    "render_str",
+    "not passed",
+    "flag"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/Textualize/rich",
+  "intro": "c55b357f37d1cc9d4071fd2b92c02433711c3d67",
+  "fix": "f352f74191bb32efd5d8865d632b5c7f6a70d957"
+ }
+}

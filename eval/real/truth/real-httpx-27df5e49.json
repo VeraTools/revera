@@ -1,0 +1,36 @@
+{
+ "defects": [
+  {
+   "file": "httpx/_models.py",
+   "line_min": 1172,
+   "line_max": 1175,
+   "keywords": [
+    "empty",
+    "chunk_size",
+    "range",
+    "zero",
+    "valueerror",
+    "step"
+   ]
+  },
+  {
+   "file": "httpx/_models.py",
+   "line_min": 1267,
+   "line_max": 1270,
+   "keywords": [
+    "empty",
+    "chunk_size",
+    "range",
+    "zero",
+    "valueerror"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/encode/httpx",
+  "intro": "27df5e49c7a97a17f68862a3fa901c11e30a4b5a",
+  "fix": "10b60d47c71e352f06c418f31095f381ea36c6b8"
+ }
+}

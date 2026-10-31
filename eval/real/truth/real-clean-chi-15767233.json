@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/go-chi/chi",
+  "intro": "15767233591fd4267ae99d05299fa3807c375cdd",
+  "fix": ""
+ }
+}

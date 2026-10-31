@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "tree.go",
+   "line_min": 351,
+   "line_max": 354,
+   "keywords": [
+    "n.children[0]",
+    "index out of range",
+    "empty children",
+    "panic",
+    "len(n.children)"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/gin-gonic/gin",
+  "intro": "a06d546f5c2e853b07fde5a41b1fff102829b116",
+  "fix": "9f598a31aafb92d675f38f1c8371e4ac76f858bf"
+ }
+}

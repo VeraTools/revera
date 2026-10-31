@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "src/utils/url.ts",
+   "line_min": 211,
+   "line_max": 215,
+   "keywords": [
+    "malformed",
+    "urierror",
+    "throws",
+    "invalid percent",
+    "decodeuricomponent"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "a16bcda1209f18a1b32a1c6cd2c0e5404c7b8a69",
+  "fix": "3df5bf9f16f32b82a6391c4ad0f3fd8b8fbdff4f"
+ }
+}

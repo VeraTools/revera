@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "src/click/core.py",
+   "line_min": 2600,
+   "line_max": 2605,
+   "keywords": [
+    "flag_value",
+    "is_flag",
+    "not self.default",
+    "non-flag",
+    "type is provided"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/pallets/click",
+  "intro": "b5464b7e065bdfd952b1532880941f1be07e4e2b",
+  "fix": "4fd2fea0db423d242aedcae0a5f664efe0a93484"
+ }
+}

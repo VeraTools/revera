@@ -13,6 +13,16 @@ if grep -q "build: hard" <<<"$out"; then echo "FAIL: hard corpus built" >&2; exi
 grep -q "run: A-baseline crossfile 1" <<<"$out"
 grep -q "run: A-baseline linestep-terminator 1" <<<"$out"
 
+out="$(CORPORA="billing-py clean-multi-rs" CONFIGS="A-baseline" \
+    RUN_ALL_DRY_RUN=1 bash "$HERE/run-all.sh" 1)"
+grep -q "build: multi" <<<"$out"
+if grep -q "build: easy" <<<"$out"; then echo "multi corpora must not build easy" >&2; exit 1; fi
+grep -q "run: A-baseline clean-multi-rs 1" <<<"$out"
+
+out="$(CORPORA="real-hono-e9830c6b" CONFIGS="A-baseline" \
+    RUN_ALL_DRY_RUN=1 bash "$HERE/run-all.sh" 1)"
+grep -q "build: real" <<<"$out"
+
 if CORPORA="bogus" RUN_ALL_DRY_RUN=1 bash "$HERE/run-all.sh" 1 2>/dev/null; then
     echo "FAIL: unknown corpus should exit non-zero" >&2
     exit 1

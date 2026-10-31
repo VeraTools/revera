@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/printer.rs",
+   "line_min": 312,
+   "line_max": 317,
+   "keywords": [
+    "split_at",
+    "multibyte",
+    "char boundary",
+    "bytes",
+    "len",
+    "panic"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/bat",
+  "intro": "45ee2dc4c7277b4697d5b330f59e8ed5efcce99c",
+  "fix": "18b71743c8ffc242653960b8fd335f3346b94094"
+ }
+}

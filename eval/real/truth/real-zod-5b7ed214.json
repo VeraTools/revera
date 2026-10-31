@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "packages/zod/src/v4/core/util.ts",
+   "line_min": 248,
+   "line_max": 253,
+   "keywords": [
+    "epsilon",
+    "tolerance",
+    "too tight",
+    "floating point",
+    "rounding",
+    "rejects valid multiples"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/colinhacks/zod",
+  "intro": "5b7ed214526cb5a7cc508aec236603ff79ae9579",
+  "fix": "2125d30ce58f66170682d5a50ee4a3e2eac568e3"
+ }
+}

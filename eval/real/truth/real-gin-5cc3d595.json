@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "context.go",
+   "line_min": 311,
+   "line_max": 314,
+   "keywords": [
+    "close",
+    "leak",
+    "file",
+    "formfile",
+    "discarded"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/gin-gonic/gin",
+  "intro": "5cc3d5955f5a03c13daa878c5ef28c33d9a18800",
+  "fix": "0f951956d0b8b4b459a2f46bcd4e7118f0306210"
+ }
+}

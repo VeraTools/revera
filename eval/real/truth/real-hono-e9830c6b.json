@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/utils/jwt/jwt.ts",
+   "line_min": 75,
+   "line_max": 79,
+   "keywords": [
+    "bitwise",
+    "| 0",
+    "32-bit",
+    "2038",
+    "overflow",
+    "math.floor"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "e9830c6ba19052d81ef0aeba9d65a1a130f7cf9e",
+  "fix": "e4602ad11a2879eeb4f06d5114d21e0565c114a9"
+ }
+}

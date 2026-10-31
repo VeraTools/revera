@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "packages/zod/src/v4/core/checks.ts",
+   "line_min": 954,
+   "line_max": 957,
+   "keywords": [
+    "position",
+    "exactly",
+    "{n,}",
+    "at or after",
+    "regex",
+    "includes"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/colinhacks/zod",
+  "intro": "9a81173ba28d70d856d8db2e5fe6daedc9241fa4",
+  "fix": "51a1368ad449ba0a4dc6e2822dfcbb5ec891700c"
+ }
+}

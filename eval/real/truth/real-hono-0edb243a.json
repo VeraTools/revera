@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "src/middleware/serve-static/index.ts",
+   "line_min": 99,
+   "line_max": 103,
+   "keywords": [
+    "empty string",
+    "falsy",
+    "empty file",
+    "!= null",
+    "zero-length"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "0edb243a7481a395f017625ba7493e1b6271decb",
+  "fix": "03a9416a13a681028011e23841ba89d1dd6c9a62"
+ }
+}

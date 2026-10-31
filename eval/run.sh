@@ -11,7 +11,7 @@ CONFIG_NAME="$1"; CORPUS="$2"; REPS="${3:-1}"
 REP_START="${4:-1}"
 CONFIG="$HERE/configs/${CONFIG_NAME}.yaml"
 SRC="$HERE/corpus/$CORPUS"
-BIN="$ROOT/target/debug/revera"
+BIN="${REVERA_BIN:-$ROOT/target/debug/revera}"
 RESULTS="$HERE/results.jsonl"
 REPORTS="$HERE/reports"
 
@@ -29,17 +29,28 @@ for rep in $(seq "$REP_START" "$REP_END"); do
     git -C "$TMP/repo" checkout -q head 2>/dev/null || true
     rm -f "$TMP/repo/.revera/state.json"
     OUT="$TMP/repo/report.json"
+    # the head commit message stands in for the PR title and description
+    # (EVAL_PR_INTENT=0 restores the old placeholder title and no body)
+    TITLE="eval $CORPUS"
+    : > "$TMP/body.md"
+    if [ "${EVAL_PR_INTENT:-1}" != 0 ]; then
+        TITLE="$(git -C "$TMP/repo" log -1 --format=%s head)"
+        git -C "$TMP/repo" log -1 --format=%b head > "$TMP/body.md"
+    fi
     "$BIN" review --repo "$TMP/repo" --base base --head head \
-        --config "$CONFIG" --title "eval $CORPUS" --force \
+        --config "$CONFIG" --title "$TITLE" --body-file "$TMP/body.md" --force \
         --out "$OUT" > "$TMP/stdout.txt" 2> "$TMP/stderr.log"
     RC=$?
     cp "$TMP/stderr.log" "$REPORTS/${CONFIG_NAME}-${CORPUS}-${rep}.stderr.log"
     TRUTH="$SRC/truth.json"
     [ -f "$TRUTH" ] || TRUTH="$HERE/large/truth/$CORPUS.json"
+    [ -f "$TRUTH" ] || TRUTH="$HERE/real/truth/$CORPUS.json"
+    DIFF_LINES="$(git -C "$TMP/repo" diff --numstat base head 2>/dev/null \
+        | awk '$1 != "-" { n += $1 + $2 } END { print n + 0 }')"
     if [ -f "$OUT" ]; then
         cp "$OUT" "$REPORTS/${CONFIG_NAME}-${CORPUS}-${rep}.json"
         python3 "$HERE/score.py" "$OUT" "$TRUTH" \
-            "$CONFIG_NAME" "$CORPUS" "$rep" >> "$RESULTS"
+            "$CONFIG_NAME" "$CORPUS" "$rep" "$DIFF_LINES" >> "$RESULTS"
     else
         python3 - "$CONFIG_NAME" "$CORPUS" "$rep" "$RC" "$TMP/stderr.log" <<'PY' >> "$RESULTS"
 import json, sys

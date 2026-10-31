@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/main.rs",
+   "line_min": 99,
+   "line_max": 103,
+   "keywords": [
+    "anyhow!",
+    "return",
+    "err",
+    "discarded",
+    "no valid search paths",
+    "panic"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/fd",
+  "intro": "28d6a4f518d4519a61b2c969f938421e70445271",
+  "fix": "4f4591bfdccd891a2b18edf166768805c8c99345"
+ }
+}

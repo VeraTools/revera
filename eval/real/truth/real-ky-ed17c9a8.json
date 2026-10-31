@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "index.js",
+   "line_min": 120,
+   "line_max": 123,
+   "keywords": [
+    "abortcontroller",
+    "undefined",
+    "typeerror",
+    "guard",
+    "unsupported environments",
+    "abort()"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sindresorhus/ky",
+  "intro": "ed17c9a84d3afa6830fcaabd6835aa3f3f23c55b",
+  "fix": "a012fd3ad568b62bf7e07375f1e27498cceadb0e"
+ }
+}

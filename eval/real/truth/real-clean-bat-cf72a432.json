@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/bat",
+  "intro": "cf72a432acd6cb5c72c5eb2935468a0b0d668d87",
+  "fix": ""
+ }
+}

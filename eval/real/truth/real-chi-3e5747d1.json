@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "context.go",
+   "line_min": 123,
+   "line_max": 128,
+   "keywords": [
+    "root",
+    "\"/\"",
+    "trimsuffix",
+    "empty string",
+    "route pattern"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/go-chi/chi",
+  "intro": "3e5747d1f803ed5fd2324c24fb4e2c767241e8a0",
+  "fix": "f4ab9b1f050bdcf14bd096399e8bd57363406514"
+ }
+}
