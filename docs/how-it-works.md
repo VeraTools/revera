@@ -63,10 +63,11 @@ switching providers replays the full conversation and keeps the last
 successful alternative for that role for the remainder of the run.
 
 **Reconcile and publish.** Inline comments require the finding to sit on a
-head-side line of a diff hunk; other accepted findings go into the summary
-under "Findings outside the diff". Accepted findings below
+head-side line of a diff hunk. Accepted findings below
 `review.inline_min_severity` (default `medium`) are listed in the summary
-under "Lower-severity findings" instead of posted inline. Inline publication and the summary
+under "Lower-severity findings", whether or not they could anchor; other
+accepted findings that cannot anchor go into the summary under "Findings
+outside the diff". Inline publication and the summary
 comment are reconciled separately, and the publisher reads existing
 `<!-- revera-id:… -->` markers on the PR before posting, so a summary
 failure never duplicates inline comments on retry. The publisher re-fetches

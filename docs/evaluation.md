@@ -345,13 +345,16 @@ endpoint load on the day.
 
 ## Recall and clean-commit precision on held-out real bugs (2026-10-31)
 
-`eval/real` holds defects mined with SZZ from 13 open-source repositories
-(Python, Go, Rust, TypeScript, shell): the commit that introduced a bug,
+`eval/real` holds defects mined with SZZ from 13 open-source repositories:
+the commit that introduced a bug,
 traced from its later fix, is reviewed against its parent. `mine.py` drops
 cases where blame misattributes the bug (blame with `-M -C`, plus a check
 that the fix touches tokens the blamed commit added), and every case was
-vetted by hand against `eval/real/VETTING.md`. The held-out set is 30
-defects and 8 presumed-clean commits; truth files list each defect's file
+vetted by hand against `eval/real/VETTING.md`; cases the vetting found to
+be SZZ mislabels are marked `excluded` and never built or scored. The
+held-out set is 38 cases from 10 of those repositories (Python, Go, Rust
+and TypeScript): 30 defect cases holding 33 defects, and 8 presumed-clean
+commits. With 2 reps that is 66 defects per config. Truth files list each defect's file
 and lines, and `also_valid` records real bugs found in "clean" commits.
 `score.py` pairs findings to defects by maximum bipartite matching and
 needs the same file for a match.
@@ -359,27 +362,44 @@ needs the same file for a match.
 The eval now gives each review a stated purpose: `run.sh` passes the head
 commit's subject and body as the PR title and description (for real cases,
 the introducing commit's own message, which predates the fix).
-`EVAL_PR_INTENT=0` restores the old placeholder title. Recall counts every
-reported finding; precision counts inline comments only.
+`EVAL_PR_INTENT=0` restores the old placeholder title. Recall counts
+defects matched by an accepted finding, whether it was posted inline or
+listed in the summary; precision counts inline comments only.
 
-Both configs ran the same models (`factory/glm-5.3` investigator,
-`glm-5.3-flash` validator, Vera off) on 38 cases × 2 reps, at the same time:
+All configs ran the same models (`factory/glm-5.3` investigator,
+`glm-5.3-flash` validator, Vera off) on 38 cases × 2 reps. P0 and P1 ran
+at the same time; P2 ran later on the final code, so endpoint load
+differs:
 
-| config | defects reported | inline TP | inline FP | clean runs with an inline comment | uncertain verdicts | median wall s | total cost |
-|---|---|---|---|---|---|---|---|
-| P0-cliproxy-glm (main before this change) | 52/66 | 50 | 31 | 2 of 16 | 1 | 120 | $1.28 |
-| P1-cliproxy-glm (recall and precision changes) | 54/66 | 45 | 18 | 1 of 16 | 6 | 139 | $1.38 |
+| config | defects reported | inline TP | inline FP | unrelated inline comments | clean runs with an inline comment | uncertain verdicts | median wall s | total cost |
+|---|---|---|---|---|---|---|---|---|
+| P0-cliproxy-glm (main before this change) | 52/66 | 50 | 31 | 23 | 2 of 16 | 1 | 119 | $1.28 |
+| P1-cliproxy-glm (first version of the changes) | 54/66 | 45 | 18 | 12 | 1 of 16 | 6 | 139 | $1.38 |
+| P2-cliproxy-glm (final version) | 58/66 | 47 | 29 | 17 | 1 of 16 | 4 | 116 | $1.46 |
 
 The changes measured are: a soft deadline that keeps a reserve for a
 low-effort wrap-up turn, a recall-first investigator method, the validator
-seeing the PR's stated intent, and `review.inline_min_severity: medium`.
-Inline false positives fall by 42 % (31 -> 18) and inline precision rises
-from 62 % to 71 %, while two more defects are reported overall. The price
-is 5 defects that move from inline comments to the summary because they
-were rated low. Three of P1's uncertain verdicts were malformed
-`submit_verdict` calls with no `validation_status`; since then a verdict
-that does not parse is returned once for a corrected submission, so that
-loss is not in these numbers.
+seeing the PR's stated intent, `review.inline_min_severity: medium`, and
+one corrected resubmission for a malformed verdict. P2 also has the fixes
+from code review (the wrap-up cap reaches budget-based routes, the grace
+period cannot outlast the hard budget, a blank rationale is refused).
+
+The final version reports 6 more defects than main (58 against 52 of 66)
+and halves the clean commits that get an inline comment (1 of 16 against
+2 of 16). "Inline FP" is every inline comment that the matching does not
+pair with a defect, so it also counts a second correct comment on a defect
+that another comment already matched: in P2 that is 12 of the 29, most of
+them distinct problems next to the bug (the sync and async variants of one
+dispatch, a wildcard panic beside a prefix mismatch). "Unrelated inline
+comments" leaves those out: 23 on main, 12 and 17 for the changes. P1 and
+P2 differ in that column by 5 comments over 76 runs, which is within the
+run-to-run spread of these models; read them as one level, about half of
+main's. The price is defects rated low: they are still reported, but
+only in the summary (8 in P1, 11 in P2; `inline_min_severity: low` posts
+them inline again). P1 lost 3 verdicts to malformed
+`submit_verdict` calls with no `validation_status`; P2, with the
+corrected resubmission, lost none (its one unresolved verdict was a
+provider error).
 
 An earlier engine line showed where most of the recall comes from: run
 with a placeholder title, the same engine reported 46 of 66 and with the
