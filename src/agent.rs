@@ -181,6 +181,24 @@ pub async fn run_agent_checked(
     let mut budget_stop = StopReason::ToolBudget;
     let start = Instant::now();
     let total = Duration::from_secs(budget.max_seconds);
+    // Ordinary turns run against a soft deadline; the last part of the budget
+    // is reserved for the wrap-up turn that answers the budget notice. A
+    // reasoning model can spend a minute on one completion, so a request
+    // still in flight at the hard deadline used to be cut off with nothing
+    // submitted, discarding every candidate found so far.
+    let reserve = (total / 5)
+        .clamp(Duration::from_secs(10), Duration::from_secs(90))
+        .min(total / 4);
+    let soft = total - reserve;
+    // set when an ordinary turn hit the soft deadline: its wrap-up turn gets
+    // only the reserve, never the extra grace, so a hung provider still ends
+    // at the hard deadline
+    let mut soft_timed_out = false;
+    let wrap_up = |name: &str| {
+        ChatMessage::user(format!(
+            "Budget exhausted; call {name} now with what you have"
+        ))
+    };
     // hard cap on any single await: the remaining budget; only the reply to
     // a time-budget notice gets a bounded grace allowance
     let left = |grace: bool| {
@@ -196,7 +214,7 @@ pub async fn run_agent_checked(
     let time_left = || total.saturating_sub(start.elapsed()) >= REPAIR_MIN_LEFT;
 
     loop {
-        let time_up = start.elapsed() > total;
+        let time_up = start.elapsed() > soft;
         let tools_up = tool_calls >= budget.max_tool_calls;
         if (time_up || tools_up) && !budget_notice_sent {
             budget_notice_sent = true;
@@ -205,10 +223,7 @@ pub async fn run_agent_checked(
             } else {
                 StopReason::ToolBudget
             };
-            messages.push(ChatMessage::user(format!(
-                "Budget exhausted; call {} now with what you have",
-                terminal_tool.name
-            )));
+            messages.push(wrap_up(&terminal_tool.name));
         } else if !budget_warned
             && budget.max_tool_calls >= 10
             && budget.max_tool_calls - tool_calls <= budget.max_tool_calls / 5
@@ -223,7 +238,13 @@ pub async fn run_agent_checked(
             )));
         }
 
-        let grace = budget_notice_sent && budget_stop == StopReason::TimeBudget;
+        let grace = budget_notice_sent && budget_stop == StopReason::TimeBudget && !soft_timed_out;
+        let limit = if budget_notice_sent {
+            left(grace)
+        } else {
+            soft.saturating_sub(start.elapsed())
+                .max(Duration::from_secs(1))
+        };
         // after the notice only the terminal tool is offered; some models
         // keep calling research tools while any are available
         let turn_specs = if budget_notice_sent {
@@ -231,30 +252,47 @@ pub async fn run_agent_checked(
         } else {
             &specs[..]
         };
-        let completion =
-            match tokio::time::timeout(left(grace), client.complete(&messages, turn_specs)).await {
-                Ok(Ok(c)) => c,
-                Ok(Err(e)) => {
-                    tracing::warn!("model request failed: {e}");
-                    return Ok(AgentRun {
-                        final_call: None,
-                        transcript_len: messages.len(),
-                        tool_calls,
-                        stopped: StopReason::ProviderError,
-                        repaired,
-                    });
-                }
-                Err(_) => {
-                    tracing::warn!("model request exceeded the remaining time budget");
-                    return Ok(AgentRun {
-                        final_call: None,
-                        transcript_len: messages.len(),
-                        tool_calls,
-                        stopped: StopReason::TimeBudget,
-                        repaired,
-                    });
-                }
-            };
+        // The wrap-up turn after a time-budget notice runs at low effort:
+        // a reasoning model at full effort over a long transcript can need
+        // more than the reserve, and then every candidate is lost.
+        let call = if budget_notice_sent && budget_stop == StopReason::TimeBudget {
+            client.complete_capped(&messages, turn_specs, crate::config::ReasoningEffort::Low)
+        } else {
+            client.complete(&messages, turn_specs)
+        };
+        let completion = match tokio::time::timeout(limit, call).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
+                tracing::warn!("model request failed: {e}");
+                return Ok(AgentRun {
+                    final_call: None,
+                    transcript_len: messages.len(),
+                    tool_calls,
+                    stopped: StopReason::ProviderError,
+                    repaired,
+                });
+            }
+            Err(_) if !budget_notice_sent => {
+                // the soft deadline passed mid-request: drop that
+                // completion and ask for the submission in the reserve
+                tracing::warn!("model request hit the soft deadline; requesting wrap-up");
+                budget_notice_sent = true;
+                budget_stop = StopReason::TimeBudget;
+                soft_timed_out = true;
+                messages.push(wrap_up(&terminal_tool.name));
+                continue;
+            }
+            Err(_) => {
+                tracing::warn!("model request exceeded the remaining time budget");
+                return Ok(AgentRun {
+                    final_call: None,
+                    transcript_len: messages.len(),
+                    tool_calls,
+                    stopped: StopReason::TimeBudget,
+                    repaired,
+                });
+            }
+        };
         let msg = completion.message;
         messages.push(msg.clone());
 
@@ -395,17 +433,28 @@ pub async fn run_agent_checked(
         // tool results so the transcript stays valid for the API
         let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
-        let results = match tokio::time::timeout(left(false), run_tool_calls(toolbox, exec)).await {
+        let tool_limit = soft
+            .saturating_sub(start.elapsed())
+            .max(Duration::from_secs(1));
+        let results = match tokio::time::timeout(tool_limit, run_tool_calls(toolbox, exec)).await {
             Ok(r) => r,
             Err(_) => {
-                tracing::warn!("tool batch exceeded the remaining time budget");
-                return Ok(AgentRun {
-                    final_call: None,
-                    transcript_len: messages.len(),
-                    tool_calls,
-                    stopped: StopReason::TimeBudget,
-                    repaired,
-                });
+                // past the soft deadline: answer every call so the
+                // transcript stays valid, then use the reserve to submit
+                tracing::warn!("tool batch hit the soft deadline; requesting wrap-up");
+                for c in msg.tool_calls.iter() {
+                    messages.push(ChatMessage::tool(
+                        c.id.clone(),
+                        c.name.clone(),
+                        r#"{"error":"not executed: time budget"}"#.to_string(),
+                    ));
+                }
+                tool_calls += exec.len() as u32;
+                budget_notice_sent = true;
+                budget_stop = StopReason::TimeBudget;
+                soft_timed_out = true;
+                messages.push(wrap_up(&terminal_tool.name));
+                continue;
             }
         };
         tool_calls += exec.len() as u32;

@@ -372,3 +372,92 @@ async fn low_tool_budget_is_announced_once_before_exhaustion() {
         "{user:?}"
     );
 }
+
+/// Stalls on its first turn (still thinking when the soft deadline passes),
+/// then answers the budget notice with a terminal submission.
+struct SlowThenSubmit {
+    calls: Mutex<u32>,
+    capped: Mutex<u32>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for SlowThenSubmit {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        if n == 1 {
+            std::future::pending::<()>().await;
+        }
+        let asked = m
+            .last()
+            .and_then(|x| x.content.as_deref())
+            .is_some_and(|c| c.contains("Budget exhausted"));
+        assert!(asked, "the wrap-up turn must carry the budget notice");
+        Ok(Completion {
+            message: assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [{"title": "t"}], "coverage": "partial"}),
+            )]),
+            usage: Usage::default(),
+            model: "stub".into(),
+            latency_ms: 0,
+        })
+    }
+    async fn complete_capped(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+        cap: revera::config::ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        assert_eq!(cap, revera::config::ReasoningEffort::Low);
+        *self.capped.lock().unwrap() += 1;
+        self.complete(m, t).await
+    }
+    fn route_label(&self) -> String {
+        "slow".into()
+    }
+}
+
+/// A completion still in flight at the soft deadline is dropped and the
+/// reserve is spent on a low-effort wrap-up turn, so candidates are
+/// submitted instead of the whole investigation being discarded. The run
+/// still ends within the hard budget.
+#[tokio::test]
+async fn slow_turn_at_the_deadline_still_submits() {
+    let t0 = std::time::Instant::now();
+    let client = SlowThenSubmit {
+        calls: Mutex::new(0),
+        capped: Mutex::new(0),
+    };
+    let r = run_agent(
+        &client,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    let call = r.final_call.expect("submission made in the reserve");
+    assert_eq!(call.arguments["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(*client.calls.lock().unwrap(), 2);
+    // only the wrap-up turn runs at the capped effort
+    assert_eq!(*client.capped.lock().unwrap(), 1);
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(4),
+        "{:?}",
+        t0.elapsed()
+    );
+}

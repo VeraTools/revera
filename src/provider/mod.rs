@@ -265,5 +265,17 @@ pub trait ModelClient: Send + Sync {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError>;
+    /// Like `complete`, with the reasoning effort for this one call capped
+    /// at `cap` (the agent's wrap-up turn uses this so it finishes inside
+    /// the time budget). Clients without a reasoning knob ignore the cap.
+    async fn complete_capped(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: crate::config::ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        let _ = cap;
+        self.complete(messages, tools).await
+    }
     fn route_label(&self) -> String;
 }

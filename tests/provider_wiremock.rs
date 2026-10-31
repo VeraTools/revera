@@ -3533,3 +3533,27 @@ fn cache_hint_request_is_deterministic_and_turns_are_append_only() {
         first_messages.as_slice()
     );
 }
+
+/// The agent's wrap-up turn asks for a capped effort; the request body must
+/// carry the cap, not the route's configured effort.
+#[tokio::test]
+async fn responses_capped_call_sends_the_lower_effort() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"reasoning": {"effort": "low"}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    resp_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    )
+    .complete_capped(&[ChatMessage::user("x")], &[], ReasoningEffort::Low)
+    .await
+    .unwrap();
+    server.verify().await;
+}

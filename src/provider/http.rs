@@ -223,12 +223,26 @@ impl HttpTransport {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
+        self.send_capped(adapter, messages, tools, None).await
+    }
+
+    /// `send` with the reasoning effort capped from the first attempt.
+    pub async fn send_capped<A: ProtocolAdapter>(
+        &self,
+        adapter: &A,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: Option<ReasoningEffort>,
+    ) -> Result<Completion, ProviderError> {
         let tel = Telemetry {
             label: adapter.label(),
             model: adapter.model().to_string(),
             requested: adapter.requested_reasoning(),
         };
-        let mut attempt = AttemptState::default();
+        let mut attempt = AttemptState {
+            reasoning_cap: cap,
+            ..AttemptState::default()
+        };
         let mut attempts = 0u32;
         let mut retries_used = 0u32;
         let start = Instant::now();
@@ -473,5 +487,16 @@ impl<A: ProtocolAdapter> super::ModelClient for HttpClient<A> {
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
         self.transport.send(&self.adapter, messages, tools).await
+    }
+
+    async fn complete_capped(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        self.transport
+            .send_capped(&self.adapter, messages, tools, Some(cap))
+            .await
     }
 }
