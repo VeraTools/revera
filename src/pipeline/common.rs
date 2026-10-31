@@ -325,9 +325,11 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         let reason = "reused completed review of identical content";
         // lower-severity findings live only in the summary, so the reused
         // summary must list them again or they vanish from the pull request
-        let lower = summary_only_open(&state, cfg.review.inline_min_severity);
-        let lower: Vec<&Finding> = lower.iter().collect();
+        let lower_owned = summary_only_open(&state, cfg.review.inline_min_severity);
+        let lower: Vec<&Finding> = lower_owned.iter().collect();
         let summary = summary_markdown(&Summary {
+            // counted in the headline; listed once, under their own heading
+            findings: &lower_owned,
             lower_severity: &lower,
             coverage: "",
             status: Some(RunStatus::Complete),
@@ -946,7 +948,11 @@ fn summary_only_open(state: &ReviewState, inline_min: crate::findings::Severity)
         .findings
         .iter()
         .filter(|f| f.status == FindingState::Open && !f.posted && f.severity < inline_min)
-        .map(|f| crate::report::CarriedFinding::from_state(f).to_finding())
+        .map(|f| Finding {
+            // stored open means it was accepted when it was found
+            validation_status: Some(crate::findings::ValidationStatus::Accepted),
+            ..crate::report::CarriedFinding::from_state(f).to_finding()
+        })
         .collect()
 }
 
@@ -1289,6 +1295,19 @@ mod tests {
         let lower = super::summary_only_open(&state, Severity::Medium);
         assert_eq!(lower.len(), 1);
         assert_eq!(lower[0].title, "title low");
+        // the reused summary counts them in its headline and lists them once
+        let refs: Vec<&crate::findings::Finding> = lower.iter().collect();
+        let md = crate::report::summary_markdown(&crate::report::Summary {
+            findings: &lower,
+            lower_severity: &refs,
+            coverage: "",
+            strategy: "baseline",
+            reused: true,
+            ..Default::default()
+        });
+        assert!(!md.contains("no accepted findings"), "{md}");
+        assert!(md.contains("Lower-severity findings"), "{md}");
+        assert_eq!(md.matches("title low").count(), 1, "{md}");
         // an unposted finding that should go inline still forces a fresh run
         state
             .findings

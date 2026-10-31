@@ -66,7 +66,8 @@ successful alternative for that role for the remainder of the run.
 head-side line of a diff hunk. Accepted findings below
 `review.inline_min_severity` (default `medium`) are listed in the summary
 under "Lower-severity findings", whether or not they could anchor; other
-accepted findings that cannot anchor go into the summary under "Findings
+accepted findings that cannot anchor, or that are beyond the
+`review.max_findings` inline cap, go into the summary under "Findings
 outside the diff". Inline publication and the summary
 comment are reconciled separately, and the publisher reads existing
 `<!-- revera-id:… -->` markers on the PR before posting, so a summary
