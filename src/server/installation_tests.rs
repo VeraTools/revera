@@ -641,6 +641,13 @@ async fn lifecycle_webhooks_are_verified_coalesced_and_do_not_enqueue_unapproved
         401
     );
     assert_eq!(*server.reconcile_request.borrow(), generation);
+    // One burst on a fixed schedule: each webhook is sent 40 ms after the
+    // previous one was sent, not after it was answered. Some lifecycle events
+    // do removal work before returning 202, and waiting for each reply would
+    // make a gap as long as that work, which can legitimately outlast the
+    // 250 ms quiet period on a loaded machine and split the burst. The
+    // burst still spans more than 250 ms (8 events) and must coalesce.
+    let mut sent = vec![];
     for (event, actions) in [
         (
             "installation",
@@ -657,10 +664,15 @@ async fn lifecycle_webhooks_are_verified_coalesced_and_do_not_enqueue_unapproved
     ] {
         for action in actions {
             let payload = json!({"action": action, "installation": installation(12, "outside", 112), "account": {"id": 112, "login": "outside"}, "repositories_added": [repo_value(12, "outside", "never-disclose")]});
-            assert_eq!(post_webhook(&url, event, &payload).await, 202);
-            // Spread the burst past a single 250 ms window; it must still coalesce.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let url = url.clone();
+            sent.push(tokio::spawn(async move {
+                post_webhook(&url, event, &payload).await
+            }));
+            tokio::time::sleep(Duration::from_millis(40)).await;
         }
+    }
+    for status in sent {
+        assert_eq!(status.await.unwrap(), 202);
     }
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
