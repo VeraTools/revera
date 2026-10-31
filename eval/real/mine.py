@@ -78,18 +78,18 @@ def numstat(repo, sha):
 
 def removed_lines(repo, fix):
     """{path: [old line numbers]} for lines the fix deleted or replaced."""
-    out, path, old = {}, None, 0
+    out, path, old, in_hunk = {}, None, 0, False
     for line in git(repo, "show", "-U0", "--format=", fix).splitlines():
-        if line.startswith("--- "):
+        if line.startswith("diff --git "):
+            path, in_hunk = None, False
+        elif not in_hunk and line.startswith("--- "):
             path = None if line == "--- /dev/null" else line[6:]
         elif line.startswith("@@"):
             m = re.match(r"@@ -(\d+)(?:,(\d+))? ", line)
-            old = int(m.group(1))
-        elif path and line.startswith("-") and not line.startswith("---"):
+            old, in_hunk = int(m.group(1)), True
+        elif path and in_hunk and line.startswith("-"):
             out.setdefault(path, []).append(old)
             old += 1
-        elif line.startswith("+") or line.startswith(" "):
-            pass
     return out
 
 
@@ -126,18 +126,22 @@ TOKEN_RE = re.compile(r"\w+|[^\s\w]+")
 def diff_lines(repo, sha, paths):
     """{path: (removed, added)} token lines of `sha`'s -U0 diff for `paths`,
     keyed by the post-image path (the pre-image one for deletions)."""
-    out, path = {}, None
+    out, path, in_hunk = {}, None, False
     for line in git(repo, "show", "-U0", "--format=", sha, "--", *paths).splitlines():
         if line.startswith("diff --git "):
-            path = None
-        elif line.startswith("--- "):
+            path, in_hunk = None, False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif not in_hunk and line.startswith("--- "):
+            # file headers only come before a file's first hunk; inside a
+            # hunk, "--- x" is a removed line that reads "-- x"
             path = None if line == "--- /dev/null" else line[6:]
-        elif line.startswith("+++ "):
+        elif not in_hunk and line.startswith("+++ "):
             if line != "+++ /dev/null":
                 path = line[6:]
-        elif path and line.startswith("-"):
+        elif path and in_hunk and line.startswith("-"):
             out.setdefault(path, ([], []))[0].append(TOKEN_RE.findall(line[1:]))
-        elif path and line.startswith("+"):
+        elif path and in_hunk and line.startswith("+"):
             out.setdefault(path, ([], []))[1].append(TOKEN_RE.findall(line[1:]))
     return out
 

@@ -63,14 +63,15 @@ def problems(c):
         return out
     if git(c["repo"], "cat-file", "-e", c["intro"] + "^{commit}").returncode:
         return ["intro sha not found"]
+    # before the clean shortcut: a malformed value must not merge either
+    if not isinstance(c["defects"], list):
+        return ["defects is not a list"]
     if c.get("clean"):
         return [] if not c["defects"] else ["clean case with defects"]
     if not c.get("fix") or git(c["repo"], "cat-file", "-e", c["fix"] + "^{commit}").returncode:
         return ["fix sha not found"]
     if not c["defects"]:
         return ["no defects"]
-    if not isinstance(c["defects"], list):
-        return ["defects is not a list"]
     for d in c["defects"]:
         shape = defect_problems(d)
         if shape:
