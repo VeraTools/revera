@@ -58,6 +58,10 @@ pub struct ReviewConfig {
     pub max_diff_bytes: usize,
     #[serde(default)]
     pub min_severity: Severity,
+    /// Accepted findings below this severity are listed in the summary
+    /// instead of posted inline (they are still validated and reported).
+    #[serde(default = "default_inline_min_severity")]
+    pub inline_min_severity: Severity,
     /// Evaluation-only knob: `false` skips the validation pass. Candidates
     /// are then reported as unvalidated, are never publishable, and never
     /// seed stored state; `publish: comment` is rejected. Default true.
@@ -492,6 +496,7 @@ pub struct ReviewOverride {
     pub max_tool_output_bytes: Option<usize>,
     pub max_diff_bytes: Option<usize>,
     pub min_severity: Option<Severity>,
+    pub inline_min_severity: Option<Severity>,
     pub guidance: Option<GuidanceMode>,
     pub notes: Option<String>,
 }
@@ -557,6 +562,10 @@ pub struct Config {
 fn default_true() -> bool {
     true
 }
+fn default_inline_min_severity() -> Severity {
+    Severity::Medium
+}
+
 fn default_max_findings() -> usize {
     10
 }
@@ -629,6 +638,7 @@ impl Default for ReviewConfig {
             max_tool_output_bytes: default_tool_output(),
             max_diff_bytes: default_diff_bytes(),
             min_severity: Severity::default(),
+            inline_min_severity: default_inline_min_severity(),
             validate: default_true(),
             guidance: GuidanceMode::default(),
             guidance_max_bytes: default_guidance_bytes(),
@@ -1368,6 +1378,7 @@ impl Config {
             "max_findings": self.review.max_findings,
             "publish_uncertain": self.review.publish_uncertain,
             "min_severity": format!("{:?}", self.review.min_severity).to_lowercase(),
+            "inline_min_severity": format!("{:?}", self.review.inline_min_severity).to_lowercase(),
             "validate": self.review.validate,
             "guidance": self.review.guidance.as_str(),
             "guidance_max_bytes": self.review.guidance_max_bytes,
@@ -1438,6 +1449,9 @@ impl Config {
             }
             if let Some(v) = r.min_severity {
                 self.review.min_severity = v;
+            }
+            if let Some(v) = r.inline_min_severity {
+                self.review.inline_min_severity = v;
             }
             if let Some(v) = r.guidance {
                 self.review.guidance = v;

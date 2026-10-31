@@ -756,12 +756,23 @@ pub async fn finish(
     // stays in the report (and state) without a placement
     let (publishable, unpublished): (Vec<Finding>, Vec<Finding>) =
         collapsed.into_iter().partition(is_publishable);
-    let anchored = anchor(&prep.diff, publishable, cfg.review.max_findings);
+    let anchored = anchor(
+        &prep.diff,
+        publishable,
+        cfg.review.max_findings,
+        cfg.review.inline_min_severity,
+    );
     let mut inline: Vec<InlineComment> = vec![];
     let mut outside: Vec<&Finding> = vec![];
+    let mut lower: Vec<&Finding> = vec![];
     let mut final_findings: Vec<Finding> = vec![];
     for a in &anchored {
         let f = &a.finding;
+        if a.quiet {
+            lower.push(f);
+            final_findings.push(f.clone());
+            continue;
+        }
         match a.placement {
             Placement::Inline => inline.push(InlineComment {
                 file: f.file.clone(),
@@ -872,6 +883,7 @@ pub async fn finish(
     let summary = summary_markdown(&Summary {
         findings: &final_findings,
         outside_diff: &outside,
+        lower_severity: &lower,
         coverage: &coverage,
         coverage_gaps: &prep.coverage_gaps,
         status: Some(status),

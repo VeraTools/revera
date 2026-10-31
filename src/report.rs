@@ -409,6 +409,8 @@ pub fn finding_body(f: &Finding) -> String {
 pub struct Summary<'a> {
     pub findings: &'a [Finding],
     pub outside_diff: &'a [&'a Finding],
+    /// Accepted findings below `review.inline_min_severity`.
+    pub lower_severity: &'a [&'a Finding],
     pub coverage: &'a str,
     pub coverage_gaps: &'a [String],
     pub status: Option<RunStatus>,
@@ -514,8 +516,12 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
     }
     s.push('\n');
     // findings that cannot anchor inline are listed once, in their own section
-    let outside_ids: std::collections::HashSet<String> =
-        inp.outside_diff.iter().map(|f| f.id()).collect();
+    let outside_ids: std::collections::HashSet<String> = inp
+        .outside_diff
+        .iter()
+        .chain(inp.lower_severity)
+        .map(|f| f.id())
+        .collect();
     for f in accepted.iter().filter(|f| !outside_ids.contains(&f.id())) {
         s.push_str(&format!(
             "- **[{}]** {}:{} — {}\n",
@@ -543,6 +549,18 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
     if !inp.outside_diff.is_empty() {
         s.push_str("\n### Findings outside the diff\n\n");
         for f in inp.outside_diff {
+            s.push_str(&format!(
+                "- **[{}]** {}:{} — {}\n",
+                f.severity,
+                public_code_span(&f.file),
+                f.start_line,
+                public_line(&f.title)
+            ));
+        }
+    }
+    if !inp.lower_severity.is_empty() {
+        s.push_str("\n### Lower-severity findings (not posted inline)\n\n");
+        for f in inp.lower_severity {
             s.push_str(&format!(
                 "- **[{}]** {}:{} — {}\n",
                 f.severity,

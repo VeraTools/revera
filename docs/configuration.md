@@ -167,6 +167,7 @@ both per route and in the totals.
 | `publish` | `dry-run` | `dry-run` prints the plan; `comment` posts to the PR (the Action passes `comment`) |
 | `validate` | `true` | evaluation-only switch; `false` reports candidates as unvalidated, never publishes or stores them, and is rejected with `publish: comment` |
 | `min_severity` | `low` | `low` · `medium` · `high`; findings below are dropped |
+| `inline_min_severity` | `medium` | accepted findings below this are listed in the summary instead of posted inline; `low` posts everything inline |
 | `max_findings` | `10` | maximum inline comments per run; remaining accepted findings go in the summary |
 | `publish_uncertain` | `false` | list `uncertain` verdicts in the summary as unconfirmed |
 | `concurrency` | `4` | concurrent lanes / validations |
