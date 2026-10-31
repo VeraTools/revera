@@ -65,6 +65,8 @@ pub struct Prepared {
     pub reserve: std::time::Duration,
     pub wall: Instant,
     pub timing: Recorder,
+    /// PR title and description for the validator (may be empty).
+    pub intent: String,
 }
 
 impl Prepared {
@@ -541,6 +543,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     // ---- recheck prior open findings ----
     // validation-disabled runs are evaluation-only: no validator sessions,
     // and no prior finding may be re-accepted into this run's output
+    let intent = super::validate::pr_intent(req.title.as_deref(), &req.body);
     let mut rechecks = if cfg.review.validate {
         recheck_candidates(&state)
     } else {
@@ -553,6 +556,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             ledger.clone(),
             &toolbox,
             &diff,
+            &intent,
             &mut rechecks,
             recheck_prompt(),
             &validator_terminal(),
@@ -629,6 +633,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
         wall,
         timing,
+        intent,
     })))
 }
 
@@ -693,6 +698,7 @@ pub async fn finish(
             prep.ledger.clone(),
             &prep.toolbox,
             &prep.diff,
+            &prep.intent,
             &mut collapsed,
             validator_prompt(),
             &validator_terminal(),

@@ -401,6 +401,7 @@ async fn validator_checks_suggestions_against_pinned_head_not_dirty_worktree() {
         revera::provider::LedgerHandle::new(),
         &toolbox,
         &diff,
+        "",
         &mut candidates,
         "Validate the finding",
         &revera::pipeline::validate::validator_terminal(),
