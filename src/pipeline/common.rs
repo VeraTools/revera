@@ -316,17 +316,19 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     // configuration — but not while any accepted finding is still unposted
     // (it must publish on this run). Partial runs, legacy state and any
     // identity drift fall through to a fresh review.
-    let unposted = state
-        .findings
-        .iter()
-        .any(|f| f.status == FindingState::Open && !f.posted);
+    let unposted = blocks_reuse(&state, cfg.review.inline_min_severity);
     if !req.force && !unposted && state.can_reuse(&key) {
         state.reviewed_head = head_sha.clone();
         state.save(&repo)?;
         let plan_state = state.public_projection(cfg.review.publish_uncertain);
         let carried = crate::report::carried_findings(&state, &[]);
         let reason = "reused completed review of identical content";
+        // lower-severity findings live only in the summary, so the reused
+        // summary must list them again or they vanish from the pull request
+        let lower = summary_only_open(&state, cfg.review.inline_min_severity);
+        let lower: Vec<&Finding> = lower.iter().collect();
         let summary = summary_markdown(&Summary {
+            lower_severity: &lower,
             coverage: "",
             status: Some(RunStatus::Complete),
             strategy: strategy_name,
@@ -927,6 +929,27 @@ pub async fn finish(
     Ok((rep, state))
 }
 
+/// An accepted finding that has not been posted yet must publish on this run,
+/// so it blocks reuse. Findings below `inline_min_severity` never post inline
+/// (they live only in the summary), so they do not.
+fn blocks_reuse(state: &ReviewState, inline_min: crate::findings::Severity) -> bool {
+    state
+        .findings
+        .iter()
+        .any(|f| f.status == FindingState::Open && !f.posted && f.severity >= inline_min)
+}
+
+/// Open findings that only ever appear in the summary's lower-severity
+/// section, rebuilt from state for a reused review.
+fn summary_only_open(state: &ReviewState, inline_min: crate::findings::Severity) -> Vec<Finding> {
+    state
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingState::Open && !f.posted && f.severity < inline_min)
+        .map(|f| crate::report::CarriedFinding::from_state(f).to_finding())
+        .collect()
+}
+
 /// Render the standard investigator-style user message.
 pub fn investigator_user(req: &ReviewRequest, diff: &DiffSet, max_diff_bytes: usize) -> String {
     let changed: Vec<String> = diff
@@ -1234,6 +1257,47 @@ mod tests {
                 assert!(report.carried.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn summary_only_findings_do_not_block_reuse_and_are_listed_again() {
+        use crate::findings::Severity;
+        use crate::state::{FindingState, ReviewState, StateFinding};
+        let finding = |id: &str, severity, posted| StateFinding {
+            id: id.into(),
+            status: FindingState::Open,
+            file: "src/a.rs".into(),
+            start_line: 10,
+            end_line: None,
+            title: format!("title {id}"),
+            posted,
+            defect_key: format!("key_{id}"),
+            severity,
+            claim: String::new(),
+            trigger: String::new(),
+            impact: String::new(),
+            evidence: vec![],
+        };
+        let mut state = ReviewState {
+            findings: vec![
+                finding("inline", Severity::High, true),
+                finding("low", Severity::Low, false),
+            ],
+            ..Default::default()
+        };
+        assert!(!super::blocks_reuse(&state, Severity::Medium));
+        let lower = super::summary_only_open(&state, Severity::Medium);
+        assert_eq!(lower.len(), 1);
+        assert_eq!(lower[0].title, "title low");
+        // an unposted finding that should go inline still forces a fresh run
+        state
+            .findings
+            .push(finding("pending", Severity::Medium, false));
+        assert!(super::blocks_reuse(&state, Severity::Medium));
+        // with every finding eligible inline, the low one blocks again
+        state.findings.pop();
+        assert!(super::blocks_reuse(&state, Severity::Low));
+        assert!(super::summary_only_open(&state, Severity::Low).is_empty());
     }
 
     #[test]
