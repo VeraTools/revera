@@ -146,6 +146,11 @@ fn anchor_lists_findings_below_the_inline_bar_in_the_summary() {
     assert_eq!(out[1].placement, Placement::Inline, "the cap slot is kept");
     assert!(!out[1].quiet);
 
+    // a low finding outside the diff is quiet too, not "outside the diff"
+    let outside = anchor(&d, vec![mk(400, Severity::Low, "c")], 10, Severity::Medium);
+    assert_eq!(outside[0].placement, Placement::Summary);
+    assert!(outside[0].quiet);
+
     let all = anchor(&d, vec![mk(12, Severity::Low, "a")], 10, Severity::Low);
     assert_eq!(all[0].placement, Placement::Inline);
     assert!(!all[0].quiet);

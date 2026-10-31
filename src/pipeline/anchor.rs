@@ -11,8 +11,8 @@ pub enum Placement {
 pub struct Anchored {
     pub finding: Finding,
     pub placement: Placement,
-    /// Placeable inline, but below `inline_min_severity`, so listed in the
-    /// summary instead.
+    /// Below `inline_min_severity`, so listed in the summary's lower-severity
+    /// section (whether or not it could have anchored inline).
     pub quiet: bool,
 }
 
@@ -55,9 +55,10 @@ pub fn anchor(
             }
         })
         .collect();
-    // below the inline bar: still reported, but in the summary
+    // below the inline bar: still reported, but in the summary's
+    // lower-severity section, whether or not it could have anchored
     for a in items.iter_mut() {
-        if a.placement == Placement::Inline && a.finding.severity < inline_min {
+        if a.finding.severity < inline_min {
             a.placement = Placement::Summary;
             a.quiet = true;
         }

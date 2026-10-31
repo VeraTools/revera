@@ -37,13 +37,15 @@ fn approved_fix(verdict: &Verdict) -> Option<String> {
 /// agent loop returns the error to the model for one corrected submission
 /// instead of the candidate ending `uncertain` on a missing field.
 pub fn verdict_terminal_check(args: &serde_json::Value) -> Result<(), String> {
-    serde_json::from_value::<Verdict>(args.clone())
-        .map(|_| ())
-        .map_err(|e| {
-            format!(
-                "submit_verdict arguments are invalid ({e}); resubmit with `validation_status` (accepted, rejected or uncertain), `counterevidence_checked` and `rationale`"
-            )
-        })
+    let fix = "resubmit with `validation_status` (accepted, rejected or uncertain), `counterevidence_checked` and `rationale`";
+    let v = serde_json::from_value::<Verdict>(args.clone())
+        .map_err(|e| format!("submit_verdict arguments are invalid ({e}); {fix}"))?;
+    // `rationale` defaults to empty when absent, which parses but leaves the
+    // verdict unexplained: refuse it the same way
+    if v.rationale.trim().is_empty() {
+        return Err(format!("submit_verdict has no `rationale`; {fix}"));
+    }
+    Ok(())
 }
 
 /// The PR's stated intent for the validator, so it can tell a defect from
@@ -363,6 +365,13 @@ mod tests {
             "rationale": "seen"
         }))
         .expect("a complete verdict passes");
+        let err = super::verdict_terminal_check(&serde_json::json!({
+            "validation_status": "accepted",
+            "counterevidence_checked": ["a.rs:1"],
+            "rationale": "  "
+        }))
+        .expect_err("a blank rationale must be refused");
+        assert!(err.contains("rationale"), "{err}");
     }
 
     #[test]
