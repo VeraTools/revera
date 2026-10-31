@@ -343,6 +343,49 @@ large set; E2 and E3 ran on one investigator model, whose budget stops
 caused every g1 miss and every ripgrep miss. Wall times depend on
 endpoint load on the day.
 
+## Recall and clean-commit precision on held-out real bugs (2026-10-31)
+
+`eval/real` holds defects mined with SZZ from 13 open-source repositories
+(Python, Go, Rust, TypeScript, shell): the commit that introduced a bug,
+traced from its later fix, is reviewed against its parent. `mine.py` drops
+cases where blame misattributes the bug (blame with `-M -C`, plus a check
+that the fix touches tokens the blamed commit added), and every case was
+vetted by hand against `eval/real/VETTING.md`. The held-out set is 30
+defects and 8 presumed-clean commits; truth files list each defect's file
+and lines, and `also_valid` records real bugs found in "clean" commits.
+`score.py` pairs findings to defects by maximum bipartite matching and
+needs the same file for a match.
+
+The eval now gives each review a stated purpose: `run.sh` passes the head
+commit's subject and body as the PR title and description (for real cases,
+the introducing commit's own message, which predates the fix).
+`EVAL_PR_INTENT=0` restores the old placeholder title. Recall counts every
+reported finding; precision counts inline comments only.
+
+Both configs ran the same models (`factory/glm-5.3` investigator,
+`glm-5.3-flash` validator, Vera off) on 38 cases × 2 reps, at the same time:
+
+| config | defects reported | inline TP | inline FP | clean runs with an inline comment | uncertain verdicts | median wall s | total cost |
+|---|---|---|---|---|---|---|---|
+| P0-cliproxy-glm (main before this change) | 52/66 | 50 | 31 | 2 of 16 | 1 | 120 | $1.28 |
+| P1-cliproxy-glm (recall and precision changes) | 54/66 | 45 | 18 | 1 of 16 | 6 | 139 | $1.38 |
+
+The changes measured are: a soft deadline that keeps a reserve for a
+low-effort wrap-up turn, a recall-first investigator method, the validator
+seeing the PR's stated intent, and `review.inline_min_severity: medium`.
+Inline false positives fall by 42 % (31 -> 18) and inline precision rises
+from 62 % to 71 %, while two more defects are reported overall. The price
+is 5 defects that move from inline comments to the summary because they
+were rated low. Three of P1's uncertain verdicts were malformed
+`submit_verdict` calls with no `validation_status`; since then a verdict
+that does not parse is returned once for a corrected submission, so that
+loss is not in these numbers.
+
+An earlier engine line showed where most of the recall comes from: run
+with a placeholder title, the same engine reported 46 of 66 and with the
+commit's message 54 of 66, and its clean-commit comments fell from 4 of 16
+to 1 of 16. Reviews without a stated purpose understate any engine.
+
 ## Opt-in web search
 
 One paired run on five synthetic public cases used GLM `glm-5.3` as investigator

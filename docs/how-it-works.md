@@ -48,9 +48,12 @@ capacity reserved; planning and synthesis have no web access. See
 
 **Validate.** Candidates are first collapsed (same file, overlapping lines,
 same `defect_key`), then each one is given to a validator agent that starts
-from an empty conversation: it sees the claim and the diff, has the same
-tools, and must re-establish the defect from the code before returning
-`accepted`. By default the validator uses the investigator's route, so a
+from an empty conversation: it sees the claim, the diff and the PR's title
+and description (as untrusted text), has the same tools, and must
+re-establish the defect from the code before returning `accepted`. A
+finding that only restates the change the PR says it intends is rejected;
+a claim that the intent is implemented wrongly is not. A verdict that does
+not parse is returned to the validator once for a corrected submission. By default the validator uses the investigator's route, so a
 single configured model still gets an independent second look; configure
 `models.validator` to use a different model. Only `accepted` findings are
 published. `uncertain` findings stay in the report and are listed in the
@@ -61,7 +64,9 @@ successful alternative for that role for the remainder of the run.
 
 **Reconcile and publish.** Inline comments require the finding to sit on a
 head-side line of a diff hunk; other accepted findings go into the summary
-under "Findings outside the diff". Inline publication and the summary
+under "Findings outside the diff". Accepted findings below
+`review.inline_min_severity` (default `medium`) are listed in the summary
+under "Lower-severity findings" instead of posted inline. Inline publication and the summary
 comment are reconciled separately, and the publisher reads existing
 `<!-- revera-id:… -->` markers on the PR before posting, so a summary
 failure never duplicates inline comments on retry. The publisher re-fetches
