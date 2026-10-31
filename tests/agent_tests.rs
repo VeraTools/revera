@@ -461,3 +461,39 @@ async fn slow_turn_at_the_deadline_still_submits() {
         t0.elapsed()
     );
 }
+
+/// A malformed verdict is sent back once with the parse error; the
+/// corrected resubmission is the run's final call.
+#[tokio::test]
+async fn malformed_verdict_gets_one_corrected_resubmission() {
+    let client = Stub {
+        replies: Mutex::new(VecDeque::from(vec![
+            assistant_calls(vec![("submit_findings", json!({"verdict": "accepted"}))]),
+            assistant_calls(vec![(
+                "submit_findings",
+                json!({
+                    "validation_status": "accepted",
+                    "counterevidence_checked": ["a.rs:1"],
+                    "rationale": "seen"
+                }),
+            )]),
+        ])),
+    };
+    let r = revera::agent::run_agent_checked(
+        &client,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &budget(),
+        &revera::pipeline::validate::verdict_terminal_check,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert!(r.repaired, "the first submission was refused and repaired");
+    assert_eq!(
+        r.final_call.unwrap().arguments["validation_status"],
+        "accepted"
+    );
+}

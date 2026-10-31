@@ -1,5 +1,5 @@
 use super::make_client;
-use crate::agent::{AgentBudget, AgentRun, StopReason, run_agent};
+use crate::agent::{AgentBudget, AgentRun, StopReason, run_agent_checked};
 use crate::config::Config;
 use crate::diff::DiffSet;
 use crate::findings::{Finding, ValidationStatus, Verdict};
@@ -31,6 +31,19 @@ fn approved_fix(verdict: &Verdict) -> Option<String> {
     (verdict.validation_status == ValidationStatus::Accepted)
         .then(|| verdict.fix.clone())
         .flatten()
+}
+
+/// Rejects a `submit_verdict` call that does not parse as a verdict, so the
+/// agent loop returns the error to the model for one corrected submission
+/// instead of the candidate ending `uncertain` on a missing field.
+pub fn verdict_terminal_check(args: &serde_json::Value) -> Result<(), String> {
+    serde_json::from_value::<Verdict>(args.clone())
+        .map(|_| ())
+        .map_err(|e| {
+            format!(
+                "submit_verdict arguments are invalid ({e}); resubmit with `validation_status` (accepted, rejected or uncertain), `counterevidence_checked` and `rationale`"
+            )
+        })
 }
 
 /// The PR's stated intent for the validator, so it can tell a defect from
@@ -161,13 +174,14 @@ pub async fn validate_candidates(
                     serde_json::to_string_pretty(&cand).unwrap_or_default()
                 )
             };
-            let run = run_agent(
+            let run = run_agent_checked(
                 client.as_ref(),
                 &system,
                 &user,
                 &tb,
                 &terminal,
                 &agent_budget,
+                &verdict_terminal_check,
             )
             .await;
             (i, run, cand_id, exec_start, queue_ms, false)
@@ -206,49 +220,60 @@ pub async fn validate_candidates(
                 Ok(AgentRun {
                     final_call: Some(call),
                     ..
-                }) => match serde_json::from_value::<Verdict>(call.arguments) {
-                    Ok(v) => {
-                        let approved_fix = approved_fix(&v);
-                        cand.validation_status = Some(v.validation_status);
-                        cand.counterevidence_checked = v.counterevidence_checked;
-                        if let Some(s) = v.severity {
-                            cand.severity = s;
+                }) => {
+                    let keys = call
+                        .arguments
+                        .as_object()
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                        .unwrap_or_else(|| "not an object".into());
+                    match serde_json::from_value::<Verdict>(call.arguments) {
+                        Ok(v) => {
+                            let approved_fix = approved_fix(&v);
+                            cand.validation_status = Some(v.validation_status);
+                            cand.counterevidence_checked = v.counterevidence_checked;
+                            if let Some(s) = v.severity {
+                                cand.severity = s;
+                            }
+                            if let Some(l) = v.start_line {
+                                cand.start_line = l;
+                            }
+                            if let Some(l) = v.end_line {
+                                cand.end_line = Some(l);
+                            }
+                            cand.validated_fix = approved_fix;
+                            if let Some(suggestion) = v.suggestion.as_ref()
+                                && let Some(head) = toolbox.reviewed_head()
+                                && let Ok(Some(bytes)) = crate::git::read_blob(
+                                    &toolbox.repo_root,
+                                    head,
+                                    &cand.file,
+                                    4 * 1024 * 1024,
+                                )
+                                .await
+                                && let Ok(text) = std::str::from_utf8(&bytes)
+                            {
+                                cand.suggestion = crate::findings::checked_suggestion(
+                                    cand, suggestion, diff, text,
+                                );
+                            }
+                            cand.rationale = Some(v.rationale);
+                            if v.validation_status == ValidationStatus::Accepted {
+                                "ok:accepted".to_string()
+                            } else {
+                                "ok".to_string()
+                            }
                         }
-                        if let Some(l) = v.start_line {
-                            cand.start_line = l;
-                        }
-                        if let Some(l) = v.end_line {
-                            cand.end_line = Some(l);
-                        }
-                        cand.validated_fix = approved_fix;
-                        if let Some(suggestion) = v.suggestion.as_ref()
-                            && let Some(head) = toolbox.reviewed_head()
-                            && let Ok(Some(bytes)) = crate::git::read_blob(
-                                &toolbox.repo_root,
-                                head,
-                                &cand.file,
-                                4 * 1024 * 1024,
-                            )
-                            .await
-                            && let Ok(text) = std::str::from_utf8(&bytes)
-                        {
-                            cand.suggestion =
-                                crate::findings::checked_suggestion(cand, suggestion, diff, text);
-                        }
-                        cand.rationale = Some(v.rationale);
-                        if v.validation_status == ValidationStatus::Accepted {
-                            "ok:accepted".to_string()
-                        } else {
-                            "ok".to_string()
+                        Err(e) => {
+                            clean = false;
+                            cand.validation_status = Some(ValidationStatus::Uncertain);
+                            cand.rationale = Some(format!(
+                                "validator returned malformed verdict: {e} (submitted keys: {})",
+                                crate::text::excerpt_bytes(&keys, 200)
+                            ));
+                            "error:malformed verdict".to_string()
                         }
                     }
-                    Err(e) => {
-                        clean = false;
-                        cand.validation_status = Some(ValidationStatus::Uncertain);
-                        cand.rationale = Some(format!("validator returned malformed verdict: {e}"));
-                        "error:malformed verdict".to_string()
-                    }
-                },
+                }
                 Ok(AgentRun {
                     stopped: StopReason::TimeBudget,
                     ..
@@ -315,6 +340,19 @@ pub fn recheck_prompt() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verdict_check_refuses_a_verdict_without_its_status() {
+        let err = super::verdict_terminal_check(&serde_json::json!({"verdict": "accepted"}))
+            .expect_err("missing validation_status must be refused");
+        assert!(err.contains("validation_status"), "{err}");
+        super::verdict_terminal_check(&serde_json::json!({
+            "validation_status": "accepted",
+            "counterevidence_checked": ["a.rs:1"],
+            "rationale": "seen"
+        }))
+        .expect("a complete verdict passes");
+    }
+
     #[test]
     fn validator_intent_carries_title_and_body_or_nothing() {
         use super::pr_intent;
