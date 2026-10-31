@@ -48,10 +48,11 @@ for x in spec["defects"]:
     if len(hits) != 1:
         sys.exit(f"{d}: anchor {x['anchor']!r} in {x['file']} matched {len(hits)} lines")
     n = hits[0]
+    last = len(lines) - (1 if lines[-1] == "" else 0)  # trailing newline
     out.append({
         "file": x["file"],
         "line_min": max(1, n - x.get("before", 2)),
-        "line_max": n + x.get("after", 2),
+        "line_max": min(last, n + x.get("after", 2)),
         "keywords": x["keywords"],
         "class": x.get("class", ""),
     })
@@ -714,7 +715,8 @@ truth "$D" <<'EOF'
   "keywords": ["defer in", "defer inside", "file descriptor", "until the function returns", "too many open files"]}
 ],
  "also_valid": [
-  {"file": "process.go", "keywords": ["empty file", "misalign", "nondeterministic", "non-deterministic"]}
+  {"file": "process.go", "keywords": ["empty file", "misalign", "nondeterministic", "non-deterministic"]},
+  {"file": "process.go", "keywords": ["s.err", "scanner error", "err()", "read error"]}
 ]}
 EOF
 

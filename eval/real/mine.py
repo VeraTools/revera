@@ -47,7 +47,21 @@ MAX_INTRO_FILES = 8
 
 def git(repo, *args):
     return subprocess.run(
-        ["git", "-C", repo, *args], check=True, capture_output=True, text=True
+        # pin the diff header format: a user's diff.noprefix or
+        # diff.mnemonicPrefix would shift the paths the parsers read
+        [
+            "git",
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "-C",
+            repo,
+            *args,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
 
 
@@ -110,16 +124,22 @@ TOKEN_RE = re.compile(r"\w+|[^\s\w]+")
 
 
 def diff_lines(repo, sha, paths):
-    """(removed, added) line texts of `sha`'s -U0 diff for `paths`."""
-    rem, add = [], []
+    """{path: (removed, added)} token lines of `sha`'s -U0 diff for `paths`,
+    keyed by the post-image path (the pre-image one for deletions)."""
+    out, path = {}, None
     for line in git(repo, "show", "-U0", "--format=", sha, "--", *paths).splitlines():
-        if line.startswith(("---", "+++")):
-            continue
-        if line.startswith("-"):
-            rem.append(TOKEN_RE.findall(line[1:]))
-        elif line.startswith("+"):
-            add.append(TOKEN_RE.findall(line[1:]))
-    return rem, add
+        if line.startswith("diff --git "):
+            path = None
+        elif line.startswith("--- "):
+            path = None if line == "--- /dev/null" else line[6:]
+        elif line.startswith("+++ "):
+            if line != "+++ /dev/null":
+                path = line[6:]
+        elif path and line.startswith("-"):
+            out.setdefault(path, ([], []))[0].append(TOKEN_RE.findall(line[1:]))
+        elif path and line.startswith("+"):
+            out.setdefault(path, ([], []))[1].append(TOKEN_RE.findall(line[1:]))
+    return out
 
 
 def best(line, pool):
@@ -163,14 +183,25 @@ def predates(repo, fix, intro, fix_paths, intro_paths):
     were left alone by the introducing commit (compared with the most similar
     line it replaced): the faulty logic is older than `intro`. Lines the
     introducing commit wrote from scratch (no similar replaced line) count
-    as introduced. None when the fix changes no existing line."""
-    frem, fadd = diff_lines(repo, fix, fix_paths)
-    irem, _ = diff_lines(repo, intro, intro_paths)
-    before = [t for ln in irem for t in ln]
-    frem = [ln for ln in frem if any(t.strip() for t in ln)]
-    if not frem:
+    as introduced. Each fixed line is compared only with what the
+    introducing commit replaced in the same file (all of it when the file is
+    not in the introducing diff, e.g. after a rename). None when the fix
+    changes no existing line, including a fix with no reviewable paths."""
+    if not fix_paths:
         return None
-    for line in frem:
+    fix_diff = diff_lines(repo, fix, fix_paths)
+    intro_diff = diff_lines(repo, intro, intro_paths)
+    everything = [t for rem, _ in intro_diff.values() for ln in rem for t in ln]
+    pairs = []
+    for path, (frem, fadd) in fix_diff.items():
+        if path in intro_diff:
+            before = [t for ln in intro_diff[path][0] for t in ln]
+        else:
+            before = everything
+        pairs += [(ln, fadd, before) for ln in frem if any(t.strip() for t in ln)]
+    if not pairs:
+        return None
+    for line, fadd, before in pairs:
         r, after = best(line, fadd)
         by_fix, near = changed(line, after if r >= 0.5 else None)
         same = kept(line, before)

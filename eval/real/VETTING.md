@@ -13,7 +13,7 @@ Keep a candidate only if ALL hold (check with git, e.g. `git -C eval/tmp/mirrors
 3. It is reviewable from the intro diff: the faulty lines are in the intro diff (or the intro diff changes their meaning), and spotting it needs no knowledge of later requirements, upstream API changes, or platform quirks no reviewer could know.
 4. intro diff is at most ~300 changed lines.
 
-Prefer clear, varied defects over many similar ones. Pick at most 8 kept defects for your group. Also pick 2 presumed-clean commits from your repos: small (20-200 changed lines) non-merge source commits that are behaviour changes (feature or fix, not docs/tests/version bumps) and whose changed lines no later commit with fix/bug/regression in the subject modified (check with `git log --format='%h %s' <sha>..HEAD -L` sparingly, or blame at HEAD).
+Prefer clear, varied defects over many similar ones. Pick at most 8 kept defects for your group. Also pick 2 presumed-clean commits from your repos: small (20-200 changed lines) non-merge source commits that are behaviour changes (feature or fix, not docs/tests/version bumps) and whose changed lines no later commit with fix/bug/regression in the subject modified (check with `git log --format='%h %s' <sha>..HEAD -L <start>,<end>:<path>` sparingly, or blame at HEAD).
 
 For each kept defect, give the defect location in the INTRO commit's version of the file (head side of the intro diff): file path, line_min and line_max (a window of at most ~6 lines that contains the faulty line(s)), and 4-6 lowercase keywords a correct review comment would likely contain (mix of the symptom and the mechanism, e.g. ["empty string","falsy","!= null","dropped"]). Verify line numbers with `git show <intro>:<path> | sed -n 'A,Bp'`.
 

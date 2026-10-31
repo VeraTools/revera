@@ -5,12 +5,13 @@
    "line_min": 833,
    "line_max": 835,
    "keywords": [
-    "port",
-    "0",
+    "port=0",
+    "port 0",
+    "port of 0",
     "falsy",
-    "or",
-    "none",
-    "default"
+    "is none",
+    "5000",
+    "ephemeral"
    ]
   }
  ],

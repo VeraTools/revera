@@ -49,7 +49,7 @@ for line in open(RESULTS):
                 row["config"],
                 row["corpus"],
                 str(row["rep"]),
-                str(row.get("diff_lines") or ""),
+                "" if row.get("diff_lines") is None else str(row["diff_lines"]),
             ],
             check=True,
             capture_output=True,

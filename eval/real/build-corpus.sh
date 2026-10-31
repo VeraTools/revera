@@ -7,6 +7,7 @@
 # intro^ (tag `base`) and intro (tag `head`), so the later fix is not in the
 # history a reviewer could read. Clean cases use a commit with no known
 # defect. Truth goes to eval/real/truth/<name>.json, outside the repos.
+# Cases marked "excluded" in cases.json are skipped entirely.
 #
 # Sources are cloned once into eval/tmp/mirrors/ (gitignored).
 set -euo pipefail
@@ -24,6 +25,8 @@ export GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:
 python3 - "$HERE/cases.json" <<'PY' > "$EVAL/tmp/real-cases.tsv"
 import json, sys
 for c in json.load(open(sys.argv[1])):
+    if c.get("excluded"):
+        continue  # vetted out (e.g. an SZZ mislabel): never built or scored
     print("\t".join([c["name"], c["repo"], c["url"], c["intro"], c["subject"]]))
 PY
 
@@ -31,6 +34,8 @@ python3 - "$HERE/cases.json" "$HERE/truth" <<'PY'
 import json, sys
 cases, out = sys.argv[1:3]
 for c in json.load(open(cases)):
+    if c.get("excluded"):
+        continue
     json.dump({"defects": c.get("defects", []), "clean": c.get("clean", False),
                "also_valid": c.get("also_valid", []),
                "source": {"repo": c["url"], "intro": c["intro"], "fix": c.get("fix")}},

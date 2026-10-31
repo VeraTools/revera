@@ -51,9 +51,15 @@ for cfg in order + sorted(set(agg) - set(order)):
     rejected = sum(r.get("rejected", 0) for r in rs)
     uncertain = sum(r.get("uncertain", 0) for r in rs)
     clean_commented = sum(1 for r in rs if is_clean(r) and r["fp"] > 0)
-    clean_inline = sum(1 for r in rs if is_clean(r) and r.get("fp_inline", 0) > 0)
-    tp_inline = sum(r.get("tp_inline", 0) for r in rs)
-    fp_inline = sum(r.get("fp_inline", 0) for r in rs)
+    # rows scored before inline placement was measured carry no inline
+    # fields: show "-" for them rather than a measured-looking zero
+    inline_rs = [r for r in rs if "tp_inline" in r]
+    if inline_rs:
+        clean_inline = sum(1 for r in inline_rs if is_clean(r) and r.get("fp_inline", 0) > 0)
+        tp_inline = sum(r["tp_inline"] for r in inline_rs)
+        fp_inline = sum(r.get("fp_inline", 0) for r in inline_rs)
+    else:
+        clean_inline = tp_inline = fp_inline = "-"
     incomplete = sum(1 for r in rs if r["status"] != "complete")
     walls = [r["wall_ms"] / 1000 for r in rs]
     fv = [r["first_validated_s"] for r in rs if r.get("first_validated_s") is not None]
@@ -78,9 +84,12 @@ for cfg in order + sorted(set(agg) - set(order)):
     print(row)
 
 # Miss attribution and diff-size recall need rows scored with miss_stages
-# (eval/score.py after the funnel landed); older rows are skipped.
+# (eval/score.py after the funnel landed); older rows are skipped. Engines
+# that record no funnel report candidate-less misses as "unattributed".
 STAGES = [
     "never_proposed",
+    "unattributed",
+    "matched_other_defect",
     "merged_away",
     "severity_dropped",
     "already_tracked",

@@ -40,7 +40,24 @@ for c in $CORPORA; do
     fi
 done
 
+# credentials: exactly the variables the selected configs reference, as
+# ${VAR} interpolations or api_key_env names
+needed=()
+for cfg in $CONFIGS; do
+    f="$HERE/configs/$cfg.yaml"
+    if [ ! -f "$f" ]; then
+        echo "unknown config: $cfg" >&2
+        exit 1
+    fi
+    while read -r v; do
+        in_set "$v" "${needed[*]:-}" || needed+=("$v")
+    done < <(grep -v '^[[:space:]]*#' "$f" |
+        grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}|api_key_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' |
+        sed -E 's/^\$\{//; s/\}$//; s/^api_key_env:[[:space:]]*//')
+done
+
 if [ "${RUN_ALL_DRY_RUN:-0}" = "1" ]; then
+    for v in "${needed[@]}"; do echo "needs: $v"; done
     [ "$build_easy" -eq 1 ] && echo "build: easy"
     [ "$build_hard" -eq 1 ] && echo "build: hard"
     [ "$build_multi" -eq 1 ] && echo "build: multi"
@@ -57,9 +74,7 @@ if [ "${RUN_ALL_DRY_RUN:-0}" = "1" ]; then
 fi
 
 missing=()
-for var in \
-    REVERA_MODEL_BASE_URL REVERA_MODEL_API_KEY \
-    REVERA_EMBEDDING_BASE_URL REVERA_EMBEDDING_API_KEY; do
+for var in "${needed[@]}"; do
     [ -n "${!var:-}" ] || missing+=("$var")
 done
 if [ ${#missing[@]} -gt 0 ]; then
@@ -75,16 +90,21 @@ fi
 [ "$build_real" -eq 1 ] && bash "$HERE/real/build-corpus.sh"
 [ "$build_large" -eq 1 ] && bash "$HERE/large/build-corpus.sh"
 
-# warm index once per corpus (vera enabled configs reuse the copied .vera)
-export VERA_BACKEND=api \
-    EMBEDDING_MODEL_BASE_URL="${REVERA_EMBEDDING_BASE_URL}" \
-    EMBEDDING_MODEL_ID="qwen/qwen3-embedding-8b" \
-    EMBEDDING_MODEL_API_KEY="$REVERA_EMBEDDING_API_KEY"
-for c in $CORPORA; do
-    d="$HERE/corpus/$c"
-    git -C "$d" checkout -q head 2>/dev/null || true
-    (cd "$d" && vera index . >/dev/null 2>&1) || true
-done
+# warm index once per corpus (vera enabled configs reuse the copied .vera);
+# configs with Vera off need no embedding endpoint, so this is optional
+if [ -n "${REVERA_EMBEDDING_BASE_URL:-}" ] && [ -n "${REVERA_EMBEDDING_API_KEY:-}" ]; then
+    export VERA_BACKEND=api \
+        EMBEDDING_MODEL_BASE_URL="${REVERA_EMBEDDING_BASE_URL}" \
+        EMBEDDING_MODEL_ID="qwen/qwen3-embedding-8b" \
+        EMBEDDING_MODEL_API_KEY="$REVERA_EMBEDDING_API_KEY"
+    for c in $CORPORA; do
+        d="$HERE/corpus/$c"
+        git -C "$d" checkout -q head 2>/dev/null || true
+        (cd "$d" && vera index . >/dev/null 2>&1) || true
+    done
+else
+    echo "no embedding endpoint: skipping the warm Vera index" >&2
+fi
 
 jobs_running() { jobs -rp | wc -l; }
 

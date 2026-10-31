@@ -2,8 +2,8 @@
  "defects": [
   {
    "file": "src/utils/url.ts",
-   "line_min": 136,
-   "line_max": 146,
+   "line_min": 138,
+   "line_max": 144,
    "keywords": [
     "first occurrence",
     "first '?'",

@@ -31,13 +31,21 @@ DROP_STAGE = {
 
 def miss_stage(r, defect):
     """Where a missed defect was lost: the validator verdict of a matching
-    candidate, the pre-validation drop reason recorded in stats.funnel, or
-    never_proposed when no candidate matched at all."""
+    candidate, an accepted finding that the matching gave to another defect,
+    the pre-validation drop reason recorded in stats.funnel, or never_proposed
+    when no candidate matched at all. Reports without stats.funnel (engines
+    that do not record pre-validation drops) cannot tell a candidate that was
+    never proposed from one dropped before validation: those are
+    unattributed."""
     for f in r.get("findings", []):
         st = f.get("validation_status")
         if st in ("rejected", "uncertain") and is_tp(f, defect):
             return st
-    for d in (r.get("stats", {}).get("funnel", {}) or {}).get("dropped", []):
+    for f in r.get("findings", []):
+        if f.get("validation_status") == "accepted" and is_tp(f, defect):
+            return "matched_other_defect"
+    funnel = (r.get("stats") or {}).get("funnel")
+    for d in (funnel or {}).get("dropped", []):
         if is_tp(
             {
                 "file": d.get("file"),
@@ -48,7 +56,7 @@ def miss_stage(r, defect):
             defect,
         ):
             return DROP_STAGE.get(d.get("reason"), d.get("reason", "dropped"))
-    return "never_proposed"
+    return "never_proposed" if funnel is not None else "unattributed"
 
 
 def main():
