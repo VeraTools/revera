@@ -462,22 +462,47 @@ async fn slow_turn_at_the_deadline_still_submits() {
     );
 }
 
+/// Records the text of every message each call receives.
+struct Recording {
+    inner: Stub,
+    seen: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for Recording {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let text: Vec<&str> = m.iter().filter_map(|x| x.content.as_deref()).collect();
+        self.seen.lock().unwrap().push(text.join("\n"));
+        self.inner.complete(m, t).await
+    }
+    fn route_label(&self) -> String {
+        "recording".into()
+    }
+}
+
 /// A malformed verdict is sent back once with the parse error; the
 /// corrected resubmission is the run's final call.
 #[tokio::test]
 async fn malformed_verdict_gets_one_corrected_resubmission() {
-    let client = Stub {
-        replies: Mutex::new(VecDeque::from(vec![
-            assistant_calls(vec![("submit_findings", json!({"verdict": "accepted"}))]),
-            assistant_calls(vec![(
-                "submit_findings",
-                json!({
-                    "validation_status": "accepted",
-                    "counterevidence_checked": ["a.rs:1"],
-                    "rationale": "seen"
-                }),
-            )]),
-        ])),
+    let client = Recording {
+        seen: Mutex::new(vec![]),
+        inner: Stub {
+            replies: Mutex::new(VecDeque::from(vec![
+                assistant_calls(vec![("submit_findings", json!({"verdict": "accepted"}))]),
+                assistant_calls(vec![(
+                    "submit_findings",
+                    json!({
+                        "validation_status": "accepted",
+                        "counterevidence_checked": ["a.rs:1"],
+                        "rationale": "seen"
+                    }),
+                )]),
+            ])),
+        },
     };
     let r = revera::agent::run_agent_checked(
         &client,
@@ -495,5 +520,81 @@ async fn malformed_verdict_gets_one_corrected_resubmission() {
     assert_eq!(
         r.final_call.unwrap().arguments["validation_status"],
         "accepted"
+    );
+    // the retry turn carries the parse error that names the missing field
+    let seen = client.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(!seen[0].contains("validation_status"), "{}", seen[0]);
+    assert!(seen[1].contains("validation_status"), "{}", seen[1]);
+}
+
+/// Finishes a research turn just after the soft deadline (inside the hard
+/// budget), then hangs on the wrap-up turn.
+struct LateThenHang {
+    calls: Mutex<u32>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for LateThenHang {
+    async fn complete(
+        &self,
+        _m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        // turn 1 ends just before the soft deadline (1.5 s on a 2 s budget);
+        // turn 2 starts inside it with the 1 s minimum timeout and ends just
+        // after it, so the budget notice follows a successful turn
+        let pause = match n {
+            1 => Some(1450),
+            2 => Some(200),
+            _ => None,
+        };
+        if let Some(ms) = pause {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            return Ok(Completion {
+                message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
+                usage: Usage::default(),
+                model: "stub".into(),
+                latency_ms: 0,
+            });
+        }
+        std::future::pending::<()>().await;
+        unreachable!()
+    }
+    fn route_label(&self) -> String {
+        "late".into()
+    }
+}
+
+/// The notice sent after the soft deadline gets only what is left of the
+/// hard budget, not the extra grace that applies once it is already spent.
+#[tokio::test]
+async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
+    let t0 = std::time::Instant::now();
+    let r = run_agent(
+        &LateThenHang {
+            calls: Mutex::new(0),
+        },
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::TimeBudget);
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(4),
+        "ran {:?} on a 2 s budget",
+        t0.elapsed()
     );
 }

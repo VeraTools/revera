@@ -207,7 +207,9 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 }
                 ReasoningField::Openrouter => {
                     body["reasoning"] = match r.budget_tokens() {
-                        Some(b) => json!({"max_tokens": b}),
+                        Some(b) => json!({
+                            "max_tokens": super::http::capped_budget(Some(b), r.effort(), attempt)
+                        }),
                         None => json!({"effort": self.effort(attempt).as_str()}),
                     };
                 }

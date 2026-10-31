@@ -3557,3 +3557,33 @@ async fn responses_capped_call_sends_the_lower_effort() {
     .unwrap();
     server.verify().await;
 }
+
+/// An explicit thinking budget wins over the effort mapping on ordinary
+/// calls, but the wrap-up cap still lowers it.
+#[tokio::test]
+async fn anthropic_capped_call_lowers_an_explicit_thinking_budget() {
+    let server = MockServer::start().await;
+    for (budget, times) in [(12000u64, 1u64), (2048, 1)] {
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({
+                "thinking": {"type": "enabled", "budget_tokens": budget}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type":"text","text":"ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(times)
+            .mount(&server)
+            .await;
+    }
+    let c = anth_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, Some(12000), ReasoningField::Auto),
+        20000,
+    );
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    c.complete_capped(&[ChatMessage::user("x")], &[], ReasoningEffort::Low)
+        .await
+        .unwrap();
+    server.verify().await;
+}

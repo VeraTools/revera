@@ -238,7 +238,13 @@ pub async fn run_agent_checked(
             )));
         }
 
-        let grace = budget_notice_sent && budget_stop == StopReason::TimeBudget && !soft_timed_out;
+        // the grace allowance is for a notice sent once the hard budget is
+        // already spent; a notice sent between the soft and the hard deadline
+        // gets only what is left of the budget, so the run never outlives it
+        let grace = budget_notice_sent
+            && budget_stop == StopReason::TimeBudget
+            && !soft_timed_out
+            && start.elapsed() >= total;
         let limit = if budget_notice_sent {
             left(grace)
         } else {

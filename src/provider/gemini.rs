@@ -246,9 +246,7 @@ impl ProtocolAdapter for GeminiAdapter {
                 // thinking budget counts toward maxOutputTokens — reconcile
                 // like anthropic: clamp to max-1024 headroom, raise the cap
                 // when the budget leaves too little room for the answer
-                let b = r
-                    .budget_tokens()
-                    .unwrap_or_else(|| self.effort(attempt).budget())
+                let b = super::http::capped_budget(r.budget_tokens(), r.effort(), attempt)
                     .min(max_out.saturating_sub(1024));
                 if max_out <= b + 1024 {
                     effective_max_out = b + max_out;

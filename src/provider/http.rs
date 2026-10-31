@@ -67,6 +67,21 @@ pub fn capped_effort(requested: ReasoningEffort, attempt: &AttemptState) -> Reas
     }
 }
 
+/// Thinking-token budget after applying `attempt.reasoning_cap`. An explicit
+/// `budget_tokens` wins over the effort mapping, but a cap still lowers it,
+/// so a capped call (the agent's wrap-up turn) is cheaper on budget routes too.
+pub fn capped_budget(
+    explicit: Option<u64>,
+    requested: ReasoningEffort,
+    attempt: &AttemptState,
+) -> u64 {
+    match (explicit, attempt.reasoning_cap) {
+        (Some(b), Some(cap)) => b.min(cap.budget()),
+        (Some(b), None) => b,
+        (None, _) => capped_effort(requested, attempt).budget(),
+    }
+}
+
 /// What the adapter asks the transport to do with a response.
 pub enum Parse {
     /// Successfully parsed assistant message + token usage.
