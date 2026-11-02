@@ -446,10 +446,11 @@ pub async fn run_agent_checked(
         let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
         let tool_limit = soft_left();
-        if tool_limit.is_zero() {
-            // A successful late turn can return tool calls after the hard
-            // deadline. Account for the batch without starting more work,
-            // then send its budget notice on the next iteration.
+        if tool_limit.is_zero() || start.elapsed() >= soft {
+            // A successful late turn can return tool calls after the soft or
+            // hard deadline. Running them could spend the reserve meant for
+            // the wrap-up turn, so account for the batch without starting
+            // more work and send the budget notice on the next iteration.
             for c in &msg.tool_calls {
                 messages.push(ChatMessage::tool(
                     c.id.clone(),

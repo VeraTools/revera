@@ -55,6 +55,8 @@ def git(repo, *args):
             "diff.noprefix=false",
             "-c",
             "diff.mnemonicPrefix=false",
+            "-c",
+            "core.quotepath=false",
             "-C",
             repo,
             *args,
@@ -62,6 +64,8 @@ def git(repo, *args):
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout
 
 

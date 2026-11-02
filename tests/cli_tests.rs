@@ -268,7 +268,8 @@ fn twice_blank_validator_rationale_is_uncertain() {
     assert!(
         report["findings"][0]["rationale"]
             .as_str()
-            .is_some_and(|r| r.starts_with("validator returned malformed verdict: ")),
+            .is_some_and(|r| r.starts_with("validator returned malformed verdict: ")
+                && r.contains("submit_verdict has no `rationale`")),
         "{report}"
     );
     assert_eq!(report["stats"]["accepted"], 0);

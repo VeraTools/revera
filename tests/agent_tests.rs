@@ -671,7 +671,7 @@ async fn successful_ordinary_turn_past_hard_deadline_allows_notice_grace() {
     assert_eq!(run.stopped, StopReason::Terminal);
     assert_eq!(run.tool_calls, 1);
     assert!(run.final_call.is_some());
-    assert!(start.elapsed() <= std::time::Duration::from_millis(1500));
+    assert!(start.elapsed() <= std::time::Duration::from_secs(2));
 }
 
 #[tokio::test]

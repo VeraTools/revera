@@ -48,7 +48,12 @@ def main():
         row = json.loads(line)
         report = args.reports / f"{row['config']}-{row['corpus']}-{row['rep']}.json"
         truth = truth_for(row["corpus"])
-        if row["config"] in args.configs and report.is_file() and truth:
+        if (
+            row["config"] in args.configs
+            and row.get("status") != "failed"
+            and report.is_file()
+            and truth
+        ):
             new = subprocess.run(
                 [
                     sys.executable,

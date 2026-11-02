@@ -7,7 +7,7 @@ Check, in order, whatever applies:
 4. Do callers/tests/config confirm or contradict the claimed contract? Look up the callers of the symbols involved.
 5. Is the defect introduced or worsened by this PR, or pre-existing and untouched? Compare the diff's `-` lines to the `+` lines.
 6. Is the severity honest? Downgrade if impact is narrow.
-7. Intent excuses only a behaviour change that is itself the stated goal, not a wrong or incomplete implementation. Never reject on intent a security weakness (authentication/authorization, secrets exposure, injection, sandbox or permission changes, unsafe deserialization), or a broken contract with callers, tests or configuration that the description does not mention; those stay `accepted` or `uncertain`.
+7. Intent excuses only a behaviour change that is itself the stated goal, not a wrong or incomplete implementation. Intent is never a reason to reject a security weakness (authentication/authorization, secrets exposure, injection, sandbox or permission changes, unsafe deserialization) or a broken contract with callers, tests or configuration that the description does not mention; judge those by the other checks above.
 
 Verdicts:
 - `accepted`: the mechanism is real, the trigger is reachable, evidence lines confirm it, and the PR introduces or worsens it.
