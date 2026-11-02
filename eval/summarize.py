@@ -54,12 +54,17 @@ for cfg in order + sorted(set(agg) - set(order)):
     # rows scored before inline placement was measured carry no inline
     # fields: show "-" for them rather than a measured-looking zero
     inline_rs = [r for r in rs if "tp_inline" in r]
+    comment_rs = [r for r in rs if "inline_comments" in r]
+    clean_inline = (
+        sum(1 for r in comment_rs if is_clean(r) and r["inline_comments"] > 0)
+        if comment_rs
+        else "-"
+    )
     if inline_rs:
-        clean_inline = sum(1 for r in inline_rs if is_clean(r) and r.get("fp_inline", 0) > 0)
         tp_inline = sum(r["tp_inline"] for r in inline_rs)
         fp_inline = sum(r.get("fp_inline", 0) for r in inline_rs)
     else:
-        clean_inline = tp_inline = fp_inline = "-"
+        tp_inline = fp_inline = "-"
     incomplete = sum(1 for r in rs if r["status"] != "complete")
     walls = [r["wall_ms"] / 1000 for r in rs]
     fv = [r["first_validated_s"] for r in rs if r.get("first_validated_s") is not None]

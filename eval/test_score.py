@@ -118,6 +118,34 @@ class ScoreTests(unittest.TestCase):
         row = score_report([f], [comment(f)], truth)
         self.assertEqual((row["fp"], row["extra_valid"]), (1, 0))
 
+    def test_clean_inline_metric_counts_actual_comments_not_false_positives(self):
+        f = finding("typeof handler")
+        truth = {
+            "clean": True,
+            "defects": [],
+            "also_valid": [{"file": f["file"], "keywords": ["typeof handler"]}],
+        }
+        row = score_report([f], [comment(f)], truth)
+        self.assertEqual((row["inline_comments"], row["fp_inline"]), (1, 0))
+        legacy = {k: v for k, v in row.items() if k != "inline_comments"}
+        legacy["config"] = "legacy"
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results.jsonl"
+            results.write_text(json.dumps(row) + "\n" + json.dumps(legacy) + "\n")
+            summary = subprocess.check_output(
+                [sys.executable, str(HERE / "summarize.py"), str(results)], text=True
+            )
+        lines = summary.splitlines()
+        headers = [h.strip() for h in lines[0].split("|")[1:-1]]
+        cells = {
+            values[0]: dict(zip(headers, values, strict=True))
+            for line in lines[2:4]
+            if (values := [v.strip() for v in line.split("|")[1:-1]])
+        }
+        self.assertEqual(cells["T"]["clean-PR inline"], "1")
+        self.assertEqual(cells["T"]["inline FP"], "0")
+        self.assertEqual(cells["legacy"]["clean-PR inline"], "-")
+
 
 if __name__ == "__main__":
     unittest.main()

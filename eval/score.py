@@ -197,6 +197,7 @@ def main():
         "fn": fn,
         "tp_inline": tp_inline,
         "fp_inline": fp_inline,
+        "inline_comments": len(r.get("plan", {}).get("inline", [])),
         "rejected": rejected,
         "uncertain": uncertain,
         "requests": led.get("requests", 0),
