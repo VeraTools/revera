@@ -190,24 +190,21 @@ pub async fn run_agent_checked(
         .clamp(Duration::from_secs(10), Duration::from_secs(90))
         .min(total / 4);
     let soft = total - reserve;
-    // set when an ordinary turn hit the soft deadline: its wrap-up turn gets
-    // only the reserve, never the extra grace, so a hung provider still ends
-    // at the hard deadline
-    let mut soft_timed_out = false;
+    // Once ordinary work starts, crossing the soft deadline (even in a
+    // successful turn) gets only the reserve, never hard-budget grace.
+    let mut ordinary_work_started = false;
+    let mut hard_notice_grace = false;
     let wrap_up = |name: &str| {
         ChatMessage::user(format!(
             "Budget exhausted; call {name} now with what you have"
         ))
     };
-    // hard cap on any single await: the remaining budget; only the reply to
-    // a time-budget notice gets a bounded grace allowance
-    let left = |grace: bool| {
-        let rem = total.saturating_sub(start.elapsed());
-        if grace {
-            rem.max(TERMINAL_GRACE)
-        } else {
-            rem.max(Duration::from_secs(1))
-        }
+    let hard_left = || total.saturating_sub(start.elapsed());
+    // The soft minimum must never extend an await beyond the hard deadline.
+    let soft_left = || {
+        soft.saturating_sub(start.elapsed())
+            .max(Duration::from_secs(1))
+            .min(hard_left())
     };
 
     // a tool-budget stop gets one reminder only while a useful reply fits
@@ -218,6 +215,7 @@ pub async fn run_agent_checked(
         let tools_up = tool_calls >= budget.max_tool_calls;
         if (time_up || tools_up) && !budget_notice_sent {
             budget_notice_sent = true;
+            hard_notice_grace = time_up && start.elapsed() >= total && !ordinary_work_started;
             budget_stop = if time_up {
                 StopReason::TimeBudget
             } else {
@@ -241,16 +239,25 @@ pub async fn run_agent_checked(
         // the grace allowance is for a notice sent once the hard budget is
         // already spent; a notice sent between the soft and the hard deadline
         // gets only what is left of the budget, so the run never outlives it
-        let grace = budget_notice_sent
-            && budget_stop == StopReason::TimeBudget
-            && !soft_timed_out
-            && start.elapsed() >= total;
         let limit = if budget_notice_sent {
-            left(grace)
+            if hard_notice_grace {
+                TERMINAL_GRACE
+            } else {
+                hard_left()
+            }
         } else {
-            soft.saturating_sub(start.elapsed())
-                .max(Duration::from_secs(1))
+            ordinary_work_started = true;
+            soft_left()
         };
+        if limit.is_zero() {
+            return Ok(AgentRun {
+                final_call: None,
+                transcript_len: messages.len(),
+                tool_calls,
+                stopped: StopReason::TimeBudget,
+                repaired,
+            });
+        }
         // after the notice only the terminal tool is offered; some models
         // keep calling research tools while any are available
         let turn_specs = if budget_notice_sent {
@@ -284,7 +291,6 @@ pub async fn run_agent_checked(
                 tracing::warn!("model request hit the soft deadline; requesting wrap-up");
                 budget_notice_sent = true;
                 budget_stop = StopReason::TimeBudget;
-                soft_timed_out = true;
                 messages.push(wrap_up(&terminal_tool.name));
                 continue;
             }
@@ -439,9 +445,16 @@ pub async fn run_agent_checked(
         // tool results so the transcript stays valid for the API
         let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
-        let tool_limit = soft
-            .saturating_sub(start.elapsed())
-            .max(Duration::from_secs(1));
+        let tool_limit = soft_left();
+        if tool_limit.is_zero() {
+            return Ok(AgentRun {
+                final_call: None,
+                transcript_len: messages.len(),
+                tool_calls,
+                stopped: StopReason::TimeBudget,
+                repaired,
+            });
+        }
         let results = match tokio::time::timeout(tool_limit, run_tool_calls(toolbox, exec)).await {
             Ok(r) => r,
             Err(_) => {
@@ -458,7 +471,6 @@ pub async fn run_agent_checked(
                 tool_calls += exec.len() as u32;
                 budget_notice_sent = true;
                 budget_stop = StopReason::TimeBudget;
-                soft_timed_out = true;
                 messages.push(wrap_up(&terminal_tool.name));
                 continue;
             }

@@ -593,8 +593,77 @@ async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
     .unwrap();
     assert_eq!(r.stopped, StopReason::TimeBudget);
     assert!(
-        t0.elapsed() < std::time::Duration::from_secs(4),
+        t0.elapsed() <= std::time::Duration::from_millis(2500),
         "ran {:?} on a 2 s budget",
         t0.elapsed()
     );
+}
+
+/// A provider future can finish after the deadline without yielding to the
+/// timer. Its successful ordinary turn must not enable hard-budget grace.
+struct BlockingThenHang;
+
+#[async_trait::async_trait]
+impl ModelClient for BlockingThenHang {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        if m.len() == 2 {
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            return Ok(Completion {
+                message: assistant_text("still researching"),
+                usage: Usage::default(),
+                model: "blocking".into(),
+                latency_ms: 0,
+            });
+        }
+        std::future::pending().await
+    }
+
+    fn route_label(&self) -> String {
+        "blocking".into()
+    }
+}
+
+#[tokio::test]
+async fn successful_ordinary_turn_past_hard_deadline_does_not_enable_grace() {
+    let start = std::time::Instant::now();
+    let run = run_agent(
+        &BlockingThenHang,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::TimeBudget);
+    assert!(start.elapsed() <= std::time::Duration::from_millis(1500));
+}
+
+#[tokio::test]
+async fn already_spent_hard_budget_still_allows_one_grace_submission() {
+    let stub = Stub {
+        replies: Mutex::new(VecDeque::new()),
+    };
+    let run = run_agent(
+        &stub,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
 }
