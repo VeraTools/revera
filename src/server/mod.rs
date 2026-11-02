@@ -204,15 +204,31 @@ impl Server {
             .is_some_and(|j| j.id == job.id);
         let mut skipped = false;
         if accepted && !matches!(job.kind, events::Kind::Remove) {
-            if let Some(previous) = previous
-                && let Err(e) = self
-                    .transition(&previous, "cancelled", Some("superseded".into()))
+            let reason = if matches!(job.kind, events::Kind::Review { .. }) {
+                format!(
+                    "superseded by {}",
+                    job.head().chars().take(7).collect::<String>()
+                )
+            } else {
+                "superseded".into()
+            };
+            let running = queue
+                .running
+                .get(&job.key())
+                .filter(|running| {
+                    matches!(job.kind, events::Kind::Review { .. }) && *running.cancel.borrow()
+                })
+                .map(|running| running.job.clone());
+            for previous in previous.into_iter().chain(running) {
+                if let Err(e) = self
+                    .transition(&previous, "cancelled", Some(reason.clone()))
                     .await
-            {
-                tracing::warn!(
-                    "job metadata: {}",
-                    crate::redact::diagnostic(&e.to_string())
-                );
+                {
+                    tracing::warn!(
+                        "job metadata: {}",
+                        crate::redact::diagnostic(&e.to_string())
+                    );
+                }
             }
             let mut summary = dashboard::JobSummary::queued(&job);
             if self.config_yaml().is_ok_and(|yaml| yaml.is_none()) {
