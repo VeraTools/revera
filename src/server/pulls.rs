@@ -29,6 +29,7 @@ pub(super) struct PullSummary {
     head_sha: String,
     head_ref: String,
     base_ref: String,
+    base_sha: String,
     fork: bool,
     created_at: String,
     updated_at: String,
@@ -61,6 +62,7 @@ impl PullSummary {
             head_sha: text(&pr["head"]["sha"]),
             head_ref: text(&pr["head"]["ref"]),
             base_ref: text(&pr["base"]["ref"]),
+            base_sha: text(&pr["base"]["sha"]),
             fork,
             created_at: text(&pr["created_at"]),
             updated_at: text(&pr["updated_at"]),
@@ -83,6 +85,9 @@ pub(super) struct Cache {
     repos: BTreeMap<u64, RepoPulls>,
     // Only GitHub data is cached: jobs, fixes and policy are joined live on each GET.
     details: BTreeMap<(u64, u64), (Instant, Value)>,
+    generations: BTreeMap<u64, u64>,
+    // Webhook observations made while a listing is in flight, including closes.
+    changes: BTreeMap<(u64, u64), (u64, Option<PullSummary>)>,
 }
 
 impl Cache {
@@ -99,15 +104,75 @@ impl Cache {
             .and_then(|times| times.into_iter().min())
     }
 
+    #[cfg(test)]
     pub(super) fn listing(&mut self, repo: &Repo, prs: &[Value]) {
+        self.listing_since(repo, prs, self.generation(repo.id));
+    }
+
+    pub(super) fn generation(&self, repo: u64) -> u64 {
+        self.generations.get(&repo).copied().unwrap_or_default()
+    }
+
+    fn invalidate(&mut self, repo: u64) -> u64 {
+        let generation = self.generations.entry(repo).or_default();
+        *generation += 1;
+        *generation
+    }
+
+    pub(super) fn current(&self, job: &Job) -> bool {
+        self.repos.get(&job.repo.id).is_some_and(|repo| {
+            repo.pulls.iter().any(|pull| {
+                pull.number == job.key().1
+                    && pull.head_sha == job.head()
+                    && pull.base_ref == job.base_ref()
+            })
+        })
+    }
+
+    pub(super) fn listing_since(&mut self, repo: &Repo, prs: &[Value], generation: u64) {
+        let mut pulls: BTreeMap<_, _> = prs
+            .iter()
+            .filter(|pr| pr["state"] != "closed")
+            .filter_map(|pr| PullSummary::parse(repo, pr))
+            .map(|pull| (pull.number, pull))
+            .collect();
+        if let Some(cached) = self.repos.get(&repo.id) {
+            for pull in &cached.pulls {
+                if pulls
+                    .get(&pull.number)
+                    .is_some_and(|listed| pull.updated_at > listed.updated_at)
+                {
+                    pulls.insert(pull.number, pull.clone());
+                }
+            }
+        }
+        for ((id, number), (at, pull)) in &self.changes {
+            if *id == repo.id && *at > generation {
+                match pull {
+                    Some(pull) => {
+                        if pulls
+                            .get(number)
+                            // GitHub timestamps have second precision: on a tie the
+                            // change observed during the listing wins.
+                            .is_none_or(|listed| pull.updated_at >= listed.updated_at)
+                        {
+                            pulls.insert(*number, pull.clone());
+                        }
+                    }
+                    None => {
+                        pulls.remove(number);
+                    }
+                }
+            }
+        }
+        self.changes
+            .retain(|(id, _), (at, _)| *id != repo.id || *at > generation);
+        self.invalidate(repo.id);
+        self.details.retain(|(id, _), _| *id != repo.id);
         self.repos.insert(
             repo.id,
             RepoPulls {
-                pulls: prs
-                    .iter()
-                    .filter(|pr| pr["state"] != "closed")
-                    .filter_map(|pr| PullSummary::parse(repo, pr))
-                    .collect(),
+                pulls: pulls.into_values().collect(),
                 refreshed_at: chrono::Utc::now().to_rfc3339(),
             },
         );
@@ -139,26 +204,40 @@ impl Cache {
             return;
         };
         self.details.remove(&(repo.id, pull.number));
+        let generation = self.invalidate(repo.id);
+        let open = action != "closed" && payload["pull_request"]["state"] != "closed";
+        self.changes.insert(
+            (repo.id, pull.number),
+            (generation, open.then(|| pull.clone())),
+        );
         // an unlisted repository waits for its first full listing; one
         // upserted PR would otherwise pass for the whole open set
         let Some(cached) = self.repos.get_mut(&repo.id) else {
             return;
         };
         cached.pulls.retain(|pr| pr.number != pull.number);
-        if action != "closed" && payload["pull_request"]["state"] != "closed" {
+        if open {
             cached.pulls.push(pull);
         }
         cached.refreshed_at = chrono::Utc::now().to_rfc3339();
     }
 
     pub(super) fn remove_repo(&mut self, repo_id: u64) {
+        self.invalidate(repo_id);
         self.repos.remove(&repo_id);
         self.details.retain(|(id, _), _| *id != repo_id);
+        self.changes.retain(|(id, _), _| *id != repo_id);
     }
 
     pub(super) fn retain_repos(&mut self, ids: &BTreeSet<u64>) {
+        for repo in self.generations.keys().copied().collect::<Vec<_>>() {
+            if !ids.contains(&repo) {
+                self.invalidate(repo);
+            }
+        }
         self.repos.retain(|id, _| ids.contains(id));
         self.details.retain(|(id, _), _| ids.contains(id));
+        self.changes.retain(|(id, _), _| ids.contains(id));
     }
 }
 
@@ -209,11 +288,12 @@ fn jobs_for<'a>(
     jobs
 }
 
-fn review(jobs: &[JobSummary], head: &str) -> Value {
+fn review(jobs: &[JobSummary], head: &str, base_ref: &str) -> Value {
     let reviews: Vec<_> = jobs.iter().filter(|job| job.kind == "review").collect();
     let latest = reviews.first().map(|j| {
         json!({
             "id": j.id, "status": j.status, "mode": j.mode, "head_sha": j.head_sha,
+            "base_ref": j.base_ref,
             "findings": j.findings, "finished_at": j.finished_at, "queued_at": j.queued_at,
         })
     });
@@ -221,7 +301,7 @@ fn review(jobs: &[JobSummary], head: &str) -> Value {
     let state = if active.is_some() {
         "reviewing"
     } else if let Some(job) = reviews.first() {
-        if job.head_sha.as_deref() != Some(head) {
+        if job.head_sha.as_deref() != Some(head) || job.base_ref.as_deref() != Some(base_ref) {
             "outdated"
         } else {
             match job.status.as_str() {
@@ -302,6 +382,7 @@ pub(super) async fn inbox(State(server): State<Arc<Server>>) -> Json<Value> {
                     pull.number,
                 ),
                 &pull.head_sha,
+                &pull.base_ref,
             );
             value
         })
@@ -314,7 +395,7 @@ query PullDetail($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       number title body url state isDraft merged isCrossRepository createdAt updatedAt headRefName
-      baseRefName headRefOid additions deletions changedFiles reviewDecision
+      baseRefName baseRefOid headRefOid additions deletions changedFiles reviewDecision
       author { login __typename }
       labels(first: 20) { totalCount nodes { name color } }
       comments(first: 100) { totalCount nodes { id author { login __typename } body createdAt url } }
@@ -369,6 +450,7 @@ fn map_detail(pr: &Value, repo: &Repo, bot: &str) -> Value {
         "draft": pr["isDraft"], "merged": pr["merged"], "fork": pr["isCrossRepository"].as_bool().unwrap_or(false),
         "created_at": pr["createdAt"], "updated_at": pr["updatedAt"],
         "head_ref": pr["headRefName"], "base_ref": pr["baseRefName"], "head_sha": pr["headRefOid"],
+        "base_sha": pr["baseRefOid"],
         "additions": pr["additions"], "deletions": pr["deletions"], "changed_files": pr["changedFiles"],
         "review_decision": pr["reviewDecision"], "author": author(&pr["author"], bot),
         "labels": nodes(&pr["labels"]).iter().map(|l| json!({"name": l["name"], "color": l["color"]})).collect::<Vec<_>>(),
@@ -390,7 +472,10 @@ pub(super) async fn detail(
     if !allowed(&server, &app, &repo).await {
         return Err(missing());
     }
-    let cached = server.pulls.lock().unwrap().detail((repo.id, number));
+    let (cached, generation) = {
+        let mut cache = server.pulls.lock().unwrap();
+        (cache.detail((repo.id, number)), cache.generation(repo.id))
+    };
     let mut value = if let Some(value) = cached {
         value
     } else {
@@ -428,18 +513,22 @@ pub(super) async fn detail(
         }
         let mut value = map_detail(pr, &repo, &app.slug);
         crate::redact::json(&mut value);
-        server
-            .pulls
-            .lock()
-            .unwrap()
-            .details
-            .insert((repo.id, number), (Instant::now(), value.clone()));
+        let mut cache = server.pulls.lock().unwrap();
+        if cache.generation(repo.id) == generation {
+            cache
+                .details
+                .insert((repo.id, number), (Instant::now(), value.clone()));
+        }
         value
     };
     {
         let dashboard = server.dashboard.lock().await;
         let jobs = jobs_for(dashboard.jobs.values(), repo.id, number);
-        value["review"] = review(&jobs, value["head_sha"].as_str().unwrap_or(""));
+        value["review"] = review(
+            &jobs,
+            value["head_sha"].as_str().unwrap_or(""),
+            value["base_ref"].as_str().unwrap_or(""),
+        );
         value["jobs"] = json!(jobs);
         value["trigger"] = json!(dashboard.preferences.trigger(&repo.full_name));
         value["mode"] = json!(dashboard.preferences.mode(&repo.full_name));
@@ -448,11 +537,15 @@ pub(super) async fn detail(
     Ok(output(value))
 }
 
-pub(super) async fn enqueue_review(server: &Server, job: Job) -> Result<String, api::Error> {
+pub(super) async fn enqueue_review(
+    server: &Server,
+    job: Job,
+    admission: &super::queue::ReviewAdmission,
+) -> Result<String, api::Error> {
     let id = job.id.clone();
     // Forced reviews always insert this ID, even behind a same-head running review;
     // they replace (and cancel) a pending review rather than coalescing into its ID.
-    server.enqueue_inner(job, None).await;
+    server.enqueue_inner(job, Some(admission)).await;
     // Setup-skipped requests still have a real stored job. Rejected admission or a
     // metadata write failure must not return an ID that the dashboard cannot load.
     if !server.dashboard.lock().await.jobs.contains_key(&id) {
@@ -467,6 +560,99 @@ pub(super) async fn enqueue_review(server: &Server, job: Job) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_listing_wins_over_intervening_older_webhook() {
+        let repo = Repo::parse(&json!({"id": 1, "full_name": "owner/repo"}), 9).unwrap();
+        let mut cache = Cache::default();
+        cache.listing(&repo, &[]);
+        let generation = cache.generation(repo.id);
+        cache.webhook(
+            &json!({"action": "synchronize", "repository": {"id": 1, "full_name": "owner/repo"},
+            "installation": {"id": 9}, "pull_request": {"number": 7, "state": "open",
+                "updated_at": "2026-10-01T00:00:00Z", "head": {"sha": "older-webhook"}}}),
+        );
+        let listed = json!({"number": 7, "state": "open", "updated_at": "2026-10-02T00:00:00Z",
+            "head": {"sha": "newer-listing"}});
+        cache.listing_since(&repo, &[listed], generation);
+        assert_eq!(cache.repos[&repo.id].pulls[0].head_sha, "newer-listing");
+    }
+
+    #[test]
+    fn same_second_webhook_wins_over_listing() {
+        let repo = Repo::parse(&json!({"id": 1, "full_name": "owner/repo"}), 9).unwrap();
+        let mut cache = Cache::default();
+        cache.listing(&repo, &[]);
+        let generation = cache.generation(repo.id);
+        cache.webhook(
+            &json!({"action": "edited", "repository": {"id": 1, "full_name": "owner/repo"},
+            "installation": {"id": 9}, "pull_request": {"number": 7, "state": "open",
+                "updated_at": "2026-10-01T00:00:00Z", "head": {"sha": "webhook"},
+                "base": {"ref": "release"}}}),
+        );
+        let listed = json!({"number": 7, "state": "open", "updated_at": "2026-10-01T00:00:00Z",
+            "head": {"sha": "listing"}, "base": {"ref": "main"}});
+        cache.listing_since(&repo, &[listed], generation);
+        assert_eq!(cache.repos[&repo.id].pulls[0].head_sha, "webhook");
+        assert_eq!(cache.repos[&repo.id].pulls[0].base_ref, "release");
+    }
+
+    #[test]
+    fn stale_listing_keeps_newer_webhook_and_does_not_resurrect_closed_pulls() {
+        let repo = Repo::parse(&json!({"id": 1, "full_name": "owner/repo"}), 9).unwrap();
+        let old = json!({"number": 7, "state": "open", "updated_at": "2026-10-01T00:00:00Z", "head": {"sha": "old"}});
+        let mut fresh = old.clone();
+        fresh["head"]["sha"] = json!("webhook");
+        fresh["updated_at"] = json!("2026-10-02T00:00:00Z");
+        let mut cache = Cache::default();
+        cache.listing(&repo, std::slice::from_ref(&old));
+        let generation = cache.generation(1);
+        let mut payload = json!({"action": "synchronize", "repository": {"id": 1, "full_name": "owner/repo"},
+            "installation": {"id": 9}, "pull_request": fresh});
+        cache.webhook(&payload);
+        cache.listing_since(&repo, std::slice::from_ref(&old), generation);
+        assert_eq!(cache.repos[&1].pulls[0].head_sha, "webhook");
+        // Timestamp comparison also protects against an eventually consistent
+        // listing fetched after (rather than during) the webhook.
+        cache.listing(&repo, std::slice::from_ref(&old));
+        assert_eq!(cache.repos[&1].pulls[0].head_sha, "webhook");
+        let generation = cache.generation(1);
+        payload["action"] = json!("closed");
+        cache.webhook(&payload);
+        cache.listing_since(&repo, &[old], generation);
+        assert!(cache.repos[&1].pulls.is_empty());
+        let generation = cache.generation(1);
+        payload["action"] = json!("reopened");
+        cache.webhook(&payload);
+        cache.listing_since(&repo, &[], generation);
+        assert_eq!(cache.repos[&1].pulls[0].head_sha, "webhook");
+        cache.listing(&repo, &[]);
+        assert!(
+            cache.repos[&1].pulls.is_empty(),
+            "ordinary listing removal still works"
+        );
+    }
+
+    #[test]
+    fn review_status_is_outdated_on_base_ref_change_but_not_base_sha_drift() {
+        let repo = Repo::parse(&json!({"id": 1, "full_name": "owner/repo"}), 9).unwrap();
+        let job = Job::new(
+            repo,
+            super::super::events::Kind::Review {
+                number: 7,
+                pr: json!({"head": {"sha": "head"}, "base": {"ref": "main", "sha": "old-base"}}),
+                force: false,
+            },
+            "auto",
+        );
+        let mut summary = JobSummary::queued(&job);
+        summary.set_state("complete", None);
+        // Both inbox and detail use this projection; no base SHA participates.
+        assert_eq!(review(&[summary.clone()], "head", "main")["state"], "clean");
+        summary.base_sha = Some("drifted-base".into());
+        assert_eq!(review(&[summary.clone()], "head", "main")["state"], "clean");
+        assert_eq!(review(&[summary], "head", "release")["state"], "outdated");
+    }
 
     #[test]
     fn detail_cache_expires_after_twenty_seconds_and_repo_eviction_clears_both_caches() {

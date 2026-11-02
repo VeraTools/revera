@@ -15,6 +15,7 @@ export interface JobSummary {
   publication: 'github' | 'private';
   repo_id?: number;
   base_sha?: string;
+  base_ref?: string;
   id: string;
   kind: 'review' | 'index';
   repo: string;
@@ -40,6 +41,7 @@ export interface Finding {
   id: string;
   defect_key: string;
   severity: 'high' | 'medium' | 'low';
+  category?: string;
   file: string;
   start_line: number;
   end_line: number;
@@ -63,6 +65,30 @@ export interface Finding {
   html_url?: string | null;
   prompt: string;
 }
+export type PlaybookLimits = {
+  reviewer_max_bytes: number;
+  skill_max_bytes: number;
+  total_max_bytes: number;
+  max_skills: number;
+};
+export type PlaybookReviewer = { builtin: string; override: string | null; effective: string };
+export type PlaybookSkill = {
+  name: string;
+  description: string;
+  builtin: string | null;
+  override: string | null;
+  effective: string;
+  enabled: boolean;
+  custom: boolean;
+};
+export type Playbook = {
+  limits: PlaybookLimits;
+  reviewer: PlaybookReviewer;
+  skills: PlaybookSkill[];
+  total_bytes: number;
+  digest: string;
+  error?: string;
+};
 export interface Diagnostic {
   id: string;
   status: 'rejected' | 'uncertain' | 'unvalidated';
@@ -191,6 +217,7 @@ export interface PullReview {
     status: JobStatus;
     mode: ReviewMode;
     head_sha: string | null;
+    base_ref: string | null;
     findings: JobSummary['findings'];
     finished_at: string | null;
     queued_at: string;
@@ -210,6 +237,7 @@ export interface PullSummary {
   head_sha: string;
   head_ref: string;
   base_ref: string;
+  base_sha: string;
   created_at: string;
   updated_at: string;
   url: string;
@@ -269,6 +297,7 @@ export interface PullDetail {
   updated_at: string;
   head_ref: string;
   base_ref: string;
+  base_sha: string;
   head_sha: string;
   additions: number;
   deletions: number;

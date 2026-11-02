@@ -3,13 +3,15 @@
 # published Action). It is not a template; start from revera.example.yaml.
 review:
   publish: comment
+  # Release PRs are large; omitted files make the review partial.
+  max_diff_bytes: 400000
 models:
   investigator:
     protocol: openai-chat
     base_url: ${REVERA_MODEL_BASE_URL}
     api_key_env: REVERA_MODEL_API_KEY
     model: glm-5.3
-    max_output_tokens: 6000
+    max_output_tokens: 16000
     temperature: 0.2
     reasoning: high
     fallback:
@@ -17,7 +19,7 @@ models:
         base_url: ${REVERA_FALLBACK_BASE_URL}
         api_key_env: REVERA_FALLBACK_API_KEY
         model: factory/glm-5.3
-        max_output_tokens: 6000
+        max_output_tokens: 16000
         temperature: 0.2
         reasoning: high
   validator:
@@ -47,3 +49,8 @@ vera:
     base_url: ${REVERA_EMBEDDING_BASE_URL}
     model: qwen/qwen3-reranker-8b
     api_key_env: REVERA_EMBEDDING_API_KEY
+budget:
+  agent_max_tool_calls: 80
+  agent_max_seconds: 900
+  run_max_seconds: 1800
+  run_max_requests: 250

@@ -4,6 +4,8 @@ use revera::pipeline::anchor::{Placement, anchor};
 
 fn finding(file: &str, key: &str, line: u32, sev: Severity) -> Finding {
     Finding {
+        category: String::new(),
+        duplicate_of: None,
         defect_key: key.into(),
         severity: sev,
         file: file.into(),

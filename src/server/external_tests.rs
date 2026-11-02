@@ -1059,6 +1059,9 @@ assert get('--publish') == 'dry-run' and get('--profile') == 'quick'
 cwd = pathlib.Path.cwd()
 assert cwd == pathlib.Path(get('--repo')) and cwd.parts[-3:] == ('external', '701', 'pull-7')
 assert pathlib.Path(get('--config')).is_file() and not pathlib.Path(get('--config')).is_relative_to(cwd)
+playbook = pathlib.Path(get('--playbook-dir'))
+assert playbook.is_dir() and not playbook.is_relative_to(cwd)
+assert (playbook / 'reviewer.md').read_text() == 'External operator method'
 assert os.environ['REVIEW_API_KEY'] == 'intended-model-key'
 assert os.environ['HOME'] == str(cwd.parent / 'home')
 assert os.environ['XDG_CACHE_HOME'] == str(cwd.parent / 'cache')
@@ -1077,6 +1080,12 @@ pathlib.Path(get('--out')).write_text(json.dumps({'source': 'external', 'status'
         prefix: vec![script.display().to_string()],
     };
     let (data, server) = server(&mock, runner, true).await;
+    crate::fsutil::write_repo_file(
+        data.path(),
+        Path::new("playbook/reviewer.md"),
+        b"External operator method",
+    )
+    .unwrap();
     {
         let mut dashboard = server.dashboard.lock().await;
         dashboard

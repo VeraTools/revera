@@ -78,6 +78,8 @@ async fn scripted_expectation_failure() {
 fn summary_rendering() {
     use revera::findings::{Finding, Severity, ValidationStatus};
     let f = Finding {
+        category: String::new(),
+        duplicate_of: None,
         defect_key: "k".into(),
         severity: Severity::High,
         file: "src/a.rs".into(),
@@ -110,6 +112,8 @@ fn summary_rendering() {
     assert!(md.contains("**[high]** `src/a.rs`:12"));
     assert!(md.contains("Checked: checked callers"));
     let body = revera::report::finding_body(&revera::findings::Finding {
+        category: String::new(),
+        duplicate_of: None,
         defect_key: "k".into(),
         severity: Severity::High,
         file: "src/a.rs".into(),

@@ -216,17 +216,39 @@ impl GitHubApi {
 
     /// Current head sha of a pull request.
     pub async fn get_pull(&self, owner: &str, repo: &str, n: u64) -> Result<String> {
-        let v = self
-            .send_idempotent(self.http.get(format!(
-                "{}/repos/{}/{}/pulls/{}",
-                self.base, owner, repo, n
-            )))
-            .await?;
+        let v = self.pull(owner, repo, n).await?;
         v["head"]["sha"]
             .as_str()
             .filter(|s| crate::git::is_oid(s))
             .map(|s| s.to_string())
             .context("malformed GitHub pull payload: missing head.sha")
+    }
+
+    async fn pull(&self, owner: &str, repo: &str, n: u64) -> Result<Value> {
+        self.send_idempotent(
+            self.http
+                .get(format!("{}/repos/{owner}/{repo}/pulls/{n}", self.base)),
+        )
+        .await
+    }
+
+    /// Publication identity includes the base branch name, not its drifting SHA.
+    pub async fn get_pull_target(
+        &self,
+        owner: &str,
+        repo: &str,
+        n: u64,
+    ) -> Result<(String, String)> {
+        let v = self.pull(owner, repo, n).await?;
+        let head = v["head"]["sha"]
+            .as_str()
+            .filter(|s| crate::git::is_oid(s))
+            .context("malformed GitHub pull payload: missing head.sha")?;
+        let base = v["base"]["ref"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("malformed GitHub pull payload: missing base.ref")?;
+        Ok((head.into(), base.into()))
     }
 
     /// Git Data API helpers for the approved fix controller. Creates are never

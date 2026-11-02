@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.11.0
+
+- Reviews follow a built-in **reviewer playbook**: a method (work out the
+  intent, list every changed behavior, check each against the defect classes,
+  keep going after the first finding), what counts as a defect, severity and
+  evidence rules, and twelve defect-class skills (logic, contracts, state,
+  errors, concurrency, security, filesystem, subprocess, resources, config,
+  tests and docs). The investigator prompt no longer tells the model to keep
+  its search small or to skip documentation defects.
+- Operators can override the playbook: `revera review --playbook-dir <DIR>`
+  (with `--event`, the directory must be outside the checkout), or the App's
+  new **Playbook** page, which edits, resets, disables and adds skills for
+  every review the server runs. The playbook is part of the review identity,
+  so an edit triggers a fresh review instead of reusing an old result.
+- Each finding has a `category` (its defect class), shown in the dashboard.
+  The validator gets that class's checklist with the candidate.
+- `deep` reviews now run five independent passes, each focused on different
+  defect classes, instead of one pass with larger budgets. Each pass gets the
+  normal per-agent budget; the run gets three times the requests and twice
+  the time (at most 50 minutes). `panel.focuses` accepts `general` or
+  comma-separated skill names; `cross-file` and `data` still work.
+- A final check removes a new finding that repeats another one or one already
+  posted on the pull request under different wording, so one defect no longer
+  gets two inline comments. It can only remove findings, and any error keeps
+  them all.
+- The delegated strategy's workers and synthesis step now get repository
+  guidance, the list of already reported findings and `read_skill`.
+- A finding submitted without a title gets one from its claim instead of
+  being dropped.
+- A reviewer running out of time is asked to submit while one more reply
+  still fits, instead of being cut off mid-request and losing everything it
+  found. When its time or tool budget ends, it is asked to list the changed
+  code it did not reach, so the review reports partial coverage instead of
+  looking complete. That list no longer includes things no reviewer here can
+  do, such as running tests or checking other platforms.
+- `eval/prs` scores reviews of real pull requests against defects other
+  reviewers reported and the authors confirmed; results are in
+  `docs/evaluation.md`.
+- The App handles a pull request whose base branch changes: running and
+  queued reviews for the old base are cancelled, auto mode reviews against the
+  new base, mention mode re-queues only a review someone asked for, and the
+  Pull requests page shows the old review as outdated. New commits on the base
+  branch do not count as a change. Publication is skipped if the base branch
+  changed while the review ran.
+- Fixed races between the background check and webhooks: an older pull
+  request listing no longer replaces newer webhook data, a stale background
+  job no longer replaces a newer one or repeats a finished review, a pull
+  request closed while a review was being queued stays closed, and check
+  recovery no longer cancels a check that just started.
+
 ## v0.10.2
 
 - `anthropic` routes use adaptive thinking (`thinking: {type: adaptive}` with

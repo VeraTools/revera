@@ -8,3 +8,6 @@ eval/tmp/
 eval/reports/
 __pycache__/
 eval/corpus-guidance/
+eval/prs/reports/
+eval/prs/results.jsonl.lock
+eval/prs/results.jsonl

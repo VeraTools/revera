@@ -1,6 +1,7 @@
 pub mod anchor;
 pub mod baseline;
 pub mod common;
+pub mod dedup;
 pub mod delegated;
 pub mod panel;
 pub mod validate;
@@ -12,7 +13,7 @@ use common::ReviewRequest;
 
 /// Dispatch on the configured (or --strategy-overridden) strategy.
 pub async fn run(cfg: &Config, req: &ReviewRequest) -> anyhow::Result<(RunReport, ReviewState)> {
-    let strategy = req.strategy_override.unwrap_or(cfg.review.strategy);
+    let strategy = cfg.effective_strategy(req.strategy_override);
     match strategy {
         Strategy::Baseline => baseline::run(cfg, req).await,
         Strategy::Delegated => delegated::run(cfg, req).await,

@@ -147,10 +147,18 @@ pub async fn publish(
         ..Default::default()
     };
 
-    // (1) head-moved check: fail closed
-    let live_head = api.get_pull(owner, repo, ev.number).await?;
-    if live_head != report.head {
-        let reason = format!("head moved {} -> {}", report.head, live_head);
+    // (1) Freshness check: a retarget changes the diff even with the same head.
+    // The reviewed base ref comes from the event, already parsed before the
+    // CLI's base-commit configuration/trust checks. Base SHA drift is harmless.
+    let (live_head, live_base) = api.get_pull_target(owner, repo, ev.number).await?;
+    let moved = if live_head != report.head {
+        Some(format!("head moved {} -> {}", report.head, live_head))
+    } else if live_base != ev.base_ref {
+        Some(format!("base changed {} -> {}", ev.base_ref, live_base))
+    } else {
+        None
+    };
+    if let Some(reason) = moved {
         pubn.skipped_reason = Some(reason.clone());
         report.status = crate::report::RunStatus::Partial;
         crate::report::mark_incomplete_summary(report);

@@ -645,6 +645,7 @@ async fn injectable_child_runs_with_base_config_and_completes_check() {
 profile=standard
 guidance=inherit
 notes=unset
+playbook=unset
 while [ $# -gt 0 ]; do
   case $1 in
     --out) out=$2; shift;;
@@ -653,10 +654,13 @@ while [ $# -gt 0 ]; do
     --profile) profile=$2; shift;;
     --guidance) guidance=$2; shift;;
     --notes-file) [ -f "$2" ] || exit 1; notes=$(cat "$2"); shift;;
+    --playbook-dir) [ "$(cat "$2/reviewer.md")" = 'Server method' ] || exit 1; playbook=$2; shift;;
   esac
   shift
 done
 [ "$profile" = "$EXPECTED_PROFILE" ] || exit 1
+if [ "$profile" = quick ]; then [ "$playbook" = unset ] || exit 1;
+else [ "$playbook" != unset ] || exit 1; fi
 case $profile in
   quick) [ "$guidance" = inherit ] && [ "$notes" = unset ] || exit 1;;
   standard) [ "$guidance" = skills ] && [ "$notes" = 'inspect migrations' ] || exit 1;;
@@ -676,6 +680,14 @@ JSON
             prefix: vec![script.display().to_string()],
         };
         let (data, server) = server(&mock, runner, true).await;
+        if mode != dashboard::Mode::Quick {
+            crate::fsutil::write_repo_file(
+                data.path(),
+                Path::new("playbook/reviewer.md"),
+                b"Server method",
+            )
+            .unwrap();
+        }
         server.dashboard.lock().await.preferences.repos.insert(
             "owner/repo".into(),
             dashboard::RepoPreference {
@@ -2578,5 +2590,10 @@ mod external_tests;
 mod handoff_tests;
 #[path = "installation_tests.rs"]
 mod installation_tests;
+#[path = "pr_races_tests.rs"]
+mod pr_races_tests;
 #[path = "pulls_tests.rs"]
 mod pulls_tests;
+
+#[path = "playbook_tests.rs"]
+mod playbook_tests;

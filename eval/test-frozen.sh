@@ -120,13 +120,22 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        tools = body["tools"]
+        terminal = tools[-1]["function"]["name"]
+        assert terminal in ("submit_verdict", "submit_groups"), terminal
+        if terminal == "submit_groups":
+            assert len(tools) == 1, tools
+            arguments = {"groups": []}
+        else:
+            arguments = {"validation_status": "accepted", "rationale": "r",
+                         "counterevidence_checked": ["src/lib.rs:2"]}
         with open(log, "a") as f:
-            f.write(json.dumps({"path": self.path, "model": body.get("model")}) + "\n")
+            f.write(json.dumps({"path": self.path, "model": body.get("model"),
+                                "terminal": terminal}) + "\n")
         out = json.dumps({"choices": [{"finish_reason": "tool_calls", "message": {
             "role": "assistant", "content": None, "tool_calls": [{
-                "id": "c1", "type": "function", "function": {"name": "submit_verdict",
-                "arguments": json.dumps({"validation_status": "accepted", "rationale": "r",
-                                         "counterevidence_checked": ["src/lib.rs:2"]})}}]}}],
+                "id": "c1", "type": "function", "function": {"name": terminal,
+                "arguments": json.dumps(arguments)}}]}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 2}}).encode()
         self.send_response(200); self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(out))); self.end_headers(); self.wfile.write(out)
@@ -154,7 +163,9 @@ row = json.loads(sys.argv[1])
 reqs = [json.loads(l) for l in open(sys.argv[2])]
 assert row["validator_models"] == ["inherited-model"], row
 assert row["accepted"] == 2 and row["validator_requests"] == 2, row
-assert len(reqs) == 2 and all(q["model"] == "inherited-model" for q in reqs), reqs
+assert len(reqs) == 3 and all(q["model"] == "inherited-model" for q in reqs), reqs
+assert [q["terminal"] for q in reqs].count("submit_verdict") == 2, reqs
+assert reqs[-1]["terminal"] == "submit_groups", reqs
 PY
 
 # malformed truth labels are refused

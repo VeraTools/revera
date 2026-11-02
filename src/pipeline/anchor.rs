@@ -87,5 +87,5 @@ pub fn anchor(
 }
 
 pub fn is_publishable(f: &Finding) -> bool {
-    f.validation_status == Some(ValidationStatus::Accepted)
+    f.validation_status == Some(ValidationStatus::Accepted) && f.duplicate_of.is_none()
 }

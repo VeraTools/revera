@@ -110,6 +110,10 @@ fn obj_schema(props: Value, required: &[&str]) -> Value {
 }
 
 pub fn terminal_submit_findings_spec() -> ToolSpec {
+    submit_findings_spec(&crate::playbook::Playbook::builtin())
+}
+
+pub fn submit_findings_spec(playbook: &crate::playbook::Playbook) -> ToolSpec {
     ToolSpec {
         name: "submit_findings".into(),
         description: "Submit the final candidate findings and finish. Call exactly once.".into(),
@@ -119,6 +123,7 @@ pub fn terminal_submit_findings_spec() -> ToolSpec {
                     "type": "object",
                     "properties": {
                         "defect_key": {"type": "string"},
+                        "category": {"type": "string", "description": format!("Defect class: {}, other", playbook.names().join(", "))},
                         "severity": {"type": "string", "enum": ["high","medium","low"]},
                         "file": {"type": "string"},
                         "start_line": {"type": "integer"},
@@ -172,6 +177,10 @@ pub fn terminal_submit_plan_spec() -> ToolSpec {
 
 /// Delegated-mode worker terminal tool.
 pub fn terminal_submit_worker_result_spec() -> ToolSpec {
+    submit_worker_result_spec(&crate::playbook::Playbook::builtin())
+}
+
+pub fn submit_worker_result_spec(playbook: &crate::playbook::Playbook) -> ToolSpec {
     ToolSpec {
         name: "submit_worker_result".into(),
         description: "Submit your answer to the assigned question. Call exactly once.".into(),
@@ -183,7 +192,7 @@ pub fn terminal_submit_worker_result_spec() -> ToolSpec {
                 "evidence": {"type": "array", "items": {"type": "object",
                     "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "note": {"type": "string"}},
                     "required": ["path"]}},
-                "candidate_findings": {"type": "array", "items": {"type": "object"}},
+                "candidate_findings": submit_findings_spec(playbook).parameters["properties"]["findings"].clone(),
                 "gaps": {"type": "array", "items": {"type": "string"}},
             }),
             &["result", "answer"],

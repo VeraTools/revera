@@ -26,6 +26,7 @@ import type {
   FixDelivery,
   PullInbox,
   PullDetail,
+  Playbook,
 } from './types';
 import type { GuidancePreview, RepoGuidanceSettings } from './types';
 
@@ -142,6 +143,14 @@ export const api = {
   serverSettings: () => request<ServerSettings>('/api/settings/server'),
   saveConfig: (yaml: string) => request<void>('/api/settings/config', 'PUT', { yaml }),
   saveServer: (server: ServerSettings) => request<void>('/api/settings/server', 'PUT', server),
+  playbook: () => request<Playbook>('/api/playbook'),
+  savePlaybookReviewer: (content: string) =>
+    request<Playbook>('/api/playbook/reviewer', 'PUT', { content }),
+  resetPlaybookReviewer: () => request<Playbook>('/api/playbook/reviewer', 'DELETE'),
+  savePlaybookSkill: (name: string, content: string) =>
+    request<Playbook>(`/api/playbook/skills/${encodeURIComponent(name)}`, 'PUT', { content }),
+  deletePlaybookSkill: (name: string) =>
+    request<Playbook>(`/api/playbook/skills/${encodeURIComponent(name)}`, 'DELETE'),
   setSecret: (name: string, value: string) =>
     request<void>(`/api/secrets/${encodeURIComponent(name)}`, 'PUT', { value }),
   deleteSecret: (name: string) =>

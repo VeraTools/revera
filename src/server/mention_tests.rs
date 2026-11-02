@@ -957,7 +957,7 @@ async fn overview_exposes_subscription_and_organization_app_settings_url() {
 }
 
 #[test]
-fn builtin_profiles_apply_without_changing_strategy_validation_or_index_identity() {
+fn builtin_profiles_use_deep_panel_and_preserve_validation_and_index_identity() {
     let standard = crate::config::Config::parse(CONFIG, "test").unwrap();
     let mut quick = standard.clone();
     quick.apply_profile("quick").unwrap();
@@ -977,7 +977,7 @@ fn builtin_profiles_apply_without_changing_strategy_validation_or_index_identity
             deep.budget.agent_max_seconds,
             deep.budget.run_max_seconds
         ),
-        (50, 600, 1800)
+        (25, 300, 1800)
     );
     assert_eq!(
         deep.review.max_diff_bytes,
@@ -985,9 +985,10 @@ fn builtin_profiles_apply_without_changing_strategy_validation_or_index_identity
     );
     assert_eq!(deep.review.max_findings, 20);
     assert_eq!(quick.budget.run_max_requests, 120);
-    assert_eq!(deep.budget.run_max_requests, 240);
+    assert_eq!(deep.budget.run_max_requests, 360);
+    assert_eq!(quick.review.strategy, standard.review.strategy);
+    assert_eq!(deep.review.strategy, crate::config::Strategy::Panel);
     for config in [&quick, &deep] {
-        assert_eq!(config.review.strategy, standard.review.strategy);
         assert!(config.review.validate);
         assert_eq!(config.vera.index_identity(), standard.vera.index_identity());
     }

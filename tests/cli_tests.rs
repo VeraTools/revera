@@ -498,4 +498,48 @@ fn event_mode_rejects_a_notes_file_inside_the_checkout() {
         stderr.contains("--notes-file must be outside the checkout"),
         "{stderr}"
     );
+    let res = Command::new(env!("CARGO_BIN_EXE_revera"))
+        .current_dir(repo.path())
+        .args(["review", "--repo", ".", "--event"])
+        .arg(ev.path())
+        .args([
+            "--config",
+            "revera.yaml",
+            "--publish",
+            "dry-run",
+            "--playbook-dir",
+            ".",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(res.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&res.stderr)
+            .contains("--playbook-dir must be outside the checkout")
+    );
+    #[cfg(unix)]
+    {
+        let external = tempfile::tempdir().unwrap();
+        let link = external.path().join("operator-playbook");
+        std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+        let res = Command::new(env!("CARGO_BIN_EXE_revera"))
+            .current_dir(repo.path())
+            .args(["review", "--repo", ".", "--event"])
+            .arg(ev.path())
+            .args([
+                "--config",
+                "revera.yaml",
+                "--publish",
+                "dry-run",
+                "--playbook-dir",
+            ])
+            .arg(link)
+            .output()
+            .unwrap();
+        assert_eq!(res.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&res.stderr)
+                .contains("--playbook-dir must be outside the checkout")
+        );
+    }
 }

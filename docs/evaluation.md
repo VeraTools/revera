@@ -182,8 +182,8 @@ validation `fresh`, at least one validator request per candidate, and no
 rechecks; one JSON row per arm is printed and written to
 `out/summary.json`. `eval/test-frozen.sh` checks
 the mechanics offline with scripted validators. Guidance
-(`review.guidance`) affects only the investigator, so it is compared with
-ordinary paired runs, not this harness.
+(`review.guidance`) changes the investigator's candidates as well as the
+validators, so it is compared with ordinary paired runs, not this harness.
 
 ## v0.4 engine evaluation (2026-09-29)
 

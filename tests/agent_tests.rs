@@ -425,6 +425,70 @@ impl ModelClient for SlowThenSubmit {
     }
 }
 
+#[tokio::test]
+async fn budget_notices_ask_for_unfinished_areas_when_the_terminal_accepts_them() {
+    for (spec, asks) in [
+        (revera::tools::terminal_submit_findings_spec(), true),
+        (terminal(), false),
+    ] {
+        let replies = (0..10)
+            .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+            .collect();
+        let rec = Recorder::new(replies);
+        let b = AgentBudget {
+            max_tool_calls: 10,
+            max_seconds: 600,
+        };
+        run_agent(&rec, "s", "u", &toolbox(), &spec, &b)
+            .await
+            .unwrap();
+        let reqs = rec.requests.lock().unwrap();
+        let user: Vec<&str> = reqs
+            .last()
+            .unwrap()
+            .0
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .filter_map(|m| m.content.as_deref())
+            .collect();
+        for prefix in ["2 tool calls left", "Budget exhausted"] {
+            let notice = user.iter().find(|t| t.starts_with(prefix)).unwrap();
+            assert_eq!(notice.contains("`not_checked`"), asks, "{notice}");
+        }
+    }
+}
+
+/// Researches until only the terminal tool is offered; every reply is slow.
+struct SlowResearcher;
+
+#[async_trait::async_trait]
+impl ModelClient for SlowResearcher {
+    async fn complete(
+        &self,
+        _m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let message = if t.len() == 1 {
+            assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [], "coverage": "partial"}),
+            )])
+        } else {
+            assistant_calls(vec![("list_changed_files", json!({}))])
+        };
+        Ok(Completion {
+            message,
+            usage: Usage::default(),
+            model: "slow".into(),
+            latency_ms: 1100,
+        })
+    }
+    fn route_label(&self) -> String {
+        "slow".into()
+    }
+}
+
 /// A completion still in flight at the soft deadline is dropped and the
 /// reserve is spent on a low-effort wrap-up turn, so candidates are
 /// submitted instead of the whole investigation being discarded. The run
@@ -693,4 +757,17 @@ async fn already_spent_hard_budget_still_allows_one_grace_submission() {
     .await
     .unwrap();
     assert_eq!(run.stopped, StopReason::Terminal);
+}
+
+#[tokio::test]
+async fn time_budget_notice_comes_while_a_reply_still_fits() {
+    let b = AgentBudget {
+        max_tool_calls: 100,
+        max_seconds: 5,
+    };
+    let run = run_agent(&SlowResearcher, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert!(run.final_call.is_some());
 }

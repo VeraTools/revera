@@ -204,6 +204,11 @@ async fn mention_pr_warmup_uses_default_base_and_reviewability_not_push_preferen
                 ));
             }
             assert!(mock.received_requests().await.unwrap().is_empty());
+            drop(queue);
+            // MockServer's Drop blocks on a Tokio lock. If this loop has spent
+            // the task's cooperative budget, that lock defers its wake-up to
+            // the scheduler, which never runs again; yield to reset the budget.
+            tokio::task::yield_now().await;
         }
     }
 }
@@ -502,7 +507,7 @@ async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks
         let scratch = tempfile::tempdir().unwrap();
         let marker = scratch.path().join("indexed-head");
         let command = format!(
-            "git rev-parse HEAD > '{}.tmp' && mv '{}.tmp' '{}'; {}",
+            "[ \"$1\" = index ] || exit 1; for arg in \"$@\"; do [ \"$arg\" != --playbook-dir ] || exit 1; done; git rev-parse HEAD > '{}.tmp' && mv '{}.tmp' '{}'; {}",
             marker.display(),
             marker.display(),
             marker.display(),
@@ -518,6 +523,13 @@ async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks
             prefix: vec!["-c".into(), command, "fixture".into()],
         };
         let (data, server) = server(&mock, runner, true).await;
+        // Even an invalid playbook must neither be loaded nor forwarded for index.
+        crate::fsutil::write_repo_file(
+            data.path(),
+            Path::new("playbook/skills/logic.md"),
+            b"invalid",
+        )
+        .unwrap();
         let source = scratch.path().join("source");
         std::fs::create_dir(&source).unwrap();
         git(&source, &["init", "-qb", "main"]);

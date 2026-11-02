@@ -53,6 +53,8 @@ fn report(inline: Vec<InlineComment>) -> RunReport {
 
 fn finding(id_body_file: &str) -> Finding {
     Finding {
+        category: String::new(),
+        duplicate_of: None,
         defect_key: "k".into(),
         severity: Severity::High,
         file: id_body_file.into(),
@@ -246,7 +248,8 @@ async fn managed_summary_preserves_server_fix_status_verbatim_before_state() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"head": {"sha": "a".repeat(40)}})),
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"head": {"sha": "a".repeat(40)}, "base": {"ref": "main"}})),
         )
         .mount(&server)
         .await;
@@ -356,7 +359,7 @@ async fn head_moved_refuses() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": "cccccccccccccccccccccccccccccccccccccccc"}
+            "head": {"sha": "cccccccccccccccccccccccccccccccccccccccc"}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -396,6 +399,60 @@ async fn head_moved_refuses() {
 }
 
 #[tokio::test]
+async fn publication_retarget_refuses_but_base_sha_drift_publishes() {
+    for live_base in ["release", "main"] {
+        let server = MockServer::start().await;
+        let ev = event();
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widgets/pulls/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "head": {"sha": ev.head_sha}, "base": {"ref": live_base, "sha": "c".repeat(40)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mount_no_review_comments(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widgets/issues/42/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/widgets/issues/42/comments"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 100})))
+            .expect(if live_base == "main" { 1 } else { 0 })
+            .mount(&server)
+            .await;
+        let api = GitHubApi::with_base(&server.uri(), "t");
+        let mut report = report(vec![]);
+        let mut state = ReviewState::default();
+        let result = publish(
+            &api,
+            &ev,
+            &mut report,
+            &mut state,
+            10,
+            "<!-- revera-summary -->",
+            "bot[bot]",
+        )
+        .await
+        .unwrap();
+        if live_base == "release" {
+            assert_eq!(
+                result.skipped_reason.as_deref(),
+                Some("base changed main -> release")
+            );
+            assert_eq!(report.status, RunStatus::Partial);
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        } else {
+            assert!(result.skipped_reason.is_none());
+            assert_eq!(report.status, RunStatus::Complete);
+            assert_eq!(result.summary_comment_id, Some(100));
+        }
+    }
+}
+
+#[tokio::test]
 async fn happy_path_posts_review_and_summary() {
     let server = MockServer::start().await;
     mount_no_review_comments(&server).await;
@@ -403,7 +460,7 @@ async fn happy_path_posts_review_and_summary() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -483,7 +540,7 @@ async fn second_run_updates_summary_and_posts_only_unposted() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -563,7 +620,7 @@ async fn summary_only_finding_marked_posted() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -625,7 +682,7 @@ async fn summary_failure_leaves_finding_unposted() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -673,7 +730,7 @@ async fn retry_after_summary_failure_does_not_duplicate_inline() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -777,7 +834,7 @@ async fn forged_inline_marker_by_other_author_is_ignored() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -842,7 +899,7 @@ async fn inline_review_422_degrades_to_summary_only() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -903,7 +960,7 @@ async fn inline_review_500_still_fails_and_leaves_unposted() {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": head_sha}
+            "head": {"sha": head_sha}, "base": {"ref": "main"}
         })))
         .mount(&server)
         .await;
@@ -946,7 +1003,7 @@ async fn mount_head(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/repos/acme/widgets/pulls/42"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "base": {"ref": "main"}
         })))
         .mount(server)
         .await;

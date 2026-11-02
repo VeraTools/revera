@@ -67,6 +67,14 @@ async fn private_cli_reviews_fork_without_any_github_reads_writes_or_repository_
         .expect(1).mount(&provider).await;
     std::fs::write(&config, format!("review: {{guidance: agents, publish: comment}}\nmodels:\n  investigator: {{protocol: openai-chat, base_url: {}, api_key_env: REVERA_MODEL_API_KEY, model: offline}}\nvera: {{enabled: false}}\n", provider.uri())).unwrap();
     let out = scratch.path().join("report.json");
+    let playbook = scratch.path().join("playbook");
+    std::fs::create_dir(&playbook).unwrap();
+    revera::fsutil::write_atomic_in(
+        &playbook,
+        "reviewer.md",
+        b"OPERATOR_PLAYBOOK_SENTINEL: investigate carefully",
+    )
+    .unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_revera"))
         .current_dir(&repo)
         .args(["review", "--repo"])
@@ -75,6 +83,8 @@ async fn private_cli_reviews_fork_without_any_github_reads_writes_or_repository_
         .arg(&event)
         .arg("--config")
         .arg(&config)
+        .arg("--playbook-dir")
+        .arg(&playbook)
         .args(["--private", "--publish", "comment", "--force", "--out"])
         .arg(&out)
         .env("GITHUB_API_URL", mock.uri())
@@ -105,6 +115,23 @@ async fn private_cli_reviews_fork_without_any_github_reads_writes_or_repository_
         "investigator received the reviewed diff"
     );
     assert!(!prompt.contains("UNTRUSTED_GUIDANCE_SENTINEL"));
+    assert!(prompt.contains("OPERATOR_PLAYBOOK_SENTINEL"));
+
+    let bad_playbook = Command::new(env!("CARGO_BIN_EXE_revera"))
+        .current_dir(&repo)
+        .args(["review", "--private", "--event"])
+        .arg(&event)
+        .arg("--config")
+        .arg(&config)
+        .arg("--playbook-dir")
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(bad_playbook.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&bad_playbook.stderr)
+            .contains("--playbook-dir must be outside the checkout")
+    );
 
     let bad = Command::new(env!("CARGO_BIN_EXE_revera"))
         .current_dir(&repo)

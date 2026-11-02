@@ -2,6 +2,7 @@ import { parseDocument } from 'yaml';
 import { mockFixRequest, updateMockFix } from './mock-fixes';
 import { applyMockGuidance, mockGuidanceNotes, mockGuidanceRequest } from './mock-guidance';
 import { mockPullRequest, annotatePullJob } from './mock-pulls';
+import { mockPlaybookRequest } from './mock-playbook';
 import type {
   JobSummary,
   JobDetail,
@@ -106,6 +107,7 @@ function handoffFindings(job: JobSummary): Finding[] {
     {
       id: 'abc123456789',
       severity: 'high' as const,
+      category: 'state',
       line: 84,
       title: 'An empty result can leave the previous query visible',
       claim:
@@ -114,6 +116,7 @@ function handoffFindings(job: JobSummary): Finding[] {
     {
       id: 'def123456789',
       severity: 'medium' as const,
+      category: 'concurrency',
       line: 112,
       title: 'A late response can overwrite a newer search',
       claim:
@@ -130,6 +133,7 @@ function handoffFindings(job: JobSummary): Finding[] {
         id: item.id,
         defect_key: item.id,
         severity: item.severity,
+        category: item.category,
         title: item.title,
         claim: item.claim,
         file: 'src/search/results.ts',
@@ -189,6 +193,8 @@ let jobs: JobSummary[] = titles.map((title, i) => ({
   title,
   author: ['alex', 'sam', 'morgan'][i % 3],
   head_sha: '8c74a1e9bf062d4a18f60c32',
+  base_ref: 'main',
+  base_sha: 'b'.repeat(40),
   trigger: (['mention', 'auto', 'mention', 'manual', 'auto', 'rerun', 'auto'] as const)[i],
   mode: (['standard', 'quick', 'deep', 'standard', 'deep', 'standard', 'quick'] as const)[i],
   status: (['running', 'queued', 'complete', 'complete', 'partial', 'failed', 'complete'] as const)[
@@ -430,6 +436,7 @@ let settings: Settings = {
   referenced_env: [],
 };
 let stage: SetupStage = 'done';
+const secretValues = new Map<string, string>();
 let setupAuthorized = true;
 let signedIn = true;
 const listeners = new Set<
@@ -534,6 +541,7 @@ function externalEnqueue(url: string, mode: ReviewMode, trigger: JobSummary['tri
     pr_url: url,
     head_sha: 'a'.repeat(40),
     base_sha: 'b'.repeat(40),
+    base_ref: 'main',
     findings: { total: 0, high: 0, medium: 0, low: 0 },
     queued_at: ago(0),
   };
@@ -598,6 +606,8 @@ async function externalRequest(
 export async function mockRequest(path: string, method: string, body?: unknown): Promise<unknown> {
   const url = new URL(path, 'https://revera.example.com');
   const data = body as Record<string, unknown> | undefined;
+  if (url.pathname === '/api/playbook' || url.pathname.startsWith('/api/playbook/'))
+    return mockPlaybookRequest(url.pathname, method, data, secretValues.values());
   const external = await externalRequest(url.pathname, method, data);
   if (external.handled) return external.value;
   // Base-branch guidance previews are separate from pull-request inventory.
@@ -1017,6 +1027,8 @@ _Timing: total 182s · index 0.1s · lanes 112s · validation 68s (p50 16s, p95 
   }
   if (url.pathname.startsWith('/api/secrets/')) {
     const name = decodeURIComponent(url.pathname.split('/').at(-1)!);
+    if (method === 'DELETE') secretValues.delete(name);
+    else if (typeof data?.value === 'string') secretValues.set(name, data.value);
     const environment =
       settings.secrets.find((secret) => secret.name === name)?.environment || false;
     settings.secrets = settings.secrets.filter((secret) => secret.name !== name);
