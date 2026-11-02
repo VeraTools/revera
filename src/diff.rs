@@ -278,48 +278,7 @@ fn file_priority(path: &str) -> u8 {
     {
         return 4;
     }
-    if (matches!(
-        extension,
-        "md" | "markdown" | "mdx" | "rst" | "txt" | "adoc" | "asciidoc"
-    ) && name != "cmakelists.txt")
-        || matches!(
-            name,
-            "readme" | "license" | "copying" | "changelog" | "contributing" | "authors" | "notice"
-        )
-        || parts.iter().any(|part| {
-            matches!(
-                *part,
-                "doc"
-                    | "docs"
-                    | "documentation"
-                    | "skill"
-                    | "skills"
-                    | "rule"
-                    | "rules"
-                    | ".agents"
-                    | ".claude"
-                    | ".opencode"
-                    | ".cursor"
-            )
-        })
-    {
-        return 3;
-    }
-    if parts.iter().any(|part| {
-        matches!(
-            *part,
-            "test" | "tests" | "__tests__" | "spec" | "specs" | "fixtures" | "testdata"
-        )
-    }) || name.starts_with("test_")
-        || name.contains(".test.")
-        || name.contains(".spec.")
-        || name
-            .rsplit_once('.')
-            .is_some_and(|(stem, _)| stem.ends_with("_test") || stem.ends_with("_tests"))
-    {
-        return 1;
-    }
-    if matches!(
+    let build_config = matches!(
         extension,
         "toml"
             | "yaml"
@@ -357,8 +316,120 @@ fn file_priority(path: &str) -> u8 {
                 | ".editorconfig"
                 | ".tool-versions"
         )
-        || name.starts_with("dockerfile.")
+        || name.starts_with("dockerfile.");
+    let source = matches!(
+        extension,
+        "rs" | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "hpp"
+            | "hxx"
+            | "cs"
+            | "fs"
+            | "fsx"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "scala"
+            | "swift"
+            | "m"
+            | "mm"
+            | "py"
+            | "pyi"
+            | "rb"
+            | "php"
+            | "pl"
+            | "pm"
+            | "lua"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "mjs"
+            | "cjs"
+            | "mts"
+            | "cts"
+            | "vue"
+            | "svelte"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "r"
+            | "jl"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hrl"
+            | "hs"
+            | "lhs"
+            | "clj"
+            | "cljs"
+            | "cljc"
+            | "dart"
+            | "sql"
+            | "graphql"
+            | "gql"
+            | "proto"
+            | "zig"
+            | "ml"
+            | "mli"
+            | "nim"
+    );
+    if (matches!(
+        extension,
+        "md" | "markdown" | "mdx" | "rst" | "txt" | "adoc" | "asciidoc"
+    ) && name != "cmakelists.txt")
+        || matches!(
+            name,
+            "readme" | "license" | "copying" | "changelog" | "contributing" | "authors" | "notice"
+        )
+        || (!source
+            && !build_config
+            && parts.iter().any(|part| {
+                matches!(
+                    *part,
+                    "doc"
+                        | "docs"
+                        | "documentation"
+                        | "skill"
+                        | "skills"
+                        | "rule"
+                        | "rules"
+                        | ".agents"
+                        | ".claude"
+                        | ".opencode"
+                        | ".cursor"
+                )
+            }))
     {
+        return 3;
+    }
+    if parts.iter().any(|part| {
+        matches!(
+            *part,
+            "test" | "tests" | "__tests__" | "spec" | "specs" | "fixtures" | "testdata"
+        )
+    }) || name.starts_with("test_")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+        || name
+            .rsplit_once('.')
+            .is_some_and(|(stem, _)| stem.ends_with("_test") || stem.ends_with("_tests"))
+    {
+        return 1;
+    }
+    if build_config {
         return 2;
     }
     0
@@ -610,6 +681,12 @@ mod tests {
                     "app/page.tsx",
                     "lib/module.py",
                     "scripts/run.sh",
+                    "src/rules/engine.rs",
+                    "docs/src/App.tsx",
+                    "docs/example.rs",
+                    ".agents/skills/tool/run.py",
+                    ".opencode/rules/rule.ts",
+                    "skills/review/script.sh",
                 ],
             ),
             (
@@ -633,6 +710,10 @@ mod tests {
                     "build.rs",
                     "CMakeLists.txt",
                     ".gitignore",
+                    "docs/Cargo.toml",
+                    "docs/CMakeLists.txt",
+                    "docs/Dockerfile",
+                    ".claude/settings.json",
                 ],
             ),
             (
@@ -642,12 +723,9 @@ mod tests {
                     "guide.rst",
                     "notes.txt",
                     "guide.adoc",
-                    "docs/example.rs",
-                    ".agents/skills/tool/run.py",
-                    ".claude/settings.json",
-                    ".opencode/rules/rule.ts",
                     ".cursor/rules/rule.mdc",
-                    "skills/review/script.sh",
+                    ".claude/skills/x/SKILL.md",
+                    "docs/guide.md",
                 ],
             ),
             (
