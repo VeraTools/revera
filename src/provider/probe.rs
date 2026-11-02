@@ -105,9 +105,14 @@ impl ProtocolAdapter for Embedding {
 
 pub async fn embedding(endpoint: VeraEndpoint, key: String) -> Result<(), ProviderError> {
     crate::redact::register(&key);
+    let timeout_secs = u64::from(
+        endpoint
+            .timeout_secs
+            .unwrap_or(crate::config::DEFAULT_EMBED_TIMEOUT_SECS),
+    );
     let client = HttpClient {
         adapter: Embedding { endpoint, key },
-        transport: transport("embedding-connectivity", 3, 1, 120)?,
+        transport: transport("embedding-connectivity", 3, 1, timeout_secs)?,
     };
     client.complete(&[], &[]).await?;
     Ok(())
