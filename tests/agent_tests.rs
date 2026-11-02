@@ -489,6 +489,76 @@ impl ModelClient for SlowResearcher {
     }
 }
 
+struct FixedLatencyResearcher {
+    started: Mutex<Vec<bool>>,
+    completed: Mutex<Vec<bool>>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for FixedLatencyResearcher {
+    async fn complete(
+        &self,
+        _messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let submitting = tools.len() == 1;
+        self.started.lock().unwrap().push(submitting);
+        // Longer than the 1 s minimum timeout, so the second research turn
+        // is interrupted even when that floor extends the adaptive deadline.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        self.completed.lock().unwrap().push(submitting);
+        let message = if submitting {
+            assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [], "coverage": "partial"}),
+            )])
+        } else {
+            assistant_calls(vec![("list_changed_files", json!({}))])
+        };
+        Ok(Completion {
+            message,
+            usage: Usage::default(),
+            model: "fixed-latency".into(),
+            latency_ms: 1100,
+        })
+    }
+
+    fn route_label(&self) -> String {
+        "fixed-latency".into()
+    }
+}
+
+#[tokio::test]
+async fn adaptive_deadline_cuts_second_research_turn_and_preserves_submission() {
+    let client = FixedLatencyResearcher {
+        started: Mutex::new(vec![]),
+        completed: Mutex::new(vec![]),
+    };
+    let start = std::time::Instant::now();
+    let run = run_agent(
+        &client,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 10,
+            max_seconds: 4,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert!(run.final_call.is_some());
+    assert_eq!(*client.started.lock().unwrap(), [false, false, true]);
+    assert_eq!(*client.completed.lock().unwrap(), [false, true]);
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(4500),
+        "ran {:?} on a 4 s budget",
+        start.elapsed()
+    );
+}
+
 /// A completion still in flight at the soft deadline is dropped and the
 /// reserve is spent on a low-effort wrap-up turn, so candidates are
 /// submitted instead of the whole investigation being discarded. The run
@@ -736,6 +806,26 @@ async fn successful_ordinary_turn_past_hard_deadline_allows_notice_grace() {
     assert_eq!(run.tool_calls, 1);
     assert!(run.final_call.is_some());
     assert!(start.elapsed() <= std::time::Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn successful_ordinary_turn_past_adaptive_deadline_skips_tools() {
+    let run = run_agent(
+        &BlockingThenSubmit,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert_eq!(run.tool_calls, 1);
+    assert!(run.final_call.is_some());
 }
 
 #[tokio::test]

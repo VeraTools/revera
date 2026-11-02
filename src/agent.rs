@@ -210,9 +210,14 @@ pub async fn run_agent_checked(
         ))
     };
     let hard_left = || total.saturating_sub(start.elapsed());
+    let soft_deadline = |slowest_reply: Duration| {
+        let adaptive_reserve = (slowest_reply * 2).min(total / 2);
+        soft.min(total - adaptive_reserve)
+    };
     // The soft minimum must never extend an await beyond the hard deadline.
-    let soft_left = || {
-        soft.saturating_sub(start.elapsed())
+    let soft_left = |deadline: Duration| {
+        deadline
+            .saturating_sub(start.elapsed())
             .max(Duration::from_secs(1))
             .min(hard_left())
     };
@@ -229,8 +234,8 @@ pub async fn run_agent_checked(
     loop {
         // past the soft deadline, or once the slowest reply so far would
         // no longer fit twice (this one and a repair or slow final reply)
-        let adaptive_reserve = (slowest_reply * 2).min(total / 2);
-        let time_up = start.elapsed() > soft || start.elapsed() + adaptive_reserve > total;
+        let effective_soft = soft_deadline(slowest_reply);
+        let time_up = start.elapsed() > effective_soft;
         let tools_up = tool_calls >= budget.max_tool_calls;
         if (time_up || tools_up) && !budget_notice_sent {
             budget_notice_sent = true;
@@ -265,7 +270,7 @@ pub async fn run_agent_checked(
                 hard_left()
             }
         } else {
-            soft_left()
+            soft_left(effective_soft)
         };
         if limit.is_zero() {
             return Ok(AgentRun {
@@ -468,8 +473,9 @@ pub async fn run_agent_checked(
         // tool results so the transcript stays valid for the API
         let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
-        let tool_limit = soft_left();
-        if tool_limit.is_zero() || start.elapsed() >= soft {
+        let effective_soft = soft_deadline(slowest_reply);
+        let tool_limit = soft_left(effective_soft);
+        if tool_limit.is_zero() || start.elapsed() >= effective_soft {
             // A successful late turn can return tool calls after the soft or
             // hard deadline. Running them could spend the reserve meant for
             // the wrap-up turn, so account for the batch without starting
