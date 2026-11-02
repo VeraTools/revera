@@ -1,8 +1,7 @@
-# Mirrors the reference server deployment (docs/evaluation.md, "Real pull
-# requests"): GPT investigator at high reasoning, GLM validator, Vera API
-# retrieval with Qwen3 embeddings and reranker, repository guidance at
-# `skills`. Web search and fallback routes are off so runs only depend on
-# the REVERA_MODEL_* and REVERA_EMBEDDING_* variables.
+# Real-PR evaluation: gpt-6.1-sol investigator and glm-5.3 validator, both
+# at high reasoning; Vera API retrieval with Qwen3 embeddings and reranker;
+# repository guidance at `skills`; dry-run publication. Web search and fallback
+# routes are off. Uses REVERA_MODEL_* and REVERA_EMBEDDING_* variables.
 review:
   publish: dry-run
   max_findings: 32

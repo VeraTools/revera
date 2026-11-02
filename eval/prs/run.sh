@@ -92,7 +92,7 @@ for c in "${CASES[@]}"; do
     idx="$CACHE/index/$c"
     [ -d "$idx/.vera" ] && continue
     dir="$WORK/warm-$c"
-    checkout "$c" "$dir" || { echo "checkout failed: $c" >&2; exit 1; }
+    checkout "$c" "$dir" || { echo "checkout failed warming $c; runs will retry" >&2; continue; }
     # Start from another case of the same repository so `vera update` only
     # embeds the files that differ.
     repo="$(case_field "$c" repo)"
@@ -116,10 +116,29 @@ for c in "${CASES[@]}"; do
     rm -rf "$dir"
 done
 
+failed_record() {
+    python3 - "$LABEL" "$1" "$2" "$3" "${4:-}" <<'PY'
+import json, sys
+config, case, rep, reason, errlog = sys.argv[1:6]
+if errlog:
+    with open(errlog, errors="replace") as log:
+        reason += ": " + log.read()[-300:]
+print(json.dumps({"config": config, "case": case, "rep": int(rep),
+    "status": "failed", "reason": reason}))
+PY
+}
+
 run_one() {
-    local c="$1" rep="$2" dir rc out
+    # Unexpected setup/scorer failures abort this worker; the parent supplies
+    # its failure row. A row is committed only after successful scoring.
+    set -e
+    local c="$1" rep="$2" row="$3" dir rc out
     dir="$WORK/$LABEL-$c-$rep"
-    checkout "$c" "$dir/repo" || { echo "checkout failed: $c" >&2; return 1; }
+    checkout "$c" "$dir/repo" || {
+        failed_record "$c" "$rep" "checkout failed: $c" > "$row.tmp"
+        mv "$row.tmp" "$row"
+        return 1
+    }
     if [ -d "$CACHE/index/$c/.vera" ]; then
         cp -a "$CACHE/index/$c/.vera" "$dir/repo/.vera"
         mkdir -p "$dir/repo/.revera"
@@ -132,31 +151,41 @@ run_one() {
         --title "$(cat "$dir/title.txt")" --force --out "$dir/report.json")
     [ -f "$body" ] && args+=(--body-file "$body")
     [ -n "$PROFILE" ] && args+=(--profile "$PROFILE")
-    "$BIN" "${args[@]}" > "$dir/stdout.txt" 2> "$dir/stderr.log"
-    rc=$?
+    rc=0
+    "$BIN" "${args[@]}" > "$dir/stdout.txt" 2> "$dir/stderr.log" || rc=$?
     out="$REPORTS/$LABEL-$c-$rep"
     cp "$dir/stderr.log" "$out.stderr.log"
     if [ -f "$dir/report.json" ]; then
         cp "$dir/report.json" "$out.json"
-        python3 "$HERE/score.py" "$dir/report.json" "$CASES_JSON" "$c" "$LABEL" "$rep" \
-            | flock "$RESULTS.lock" tee -a "$RESULTS" > /dev/null
+        python3 "$HERE/score.py" "$dir/report.json" "$CASES_JSON" "$c" "$LABEL" "$rep" > "$row.tmp"
+        mv "$row.tmp" "$row"
     else
-        python3 - "$LABEL" "$c" "$rep" "$rc" "$dir/stderr.log" <<'PY' | flock "$RESULTS.lock" tee -a "$RESULTS" > /dev/null
-import json, sys
-config, case, rep, rc, errlog = sys.argv[1:6]
-print(json.dumps({"config": config, "case": case, "rep": int(rep), "status": "failed",
-    "reason": f"review exited {rc}: {open(errlog, errors='replace').read()[-300:]}",
-    "tp": 0, "fn": -1}))
-PY
+        failed_record "$c" "$rep" "review exited $rc" "$dir/stderr.log" > "$row.tmp"
+        mv "$row.tmp" "$row"
     fi
     rm -rf "$dir"
 }
 
+# Keep each worker's result separate until it exits. Even a killed worker or
+# failed scorer then contributes exactly one failed row, never a missing run.
+rows="$(mktemp -d "$WORK/score-lines.XXXXXX")" || exit 1
+cases_pending=() reps_pending=()
 for c in "${CASES[@]}"; do
     for rep in $(seq 1 "$REPS"); do
-        while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do wait -n; done
-        run_one "$c" "$rep" &
+        while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do wait -n || true; done
+        row="$rows/${#cases_pending[@]}.json"
+        cases_pending+=("$c") reps_pending+=("$rep")
+        run_one "$c" "$rep" "$row" &
     done
 done
-wait
+wait || true
+for i in "${!cases_pending[@]}"; do
+    row="$rows/$i.json"
+    if [ ! -s "$row" ]; then
+        failed_record "${cases_pending[$i]}" "${reps_pending[$i]}" \
+            "background worker exited without a score (setup or scorer failed)" > "$row" || exit 1
+    fi
+    flock "$RESULTS.lock" tee -a "$RESULTS" < "$row" > /dev/null || exit 1
+done
+rm -rf "$rows"
 echo "done; results in $RESULTS" >&2
