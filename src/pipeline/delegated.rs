@@ -1,6 +1,6 @@
 use super::common::{
     PrepareOut, ReviewRequest, clamp_budget, findings_terminal_check, finish, investigator_user,
-    parse_candidate_findings, parse_findings_checked, prepare,
+    parse_candidate_findings, parse_findings_checked, parse_not_checked, prepare,
 };
 use super::make_client;
 use crate::agent::{run_agent, run_agent_checked};
@@ -442,14 +442,16 @@ async fn delegated_candidates(
                     .as_str()
                     .unwrap_or("(none)")
                     .to_string();
-                for u in call.arguments["unresolved"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(s) = u.as_str() {
-                        prep.coverage_gaps.push(s.to_string());
-                    }
+                let unchecked = parse_not_checked(&serde_json::json!({
+                    "not_checked": call.arguments.get("not_checked")
+                        .or_else(|| call.arguments.get("unresolved"))
+                }));
+                if !unchecked.is_empty() {
+                    prep.partial_reasons.push(format!(
+                        "lead synthesis reported {} unchecked area(s)",
+                        unchecked.len()
+                    ));
+                    prep.coverage_gaps.extend(unchecked);
                 }
                 let parsed = parse_findings_checked(&call.arguments);
                 prep.stats.malformed_findings += parsed.dropped;

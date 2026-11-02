@@ -172,6 +172,65 @@ async fn prompts_cover_baseline_panel_and_delegated_context_and_tools() {
 }
 
 #[tokio::test]
+async fn delegated_synthesis_not_checked_marks_partial_with_legacy_fallback() {
+    for (fields, expected_gaps) in [
+        (
+            json!({"not_checked": [" changed schema ", "", 42]}),
+            vec!["changed schema"],
+        ),
+        (json!({"unresolved": ["legacy area"]}), vec!["legacy area"]),
+        (
+            json!({"not_checked": ["current area"], "unresolved": ["old area"]}),
+            vec!["current area"],
+        ),
+        (
+            json!({"not_checked": [], "unresolved": ["old area"]}),
+            vec![],
+        ),
+    ] {
+        let mut submission = json!({"findings": [], "coverage": "checked"});
+        submission
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(move |request: &Request| {
+                let v: Value = serde_json::from_slice(&request.body).unwrap();
+                match terminal_name(&v) {
+                    "submit_plan" => terminal(
+                        "submit_plan",
+                        json!({"questions":[{"id":"q1","question":"Check behavior"}]}),
+                    ),
+                    "submit_worker_result" => terminal(
+                        "submit_worker_result",
+                        json!({"result":"answered","answer":"checked","candidate_findings":[]}),
+                    ),
+                    "submit_findings" => terminal("submit_findings", submission.clone()),
+                    name => panic!("unexpected terminal {name}"),
+                }
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        let (_data, req) = fixture();
+        let cfg = config(&server.uri(), "delegated");
+        let (report, _) = revera::pipeline::run(&cfg, &req).await.unwrap();
+        assert_eq!(report.coverage_gaps, expected_gaps);
+        if expected_gaps.is_empty() {
+            assert_eq!(report.status, revera::report::RunStatus::Complete);
+            assert_eq!(report.reason, None);
+        } else {
+            assert_eq!(report.status, revera::report::RunStatus::Partial);
+            assert_eq!(
+                report.reason.as_deref(),
+                Some("lead synthesis reported 1 unchecked area(s)")
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn validator_checklist_is_user_only_and_dedup_removes_plan_and_state_entries() {
     let server = MockServer::start().await;
     Mock::given(method("POST")).respond_with(|request: &Request| {
