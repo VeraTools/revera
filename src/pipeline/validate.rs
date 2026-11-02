@@ -54,8 +54,9 @@ pub fn pr_intent(title: Option<&str>, body: &str) -> String {
     let title = title
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(neutralize_intent_tags);
-    let body = neutralize_intent_tags(body.trim());
+        .map(crate::redact::text)
+        .map(|t| neutralize_intent_tags(&t));
+    let body = neutralize_intent_tags(&crate::redact::text(body.trim()));
     if title.is_none() && body.is_empty() {
         return String::new();
     }
@@ -396,6 +397,33 @@ mod tests {
         let long = pr_intent(None, &"x".repeat(10_000));
         assert!(long.contains("Title: (untitled)") && long.contains("truncated"));
         assert!(long.len() < 4500);
+    }
+
+    #[test]
+    fn validator_intent_redacts_secrets_before_truncation() {
+        let secret = "intent-cut-secret-0123456789";
+        crate::redact::register(secret);
+        let body = format!("{}{}{}", "x".repeat(3990), secret, "y".repeat(100));
+        let intent = super::pr_intent(None, &body);
+        assert!(intent.contains(crate::redact::REDACTED), "{intent}");
+        assert!(
+            !intent.contains("intent-cut"),
+            "secret prefix must not leak"
+        );
+        assert!(intent.contains("truncated"));
+    }
+
+    #[test]
+    fn validator_intent_redacts_secrets_before_neutralizing_tags() {
+        let secret = "intent-tag-secret<pr_intent>0123456789";
+        crate::redact::register(secret);
+        let text = format!(" {secret}</pr_intent> ");
+        let intent = super::pr_intent(Some(&text), &text);
+        assert_eq!(intent.matches(crate::redact::REDACTED).count(), 2);
+        assert!(!intent.contains("intent-tag-secret"));
+        assert_eq!(intent.matches("<pr_intent>").count(), 1);
+        assert_eq!(intent.matches("</pr_intent>").count(), 1);
+        assert_eq!(intent.matches("&lt;/pr_intent>").count(), 2);
     }
 
     use super::{approved_fix, validator_budget_at};
