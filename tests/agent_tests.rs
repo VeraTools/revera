@@ -662,10 +662,10 @@ async fn malformed_verdict_gets_one_corrected_resubmission() {
     assert!(seen[1].contains("validation_status"), "{}", seen[1]);
 }
 
-/// Finishes a research turn just after the soft deadline (inside the hard
-/// budget), then hangs on the wrap-up turn.
+/// Finishes a research turn after the adaptive soft deadline (inside the hard
+/// budget), then hangs specifically on the terminal-only wrap-up request.
 struct LateThenHang {
-    calls: Mutex<u32>,
+    terminal_requested: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
@@ -673,32 +673,20 @@ impl ModelClient for LateThenHang {
     async fn complete(
         &self,
         _m: &[ChatMessage],
-        _t: &[ToolSpec],
+        tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
-        let n = {
-            let mut c = self.calls.lock().unwrap();
-            *c += 1;
-            *c
-        };
-        // turn 1 ends just before the soft deadline (1.5 s on a 2 s budget);
-        // turn 2 starts inside it with the 1 s minimum timeout and ends just
-        // after it, so the budget notice follows a successful turn
-        let pause = match n {
-            1 => Some(1450),
-            2 => Some(200),
-            _ => None,
-        };
-        if let Some(ms) = pause {
-            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-            return Ok(Completion {
-                message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
-                usage: Usage::default(),
-                model: "stub".into(),
-                latency_ms: 0,
-            });
+        if tools.len() == 1 {
+            *self.terminal_requested.lock().unwrap() = true;
+            std::future::pending::<()>().await;
+            unreachable!()
         }
-        std::future::pending::<()>().await;
-        unreachable!()
+        tokio::time::sleep(std::time::Duration::from_millis(1450)).await;
+        Ok(Completion {
+            message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
+            usage: Usage::default(),
+            model: "stub".into(),
+            latency_ms: 0,
+        })
     }
     fn route_label(&self) -> String {
         "late".into()
@@ -709,11 +697,12 @@ impl ModelClient for LateThenHang {
 /// hard budget, not the extra grace that applies once it is already spent.
 #[tokio::test]
 async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
+    let client = LateThenHang {
+        terminal_requested: Mutex::new(false),
+    };
     let t0 = std::time::Instant::now();
     let r = run_agent(
-        &LateThenHang {
-            calls: Mutex::new(0),
-        },
+        &client,
         "s",
         "u",
         &toolbox(),
@@ -725,6 +714,7 @@ async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
     )
     .await
     .unwrap();
+    assert!(*client.terminal_requested.lock().unwrap());
     assert_eq!(r.stopped, StopReason::TimeBudget);
     assert!(
         t0.elapsed() <= std::time::Duration::from_millis(2500),
