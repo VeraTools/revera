@@ -109,6 +109,14 @@ fn missing_title_is_derived_instead_of_dropping_the_finding() {
     // no claim: still malformed (claim is required), and reported
     assert_eq!(parsed.dropped, 1);
     assert!(parsed.problem.unwrap().contains("claim"));
+
+    let mut punctuation = valid_finding_json();
+    punctuation.as_object_mut().unwrap().remove("title");
+    punctuation["claim"] = json!("...");
+    punctuation["defect_key"] = json!("cache_key_omits_base");
+    let parsed = parse_findings_checked(&json!({"findings": [punctuation]}));
+    assert_eq!(parsed.dropped, 0);
+    assert_eq!(parsed.findings[0].title, "cache key omits base");
 }
 
 #[test]

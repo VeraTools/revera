@@ -281,8 +281,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         );
     }
     if skipped > 0 {
-        prep.partial_reasons
-            .push(format!("run budget exhausted before {skipped} lanes"));
+        prep.partial_reasons.push(format!(
+            "investigation deadline or run budget exhausted before {skipped} lanes"
+        ));
     }
     let n_raw = raw.len();
     let n_unique = crate::findings::collapse(raw.clone()).len();

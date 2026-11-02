@@ -156,8 +156,11 @@ pub fn validate_skill(name: &str, text: &str) -> Result<Skill> {
         if h.name != name {
             bail!("front matter name must equal file stem {name:?}");
         }
-        if h.description.contains(['\n', '\r']) || h.description.chars().count() > 300 {
-            bail!("description must be one line, at most 300 characters");
+        if h.description.trim().is_empty()
+            || h.description.contains(['\n', '\r'])
+            || h.description.chars().count() > 300
+        {
+            bail!("description must be one line, 1–300 characters");
         }
         Ok(Skill {
             name: h.name,
@@ -495,6 +498,8 @@ mod tests {
             "---\nname: logic\n---\n".into(),
             "---\nname: logic\ndescription: a\nenabled: maybe\n---\n".into(),
             format!("---\nname: logic\ndescription: {}\n---\n", "x".repeat(301)),
+            "---\nname: logic\ndescription: ''\n---\n".into(),
+            "---\nname: logic\ndescription: '   '\n---\n".into(),
             "---\nname: logic\ndescription: |\n  a\n  b\n---\n".into(),
         ] {
             assert!(validate_skill("logic", &text).is_err(), "{text}");

@@ -344,8 +344,9 @@ async fn delegated_candidates(
         reports.push(report);
     }
     if skipped > 0 {
-        prep.partial_reasons
-            .push(format!("run budget exhausted before {skipped} lanes"));
+        prep.partial_reasons.push(format!(
+            "investigation deadline or run budget exhausted before {skipped} lanes"
+        ));
     }
     for r in &reports {
         for g in &r.gaps {

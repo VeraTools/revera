@@ -199,7 +199,10 @@ fn fallback_title(o: &serde_json::Map<String, serde_json::Value>) -> Option<Stri
             .unwrap_or(claim)
             .trim()
             .trim_end_matches('.');
-        return Some(short_title(first));
+        let title = short_title(first);
+        if !title.is_empty() {
+            return Some(title);
+        }
     }
     text("defect_key").map(|k| short_title(&k.replace('_', " ")))
 }

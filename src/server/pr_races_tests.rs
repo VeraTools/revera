@@ -275,12 +275,22 @@ async fn retarget_auto_cancels_running_and_pending_then_reviews_new_base() {
 
 #[tokio::test]
 async fn retarget_mention_only_requeues_requested_work_and_keeps_its_mode() {
-    for state in ["none", "pending", "running"] {
+    for state in [
+        "none",
+        "pending",
+        "running",
+        "automatic_pending",
+        "automatic_running",
+    ] {
         let mock = MockServer::start().await;
         let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
-        server.dashboard.lock().await.preferences.default_trigger = Trigger::Mention;
         let mut old = job("same");
-        old.trigger = "manual".into();
+        old.trigger = if state.starts_with("automatic") {
+            "webhook"
+        } else {
+            "manual"
+        }
+        .into();
         old.mode = Mode::Deep;
         server
             .pulls
@@ -290,11 +300,13 @@ async fn retarget_mention_only_requeues_requested_work_and_keeps_its_mode() {
         if state != "none" {
             server.enqueue(old.clone()).await;
         }
-        let cancel = if state == "running" {
+        let cancel = if state.ends_with("running") {
             Some(server.queue.lock().await.take().unwrap().1)
         } else {
             None
         };
+        // Existing automatic work was admitted before mention-only was selected.
+        server.dashboard.lock().await.preferences.default_trigger = Trigger::Mention;
         deliver(
             &server,
             retargeted("same"),
@@ -302,9 +314,16 @@ async fn retarget_mention_only_requeues_requested_work_and_keeps_its_mode() {
         )
         .await;
         let queue = server.queue.lock().await;
-        if state == "none" {
+        if state == "none" || state.starts_with("automatic") {
             assert!(queue.pending.is_empty());
-            assert!(server.dashboard.lock().await.jobs.is_empty());
+            if state == "none" {
+                assert!(server.dashboard.lock().await.jobs.is_empty());
+            } else {
+                assert_eq!(
+                    server.dashboard.lock().await.jobs[&old.id].status,
+                    "cancelled"
+                );
+            }
         } else {
             let replacement = &queue.pending[&old.key()];
             assert_eq!(replacement.base_ref(), "release");
@@ -319,6 +338,50 @@ async fn retarget_mention_only_requeues_requested_work_and_keeps_its_mode() {
             assert!(*cancel.borrow());
         }
         drop(queue);
+    }
+}
+
+#[tokio::test]
+async fn retarget_admits_replacement_when_cancellation_metadata_cannot_be_written() {
+    for running in [false, true] {
+        let mock = MockServer::start().await;
+        let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        let old = job("same");
+        server.enqueue(old.clone()).await;
+        let cancel = running.then(|| server.queue.try_lock().unwrap().take().unwrap().1);
+        // A directory at meta.json makes this job's atomic metadata write fail,
+        // without preventing persistence of the replacement job.
+        let metadata = data.path().join("jobs").join(&old.id).join("meta.json");
+        std::fs::remove_file(&metadata).unwrap();
+        std::fs::create_dir(&metadata).unwrap();
+        assert!(server.transition(&old, "cancelled", None).await.is_err());
+        server
+            .retarget(events::Job::new(
+                old.repo.clone(),
+                events::Kind::Review {
+                    number: 7,
+                    pr: retargeted("same"),
+                    force: false,
+                },
+                "webhook",
+            ))
+            .await
+            .unwrap();
+        let queue = server.queue.lock().await;
+        let replacement = &queue.pending[&old.key()];
+        assert_eq!(replacement.base_ref(), "release");
+        assert_ne!(replacement.id, old.id);
+        assert!(
+            server
+                .dashboard
+                .lock()
+                .await
+                .jobs
+                .contains_key(&replacement.id)
+        );
+        if let Some(cancel) = cancel {
+            assert!(*cancel.borrow());
+        }
     }
 }
 

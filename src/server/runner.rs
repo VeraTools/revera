@@ -513,10 +513,11 @@ async fn execute_external(
 pub(super) fn review_playbook(server: &Server, command: &mut Command) -> Result<()> {
     let dir = server.settings.data_dir.join("playbook");
     match std::fs::symlink_metadata(&dir) {
-        Ok(_) => {
+        Ok(meta) if meta.file_type().is_dir() => {
             crate::playbook::Playbook::load(Some(&dir)).context("load server review playbook")?;
             command.arg("--playbook-dir").arg(dir);
         }
+        Ok(_) => anyhow::bail!("server playbook root must be a real directory, not a symlink"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("read server playbook directory"),
     }

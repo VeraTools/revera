@@ -112,7 +112,7 @@ pub struct Queue {
     // admitting the next lookup, rather than retaining every PR ever closed.
     admissions: BTreeMap<Key, Weak<()>>,
     observation_sequence: u64,
-    // Retained only while a repository listing has a live admission token.
+    // Pruned on the next admission after the repository listing's token expires.
     observations: BTreeMap<Key, u64>,
 }
 

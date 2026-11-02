@@ -541,5 +541,26 @@ fn event_mode_rejects_a_notes_file_inside_the_checkout() {
             String::from_utf8_lossy(&res.stderr)
                 .contains("--playbook-dir must be outside the checkout")
         );
+        let inside_link = repo.path().join("playbook-link");
+        std::os::unix::fs::symlink(external.path(), &inside_link).unwrap();
+        let res = Command::new(env!("CARGO_BIN_EXE_revera"))
+            .current_dir(repo.path())
+            .args(["review", "--repo", ".", "--event"])
+            .arg(ev.path())
+            .args([
+                "--config",
+                "revera.yaml",
+                "--publish",
+                "dry-run",
+                "--playbook-dir",
+                "playbook-link",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(res.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&res.stderr)
+                .contains("--playbook-dir must be outside the checkout")
+        );
     }
 }

@@ -54,7 +54,16 @@ pub async fn run(cfg: &Config, prep: &Prepared, findings: &mut [Finding]) -> usi
     }).await;
     match result {
         Ok(Ok(count)) => count,
-        _ => 0,
+        Ok(Err(error)) => {
+            tracing::warn!(error = %crate::redact::diagnostic(&format!("{error:#}")),
+                "optional deduplication failed; keeping all accepted findings");
+            0
+        }
+        Err(error) => {
+            tracing::warn!(error = %crate::redact::diagnostic(&error.to_string()),
+                "optional deduplication timed out; keeping all accepted findings");
+            0
+        }
     }
 }
 

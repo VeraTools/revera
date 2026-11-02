@@ -490,6 +490,7 @@ async fn review(a: ReviewArgs) -> i32 {
             "--notes-file",
             a.notes_file.as_deref().filter(|_| !a.private),
         ),
+        ("--playbook-dir", a.playbook_dir.as_deref()),
         ("--playbook-dir", playbook_dir.as_deref()),
     ] {
         let Some(path) = path.filter(|_| ev.is_some()) else {

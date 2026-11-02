@@ -174,11 +174,11 @@ impl super::Server {
                     .filter(|running| !*running.cancel.borrow())
                     .map(|running| &running.job),
             )
-            .filter(|previous| previous.base_ref() != job.base_ref())
             // Preserve an explicit request even if an automatic job was also
             // queued; prefer the pending (newer) request when both are explicit.
-            .min_by_key(|previous| {
-                !matches!(previous.trigger.as_str(), "manual" | "mention" | "rerun")
+            .find(|previous| {
+                previous.base_ref() != job.base_ref()
+                    && matches!(previous.trigger.as_str(), "manual" | "mention" | "rerun")
             })
             .cloned();
         let cancelled: Vec<_> = queue
@@ -202,12 +202,17 @@ impl super::Server {
             let _ = running.cancel.send(true);
         }
         for previous in cancelled {
-            self.transition(
-                &previous,
-                "cancelled",
-                Some("superseded: base changed".into()),
-            )
-            .await?;
+            if let Err(error) = self
+                .transition(
+                    &previous,
+                    "cancelled",
+                    Some("superseded: base changed".into()),
+                )
+                .await
+            {
+                tracing::warn!(error = %crate::redact::diagnostic(&format!("{error:#}")),
+                    "could not persist superseded review cancellation");
+            }
         }
         let admission = queue.review_admission(key);
         drop(queue);

@@ -215,13 +215,15 @@ async fn mention_pr_warmup_uses_default_base_and_reviewability_not_push_preferen
 
 #[tokio::test]
 async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
-    for (enabled, pushed_at, response, queued, lookups) in [
-        (false, "two", Some(INDEXED), false, 0),
-        (true, "two", Some(INDEXED), false, 1),
-        (true, "two", Some(NEXT), true, 1),
-        (true, "two", None, true, 1),
-        (true, "two", Some("invalid"), true, 1),
-        (true, "one", Some(NEXT), false, 0),
+    for (enabled, pushed_at, response, queued, lookups, active) in [
+        (false, "two", Some(INDEXED), false, 0, "none"),
+        (true, "two", Some(INDEXED), false, 1, "none"),
+        (true, "two", Some(NEXT), true, 1, "none"),
+        (true, "two", None, true, 1, "none"),
+        (true, "two", Some("invalid"), true, 1, "none"),
+        (true, "one", Some(NEXT), false, 0, "none"),
+        (true, "two", Some(NEXT), true, 0, "pending"),
+        (true, "two", Some(NEXT), false, 0, "running"),
     ] {
         let mock = MockServer::start().await;
         let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
@@ -235,6 +237,13 @@ async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
             record_index(&mut seen, &previous, INDEXED);
             // Production persists every seen change as it is made.
             reconcile::save(&server, &seen).await.unwrap();
+        }
+        let index = events::Job::new(previous.clone(), events::Kind::Index, "push");
+        if active != "none" {
+            server.enqueue(index.clone()).await;
+            if active == "running" {
+                server.queue.lock().await.take().unwrap();
+            }
         }
         value["pushed_at"] = json!(pushed_at);
         inventory(&mock, value, vec![], 1).await;
@@ -264,10 +273,20 @@ async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
                 events::Kind::Index
             ));
         }
+        if active == "pending" {
+            assert_eq!(queue.pending[&index.key()].id, index.id);
+        }
+        if active == "running" {
+            assert_eq!(queue.running[&index.key()].job.id, index.id);
+        }
         let saved: reconcile::Seen = dashboard::read_json(data.path(), "seen.json").unwrap();
         assert_eq!(
             saved.0[&1].pushed_at,
-            if queued { "one" } else { pushed_at }
+            if queued || active == "running" {
+                "one"
+            } else {
+                pushed_at
+            }
         );
         assert!(saved.index_current(1, INDEXED));
     }

@@ -527,10 +527,14 @@ async fn playbook_mutations_refuse_symlinked_storage() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
     let (cookie, csrf) = administrator(&server).await;
-    let (url, task) = http(server).await;
+    let (url, task) = http(server.clone()).await;
     let external = tempfile::tempdir().unwrap();
     let dir = data.path().join("playbook");
     symlink(external.path(), &dir).unwrap();
+    let mut command = tokio::process::Command::new("revera");
+    let error = runner::review_playbook(&server, &mut command).unwrap_err();
+    assert!(error.to_string().contains("real directory"));
+    assert_eq!(command.as_std().get_args().count(), 0);
     assert_eq!(
         call(
             &url,
@@ -545,6 +549,9 @@ async fn playbook_mutations_refuse_symlinked_storage() {
         400
     );
     assert!(!external.path().join("reviewer.md").exists());
+    std::fs::remove_file(&dir).unwrap();
+    crate::fsutil::write_repo_file(data.path(), Path::new("playbook"), b"not a directory").unwrap();
+    assert!(runner::review_playbook(&server, &mut command).is_err());
     std::fs::remove_file(&dir).unwrap();
     crate::fsutil::ensure_dir(data.path(), Path::new("playbook")).unwrap();
     symlink(external.path(), dir.join("skills")).unwrap();

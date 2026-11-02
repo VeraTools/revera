@@ -644,6 +644,7 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
             } else {
                 Vec::new()
             };
+            drop(queue);
             // An unchanged repository needs no rewrite of the whole seen state,
             // unless an earlier write failed and memory is ahead of disk.
             if server
@@ -654,7 +655,6 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 save(server, &seen).await?;
             }
             drop(seen);
-            drop(queue);
             let workspace = server.settings.data_dir.join("repos").join(&repo.full_name);
             let reference = format!("refs/remotes/origin/{}", repo.default_branch);
             let mut has_override = false;
@@ -690,6 +690,10 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 // request an index. Neither may bypass reconcile retry backoff.
                 if matches!(job.kind, Kind::Index)
                     && retry_at.is_some_and(|at| at > chrono::Utc::now())
+                {
+                    continue;
+                }
+                if matches!(job.kind, Kind::Index) && server.queue.lock().await.contains(job.key())
                 {
                     continue;
                 }
