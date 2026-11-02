@@ -140,7 +140,9 @@
         ? !window.confirm(
             `Delete the custom skill "${selected}"?${dirty ? ' Unsaved edits will be discarded.' : ''}`,
           )
-        : !canDiscard()
+        : !window.confirm(
+            `Reset "${title}" to built-in? The saved override will be removed.${dirty ? ' Unsaved edits will be discarded.' : ''}`,
+          )
     )
       return;
     busy = true;

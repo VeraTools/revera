@@ -155,6 +155,8 @@ function seed(jobs: JobSummary[]) {
       title: pull.title,
       author: pull.author,
       head_sha: pull.head_sha,
+      base_ref: pull.base_ref,
+      base_sha: pull.base_sha,
       trigger: 'manual',
       mode: pull.mode,
       status,

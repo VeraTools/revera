@@ -1,6 +1,5 @@
-// Skill front matter uses single-line values, including unquoted descriptions
-// containing colons in the shipped defaults. Keep the markdown body untouched.
-const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+// Skill front matter uses single-line values. Keep the markdown body untouched.
+const frontMatter = /^---[^\S\r\n]*\r?\n([\s\S]*?)\r?\n---[^\S\r\n]*(?:\r?\n|$)/;
 export const playbookBytes = (text: string) => new TextEncoder().encode(text).length;
 
 export function skillMetadata(content: string) {

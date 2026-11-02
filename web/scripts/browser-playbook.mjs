@@ -6,16 +6,9 @@ import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 
 async function confirmAction(page, action, accept) {
-  const handled = new Promise((resolve, reject) => {
-    page.once('dialog', async (dialog) => {
-      try {
-        await (accept ? dialog.accept() : dialog.dismiss());
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
+  const handled = page
+    .waitForEvent('dialog', { timeout: 5000 })
+    .then((dialog) => (accept ? dialog.accept() : dialog.dismiss()));
   await Promise.all([handled, action()]);
 }
 
@@ -51,7 +44,11 @@ export async function checkPlaybook({ open, output }) {
   await save.click();
   await page.getByText('Reviewer instructions saved.', { exact: true }).waitFor();
   assert.equal(await item('Reviewer instructions').getByText('Edited', { exact: true }).count(), 1);
-  await page.getByRole('button', { name: 'Reset to built-in', exact: true }).click();
+  const reset = () => page.getByRole('button', { name: 'Reset to built-in', exact: true }).click();
+  await confirmAction(page, reset, false);
+  assert.notEqual((await book()).reviewer.override, null);
+  assert.notEqual(await editor.inputValue(), initial.reviewer.builtin);
+  await confirmAction(page, reset, true);
   await page.getByText('Reset to built-in.', { exact: true }).waitFor();
   assert.equal(await editor.inputValue(), initial.reviewer.builtin);
 
@@ -67,7 +64,9 @@ export async function checkPlaybook({ open, output }) {
   assert.equal(await builtin.inputValue(), logic.builtin);
   assert.equal(await builtin.getAttribute('readonly'), '');
   await page.screenshot({ path: join(shots, 'edited-comparison.png'), fullPage: true });
-  await page.getByRole('button', { name: 'Reset to built-in', exact: true }).click();
+  await confirmAction(page, reset, false);
+  assert.notEqual((await book()).skills.find((skill) => skill.name === 'logic').override, null);
+  await confirmAction(page, reset, true);
   await page.getByText('Reset to built-in.', { exact: true }).waitFor();
   assert.equal(await skillEditor.inputValue(), logic.builtin);
   assert.equal(await item('logic').getByText('Edited', { exact: true }).count(), 0);
@@ -164,6 +163,8 @@ export async function checkPlaybook({ open, output }) {
       ['logic', 'x'.repeat(8193)],
       ['../escape', 'bad'],
       ['logic', '---\nname: logic\ndescription: Test\nunknown: yes\n---\nBody'],
+      ['logic', "---\nname: logic\ndescription: ''\n---\nBody"],
+      ['logic', "---\nname: logic\ndescription: '   '\n---\nBody"],
     ]) {
       try {
         await api.savePlaybookSkill(name, text);
@@ -171,6 +172,9 @@ export async function checkPlaybook({ open, output }) {
         failures.push(error.status);
       }
     }
+    // Match the server's acceptance of trailing whitespace on front-matter fences.
+    await api.savePlaybookSkill('logic', '---\nname: logic\ndescription: Test\n--- \t\nBody');
+    await api.deletePlaybookSkill('logic');
     for (let i = 0; i < 12; i++)
       await api.savePlaybookSkill(
         `custom-${i}`,
@@ -199,7 +203,7 @@ export async function checkPlaybook({ open, output }) {
     for (const skill of before.skills) await api.deletePlaybookSkill(skill.name);
     return { failures, totalRejected, after: await api.playbook() };
   });
-  assert.deepEqual(validation.failures, [400, 400, 400, 400]);
+  assert.deepEqual(validation.failures, [400, 400, 400, 400, 400, 400]);
   assert.equal(validation.totalRejected, true);
   assert.equal(validation.after.digest, initial.digest);
   await context.close();
@@ -266,8 +270,19 @@ export async function checkPlaybook({ open, output }) {
   }
   {
     const { context, page } = await open('/reviews/review-105');
-    await page.getByLabel('Category: state', { exact: true }).waitFor();
-    await page.getByLabel('Category: concurrency', { exact: true }).waitFor();
+    await page
+      .locator('.badge')
+      .filter({ hasText: /^state$/ })
+      .waitFor();
+    await page
+      .locator('.badge')
+      .filter({ hasText: /^concurrency$/ })
+      .waitFor();
+    const pull = await page.evaluate(async () =>
+      (await window.importDashboard('/src/lib/api.ts')).api.pull('northstar', 'api', 254),
+    );
+    assert.equal(pull.review.state, 'findings');
+    assert.equal(pull.review.latest.base_ref, pull.base_ref);
     await context.close();
   }
 }
