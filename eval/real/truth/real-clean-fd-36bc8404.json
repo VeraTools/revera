@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/fd",
+  "intro": "36bc84041b0e4bca758abb248e18538b75c4774a",
+  "fix": ""
+ }
+}

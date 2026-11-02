@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sindresorhus/ky",
+  "intro": "0bda554d448c1b57c17a5c18114432c02465d467",
+  "fix": ""
+ }
+}

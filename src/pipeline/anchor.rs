@@ -1,5 +1,5 @@
 use crate::diff::DiffSet;
-use crate::findings::{Finding, ValidationStatus};
+use crate::findings::{Finding, Severity, ValidationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Placement {
@@ -11,12 +11,21 @@ pub enum Placement {
 pub struct Anchored {
     pub finding: Finding,
     pub placement: Placement,
+    /// Below `inline_min_severity`, so listed in the summary's lower-severity
+    /// section (whether or not it could have anchored inline).
+    pub quiet: bool,
 }
 
 /// Anchor accepted findings: inline when the file is in the diff and
-/// start_line is a head-side hunk line; else summary. Inline comments are
-/// capped at `max_findings`, ordered by severity then file/line.
-pub fn anchor(diff: &DiffSet, findings: Vec<Finding>, max_findings: usize) -> Vec<Anchored> {
+/// start_line is a head-side hunk line; else summary. Findings below
+/// `inline_min` go to the summary; the rest are capped at `max_findings`,
+/// ordered by severity then file/line.
+pub fn anchor(
+    diff: &DiffSet,
+    findings: Vec<Finding>,
+    max_findings: usize,
+    inline_min: Severity,
+) -> Vec<Anchored> {
     let mut items: Vec<Anchored> = findings
         .into_iter()
         .map(|f| {
@@ -42,9 +51,18 @@ pub fn anchor(diff: &DiffSet, findings: Vec<Finding>, max_findings: usize) -> Ve
                 } else {
                     Placement::Summary
                 },
+                quiet: false,
             }
         })
         .collect();
+    // below the inline bar: still reported, but in the summary's
+    // lower-severity section, whether or not it could have anchored
+    for a in items.iter_mut() {
+        if a.finding.severity < inline_min {
+            a.placement = Placement::Summary;
+            a.quiet = true;
+        }
+    }
     // cap inline: sort eligible by severity desc then file/line, overflow -> summary
     let mut inline_idx: Vec<usize> = items
         .iter()

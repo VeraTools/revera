@@ -65,6 +65,8 @@ pub struct Prepared {
     pub reserve: std::time::Duration,
     pub wall: Instant,
     pub timing: Recorder,
+    /// PR title and description for the validator (may be empty).
+    pub intent: String,
 }
 
 impl Prepared {
@@ -314,17 +316,21 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     // configuration — but not while any accepted finding is still unposted
     // (it must publish on this run). Partial runs, legacy state and any
     // identity drift fall through to a fresh review.
-    let unposted = state
-        .findings
-        .iter()
-        .any(|f| f.status == FindingState::Open && !f.posted);
+    let unposted = blocks_reuse(&state, cfg.review.inline_min_severity);
     if !req.force && !unposted && state.can_reuse(&key) {
         state.reviewed_head = head_sha.clone();
         state.save(&repo)?;
         let plan_state = state.public_projection(cfg.review.publish_uncertain);
         let carried = crate::report::carried_findings(&state, &[]);
         let reason = "reused completed review of identical content";
+        // lower-severity findings live only in the summary, so the reused
+        // summary must list them again or they vanish from the pull request
+        let lower_owned = summary_only_open(&state, cfg.review.inline_min_severity);
+        let lower: Vec<&Finding> = lower_owned.iter().collect();
         let summary = summary_markdown(&Summary {
+            // counted in the headline; listed once, under their own heading
+            findings: &lower_owned,
+            lower_severity: &lower,
             coverage: "",
             status: Some(RunStatus::Complete),
             strategy: strategy_name,
@@ -541,6 +547,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     // ---- recheck prior open findings ----
     // validation-disabled runs are evaluation-only: no validator sessions,
     // and no prior finding may be re-accepted into this run's output
+    let intent = super::validate::pr_intent(req.title.as_deref(), &req.body);
     let mut rechecks = if cfg.review.validate {
         recheck_candidates(&state)
     } else {
@@ -553,6 +560,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             ledger.clone(),
             &toolbox,
             &diff,
+            &intent,
             &mut rechecks,
             recheck_prompt(),
             &validator_terminal(),
@@ -629,6 +637,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
         wall,
         timing,
+        intent,
     })))
 }
 
@@ -693,6 +702,7 @@ pub async fn finish(
             prep.ledger.clone(),
             &prep.toolbox,
             &prep.diff,
+            &prep.intent,
             &mut collapsed,
             validator_prompt(),
             &validator_terminal(),
@@ -750,12 +760,23 @@ pub async fn finish(
     // stays in the report (and state) without a placement
     let (publishable, unpublished): (Vec<Finding>, Vec<Finding>) =
         collapsed.into_iter().partition(is_publishable);
-    let anchored = anchor(&prep.diff, publishable, cfg.review.max_findings);
+    let anchored = anchor(
+        &prep.diff,
+        publishable,
+        cfg.review.max_findings,
+        cfg.review.inline_min_severity,
+    );
     let mut inline: Vec<InlineComment> = vec![];
     let mut outside: Vec<&Finding> = vec![];
+    let mut lower: Vec<&Finding> = vec![];
     let mut final_findings: Vec<Finding> = vec![];
     for a in &anchored {
         let f = &a.finding;
+        if a.quiet {
+            lower.push(f);
+            final_findings.push(f.clone());
+            continue;
+        }
         match a.placement {
             Placement::Inline => inline.push(InlineComment {
                 file: f.file.clone(),
@@ -866,6 +887,7 @@ pub async fn finish(
     let summary = summary_markdown(&Summary {
         findings: &final_findings,
         outside_diff: &outside,
+        lower_severity: &lower,
         coverage: &coverage,
         coverage_gaps: &prep.coverage_gaps,
         status: Some(status),
@@ -907,6 +929,31 @@ pub async fn finish(
         stats,
     };
     Ok((rep, state))
+}
+
+/// An accepted finding that has not been posted yet must publish on this run,
+/// so it blocks reuse. Findings below `inline_min_severity` never post inline
+/// (they live only in the summary), so they do not.
+fn blocks_reuse(state: &ReviewState, inline_min: crate::findings::Severity) -> bool {
+    state
+        .findings
+        .iter()
+        .any(|f| f.status == FindingState::Open && !f.posted && f.severity >= inline_min)
+}
+
+/// Open findings that only ever appear in the summary's lower-severity
+/// section, rebuilt from state for a reused review.
+fn summary_only_open(state: &ReviewState, inline_min: crate::findings::Severity) -> Vec<Finding> {
+    state
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingState::Open && !f.posted && f.severity < inline_min)
+        .map(|f| Finding {
+            // stored open means it was accepted when it was found
+            validation_status: Some(crate::findings::ValidationStatus::Accepted),
+            ..crate::report::CarriedFinding::from_state(f).to_finding()
+        })
+        .collect()
 }
 
 /// Render the standard investigator-style user message.
@@ -1216,6 +1263,60 @@ mod tests {
                 assert!(report.carried.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn summary_only_findings_do_not_block_reuse_and_are_listed_again() {
+        use crate::findings::Severity;
+        use crate::state::{FindingState, ReviewState, StateFinding};
+        let finding = |id: &str, severity, posted| StateFinding {
+            id: id.into(),
+            status: FindingState::Open,
+            file: "src/a.rs".into(),
+            start_line: 10,
+            end_line: None,
+            title: format!("title {id}"),
+            posted,
+            defect_key: format!("key_{id}"),
+            severity,
+            claim: String::new(),
+            trigger: String::new(),
+            impact: String::new(),
+            evidence: vec![],
+        };
+        let mut state = ReviewState {
+            findings: vec![
+                finding("inline", Severity::High, true),
+                finding("low", Severity::Low, false),
+            ],
+            ..Default::default()
+        };
+        assert!(!super::blocks_reuse(&state, Severity::Medium));
+        let lower = super::summary_only_open(&state, Severity::Medium);
+        assert_eq!(lower.len(), 1);
+        assert_eq!(lower[0].title, "title low");
+        // the reused summary counts them in its headline and lists them once
+        let refs: Vec<&crate::findings::Finding> = lower.iter().collect();
+        let md = crate::report::summary_markdown(&crate::report::Summary {
+            findings: &lower,
+            lower_severity: &refs,
+            coverage: "",
+            strategy: "baseline",
+            reused: true,
+            ..Default::default()
+        });
+        assert!(!md.contains("no accepted findings"), "{md}");
+        assert!(md.contains("Lower-severity findings"), "{md}");
+        assert_eq!(md.matches("title low").count(), 1, "{md}");
+        // an unposted finding that should go inline still forces a fresh run
+        state
+            .findings
+            .push(finding("pending", Severity::Medium, false));
+        assert!(super::blocks_reuse(&state, Severity::Medium));
+        // with every finding eligible inline, the low one blocks again
+        state.findings.pop();
+        assert!(super::blocks_reuse(&state, Severity::Low));
+        assert!(super::summary_only_open(&state, Severity::Low).is_empty());
     }
 
     #[test]

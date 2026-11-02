@@ -1,0 +1,25 @@
+{
+ "defects": [
+  {
+   "file": "flask/app.py",
+   "line_min": 833,
+   "line_max": 835,
+   "keywords": [
+    "port=0",
+    "port 0",
+    "port of 0",
+    "falsy",
+    "is none",
+    "5000",
+    "ephemeral"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/pallets/flask",
+  "intro": "1636a4c410a1bf3713bc1da8d4de7ca66cdf1681",
+  "fix": "e1cc16f8bea15f11f63eacaa6089cd6e6b8b1965"
+ }
+}

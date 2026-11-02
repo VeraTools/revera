@@ -1,0 +1,1351 @@
+[
+ {
+  "name": "real-hono-e9830c6b",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "e9830c6ba19052d81ef0aeba9d65a1a130f7cf9e",
+  "subject": "perf(utils): use `| 0` instead of `Math.floor` (#3605)",
+  "fix": "e4602ad11a2879eeb4f06d5114d21e0565c114a9",
+  "fix_subject": "fix(jwt): use `Math.floor` instead of bitwise OR for safe timestamp (#4754)",
+  "defects": [
+   {
+    "file": "src/utils/jwt/jwt.ts",
+    "line_min": 75,
+    "line_max": 79,
+    "keywords": [
+     "bitwise",
+     "| 0",
+     "32-bit",
+     "2038",
+     "overflow",
+     "math.floor"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-hono-48dc87df",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "48dc87dfd542b9b8f1a442c2d0abab5d13ed4a3b",
+  "subject": "fix(utils/filepath): filepath supports Windows (#1642)",
+  "fix": "82dad6297c90c33c41bf48b4530509a21588ad06",
+  "fix_subject": "fix(serve-static): normalize all backslashes in file paths, not just the first (#4962)",
+  "defects": [
+   {
+    "file": "src/utils/filepath.ts",
+    "line_min": 24,
+    "line_max": 28,
+    "keywords": [
+     "first backslash",
+     "only the first",
+     "global flag",
+     "/g",
+     "replaceall",
+     "all backslashes"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-hono-0edb243a",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "0edb243a7481a395f017625ba7493e1b6271decb",
+  "subject": "perf(serve-static): performance optimization for precompressed feature (#3414)",
+  "fix": "03a9416a13a681028011e23841ba89d1dd6c9a62",
+  "fix_subject": "fix(serve-static): treat empty string content as found (#5062)",
+  "defects": [
+   {
+    "file": "src/middleware/serve-static/index.ts",
+    "line_min": 99,
+    "line_max": 103,
+    "keywords": [
+     "empty string",
+     "falsy",
+     "empty file",
+     "!= null",
+     "zero-length"
+    ]
+   }
+  ],
+  "excluded": "SZZ mislabel: the parent already used the falsy `if (content)` check that the fix changed to `!= null`"
+ },
+ {
+  "name": "real-hono-a16bcda1",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "a16bcda1209f18a1b32a1c6cd2c0e5404c7b8a69",
+  "subject": "perf(utils/url): improve performance of url utility (#3593)",
+  "fix": "3df5bf9f16f32b82a6391c4ad0f3fd8b8fbdff4f",
+  "fix_subject": "fix(req): don't throw if the query param is invalid (#4110)",
+  "defects": [
+   {
+    "file": "src/utils/url.ts",
+    "line_min": 211,
+    "line_max": 215,
+    "keywords": [
+     "malformed",
+     "urierror",
+     "throws",
+     "invalid percent",
+     "decodeuricomponent"
+    ]
+   }
+  ],
+  "excluded": "SZZ mislabel: the change (/%/.test -> indexOf('%')) is equivalent; the parent already called decodeURIComponent_ on any '%', so the throw predates this commit"
+ },
+ {
+  "name": "real-hono-331b3d8a",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "331b3d8a96eacdf353019018242872b505010ba9",
+  "subject": "fix(client): replace optional params to url correctly (#3304)",
+  "fix": "4eb022de6869b8d5a7ce4edb1489e384cd76b9fe",
+  "fix_subject": "fix(client): prevent URL corruption when replaceUrlParam contains $ replacement tokens (#5227)",
+  "defects": [
+   {
+    "file": "src/client/utils.ts",
+    "line_min": 11,
+    "line_max": 15,
+    "keywords": [
+     "replacement pattern",
+     "$&",
+     "$'",
+     "special pattern",
+     "dollar",
+     "replacer function"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-hono-f0b012dd",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "f0b012ddf75164953bff9b7d5f598a6fb030d6c4",
+  "subject": "fix(service-worker): refer to `self.fetch` correctly (#3200)",
+  "fix": "de7827ee279c84285ac72deb5badd80bcca4d00c",
+  "fix_subject": "fix(service-worker): bind fetch to `globalThis` (#3500)",
+  "defects": [
+   {
+    "file": "src/adapter/service-worker/handler.ts",
+    "line_min": 17,
+    "line_max": 22,
+    "keywords": [
+     "illegal invocation",
+     "unbound",
+     "bind",
+     "this binding",
+     "receiver"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-hono-1ce18c26",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "1ce18c26dcd447972d885520fbbdb06a9b5a15f3",
+  "subject": "feat(sse): Allow sending retry for SSE connection (#2188)",
+  "fix": "44f884321a1d52e98d45a85634da9d5f4751a43a",
+  "fix_subject": "fix(sse): emit empty id field to reset Last-Event-ID (#5138)",
+  "defects": [
+   {
+    "file": "src/helper/streaming/sse.ts",
+    "line_min": 26,
+    "line_max": 30,
+    "keywords": [
+     "falsy",
+     "id: 0",
+     "empty id",
+     "!== undefined",
+     "last-event-id",
+     "zero"
+    ]
+   }
+  ],
+  "excluded": "SZZ mislabel (found by mine.py's predates guard): the falsy `message.id &&` the fix changed to `!== undefined` was already in the parent; the commit only reformatted it"
+ },
+ {
+  "name": "real-hono-ff34b1ba",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "ff34b1ba9adab6e1c9050c2d6a5ef705de31682e",
+  "subject": "feat: support multiple optinal parameters (#1940)",
+  "fix": "d982f637ebab758715f7e68ff35a7c4844450023",
+  "fix_subject": "fix(url): strip trailing question mark correctly for optional params with regex quantifiers (#5209)",
+  "defects": [
+   {
+    "file": "src/utils/url.ts",
+    "line_min": 138,
+    "line_max": 144,
+    "keywords": [
+     "first occurrence",
+     "first '?'",
+     "regex",
+     "quantifier",
+     "only the first",
+     "trailing"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-hono-acb94b15",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "acb94b15fa10418a6f43e24ef660c0d5b40236fd",
+  "subject": "fix(context): encode the redirect location (#4297)",
+  "fix": "d806626b40846315f36398796bb9099b8888ebb2",
+  "fix_subject": "fix(utils/url): prevent double encoding in `safeEncodeURI` (#4306)",
+  "defects": [
+   {
+    "file": "src/utils/url.ts",
+    "line_min": 319,
+    "line_max": 325,
+    "keywords": [
+     "double encod",
+     "double-encod",
+     "already encoded",
+     "%25",
+     "re-encode"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-click-1e02000e",
+  "repo": "click",
+  "url": "https://github.com/pallets/click",
+  "intro": "1e02000e172d4aa46bf4f577ac763b48f5ff01fb",
+  "subject": "add italic and overline to style",
+  "fix": "05b795c917f4146edfe83b2d08c189886b301785",
+  "fix_subject": "Fix copy-paste errors in `click.style()`",
+  "defects": [
+   {
+    "file": "src/click/termui.py",
+    "line_min": 572,
+    "line_max": 578,
+    "keywords": [
+     "copy-paste",
+     "copy paste",
+     "overline",
+     "italic",
+     "underline",
+     "wrong escape"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-click-08ecfd0e",
+  "repo": "click",
+  "url": "https://github.com/pallets/click",
+  "intro": "08ecfd0e7c238a2444886d239de6d0e9d83530ec",
+  "subject": "keep !r format for now",
+  "fix": "92cebe902aa7f03a89f6b261d897964dd9c5fa43",
+  "fix_subject": "fix readable path check error message",
+  "defects": [
+   {
+    "file": "src/click/types.py",
+    "line_min": 878,
+    "line_max": 882,
+    "keywords": [
+     "not executable",
+     "readable",
+     "wrong message",
+     "error message",
+     "copy-paste"
+    ]
+   }
+  ],
+  "excluded": "SZZ mislabel (found by mine.py's predates guard): the readable check already said 'is not executable' in the parent; the commit only changed quoting"
+ },
+ {
+  "name": "real-click-ad52b19c",
+  "repo": "click",
+  "url": "https://github.com/pallets/click",
+  "intro": "ad52b19c84ab47cf6ec4df25b4e89ac939c3b253",
+  "subject": "detect type from flag_value",
+  "fix": "ee56925bc4f5451a125317e183f498e8bd1aecb3",
+  "fix_subject": "Fix is_bool_flag being set to True even if is_flag is False",
+  "defects": [
+   {
+    "file": "src/click/core.py",
+    "line_min": 2512,
+    "line_max": 2516,
+    "keywords": [
+     "is_flag",
+     "is_bool_flag",
+     "non-flag",
+     "bool type",
+     "booltype"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-click-b5464b7e",
+  "repo": "click",
+  "url": "https://github.com/pallets/click",
+  "intro": "b5464b7e065bdfd952b1532880941f1be07e4e2b",
+  "subject": "Only try to set flag_value if is_flag is true (#2829)",
+  "fix": "4fd2fea0db423d242aedcae0a5f664efe0a93484",
+  "fix_subject": "Fix condition for setting flag value when type is provided",
+  "defects": [
+   {
+    "file": "src/click/core.py",
+    "line_min": 2600,
+    "line_max": 2605,
+    "keywords": [
+     "flag_value",
+     "is_flag",
+     "not self.default",
+     "non-flag",
+     "type is provided"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-ripgrep-361698b9",
+  "repo": "ripgrep",
+  "url": "https://github.com/BurntSushi/ripgrep",
+  "intro": "361698b90a6b31feac78ac2f16082342f750a1e1",
+  "subject": "ignore: fix improper hidden filtering",
+  "fix": "23be3cf850386ec0d4d8724fb9bf5ddeaab2c27d",
+  "fix_subject": "ignore: fix handling of **",
+  "defects": [
+   {
+    "file": "ignore/src/gitignore.rs",
+    "line_min": 70,
+    "line_max": 75,
+    "keywords": [
+     "\"**\"",
+     "bare **",
+     "is_only_dir",
+     "double star",
+     "match everything",
+     "directories only"
+    ]
+   }
+  ],
+  "excluded": "SZZ mislabel: the `**` condition was moved unchanged into has_doublestar_prefix; the logic the fix corrected predates this commit"
+ },
+ {
+  "name": "real-clean-hono-47bb23c5",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "47bb23c575a93d5fed4721935481a6a4cbf5cf1a",
+  "subject": "perf(trie-router): avoid calling spread operator for `Object.create(null)` (#3735)",
+  "clean": true,
+  "defects": [],
+  "note": "presumed clean: no mined fix blames this commit"
+ },
+ {
+  "name": "real-clean-hono-3059741b",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "3059741b6ec3afe73a88c705f44eadeb71e1546e",
+  "subject": "perf(router): sort handlers by score only when necessary (#3697)",
+  "clean": true,
+  "defects": [],
+  "note": "presumed clean: no mined fix blames this commit"
+ },
+ {
+  "name": "real-clean-hono-61bee9f6",
+  "repo": "hono",
+  "url": "https://github.com/honojs/hono",
+  "intro": "61bee9f65115771c307519a1dee1281365850b45",
+  "subject": "refactor(hono-base): remove unneeded processes and variables (#3649)",
+  "clean": true,
+  "defects": [],
+  "note": "presumed clean, but review found a real behaviour change: the typeof handler !== 'string' guard was removed, so string args are registered as handlers",
+  "also_valid": [
+   {
+    "file": "src/hono-base.ts",
+    "keywords": [
+     "string args",
+     "typeof handler"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-clean-click-2fdde683",
+  "repo": "click",
+  "url": "https://github.com/pallets/click",
+  "intro": "2fdde68324c386bd967b00ce422daa357432f7cd",
+  "subject": "Cleanup #3126",
+  "clean": true,
+  "defects": [],
+  "note": "presumed clean: no mined fix blames this commit"
+ },
+ {
+  "name": "real-clean-ripgrep-f7ff34fd",
+  "repo": "ripgrep",
+  "url": "https://github.com/BurntSushi/ripgrep",
+  "intro": "f7ff34fdf9d2853f9763aceb28f5dcb014728045",
+  "subject": "searcher: simplify 'replace_bytes' routine",
+  "clean": true,
+  "defects": [],
+  "note": "presumed clean: no mined fix blames this commit"
+ },
+ {
+  "name": "real-clean-ripgrep-861f6d37",
+  "repo": "ripgrep",
+  "url": "https://github.com/BurntSushi/ripgrep",
+  "intro": "861f6d374fa3d599dca86111e9b513772ca3de1a",
+  "subject": "style: simplify string formatting",
+  "clean": true,
+  "defects": [],
+  "note": "presumed clean: no mined fix blames this commit"
+ },
+ {
+  "name": "real-chi-3e5747d1",
+  "repo": "chi",
+  "url": "https://github.com/go-chi/chi",
+  "intro": "3e5747d1f803ed5fd2324c24fb4e2c767241e8a0",
+  "subject": "context: clean RoutePattern suffixes",
+  "fix": "f4ab9b1f050bdcf14bd096399e8bd57363406514",
+  "fix_subject": "fix: #846 (#847)",
+  "defects": [
+   {
+    "file": "context.go",
+    "line_min": 123,
+    "line_max": 128,
+    "keywords": [
+     "root",
+     "\"/\"",
+     "trimsuffix",
+     "empty string",
+     "route pattern"
+    ]
+   }
+  ],
+  "note": "RoutePattern() now unconditionally trims a trailing \"/\", so the root route pattern \"/\" becomes the empty string. The parent returned the joined pattern untouched."
+ },
+ {
+  "name": "real-chi-b74aedb0",
+  "repo": "chi",
+  "url": "https://github.com/go-chi/chi",
+  "intro": "b74aedb047b9ee86e7f0c0154101b65fe255fd9a",
+  "subject": "Introduce simple StripSlashes and RedirectSlashes middleware for handling trailing slashes on routes",
+  "fix": "bb7ee27ff4734d4bf046551a9a0b6ac36516d805",
+  "fix_subject": "middleware: fixes #334 to preserve query params after RedirectSlashes",
+  "defects": [
+   {
+    "file": "middleware/strip.go",
+    "line_min": 29,
+    "line_max": 33,
+    "keywords": [
+     "query",
+     "rawquery",
+     "redirect",
+     "dropped",
+     "query string"
+    ]
+   }
+  ],
+  "note": "New RedirectSlashes builds the redirect target from r.URL.Path only, so any query string is lost on the 301. The middleware did not exist in the parent."
+ },
+ {
+  "name": "real-chi-98de1d83",
+  "repo": "chi",
+  "url": "https://github.com/go-chi/chi",
+  "intro": "98de1d836ac74406c388378b7ff29f03d185f56d",
+  "subject": "middleware.Recoverer, now with pretty stack traces (#496)",
+  "fix": "878fe71fc9e506a63ea6957ed09c9ce84f789e97",
+  "fix_subject": "Fix defaultLogEntry.Panic not respecting NoColor setting (#1050)",
+  "defects": [
+   {
+    "file": "middleware/logger.go",
+    "line_min": 153,
+    "line_max": 155,
+    "keywords": [
+     "nocolor",
+     "usecolor",
+     "color",
+     "hardcoded",
+     "ignored"
+    ]
+   },
+   {
+    "file": "middleware/recoverer.go",
+    "line_min": 58,
+    "line_max": 61,
+    "keywords": [
+     "usecolor := true",
+     "hardcoded",
+     "nocolor",
+     "ansi"
+    ]
+   }
+  ],
+  "note": "defaultLogEntry.Panic now calls PrintPrettyStack, whose parser hardcodes useColor=true, so NoColor loggers emit ANSI escapes. The parent printed the panic with cW(..., l.useColor, ...)."
+ },
+ {
+  "name": "real-gin-2dd31930",
+  "repo": "gin",
+  "url": "https://github.com/gin-gonic/gin",
+  "intro": "2dd31930060c978a84507571f7a3106afbf9673b",
+  "subject": "Support negotiation wildcards, fix #391 (#1112)",
+  "fix": "7cb151bb4c4cfc6018a00a125422ff38a041b9f8",
+  "fix_subject": "fix(context): panic on NegotiateFormat - index out of range (#3397)",
+  "defects": [
+   {
+    "file": "context.go",
+    "line_min": 957,
+    "line_max": 962,
+    "keywords": [
+     "index out of range",
+     "panic",
+     "len(offert)",
+     "bounds",
+     "shorter"
+    ]
+   }
+  ],
+  "note": "The new wildcard loop iterates up to len(accepted) but also indexes offert[i], panicking when the offered type is shorter than the Accept entry. The parent only compared strings with ==."
+ },
+ {
+  "name": "real-gin-3fe92899",
+  "repo": "gin",
+  "url": "https://github.com/gin-gonic/gin",
+  "intro": "3fe928994b7ba7ed16b0c5114ca82a9dafa7a974",
+  "subject": "Update the code logic for latestNode in tree.go (#2897)",
+  "fix": "8eb5f832bac1853fc84c508a2b9406134d39492e",
+  "fix_subject": "fix(router): tree bug where loop index is not decremented. (#3460)",
+  "defects": [
+   {
+    "file": "tree.go",
+    "line_min": 454,
+    "line_max": 457,
+    "keywords": [
+     "loop",
+     "decrement",
+     "index out of range",
+     "skippednodes",
+     "stale length"
+    ]
+   }
+  ],
+  "note": "The new rollback loop `for l := len(*skippedNodes); l > 0; {` never decrements l while shrinking the slice, so a non-matching entry leads to indexing past the end (panic) or wrong backtracking. The parent had no skippedNodes loop."
+ },
+ {
+  "name": "real-gin-a06d546f",
+  "repo": "gin",
+  "url": "https://github.com/gin-gonic/gin",
+  "intro": "a06d546f5c2e853b07fde5a41b1fff102829b116",
+  "subject": "prettify error message for catch-all conflict with existing path segment (#2934)",
+  "fix": "9f598a31aafb92d675f38f1c8371e4ac76f858bf",
+  "fix_subject": "fix(router): catch-all conflicting wildcard (#3812)",
+  "defects": [
+   {
+    "file": "tree.go",
+    "line_min": 351,
+    "line_max": 354,
+    "keywords": [
+     "n.children[0]",
+     "index out of range",
+     "empty children",
+     "panic",
+     "len(n.children)"
+    ]
+   }
+  ],
+  "note": "Building the prettier message indexes n.children[0] without checking that the node has children, causing an index-out-of-range runtime panic instead of the intended conflict message. The parent panicked with a constant string."
+ },
+ {
+  "name": "real-gin-5cc3d595",
+  "repo": "gin",
+  "url": "https://github.com/gin-gonic/gin",
+  "intro": "5cc3d5955f5a03c13daa878c5ef28c33d9a18800",
+  "subject": "Support upload single or multiple files.",
+  "fix": "0f951956d0b8b4b459a2f46bcd4e7118f0306210",
+  "fix_subject": "[FIX] c.Request.FormFile maybe file, need close (#2114)",
+  "defects": [
+   {
+    "file": "context.go",
+    "line_min": 311,
+    "line_max": 314,
+    "keywords": [
+     "close",
+     "leak",
+     "file",
+     "formfile",
+     "discarded"
+    ]
+   }
+  ],
+  "note": "New Context.FormFile discards the multipart.File returned by Request.FormFile without closing it, leaking the (possibly temp-file backed) handle. FormFile did not exist in the parent."
+ },
+ {
+  "name": "real-cobra-21f39ca0",
+  "repo": "cobra",
+  "url": "https://github.com/spf13/cobra",
+  "intro": "21f39ca07ee7bf0c29e1bbdb2ab35df70c64b4b2",
+  "subject": "bash: fix shellcheck errors (#889)",
+  "fix": "bf268956645942d536f2faef6d53f1951f9522a4",
+  "fix_subject": "Fix regression when calling *_custom_func (#1001)",
+  "defects": [
+   {
+    "file": "bash_completions.go",
+    "line_min": 75,
+    "line_max": 77,
+    "keywords": [
+     "read -r c",
+     "clobber",
+     "variable",
+     "local",
+     "$c",
+     "custom_func"
+    ]
+   }
+  ],
+  "note": "The shellcheck rewrite uses `read -r c` loops, overwriting the caller's word-index variable c (declared `local c=0` in the start function) before __custom_func runs. The parent used COMPREPLY=( $(compgen ...) ) with no loop variable."
+ },
+ {
+  "name": "real-clean-chi-15767233",
+  "repo": "chi",
+  "url": "https://github.com/go-chi/chi",
+  "intro": "15767233591fd4267ae99d05299fa3807c375cdd",
+  "subject": "Add Clone method to Context (#1157)",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "Small feature (27 source lines plus tests). git blame at HEAD still attributes all 27 added lines of context.go to this commit, and no later fix/bug commit modified them."
+ },
+ {
+  "name": "real-clean-gin-96ece6a1",
+  "repo": "gin",
+  "url": "https://github.com/gin-gonic/gin",
+  "intro": "96ece6a14123923d00081320486042f568adef32",
+  "subject": "feat(context): add Scheme() with proper reverse proxy support (#4655)",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "presumed clean, but Scheme() trusts client-supplied X-Forwarded-* headers regardless of SetTrustedProxies and returns comma-separated values verbatim",
+  "also_valid": [
+   {
+    "file": "context.go",
+    "keywords": [
+     "x-forwarded",
+     "trusted",
+     "spoof",
+     "comma"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-httpx-6f5865f8",
+  "repo": "httpx",
+  "url": "https://github.com/encode/httpx",
+  "intro": "6f5865f8605b2cf15872388c3d9bc3623bbf265e",
+  "subject": "Read upload files using `read(CHUNK_SIZE)` rather than `iter()`. (#1948)",
+  "fix": "b7dc0c3df68279ce89f016a69a41b27a2346d54d",
+  "fix_subject": "Fix for stream uploads that subclass SyncByteStream/AsyncByteStream (#2016)",
+  "defects": [
+   {
+    "file": "httpx/_content.py",
+    "line_min": 52,
+    "line_max": 57,
+    "keywords": [
+     "syncbytestream",
+     "read()",
+     "chunk_size",
+     "typeerror",
+     "hasattr",
+     "signature"
+    ]
+   },
+   {
+    "file": "httpx/_content.py",
+    "line_min": 77,
+    "line_max": 81,
+    "keywords": [
+     "asyncbytestream",
+     "aread",
+     "chunk_size",
+     "typeerror",
+     "hasattr"
+    ]
+   }
+  ],
+  "note": "The new hasattr(self._stream, 'read') branch also matches SyncByteStream/AsyncByteStream subclasses, whose read()/aread() take no size argument, so read(CHUNK_SIZE) raises TypeError. The parent simply iterated the stream."
+ },
+ {
+  "name": "real-httpx-27df5e49",
+  "repo": "httpx",
+  "url": "https://github.com/encode/httpx",
+  "intro": "27df5e49c7a97a17f68862a3fa901c11e30a4b5a",
+  "subject": "Support for `chunk_size` (#1277)",
+  "fix": "10b60d47c71e352f06c418f31095f381ea36c6b8",
+  "fix_subject": "Fix iter_bytes with empty content (#1827)",
+  "defects": [
+   {
+    "file": "httpx/_models.py",
+    "line_min": 1172,
+    "line_max": 1175,
+    "keywords": [
+     "empty",
+     "chunk_size",
+     "range",
+     "zero",
+     "valueerror",
+     "step"
+    ]
+   },
+   {
+    "file": "httpx/_models.py",
+    "line_min": 1267,
+    "line_max": 1270,
+    "keywords": [
+     "empty",
+     "chunk_size",
+     "range",
+     "zero",
+     "valueerror"
+    ]
+   }
+  ],
+  "note": "With chunk_size=None and empty content, chunk_size becomes len(b'')=0 and range(0, 0, 0) raises ValueError (step must not be zero). The parent yielded self._content directly; the chunking loop is new in this commit."
+ },
+ {
+  "name": "real-httpx-248aa580",
+  "repo": "httpx",
+  "url": "https://github.com/encode/httpx",
+  "intro": "248aa580a1931840acb1dfc22524f2ad71d63b61",
+  "subject": "Add Response.stream_lines (#575)",
+  "fix": "20f4911e805d9cf28b915cc2c7fbae8f27dc2c49",
+  "fix_subject": "Fixes for LineDecoding (#1075)",
+  "defects": [
+   {
+    "file": "httpx/decoders.py",
+    "line_min": 228,
+    "line_max": 233,
+    "keywords": [
+     "\\r",
+     "trailing",
+     "buffer",
+     "line ending",
+     "merged",
+     "newline"
+    ]
+   }
+  ],
+  "note": "LineDecoder.decode only flushes a buffered trailing '\\r' when the next chunk starts with '\\n'; if a chunk ends with '\\r' and the next starts with another character, the two lines get joined. The class is new in this commit."
+ },
+ {
+  "name": "real-flask-9c02f07f",
+  "repo": "flask",
+  "url": "https://github.com/pallets/flask",
+  "intro": "9c02f07f9bb4c88207c2a6860742c452c35d2948",
+  "subject": "deprecate markupsafe exports",
+  "fix": "0ec9192cf25f5187d6521f2539489fa8d55336bb",
+  "fix_subject": "fix importing Markup from flask",
+  "defects": [
+   {
+    "file": "src/flask/__init__.py",
+    "line_min": 80,
+    "line_max": 84,
+    "keywords": [
+     "markup",
+     "escape",
+     "duplicate",
+     "copy-paste",
+     "unreachable",
+     "__getattr__"
+    ]
+   }
+  ],
+  "note": "The module __getattr__ checks name == 'escape' twice; the second branch was meant for 'Markup', so it is unreachable and `from flask import Markup` raises AttributeError. The parent imported Markup directly."
+ },
+ {
+  "name": "real-flask-1636a4c4",
+  "repo": "flask",
+  "url": "https://github.com/pallets/flask",
+  "intro": "1636a4c410a1bf3713bc1da8d4de7ca66cdf1681",
+  "subject": "use SERVER_NAME to set host and port in app.run() (#2152)",
+  "fix": "e1cc16f8bea15f11f63eacaa6089cd6e6b8b1965",
+  "fix_subject": "Fix 0 port value being overriden by default",
+  "defects": [
+   {
+    "file": "flask/app.py",
+    "line_min": 833,
+    "line_max": 835,
+    "keywords": [
+     "port=0",
+     "port 0",
+     "port of 0",
+     "falsy",
+     "is none",
+     "5000",
+     "ephemeral"
+    ]
+   }
+  ],
+  "note": "`port or sn_port or _port` treats an explicit port=0 as missing and replaces it with the default 5000. The parent only fell back when port is None."
+ },
+ {
+  "name": "real-rich-eb370318",
+  "repo": "rich",
+  "url": "https://github.com/Textualize/rich",
+  "intro": "eb370318731e33987908f297fe74a742a8984535",
+  "subject": "fix hash",
+  "fix": "f70eb3cac24f47443cdc571a05b255519deea9b4",
+  "fix_subject": "fix hash again",
+  "defects": [
+   {
+    "file": "rich/style.py",
+    "line_min": 239,
+    "line_max": 244,
+    "keywords": [
+     "self",
+     "classmethod",
+     "nameerror",
+     "style._meta",
+     "hash"
+    ]
+   }
+  ],
+  "note": "In the from_meta classmethod the hash tuple now uses self._meta, but there is no self there, so it raises NameError (should be style._meta). The parent used `meta` at this spot; the self reference is new."
+ },
+ {
+  "name": "real-rich-c55b357f",
+  "repo": "rich",
+  "url": "https://github.com/Textualize/rich",
+  "intro": "c55b357f37d1cc9d4071fd2b92c02433711c3d67",
+  "subject": "added emoji and markup switches",
+  "fix": "f352f74191bb32efd5d8865d632b5c7f6a70d957",
+  "fix_subject": "fix for markup flag not passed through",
+  "defects": [
+   {
+    "file": "rich/console.py",
+    "line_min": 709,
+    "line_max": 711,
+    "keywords": [
+     "markup",
+     "emoji",
+     "ignored",
+     "render_str",
+     "not passed",
+     "flag"
+    ]
+   }
+  ],
+  "note": "_collect_renderables gained emoji/markup parameters but calls self.render_str(renderable) without passing them, so print(..., markup=False/emoji=False) is ignored. The parent at least honored emoji=False."
+ },
+ {
+  "name": "real-clean-flask-daf1510a",
+  "repo": "flask",
+  "url": "https://github.com/pallets/flask",
+  "intro": "daf1510a4bda652ac2cfca03ec5567b03ddf8bf1",
+  "subject": "use template_filter without parens",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "presumed clean, but the new tests use `assert f(), \"value\"` (never compares) and the template_test/global annotations reuse T_template_filter (typing fixed later in edebd370)",
+  "also_valid": [
+   {
+    "file": "src/flask/sansio/app.py",
+    "keywords": [
+     "t_template_filter",
+     "typevar",
+     "annotation"
+    ]
+   },
+   {
+    "file": "src/flask/app.py",
+    "keywords": [
+     "t_template_filter",
+     "typevar",
+     "annotation"
+    ]
+   },
+   {
+    "file": "src/flask/sansio/blueprints.py",
+    "keywords": [
+     "t_template_filter",
+     "typevar",
+     "annotation"
+    ]
+   },
+   {
+    "file": "src/flask/blueprints.py",
+    "keywords": [
+     "t_template_filter",
+     "typevar",
+     "annotation"
+    ]
+   },
+   {
+    "file": "tests/test_templating.py",
+    "keywords": [
+     "comma",
+     "==",
+     "never",
+     "compar"
+    ]
+   },
+   {
+    "file": "tests/test_blueprints.py",
+    "keywords": [
+     "comma",
+     "==",
+     "never",
+     "compar"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-clean-rich-e8e797d1",
+  "repo": "rich",
+  "url": "https://github.com/Textualize/rich",
+  "intro": "e8e797d19d84fc1c580e90e84c00bf6747b6a0d7",
+  "subject": "feat: Traceback - Expose more locals rendering options",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "presumed clean, but the commit misspelled the documented locals_overflow parameter as locals_overlow (renamed later)",
+  "also_valid": [
+   {
+    "file": "rich/traceback.py",
+    "keywords": [
+     "locals_overlow",
+     "misspel",
+     "locals_max_depth"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "real-fd-28d6a4f5",
+  "repo": "fd",
+  "url": "https://github.com/sharkdp/fd",
+  "intro": "28d6a4f518d4519a61b2c969f938421e70445271",
+  "subject": "Check for no valid search paths to prevent panic",
+  "fix": "4f4591bfdccd891a2b18edf166768805c8c99345",
+  "fix_subject": "Correct Err return to prevent panic",
+  "defects": [
+   {
+    "file": "src/main.rs",
+    "line_min": 99,
+    "line_max": 103,
+    "keywords": [
+     "anyhow!",
+     "return",
+     "err",
+     "discarded",
+     "no valid search paths",
+     "panic"
+    ]
+   }
+  ],
+  "note": "The new empty-search-path check builds an anyhow! error but never returns it, so the value is discarded and execution continues to the panic it meant to prevent. The parent had no such check; the intro added it with a missing `return Err(...)`."
+ },
+ {
+  "name": "real-fd-7917c008",
+  "repo": "fd",
+  "url": "https://github.com/sharkdp/fd",
+  "intro": "7917c0088715c370b12b8b2551d1e477ea478d48",
+  "subject": "dir_entry: Implement lscolors::Colorable",
+  "fix": "b2c8888a501d4cf2679c7af595fa5cb935b06dc6",
+  "fix_subject": "dir_entry: Implement file_name() for broken symlinks",
+  "defects": [
+   {
+    "file": "src/dir_entry.rs",
+    "line_min": 121,
+    "line_max": 127,
+    "keywords": [
+     "todo!",
+     "broken symlink",
+     "panic",
+     "file_name",
+     "unimplemented"
+    ]
+   }
+  ],
+  "note": "The new Colorable impl uses todo!() for broken symlinks in file_name(), so coloring a broken symlink panics. This impl is new in the intro commit."
+ },
+ {
+  "name": "real-bat-96ce80d0",
+  "repo": "bat",
+  "url": "https://github.com/sharkdp/bat",
+  "intro": "96ce80d0e27eee0ca8d7fe25f0526465d38a2a54",
+  "subject": "Apply same fix and tests for UTF16BE",
+  "fix": "c2adbf6caad083b137beff082426f228a840e007",
+  "fix_subject": "Fix the first line of UTF-16BE input swallowing the second line",
+  "defects": [
+   {
+    "file": "src/input.rs",
+    "line_min": 269,
+    "line_max": 273,
+    "keywords": [
+     "utf-16be",
+     "first line",
+     "00 0a",
+     "read_until",
+     "swallow",
+     "second line"
+    ]
+   }
+  ],
+  "note": "For UTF-16BE, the initial read_until(b'\\n') already ends at the 00 0A newline, but the new BE branch always calls read_utf16_line, which keeps reading to the next newline and merges lines 1 and 2. The parent only handled UTF-16LE, where the extra read just consumes the trailing 00."
+ },
+ {
+  "name": "real-bat-45ee2dc4",
+  "repo": "bat",
+  "url": "https://github.com/sharkdp/bat",
+  "intro": "45ee2dc4c7277b4697d5b330f59e8ed5efcce99c",
+  "subject": "fix: Wrap file name in header",
+  "fix": "18b71743c8ffc242653960b8fd335f3346b94094",
+  "fix_subject": "Fix for multibyte characters in file path",
+  "defects": [
+   {
+    "file": "src/printer.rs",
+    "line_min": 312,
+    "line_max": 317,
+    "keywords": [
+     "split_at",
+     "multibyte",
+     "char boundary",
+     "bytes",
+     "len",
+     "panic"
+    ]
+   }
+  ],
+  "note": "The new header wrapping uses content.len() and str::split_at(content_width), which count bytes, so a file name with multibyte characters panics when the split falls inside a char (and wraps at the wrong width). The parent did not wrap the header."
+ },
+ {
+  "name": "real-bat-b327127f",
+  "repo": "bat",
+  "url": "https://github.com/sharkdp/bat",
+  "intro": "b327127f373b104b46d062caa5b7016bc02c3a77",
+  "subject": "Split decorations into a separate file and optimized them a bit.",
+  "fix": "9d77c1373c59f9998b9991f1a58ffc6bf679d087",
+  "fix_subject": "Fix off-by-one error in line number continuation",
+  "defects": [
+   {
+    "file": "src/decorations.rs",
+    "line_min": 46,
+    "line_max": 52,
+    "keywords": [
+     "off-by-one",
+     ">=",
+     "10000",
+     "width",
+     "line number",
+     "wrap"
+    ]
+   }
+  ],
+  "note": "cached_wrap_invalid_at is 10000 and the check is `line_number > 10000`, but 10000 already has 5 digits, so the wrap padding for line 10000 is one column too narrow. The new decorations module introduced this logic; the parent had no cached wrap decoration."
+ },
+ {
+  "name": "real-bat-07487834",
+  "repo": "bat",
+  "url": "https://github.com/sharkdp/bat",
+  "intro": "07487834044a1e24247d4c1631447419fdd463d2",
+  "subject": "Support for line range plus syntax",
+  "fix": "9fcc57e4967e56b53c4cd6c436073ec45a23c148",
+  "fix_subject": "fix: integer overflow in `LineRange::parse_range`",
+  "defects": [
+   {
+    "file": "src/line_range.rs",
+    "line_min": 50,
+    "line_max": 56,
+    "keywords": [
+     "overflow",
+     "lower + more_lines",
+     "usize",
+     "checked_add",
+     "panic",
+     "+n"
+    ]
+   }
+  ],
+  "note": "The new `N:+M` syntax computes new_range.lower + more_lines with unchecked usize addition, so large values overflow (a panic in debug builds, wrap-around in release). The parent only parsed a plain upper bound."
+ },
+ {
+  "name": "real-bat-57cc0d84",
+  "repo": "bat",
+  "url": "https://github.com/sharkdp/bat",
+  "intro": "57cc0d843567eef566540074b391f8212d859871",
+  "subject": "Use the `is-terminal` crate instead of `atty`",
+  "fix": "149dec695376da3a74da10ee1201e1f50a245655",
+  "fix_subject": "Fix paging not happening when stdout is interactive but stdin is not",
+  "defects": [
+   {
+    "file": "src/bin/bat/app.rs",
+    "line_min": 104,
+    "line_max": 110,
+    "keywords": [
+     "is_terminal",
+     "negation",
+     "stdin",
+     "paging",
+     "inverted",
+     "!"
+    ]
+   }
+  ],
+  "note": "Migrating `!atty::is(Stream::Stdin)` to `std::io::stdin().is_terminal()` dropped the negation, so paging is disabled when piping into bat and enabled when stdin is a terminal. The parent had the correct negated check."
+ },
+ {
+  "name": "real-clean-fd-36bc8404",
+  "repo": "fd",
+  "url": "https://github.com/sharkdp/fd",
+  "intro": "36bc84041b0e4bca758abb248e18538b75c4774a",
+  "subject": "Support character and block device file types",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "Small feature (char/block device --type) across cli/filesystem/filetypes; almost all added src lines survive unchanged at HEAD and no later fix/bug/regression commit modified them."
+ },
+ {
+  "name": "real-clean-bat-cf72a432",
+  "repo": "bat",
+  "url": "https://github.com/sharkdp/bat",
+  "intro": "cf72a432acd6cb5c72c5eb2935468a0b0d668d87",
+  "subject": "Allow boolean flags to be repeated",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "Small behaviour change making boolean flags self-overriding so config+CLI repeats don't error; all 8 clap_app.rs lines survive at HEAD and no later fix commit touched clap_app.rs."
+ },
+ {
+  "name": "real-zod-9a81173b",
+  "repo": "zod",
+  "url": "https://github.com/colinhacks/zod",
+  "intro": "9a81173ba28d70d856d8db2e5fe6daedc9241fa4",
+  "subject": "Add includes position regex (#4602)",
+  "fix": "51a1368ad449ba0a4dc6e2822dfcbb5ec891700c",
+  "fix_subject": "fix(v4): let the includes(position) pattern match at or after the offset (#6024)",
+  "defects": [
+   {
+    "file": "packages/zod/src/v4/core/checks.ts",
+    "line_min": 954,
+    "line_max": 957,
+    "keywords": [
+     "position",
+     "exactly",
+     "{n,}",
+     "at or after",
+     "regex",
+     "includes"
+    ]
+   }
+  ],
+  "note": "The emitted pattern `^.{N}sub` only matches the substring exactly at offset N, while String.prototype.includes(sub, N) (what the check runs) matches at or after N, so the JSON-schema/regex pattern disagrees with validation. The parent emitted only the unanchored escaped substring."
+ },
+ {
+  "name": "real-zod-5b7ed214",
+  "repo": "zod",
+  "url": "https://github.com/colinhacks/zod",
+  "intro": "5b7ed214526cb5a7cc508aec236603ff79ae9579",
+  "subject": "fix: correct multipleOf float validation using tolerance-based comparison (#5793)",
+  "fix": "2125d30ce58f66170682d5a50ee4a3e2eac568e3",
+  "fix_subject": "fix(v4): accept exact decimal multiples in multipleOf (#6223)",
+  "defects": [
+   {
+    "file": "packages/zod/src/v4/core/util.ts",
+    "line_min": 248,
+    "line_max": 253,
+    "keywords": [
+     "epsilon",
+     "tolerance",
+     "too tight",
+     "floating point",
+     "rounding",
+     "rejects valid multiples"
+    ]
+   }
+  ],
+  "note": "The new ratio check uses a tolerance of one Number.EPSILON scaled by the ratio, smaller than the rounding error of val/step, so exact decimal multiples (e.g. 2.03 vs 0.07) are rejected. The parent's decimal-digit integer remainder accepted them."
+ },
+ {
+  "name": "real-zod-76e8f706",
+  "repo": "zod",
+  "url": "https://github.com/colinhacks/zod",
+  "intro": "76e8f706bb554de82234106de8299d0139cb3b8e",
+  "subject": "fix(v4): skip __proto__ key in object catchall (#5898)",
+  "fix": "e7029aa43b848a14d632bb99394a304a7f205bc9",
+  "fix_subject": "fix(v4): report own __proto__ key under .strict() (#6221)",
+  "defects": [
+   {
+    "file": "packages/zod/src/v4/core/schemas.ts",
+    "line_min": 1852,
+    "line_max": 1858,
+    "keywords": [
+     "__proto__",
+     "strict",
+     "unrecognized",
+     "skipped",
+     "continue",
+     "silently accepted"
+    ]
+   }
+  ],
+  "note": "The new `if (key === \"__proto__\") continue;` runs before the `t === \"never\"` branch, so under .strict() an own __proto__ key is no longer reported as unrecognized and passes validation. The parent pushed every undeclared key to `unrecognized` in strict mode."
+ },
+ {
+  "name": "real-zod-64883e4f",
+  "repo": "zod",
+  "url": "https://github.com/colinhacks/zod",
+  "intro": "64883e4fe41b10eb577c4f9eaf6f24fa29bcd60d",
+  "subject": "feat: z.string().ulid() - add support for ulids (#2049)",
+  "fix": "cd7991e04a550868bfcb5b5d46e5eb5bc7edf5f3",
+  "fix_subject": "fix ulid regex (#2225)",
+  "defects": [
+   {
+    "file": "src/types.ts",
+    "line_min": 539,
+    "line_max": 542,
+    "keywords": [
+     "anchor",
+     "^",
+     "$",
+     "unanchored",
+     "substring",
+     "ulid"
+    ]
+   }
+  ],
+  "note": "The new ulidRegex lacks ^ and $ anchors, so .test() accepts any string that merely contains 26 Crockford base32 characters (e.g. with junk prefix/suffix). The regex is new in this commit; neighbouring format regexes are anchored."
+ },
+ {
+  "name": "real-zod-36fef584",
+  "repo": "zod",
+  "url": "https://github.com/colinhacks/zod",
+  "intro": "36fef58410f4b2c9e79edabae2fc567a4aee13a7",
+  "subject": "Make email regex reasonable (#2157)",
+  "fix": "2ba00fe2377f4d53947a84b8cdb314a63bbd6dd4",
+  "fix_subject": "[2609] fix ReDoS vulnerability in email regex (#2824)",
+  "defects": [
+   {
+    "file": "src/types.ts",
+    "line_min": 560,
+    "line_max": 561,
+    "keywords": [
+     "redos",
+     "catastrophic backtracking",
+     "nested quantifier",
+     "([a-z0-9_+-]+\\.?)*",
+     "regex",
+     "denial of service"
+    ]
+   }
+  ],
+  "note": "The new local-part `([A-Z0-9_+-]+\\.?)*` nests a + inside a * with an optional separator, giving exponential backtracking on long non-matching input (ReDoS). The parent's local part required a literal dot between repeated groups, which is unambiguous."
+ },
+ {
+  "name": "real-ky-c5821a7f",
+  "repo": "ky",
+  "url": "https://github.com/sindresorhus/ky",
+  "intro": "c5821a7fbf1af21f934ee5ed5a76fb224559c530",
+  "subject": "Use request to normalize options (#180)",
+  "fix": "55b2535ab02446c8f1ef93140495cc9f4ed61731",
+  "fix_subject": "Fix retries for requests with a body (#231)",
+  "defects": [
+   {
+    "file": "index.js",
+    "line_min": 434,
+    "line_max": 438,
+    "keywords": [
+     "retry",
+     "body",
+     "already used",
+     "consumed",
+     "clone",
+     "request"
+    ]
+   }
+  ],
+  "note": "_fetch now passes the same Request object to fetch on every retry attempt; a Request body can be read only once, so retried requests with a body (e.g. PUT) fail with 'body already used'. The parent called fetch(this._input, this._options), rebuilding the request each attempt."
+ },
+ {
+  "name": "real-ky-ed17c9a8",
+  "repo": "ky",
+  "url": "https://github.com/sindresorhus/ky",
+  "intro": "ed17c9a84d3afa6830fcaabd6835aa3f3f23c55b",
+  "subject": "Fix problem with debugging timed-out requests (#122)",
+  "fix": "a012fd3ad568b62bf7e07375f1e27498cceadb0e",
+  "fix_subject": "Fix regression for environments without `AbortController` (#125)",
+  "defects": [
+   {
+    "file": "index.js",
+    "line_min": 120,
+    "line_max": 123,
+    "keywords": [
+     "abortcontroller",
+     "undefined",
+     "typeerror",
+     "guard",
+     "unsupported environments",
+     "abort()"
+    ]
+   }
+  ],
+  "note": "The rewritten timeout calls abortController.abort() unconditionally, but abortController is undefined where AbortController is unsupported, so a timeout throws a TypeError instead of only rejecting with TimeoutError. The parent guarded the abort with `if (abortController)`."
+ },
+ {
+  "name": "real-ky-1e749ba0",
+  "repo": "ky",
+  "url": "https://github.com/sindresorhus/ky",
+  "intro": "1e749ba065b4912e9db5b3517320f4ead4adec74",
+  "subject": "Add `context` option (#772)",
+  "fix": "d7f7e73ceede6232e3fc4b835f2ff26361531d34",
+  "fix_subject": "Fix empty `context` object being added to merged `json` body",
+  "defects": [
+   {
+    "file": "source/utils/merge.ts",
+    "line_min": 174,
+    "line_max": 176,
+    "keywords": [
+     "context",
+     "deepmerge",
+     "recursive",
+     "json body",
+     "nested objects",
+     "injected"
+    ]
+   }
+  ],
+  "note": "deepMerge is generic and recursive (it merges nested values such as the json body), yet the commit makes it always add `context: {}` to its result, so merged json payloads and other nested objects gain a spurious `context` key. The parent deepMerge did not add any keys."
+ },
+ {
+  "name": "real-clean-zod-9446b5cc",
+  "repo": "zod",
+  "url": "https://github.com/colinhacks/zod",
+  "intro": "9446b5cc14c5bf137790f1f66abf602044871223",
+  "subject": "fix: preserve undefined prefault outputs and object keys (#6587)",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "Non-merge behaviour fix (126 changed lines); 47 later commits exist and every added source line is still blamed to this commit at HEAD, so no later fix modified them."
+ },
+ {
+  "name": "real-clean-ky-0bda554d",
+  "repo": "ky",
+  "url": "https://github.com/sindresorhus/ky",
+  "intro": "0bda554d448c1b57c17a5c18114432c02465d467",
+  "subject": "Fix `signal` replacement when extending instances (#880)",
+  "fix": "",
+  "fix_subject": "",
+  "defects": [],
+  "clean": true,
+  "note": "Non-merge behaviour fix (86 changed lines incl. tests); 100 later commits, many fixes to merge.ts, but all its added source lines are still blamed to it at HEAD."
+ }
+]

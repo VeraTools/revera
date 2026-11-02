@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "httpx/decoders.py",
+   "line_min": 228,
+   "line_max": 233,
+   "keywords": [
+    "\\r",
+    "trailing",
+    "buffer",
+    "line ending",
+    "merged",
+    "newline"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/encode/httpx",
+  "intro": "248aa580a1931840acb1dfc22524f2ad71d63b61",
+  "fix": "20f4911e805d9cf28b915cc2c7fbae8f27dc2c49"
+ }
+}

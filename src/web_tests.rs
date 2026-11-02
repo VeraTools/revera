@@ -742,6 +742,7 @@ async fn fresh_validator_independently_retrieves_and_keeps_missing_or_conflictin
             ledger,
             &tb,
             &diff,
+            "",
             &mut candidates,
             crate::prompts::VALIDATOR,
             &validator_terminal(),

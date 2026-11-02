@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "src/adapter/service-worker/handler.ts",
+   "line_min": 17,
+   "line_max": 22,
+   "keywords": [
+    "illegal invocation",
+    "unbound",
+    "bind",
+    "this binding",
+    "receiver"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "f0b012ddf75164953bff9b7d5f598a6fb030d6c4",
+  "fix": "de7827ee279c84285ac72deb5badd80bcca4d00c"
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/colinhacks/zod",
+  "intro": "9446b5cc14c5bf137790f1f66abf602044871223",
+  "fix": ""
+ }
+}

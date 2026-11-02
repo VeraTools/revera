@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "src/dir_entry.rs",
+   "line_min": 121,
+   "line_max": 127,
+   "keywords": [
+    "todo!",
+    "broken symlink",
+    "panic",
+    "file_name",
+    "unimplemented"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/fd",
+  "intro": "7917c0088715c370b12b8b2551d1e477ea478d48",
+  "fix": "b2c8888a501d4cf2679c7af595fa5cb935b06dc6"
+ }
+}

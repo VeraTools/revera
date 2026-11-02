@@ -1,0 +1,20 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [
+  {
+   "file": "context.go",
+   "keywords": [
+    "x-forwarded",
+    "trusted",
+    "spoof",
+    "comma"
+   ]
+  }
+ ],
+ "source": {
+  "repo": "https://github.com/gin-gonic/gin",
+  "intro": "96ece6a14123923d00081320486042f568adef32",
+  "fix": ""
+ }
+}

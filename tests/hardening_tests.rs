@@ -61,13 +61,28 @@ fn anchor_drops_invalid_end_line() {
         sources: vec![],
     };
     // end < start -> dropped
-    let r = anchor(&diff, vec![mk(Some(1))], 10);
+    let r = anchor(
+        &diff,
+        vec![mk(Some(1))],
+        10,
+        revera::findings::Severity::Low,
+    );
     assert_eq!(r[0].finding.end_line, None);
     // end not a head-side diff line (line 100 doesn't exist) -> dropped
-    let r = anchor(&diff, vec![mk(Some(100))], 10);
+    let r = anchor(
+        &diff,
+        vec![mk(Some(100))],
+        10,
+        revera::findings::Severity::Low,
+    );
     assert_eq!(r[0].finding.end_line, None);
     // valid range kept
-    let r = anchor(&diff, vec![mk(Some(3))], 10);
+    let r = anchor(
+        &diff,
+        vec![mk(Some(3))],
+        10,
+        revera::findings::Severity::Low,
+    );
     assert_eq!(r[0].finding.end_line, Some(3));
     assert_eq!(r[0].placement, Placement::Inline);
 }
@@ -518,6 +533,7 @@ vera: {executable: "true", version: "1.4.1", backend: api}
         LedgerHandle::new(),
         &toolbox,
         &diff,
+        "",
         &mut cands,
         "sys",
         &term,

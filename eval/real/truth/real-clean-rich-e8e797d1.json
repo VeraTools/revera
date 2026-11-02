@@ -1,0 +1,19 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [
+  {
+   "file": "rich/traceback.py",
+   "keywords": [
+    "locals_overlow",
+    "misspel",
+    "locals_max_depth"
+   ]
+  }
+ ],
+ "source": {
+  "repo": "https://github.com/Textualize/rich",
+  "intro": "e8e797d19d84fc1c580e90e84c00bf6747b6a0d7",
+  "fix": ""
+ }
+}

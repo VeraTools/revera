@@ -230,6 +230,53 @@ fn validation_disabled_run_does_not_recheck_prior_findings() {
 }
 
 #[test]
+fn twice_blank_validator_rationale_is_uncertain() {
+    let repo = two_commit_repo();
+    let w = tempfile::tempdir().unwrap();
+    let inv = serde_json::json!({
+        "roles": {"investigator": [[{"tool_calls": [{
+            "name": "submit_findings",
+            "arguments": {"findings": [{
+                "defect_key": "div-zero", "severity": "high", "file": "src/lib.rs",
+                "start_line": 2, "title": "division can fail", "claim": "b - 1 can be zero",
+                "introduced_by_change": true
+            }], "coverage": "checked"}
+        }]}]]}
+    });
+    let blank = serde_json::json!({"tool_calls": [{
+        "name": "submit_verdict",
+        "arguments": {"validation_status": "accepted", "rationale": " \n "}
+    }]});
+    let val = serde_json::json!({"roles": {"validator": [[blank, blank]]}});
+    std::fs::write(w.path().join("inv.json"), inv.to_string()).unwrap();
+    std::fs::write(w.path().join("val.json"), val.to_string()).unwrap();
+    let cfg = w.path().join("cfg.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "review: {{min_severity: low}}\nvera: {{enabled: false}}\nmodels:\n  investigator: {{protocol: scripted, script: \"{}\", model: i}}\n  validator: {{protocol: scripted, script: \"{}\", model: v}}\n",
+            w.path().join("inv.json").display(),
+            w.path().join("val.json").display()
+        ),
+    )
+    .unwrap();
+
+    let report = review_run(repo.path(), &cfg, &w.path().join("report.json"));
+    assert_eq!(validator_requests(&report), 2, "{report}");
+    assert_eq!(report["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(report["findings"][0]["validation_status"], "uncertain");
+    assert!(
+        report["findings"][0]["rationale"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("validator returned malformed verdict: ")
+                && r.contains("submit_verdict has no `rationale`")),
+        "{report}"
+    );
+    assert_eq!(report["stats"]["accepted"], 0);
+    assert!(report["plan"]["inline"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn validator_fix_replaces_unsafe_investigator_fix_and_reuse_drops_it() {
     let repo = two_commit_repo();
     let w = tempfile::tempdir().unwrap();

@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/pallets/click",
+  "intro": "2fdde68324c386bd967b00ce422daa357432f7cd",
+  "fix": null
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/utils/url.ts",
+   "line_min": 138,
+   "line_max": 144,
+   "keywords": [
+    "first occurrence",
+    "first '?'",
+    "regex",
+    "quantifier",
+    "only the first",
+    "trailing"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "ff34b1ba9adab6e1c9050c2d6a5ef705de31682e",
+  "fix": "d982f637ebab758715f7e68ff35a7c4844450023"
+ }
+}

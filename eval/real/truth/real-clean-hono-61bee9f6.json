@@ -1,0 +1,18 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [
+  {
+   "file": "src/hono-base.ts",
+   "keywords": [
+    "string args",
+    "typeof handler"
+   ]
+  }
+ ],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "61bee9f65115771c307519a1dee1281365850b45",
+  "fix": null
+ }
+}

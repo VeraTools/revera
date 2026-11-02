@@ -254,6 +254,17 @@ impl ModelClient for CappedClient {
         }
         self.inner.complete(messages, tools).await
     }
+    async fn complete_capped(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: crate::config::ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        if self.ledger.request_count() >= self.max {
+            return Err(ProviderError::BudgetExhausted);
+        }
+        self.inner.complete_capped(messages, tools, cap).await
+    }
 }
 
 /// Child entry point: use only inside the OS sandbox. The controller should use

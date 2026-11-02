@@ -183,8 +183,10 @@ ownership check:
 > Evidence: src/github/publish.rs:87, src/github/publish.rs:184,
 > src/github/api.rs:102, tests/outcome_tests.rs:530
 
-Accepted findings appear inline when they can be anchored to the diff;
-others appear in the managed summary. The summary reports completion and
+By default, accepted findings of medium severity or higher appear inline
+when they can be anchored to the diff; others, including low-severity
+findings, appear in the managed summary (`review.inline_min_severity`
+changes the bar). The summary reports completion and
 tracks open, resolved and reopened findings across pushes.
 
 The dashboard shows accepted findings with evidence and links to the reviewed

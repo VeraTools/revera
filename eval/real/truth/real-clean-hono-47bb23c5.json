@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "47bb23c575a93d5fed4721935481a6a4cbf5cf1a",
+  "fix": null
+ }
+}

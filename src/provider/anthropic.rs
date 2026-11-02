@@ -186,13 +186,13 @@ impl AnthropicAdapter {
 
     /// Thinking budget `build()` emits for this attempt state. Effort is
     /// mapped to a budget (capped by `attempt.reasoning_cap` like the
-    /// openai adapters); explicit budget_tokens still wins.
+    /// openai adapters); explicit budget_tokens wins unless a cap lowers it.
     fn budget(&self, attempt: &AttemptState) -> u64 {
-        let eff = super::http::capped_effort(self.route.reasoning.effort(), attempt);
-        self.route
-            .reasoning
-            .budget_tokens()
-            .unwrap_or_else(|| eff.budget())
+        super::http::capped_budget(
+            self.route.reasoning.budget_tokens(),
+            self.route.reasoning.effort(),
+            attempt,
+        )
     }
 }
 

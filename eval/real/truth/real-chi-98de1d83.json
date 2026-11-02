@@ -1,0 +1,34 @@
+{
+ "defects": [
+  {
+   "file": "middleware/logger.go",
+   "line_min": 153,
+   "line_max": 155,
+   "keywords": [
+    "nocolor",
+    "usecolor",
+    "color",
+    "hardcoded",
+    "ignored"
+   ]
+  },
+  {
+   "file": "middleware/recoverer.go",
+   "line_min": 58,
+   "line_max": 61,
+   "keywords": [
+    "usecolor := true",
+    "hardcoded",
+    "nocolor",
+    "ansi"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/go-chi/chi",
+  "intro": "98de1d836ac74406c388378b7ff29f03d185f56d",
+  "fix": "878fe71fc9e506a63ea6957ed09c9ce84f789e97"
+ }
+}

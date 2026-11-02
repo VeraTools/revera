@@ -1,0 +1,36 @@
+{
+ "defects": [
+  {
+   "file": "httpx/_content.py",
+   "line_min": 52,
+   "line_max": 57,
+   "keywords": [
+    "syncbytestream",
+    "read()",
+    "chunk_size",
+    "typeerror",
+    "hasattr",
+    "signature"
+   ]
+  },
+  {
+   "file": "httpx/_content.py",
+   "line_min": 77,
+   "line_max": 81,
+   "keywords": [
+    "asyncbytestream",
+    "aread",
+    "chunk_size",
+    "typeerror",
+    "hasattr"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/encode/httpx",
+  "intro": "6f5865f8605b2cf15872388c3d9bc3623bbf265e",
+  "fix": "b7dc0c3df68279ce89f016a69a41b27a2346d54d"
+ }
+}

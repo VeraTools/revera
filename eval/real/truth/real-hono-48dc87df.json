@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/utils/filepath.ts",
+   "line_min": 24,
+   "line_max": 28,
+   "keywords": [
+    "first backslash",
+    "only the first",
+    "global flag",
+    "/g",
+    "replaceall",
+    "all backslashes"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "48dc87dfd542b9b8f1a442c2d0abab5d13ed4a3b",
+  "fix": "82dad6297c90c33c41bf48b4530509a21588ad06"
+ }
+}

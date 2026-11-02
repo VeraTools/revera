@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/types.ts",
+   "line_min": 539,
+   "line_max": 542,
+   "keywords": [
+    "anchor",
+    "^",
+    "$",
+    "unanchored",
+    "substring",
+    "ulid"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/colinhacks/zod",
+  "intro": "64883e4fe41b10eb577c4f9eaf6f24fa29bcd60d",
+  "fix": "cd7991e04a550868bfcb5b5d46e5eb5bc7edf5f3"
+ }
+}

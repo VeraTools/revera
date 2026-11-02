@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "index.js",
+   "line_min": 434,
+   "line_max": 438,
+   "keywords": [
+    "retry",
+    "body",
+    "already used",
+    "consumed",
+    "clone",
+    "request"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sindresorhus/ky",
+  "intro": "c5821a7fbf1af21f934ee5ed5a76fb224559c530",
+  "fix": "55b2535ab02446c8f1ef93140495cc9f4ed61731"
+ }
+}

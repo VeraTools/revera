@@ -1,0 +1,10 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/BurntSushi/ripgrep",
+  "intro": "f7ff34fdf9d2853f9763aceb28f5dcb014728045",
+  "fix": null
+ }
+}

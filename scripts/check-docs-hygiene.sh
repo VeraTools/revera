@@ -13,6 +13,9 @@ import sys
 from pathlib import Path
 
 FORBIDDEN = {
+    8: {
+        "90e6d56e1aae9367d608f6210c23977fdce63bc3cb64a372aa44cd5f714fb8d9",
+    },
     9: {
         "d4a62f38047e17888d1e10189cab2ab26ec111d010d08e0e14aec4ae43e08ef5",
     },

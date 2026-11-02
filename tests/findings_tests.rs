@@ -94,7 +94,12 @@ fn anchor_inline_vs_summary() {
     outside.validation_status = Some(ValidationStatus::Accepted);
     let mut other = finding("other.rs", "k3", 12, Severity::High);
     other.validation_status = Some(ValidationStatus::Accepted);
-    let out = anchor(&d, vec![inside, outside, other], 10);
+    let out = anchor(
+        &d,
+        vec![inside, outside, other],
+        10,
+        revera::findings::Severity::Low,
+    );
     assert_eq!(out[0].placement, Placement::Inline);
     assert_eq!(out[1].placement, Placement::Summary);
     assert_eq!(out[2].placement, Placement::Summary);
@@ -112,6 +117,7 @@ fn anchor_caps_inline() {
         &d,
         vec![mk(12, Severity::Low, "a"), mk(11, Severity::High, "b")],
         1,
+        revera::findings::Severity::Low,
     );
     let inline: Vec<_> = out
         .iter()
@@ -119,4 +125,56 @@ fn anchor_caps_inline() {
         .collect();
     assert_eq!(inline.len(), 1);
     assert_eq!(inline[0].finding.severity, Severity::High);
+}
+
+#[test]
+fn anchor_lists_findings_below_the_inline_bar_in_the_summary() {
+    let d = parse_unified(DIFF);
+    let mk = |line: u32, sev: Severity, key: &str| {
+        let mut f = finding("src/x.rs", key, line, sev);
+        f.validation_status = Some(ValidationStatus::Accepted);
+        f
+    };
+    let out = anchor(
+        &d,
+        vec![mk(12, Severity::Low, "a"), mk(11, Severity::Medium, "b")],
+        1,
+        Severity::Medium,
+    );
+    assert_eq!(out[0].placement, Placement::Summary);
+    assert!(out[0].quiet, "low goes quiet");
+    assert_eq!(out[1].placement, Placement::Inline, "the cap slot is kept");
+    assert!(!out[1].quiet);
+
+    // a low finding outside the diff is quiet too, not "outside the diff"
+    let outside = anchor(&d, vec![mk(400, Severity::Low, "c")], 10, Severity::Medium);
+    assert_eq!(outside[0].placement, Placement::Summary);
+    assert!(outside[0].quiet);
+
+    let all = anchor(&d, vec![mk(12, Severity::Low, "a")], 10, Severity::Low);
+    assert_eq!(all[0].placement, Placement::Inline);
+    assert!(!all[0].quiet);
+}
+
+#[test]
+fn summary_lists_lower_severity_findings_once_under_their_own_heading() {
+    let mut low = finding("src/x.rs", "a", 12, Severity::Low);
+    low.validation_status = Some(ValidationStatus::Accepted);
+    low.title = "quiet one".into();
+    let mut high = finding("src/x.rs", "b", 11, Severity::High);
+    high.validation_status = Some(ValidationStatus::Accepted);
+    high.title = "loud one".into();
+    let findings = vec![low.clone(), high];
+    let lower = vec![&low];
+    let s = revera::report::summary_markdown(&revera::report::Summary {
+        findings: &findings,
+        lower_severity: &lower,
+        ..Default::default()
+    });
+    let head = s
+        .find("### Lower-severity findings (not posted inline)")
+        .expect("section present");
+    assert_eq!(s.matches("quiet one").count(), 1, "{s}");
+    assert!(s.find("quiet one").unwrap() > head, "{s}");
+    assert!(s.find("loud one").unwrap() < head, "{s}");
 }

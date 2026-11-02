@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "bash_completions.go",
+   "line_min": 75,
+   "line_max": 77,
+   "keywords": [
+    "read -r c",
+    "clobber",
+    "variable",
+    "local",
+    "$c",
+    "custom_func"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/spf13/cobra",
+  "intro": "21f39ca07ee7bf0c29e1bbdb2ab35df70c64b4b2",
+  "fix": "bf268956645942d536f2faef6d53f1951f9522a4"
+ }
+}

@@ -236,7 +236,8 @@ fn exact_suggestion_is_right_anchored_and_backticks_cannot_escape_fence() {
         body.contains("`````suggestion\nfixed(````)\n\n`````"),
         "{body}"
     );
-    let anchored = revera::pipeline::anchor::anchor(&diff(), vec![f], 1);
+    let anchored =
+        revera::pipeline::anchor::anchor(&diff(), vec![f], 1, revera::findings::Severity::Low);
     assert_eq!(anchored[0].finding.start_line, 2);
     assert_eq!(anchored[0].finding.end_line, None);
     assert_eq!(
@@ -401,6 +402,7 @@ async fn validator_checks_suggestions_against_pinned_head_not_dirty_worktree() {
         revera::provider::LedgerHandle::new(),
         &toolbox,
         &diff,
+        "",
         &mut candidates,
         "Validate the finding",
         &revera::pipeline::validate::validator_terminal(),

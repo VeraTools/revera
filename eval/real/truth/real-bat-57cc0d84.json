@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/bin/bat/app.rs",
+   "line_min": 104,
+   "line_max": 110,
+   "keywords": [
+    "is_terminal",
+    "negation",
+    "stdin",
+    "paging",
+    "inverted",
+    "!"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/bat",
+  "intro": "57cc0d843567eef566540074b391f8212d859871",
+  "fix": "149dec695376da3a74da10ee1201e1f50a245655"
+ }
+}

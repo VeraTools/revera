@@ -372,3 +372,325 @@ async fn low_tool_budget_is_announced_once_before_exhaustion() {
         "{user:?}"
     );
 }
+
+/// Stalls on its first turn (still thinking when the soft deadline passes),
+/// then answers the budget notice with a terminal submission.
+struct SlowThenSubmit {
+    calls: Mutex<u32>,
+    capped: Mutex<u32>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for SlowThenSubmit {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        if n == 1 {
+            std::future::pending::<()>().await;
+        }
+        let asked = m
+            .last()
+            .and_then(|x| x.content.as_deref())
+            .is_some_and(|c| c.contains("Budget exhausted"));
+        assert!(asked, "the wrap-up turn must carry the budget notice");
+        Ok(Completion {
+            message: assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [{"title": "t"}], "coverage": "partial"}),
+            )]),
+            usage: Usage::default(),
+            model: "stub".into(),
+            latency_ms: 0,
+        })
+    }
+    async fn complete_capped(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+        cap: revera::config::ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        assert_eq!(cap, revera::config::ReasoningEffort::Low);
+        *self.capped.lock().unwrap() += 1;
+        self.complete(m, t).await
+    }
+    fn route_label(&self) -> String {
+        "slow".into()
+    }
+}
+
+/// A completion still in flight at the soft deadline is dropped and the
+/// reserve is spent on a low-effort wrap-up turn, so candidates are
+/// submitted instead of the whole investigation being discarded. The run
+/// still ends within the hard budget.
+#[tokio::test]
+async fn slow_turn_at_the_deadline_still_submits() {
+    let t0 = std::time::Instant::now();
+    let client = SlowThenSubmit {
+        calls: Mutex::new(0),
+        capped: Mutex::new(0),
+    };
+    let r = run_agent(
+        &client,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    let call = r.final_call.expect("submission made in the reserve");
+    assert_eq!(call.arguments["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(*client.calls.lock().unwrap(), 2);
+    // only the wrap-up turn runs at the capped effort
+    assert_eq!(*client.capped.lock().unwrap(), 1);
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(4),
+        "{:?}",
+        t0.elapsed()
+    );
+}
+
+/// Records the text of every message each call receives.
+struct Recording {
+    inner: Stub,
+    seen: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for Recording {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let text: Vec<&str> = m.iter().filter_map(|x| x.content.as_deref()).collect();
+        self.seen.lock().unwrap().push(text.join("\n"));
+        self.inner.complete(m, t).await
+    }
+    fn route_label(&self) -> String {
+        "recording".into()
+    }
+}
+
+/// A malformed verdict is sent back once with the parse error; the
+/// corrected resubmission is the run's final call.
+#[tokio::test]
+async fn malformed_verdict_gets_one_corrected_resubmission() {
+    let client = Recording {
+        seen: Mutex::new(vec![]),
+        inner: Stub {
+            replies: Mutex::new(VecDeque::from(vec![
+                assistant_calls(vec![("submit_findings", json!({"verdict": "accepted"}))]),
+                assistant_calls(vec![(
+                    "submit_findings",
+                    json!({
+                        "validation_status": "accepted",
+                        "counterevidence_checked": ["a.rs:1"],
+                        "rationale": "seen"
+                    }),
+                )]),
+            ])),
+        },
+    };
+    let r = revera::agent::run_agent_checked(
+        &client,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &budget(),
+        &revera::pipeline::validate::verdict_terminal_check,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert!(r.repaired, "the first submission was refused and repaired");
+    assert_eq!(
+        r.final_call.unwrap().arguments["validation_status"],
+        "accepted"
+    );
+    // the retry turn carries the parse error that names the missing field
+    let seen = client.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(!seen[0].contains("validation_status"), "{}", seen[0]);
+    assert!(seen[1].contains("validation_status"), "{}", seen[1]);
+}
+
+/// Finishes a research turn just after the soft deadline (inside the hard
+/// budget), then hangs on the wrap-up turn.
+struct LateThenHang {
+    calls: Mutex<u32>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for LateThenHang {
+    async fn complete(
+        &self,
+        _m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        // turn 1 ends just before the soft deadline (1.5 s on a 2 s budget);
+        // turn 2 starts inside it with the 1 s minimum timeout and ends just
+        // after it, so the budget notice follows a successful turn
+        let pause = match n {
+            1 => Some(1450),
+            2 => Some(200),
+            _ => None,
+        };
+        if let Some(ms) = pause {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            return Ok(Completion {
+                message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
+                usage: Usage::default(),
+                model: "stub".into(),
+                latency_ms: 0,
+            });
+        }
+        std::future::pending::<()>().await;
+        unreachable!()
+    }
+    fn route_label(&self) -> String {
+        "late".into()
+    }
+}
+
+/// The notice sent after the soft deadline gets only what is left of the
+/// hard budget, not the extra grace that applies once it is already spent.
+#[tokio::test]
+async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
+    let t0 = std::time::Instant::now();
+    let r = run_agent(
+        &LateThenHang {
+            calls: Mutex::new(0),
+        },
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.stopped, StopReason::TimeBudget);
+    assert!(
+        t0.elapsed() <= std::time::Duration::from_millis(2500),
+        "ran {:?} on a 2 s budget",
+        t0.elapsed()
+    );
+}
+
+/// A provider future can finish after the deadline without yielding to the
+/// timer. Its notice is sent after the hard deadline and receives grace;
+/// the late tool batch is accounted for but never executed.
+struct BlockingThenSubmit;
+
+#[async_trait::async_trait]
+impl ModelClient for BlockingThenSubmit {
+    async fn complete(
+        &self,
+        m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        if m.len() == 2 {
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            return Ok(Completion {
+                message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
+                usage: Usage::default(),
+                model: "blocking".into(),
+                latency_ms: 0,
+            });
+        }
+        assert!(m.iter().any(|message| {
+            message
+                .content
+                .as_deref()
+                .is_some_and(|s| s.contains("Budget exhausted"))
+        }));
+        assert!(m.iter().any(|message| {
+            message.role == Role::Tool
+                && message
+                    .content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("not executed: time budget"))
+        }));
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].name, "submit_findings");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        Ok(Completion {
+            message: assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [], "coverage": "budget"}),
+            )]),
+            usage: Usage::default(),
+            model: "blocking".into(),
+            latency_ms: 0,
+        })
+    }
+
+    fn route_label(&self) -> String {
+        "blocking".into()
+    }
+}
+
+#[tokio::test]
+async fn successful_ordinary_turn_past_hard_deadline_allows_notice_grace() {
+    let start = std::time::Instant::now();
+    let run = run_agent(
+        &BlockingThenSubmit,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert_eq!(run.tool_calls, 1);
+    assert!(run.final_call.is_some());
+    assert!(start.elapsed() <= std::time::Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn already_spent_hard_budget_still_allows_one_grace_submission() {
+    let stub = Stub {
+        replies: Mutex::new(VecDeque::new()),
+    };
+    let run = run_agent(
+        &stub,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+}

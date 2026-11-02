@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/types.ts",
+   "line_min": 560,
+   "line_max": 561,
+   "keywords": [
+    "redos",
+    "catastrophic backtracking",
+    "nested quantifier",
+    "([a-z0-9_+-]+\\.?)*",
+    "regex",
+    "denial of service"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/colinhacks/zod",
+  "intro": "36fef58410f4b2c9e79edabae2fc567a4aee13a7",
+  "fix": "2ba00fe2377f4d53947a84b8cdb314a63bbd6dd4"
+ }
+}

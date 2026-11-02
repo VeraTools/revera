@@ -83,6 +83,28 @@ impl ModelClient for FallbackClient {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
+        self.complete_routes(messages, tools, None).await
+    }
+
+    async fn complete_capped(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: crate::config::ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        self.complete_routes(messages, tools, Some(cap)).await
+    }
+}
+
+impl FallbackClient {
+    /// Try each available route in order; `cap` limits the reasoning effort
+    /// on whichever route answers.
+    async fn complete_routes(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: Option<crate::config::ReasoningEffort>,
+    ) -> Result<Completion, ProviderError> {
         let start = self.position.load(Ordering::Acquire);
         let mut failed = None;
         let mut last_error = ProviderError::MissingKey("no available route".into());
@@ -110,7 +132,10 @@ impl ModelClient for FallbackClient {
                     message
                 })
                 .collect();
-            let result = client.complete(&replay, tools).await;
+            let result = match cap {
+                Some(cap) => client.complete_capped(&replay, tools, cap).await,
+                None => client.complete(&replay, tools).await,
+            };
             if !matches!(result, Err(ProviderError::BudgetExhausted))
                 && let Some((from_model, reason)) = &failed
             {

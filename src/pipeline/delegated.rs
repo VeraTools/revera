@@ -597,6 +597,7 @@ vera: {}
             reserve: Duration::ZERO,
             wall: Instant::now(),
             timing: crate::timing::Recorder::default(),
+            intent: String::new(),
         };
         if skipped > 0 {
             prep.partial_reasons

@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "src/utils/url.ts",
+   "line_min": 319,
+   "line_max": 325,
+   "keywords": [
+    "double encod",
+    "double-encod",
+    "already encoded",
+    "%25",
+    "re-encode"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/honojs/hono",
+  "intro": "acb94b15fa10418a6f43e24ef660c0d5b40236fd",
+  "fix": "d806626b40846315f36398796bb9099b8888ebb2"
+ }
+}

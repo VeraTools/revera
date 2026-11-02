@@ -1,0 +1,61 @@
+{
+ "defects": [],
+ "clean": true,
+ "also_valid": [
+  {
+   "file": "src/flask/sansio/app.py",
+   "keywords": [
+    "t_template_filter",
+    "typevar",
+    "annotation"
+   ]
+  },
+  {
+   "file": "src/flask/app.py",
+   "keywords": [
+    "t_template_filter",
+    "typevar",
+    "annotation"
+   ]
+  },
+  {
+   "file": "src/flask/sansio/blueprints.py",
+   "keywords": [
+    "t_template_filter",
+    "typevar",
+    "annotation"
+   ]
+  },
+  {
+   "file": "src/flask/blueprints.py",
+   "keywords": [
+    "t_template_filter",
+    "typevar",
+    "annotation"
+   ]
+  },
+  {
+   "file": "tests/test_templating.py",
+   "keywords": [
+    "comma",
+    "==",
+    "never",
+    "compar"
+   ]
+  },
+  {
+   "file": "tests/test_blueprints.py",
+   "keywords": [
+    "comma",
+    "==",
+    "never",
+    "compar"
+   ]
+  }
+ ],
+ "source": {
+  "repo": "https://github.com/pallets/flask",
+  "intro": "daf1510a4bda652ac2cfca03ec5567b03ddf8bf1",
+  "fix": ""
+ }
+}

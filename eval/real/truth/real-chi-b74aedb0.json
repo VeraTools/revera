@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "middleware/strip.go",
+   "line_min": 29,
+   "line_max": 33,
+   "keywords": [
+    "query",
+    "rawquery",
+    "redirect",
+    "dropped",
+    "query string"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/go-chi/chi",
+  "intro": "b74aedb047b9ee86e7f0c0154101b65fe255fd9a",
+  "fix": "bb7ee27ff4734d4bf046551a9a0b6ac36516d805"
+ }
+}

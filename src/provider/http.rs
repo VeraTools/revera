@@ -67,6 +67,21 @@ pub fn capped_effort(requested: ReasoningEffort, attempt: &AttemptState) -> Reas
     }
 }
 
+/// Thinking-token budget after applying `attempt.reasoning_cap`. An explicit
+/// `budget_tokens` wins over the effort mapping, but a cap still lowers it,
+/// so a capped call (the agent's wrap-up turn) is cheaper on budget routes too.
+pub fn capped_budget(
+    explicit: Option<u64>,
+    requested: ReasoningEffort,
+    attempt: &AttemptState,
+) -> u64 {
+    match (explicit, attempt.reasoning_cap) {
+        (Some(b), Some(cap)) => b.min(cap.budget()),
+        (Some(b), None) => b,
+        (None, _) => capped_effort(requested, attempt).budget(),
+    }
+}
+
 /// What the adapter asks the transport to do with a response.
 pub enum Parse {
     /// Successfully parsed assistant message + token usage.
@@ -223,12 +238,26 @@ impl HttpTransport {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
+        self.send_capped(adapter, messages, tools, None).await
+    }
+
+    /// `send` with the reasoning effort capped from the first attempt.
+    pub async fn send_capped<A: ProtocolAdapter>(
+        &self,
+        adapter: &A,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: Option<ReasoningEffort>,
+    ) -> Result<Completion, ProviderError> {
         let tel = Telemetry {
             label: adapter.label(),
             model: adapter.model().to_string(),
             requested: adapter.requested_reasoning(),
         };
-        let mut attempt = AttemptState::default();
+        let mut attempt = AttemptState {
+            reasoning_cap: cap,
+            ..AttemptState::default()
+        };
         let mut attempts = 0u32;
         let mut retries_used = 0u32;
         let start = Instant::now();
@@ -473,5 +502,16 @@ impl<A: ProtocolAdapter> super::ModelClient for HttpClient<A> {
         tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
         self.transport.send(&self.adapter, messages, tools).await
+    }
+
+    async fn complete_capped(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        cap: ReasoningEffort,
+    ) -> Result<Completion, ProviderError> {
+        self.transport
+            .send_capped(&self.adapter, messages, tools, Some(cap))
+            .await
     }
 }

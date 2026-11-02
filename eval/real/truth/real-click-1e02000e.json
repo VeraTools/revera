@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/click/termui.py",
+   "line_min": 572,
+   "line_max": 578,
+   "keywords": [
+    "copy-paste",
+    "copy paste",
+    "overline",
+    "italic",
+    "underline",
+    "wrong escape"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/pallets/click",
+  "intro": "1e02000e172d4aa46bf4f577ac763b48f5ff01fb",
+  "fix": "05b795c917f4146edfe83b2d08c189886b301785"
+ }
+}

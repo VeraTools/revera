@@ -1,0 +1,23 @@
+{
+ "defects": [
+  {
+   "file": "context.go",
+   "line_min": 957,
+   "line_max": 962,
+   "keywords": [
+    "index out of range",
+    "panic",
+    "len(offert)",
+    "bounds",
+    "shorter"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/gin-gonic/gin",
+  "intro": "2dd31930060c978a84507571f7a3106afbf9673b",
+  "fix": "7cb151bb4c4cfc6018a00a125422ff38a041b9f8"
+ }
+}

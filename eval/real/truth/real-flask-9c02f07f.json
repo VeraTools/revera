@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/flask/__init__.py",
+   "line_min": 80,
+   "line_max": 84,
+   "keywords": [
+    "markup",
+    "escape",
+    "duplicate",
+    "copy-paste",
+    "unreachable",
+    "__getattr__"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/pallets/flask",
+  "intro": "9c02f07f9bb4c88207c2a6860742c452c35d2948",
+  "fix": "0ec9192cf25f5187d6521f2539489fa8d55336bb"
+ }
+}

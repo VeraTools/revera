@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "source/utils/merge.ts",
+   "line_min": 174,
+   "line_max": 176,
+   "keywords": [
+    "context",
+    "deepmerge",
+    "recursive",
+    "json body",
+    "nested objects",
+    "injected"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sindresorhus/ky",
+  "intro": "1e749ba065b4912e9db5b3517320f4ead4adec74",
+  "fix": "d7f7e73ceede6232e3fc4b835f2ff26361531d34"
+ }
+}

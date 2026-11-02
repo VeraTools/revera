@@ -1,0 +1,24 @@
+{
+ "defects": [
+  {
+   "file": "src/input.rs",
+   "line_min": 269,
+   "line_max": 273,
+   "keywords": [
+    "utf-16be",
+    "first line",
+    "00 0a",
+    "read_until",
+    "swallow",
+    "second line"
+   ]
+  }
+ ],
+ "clean": false,
+ "also_valid": [],
+ "source": {
+  "repo": "https://github.com/sharkdp/bat",
+  "intro": "96ce80d0e27eee0ca8d7fe25f0526465d38a2a54",
+  "fix": "c2adbf6caad083b137beff082426f228a840e007"
+ }
+}
