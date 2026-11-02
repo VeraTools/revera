@@ -244,7 +244,7 @@ async fn server_errors_exhaust_retries() {
 }
 
 #[tokio::test]
-async fn max_completion_tokens_retry() {
+async fn chat_remembers_max_completion_tokens_after_success() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({"max_tokens": 100})))
@@ -258,11 +258,14 @@ async fn max_completion_tokens_retry() {
     Mock::given(method("POST"))
         .and(body_partial_json(json!({"max_completion_tokens": 100})))
         .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let c = client(&server.uri());
     c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
 }
 
@@ -351,6 +354,153 @@ fn routed_client(
         "submit_findings",
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn responses_remembers_rejected_temperature_after_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            if body.get("temperature").is_some() {
+                ResponseTemplate::new(400).set_body_string("unsupported parameter: temperature")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+                }))
+            }
+        })
+        .expect(3)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = routed_client(
+        &route_for(&server.uri(), Protocol::OpenaiResponses, "test-model"),
+        &ledger,
+        "test",
+        10,
+        0,
+    );
+    c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in &requests[1..] {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
+    let entries = ledger.0.lock().unwrap().entries.clone();
+    assert_eq!(
+        entries.iter().filter(|entry| entry.error.is_some()).count(),
+        1
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn failed_adjusted_response_does_not_learn() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    for failure_status in [503, 200] {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let index = attempts.fetch_add(1, Ordering::SeqCst);
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                if body.get("temperature").is_some() {
+                    ResponseTemplate::new(400).set_body_string("unsupported parameter: temperature")
+                } else if index == 1 {
+                    // Neither a server error nor a malformed 200 confirms the adjustment.
+                    ResponseTemplate::new(failure_status).set_body_string("failed response")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+                    }))
+                }
+            })
+            .expect(4)
+            .mount(&server)
+            .await;
+        let c = routed_client(
+            &route_for(&server.uri(), Protocol::OpenaiResponses, "test-model"),
+            &LedgerHandle::new(),
+            "test",
+            10,
+            0,
+        );
+        assert!(c.complete(&[ChatMessage::user("hi")], &[]).await.is_err());
+        c.complete(&[ChatMessage::user("again")], &[])
+            .await
+            .unwrap();
+        let temperatures: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                body.get("temperature").is_some()
+            })
+            .collect();
+        assert_eq!(temperatures, [true, false, true, false], "{failure_status}");
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn caller_reasoning_cap_is_not_learned_with_a_temperature_adjustment() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            if body.get("temperature").is_some() {
+                ResponseTemplate::new(400).set_body_string("unsupported parameter: temperature")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+                }))
+            }
+        })
+        .expect(3)
+        .mount(&server)
+        .await;
+    let ledger = LedgerHandle::new();
+    let c = routed_client(
+        &route_reasoning(
+            &server.uri(),
+            Protocol::OpenaiResponses,
+            "test-model",
+            Reasoning::Effort(ReasoningEffort::Max),
+        ),
+        &ledger,
+        "test",
+        10,
+        0,
+    );
+    c.complete_capped(&[ChatMessage::user("wrap up")], &[], ReasoningEffort::Low)
+        .await
+        .unwrap();
+    c.complete(&[ChatMessage::user("research")], &[])
+        .await
+        .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let last: serde_json::Value = serde_json::from_slice(&requests[2].body).unwrap();
+    assert_eq!(last["reasoning"]["effort"], "max");
+    let entries = ledger.0.lock().unwrap().entries.clone();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.effective_reasoning.as_str())
+            .collect::<Vec<_>>(),
+        ["low", "low", "max"]
+    );
+    server.verify().await;
 }
 
 #[test]
@@ -1752,7 +1902,7 @@ async fn openai_chat_max_passes_through_for_non_gpt5() {
 }
 
 #[tokio::test]
-async fn openai_chat_400_steps_effort_down_to_high() {
+async fn openai_chat_remembers_400_effort_cap_and_records_it() {
     let server = MockServer::start().await;
     // first attempt: requested "max" verbatim -> 400 mentions reasoning_effort
     Mock::given(method("POST"))
@@ -1767,7 +1917,7 @@ async fn openai_chat_400_steps_effort_down_to_high() {
     Mock::given(method("POST"))
         .and(body_partial_json(json!({"reasoning_effort": "high"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let ledger = LedgerHandle::new();
@@ -1785,8 +1935,13 @@ async fn openai_chat_400_steps_effort_down_to_high() {
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
     let entries = &ledger.0.lock().unwrap().entries;
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[1].effective_reasoning, "high");
     let last = entries.last().unwrap();
     assert_eq!(last.requested_reasoning, "max");
     assert_eq!(last.effective_reasoning, "high");
@@ -1794,7 +1949,7 @@ async fn openai_chat_400_steps_effort_down_to_high() {
 }
 
 #[tokio::test]
-async fn openai_chat_second_400_drops_reasoning() {
+async fn openai_chat_remembers_dropped_reasoning_after_a_second_400() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({"reasoning_effort": "max"})))
@@ -1815,7 +1970,7 @@ async fn openai_chat_second_400_drops_reasoning() {
         .await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let ledger = LedgerHandle::new();
@@ -1833,12 +1988,18 @@ async fn openai_chat_second_400_drops_reasoning() {
     )
     .unwrap();
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
-    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs.len(), 4);
     let body3: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
     assert!(body3.get("reasoning_effort").is_none(), "{body3}");
     assert!(body3.get("reasoning").is_none(), "{body3}");
+    let body4: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    assert!(body4.get("reasoning_effort").is_none(), "{body4}");
+    assert!(body4.get("reasoning").is_none(), "{body4}");
     let entries = &ledger.0.lock().unwrap().entries;
     let last = entries.last().unwrap();
     assert_eq!(last.requested_reasoning, "max");
@@ -2914,21 +3075,25 @@ async fn anthropic_temperature_400_retries_without() {
             "content": [{"type":"text","text":"ok"}],
             "usage": {"input_tokens": 1, "output_tokens": 1}
         })))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
-    anth_adapter(
+    let c = anth_adapter(
         &server.uri(),
         spec(ReasoningEffort::None, None, ReasoningField::Auto),
         4000,
-    )
-    .complete(&[ChatMessage::user("x")], &[])
-    .await
-    .unwrap();
+    );
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
-    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
-    assert!(body2.get("temperature").is_none(), "{body2}");
+    assert_eq!(reqs.len(), 3);
+    for request in &reqs[1..] {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(body.get("temperature").is_none(), "{body}");
+    }
 }
 
 #[tokio::test]
@@ -2947,24 +3112,28 @@ async fn gemini_temperature_400_retries_without() {
             "candidates": [{"content": {"role":"model","parts":[{"text":"ok"}]}}],
             "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
         })))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
-    gem_adapter(
+    let c = gem_adapter(
         &server.uri(),
         "gemini-2.5-pro", // 2.5-pro with effort none → no thinkingConfig, cleanest check
         spec(ReasoningEffort::None, None, ReasoningField::Auto),
-    )
-    .complete(&[ChatMessage::user("x")], &[])
-    .await
-    .unwrap();
+    );
+    c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
-    let body2: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
-    assert!(
-        body2["generationConfig"].get("temperature").is_none(),
-        "{body2}"
-    );
+    assert_eq!(reqs.len(), 3);
+    for request in &reqs[1..] {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(
+            body["generationConfig"].get("temperature").is_none(),
+            "{body}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3246,31 +3415,33 @@ async fn openai_chat_retries_without_rejected_cache_key_and_records_fallback() {
         ))
         .respond_with(ResponseTemplate::new(400).set_body_string("unsupported prompt_cache_key"))
         .expect(1)
-        .up_to_n_times(1)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let ledger = LedgerHandle::new();
-    cache_client(
+    let c = cache_client(
         &server.uri(),
         Protocol::OpenaiChat,
         "m",
         true,
         ledger.clone(),
-    )
-    .complete(&[ChatMessage::user("hi")], &[])
-    .await
-    .unwrap();
+    );
+    c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
     let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
     assert!(second.get("prompt_cache_key").is_none(), "{second}");
+    let third: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert!(third.get("prompt_cache_key").is_none(), "{third}");
     let entries = ledger.0.lock().unwrap().entries.clone();
-    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.len(), 3);
     assert_eq!(
         entries[0].error.as_deref(),
         Some("400: retrying without prompt cache hint")
@@ -3286,7 +3457,6 @@ async fn openai_responses_retries_without_rejected_cache_key_and_records_fallbac
         ))
         .respond_with(ResponseTemplate::new(400).set_body_string("unsupported prompt_cache_key"))
         .expect(1)
-        .up_to_n_times(1)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -3294,26 +3464,29 @@ async fn openai_responses_retries_without_rejected_cache_key_and_records_fallbac
             "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
             "usage": {"input_tokens": 1, "output_tokens": 1}
         })))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let ledger = LedgerHandle::new();
-    cache_client(
+    let c = cache_client(
         &server.uri(),
         Protocol::OpenaiResponses,
         "m",
         true,
         ledger.clone(),
-    )
-    .complete(&[ChatMessage::user("hi")], &[])
-    .await
-    .unwrap();
+    );
+    c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    c.complete(&[ChatMessage::user("again")], &[])
+        .await
+        .unwrap();
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
     let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
     assert!(second.get("prompt_cache_key").is_none(), "{second}");
+    let third: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert!(third.get("prompt_cache_key").is_none(), "{third}");
     let entries = ledger.0.lock().unwrap().entries.clone();
-    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.len(), 3);
     assert_eq!(
         entries[0].error.as_deref(),
         Some("400: retrying without prompt cache hint")
@@ -3329,7 +3502,6 @@ async fn anthropic_retries_without_rejected_cache_control_and_records_fallback()
         })))
         .respond_with(ResponseTemplate::new(400).set_body_string("unsupported cache_control"))
         .expect(1)
-        .up_to_n_times(1)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -3337,30 +3509,35 @@ async fn anthropic_retries_without_rejected_cache_control_and_records_fallback()
             "content": [{"type":"text","text":"ok"}],
             "usage": {"input_tokens": 1, "output_tokens": 1}
         })))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let ledger = LedgerHandle::new();
-    cache_client(
+    let c = cache_client(
         &server.uri(),
         Protocol::Anthropic,
         "claude",
         true,
         ledger.clone(),
-    )
-    .complete(
-        &[ChatMessage::system("system"), ChatMessage::user("hi")],
-        &[],
-    )
-    .await
-    .unwrap();
+    );
+    for text in ["hi", "again"] {
+        c.complete(
+            &[ChatMessage::system("system"), ChatMessage::user(text)],
+            &[],
+        )
+        .await
+        .unwrap();
+    }
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
     let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
     assert_eq!(second["system"], "system", "{second}");
     assert_eq!(count_cache_controls(&second), 0, "{second}");
+    let third: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert_eq!(third["system"], "system", "{third}");
+    assert_eq!(count_cache_controls(&third), 0, "{third}");
     let entries = ledger.0.lock().unwrap().entries.clone();
-    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.len(), 3);
     assert_eq!(
         entries[0].error.as_deref(),
         Some("400: retrying without prompt cache hint")

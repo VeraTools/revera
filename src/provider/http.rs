@@ -5,7 +5,7 @@ use super::{
 use crate::config::{ModelRoute, ReasoningEffort};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Stable id for this process run, used by routes that set `session_header`
@@ -55,6 +55,22 @@ impl Default for AttemptState {
             drop_cache_hint: false,
             reasoning_cap: None,
             thinking_mode_retried: false,
+        }
+    }
+}
+
+impl AttemptState {
+    /// Merge reusable adjustments without weakening anything already learned.
+    /// Retry guards belong to one request and are deliberately not copied.
+    fn merge_adjustments(&mut self, other: &Self) {
+        if other.tokens_key == "max_completion_tokens" {
+            self.tokens_key.clone_from(&other.tokens_key);
+        }
+        self.drop_temperature |= other.drop_temperature;
+        self.drop_reasoning |= other.drop_reasoning;
+        self.drop_cache_hint |= other.drop_cache_hint;
+        if let Some(cap) = other.reasoning_cap {
+            self.reasoning_cap = Some(self.reasoning_cap.map_or(cap, |current| current.min(cap)));
         }
     }
 }
@@ -177,6 +193,8 @@ pub struct HttpTransport {
     pub retries: u32,
     /// Pipeline role recorded on every ledger entry.
     pub role: String,
+    /// Client-local 400 adjustments confirmed by a usable successful response.
+    learned: Mutex<AttemptState>,
 }
 
 impl HttpTransport {
@@ -197,6 +215,7 @@ impl HttpTransport {
             max_requests,
             retries,
             role: role.to_string(),
+            learned: Mutex::new(AttemptState::default()),
         })
     }
 
@@ -258,6 +277,7 @@ impl HttpTransport {
             reasoning_cap: cap,
             ..AttemptState::default()
         };
+        let mut pending = AttemptState::default();
         let mut attempts = 0u32;
         let mut retries_used = 0u32;
         let start = Instant::now();
@@ -268,6 +288,8 @@ impl HttpTransport {
                 return Err(ProviderError::BudgetExhausted);
             }
             attempts += 1;
+            // Also pick up adjustments learned while this request was in flight.
+            attempt.merge_adjustments(&self.learned.lock().unwrap());
             let spec = match adapter.build(messages, tools, &mut attempt) {
                 Ok(s) => s,
                 Err(e) => {
@@ -338,6 +360,7 @@ impl HttpTransport {
                         );
                         return Err(err);
                     }
+                    let previous_cap = attempt.reasoning_cap;
                     let parsed = match adapter.parse(status, &text, &mut attempt) {
                         Parse::Ok(message, _)
                             if message.tool_calls.is_empty()
@@ -352,6 +375,7 @@ impl HttpTransport {
                     };
                     match parsed {
                         Parse::Ok(message, usage) => {
+                            self.learned.lock().unwrap().merge_adjustments(&pending);
                             let latency = start.elapsed().as_millis() as u64;
                             self.record(
                                 &tel,
@@ -383,6 +407,15 @@ impl HttpTransport {
                             });
                         }
                         Parse::RetrySameSlot(reason) => {
+                            if status == 400 {
+                                let mut adjustment = attempt.clone();
+                                // A caller's complete_capped limit is not a
+                                // provider compatibility adjustment.
+                                if adjustment.reasoning_cap == previous_cap {
+                                    adjustment.reasoning_cap = None;
+                                }
+                                pending.merge_adjustments(&adjustment);
+                            }
                             self.record(
                                 &tel,
                                 &effective,
@@ -513,5 +546,34 @@ impl<A: ProtocolAdapter> super::ModelClient for HttpClient<A> {
         self.transport
             .send_capped(&self.adapter, messages, tools, Some(cap))
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn learned_adjustments_merge_without_weakening_or_copying_retry_guards() {
+        let mut learned = AttemptState::default();
+        learned.merge_adjustments(&AttemptState {
+            tokens_key: "max_completion_tokens".into(),
+            drop_temperature: true,
+            drop_reasoning: true,
+            drop_cache_hint: true,
+            reasoning_cap: Some(ReasoningEffort::Low),
+            thinking_mode_retried: true,
+        });
+        learned.merge_adjustments(&AttemptState::default());
+        learned.merge_adjustments(&AttemptState {
+            reasoning_cap: Some(ReasoningEffort::High),
+            ..AttemptState::default()
+        });
+        assert_eq!(learned.tokens_key, "max_completion_tokens");
+        assert!(learned.drop_temperature);
+        assert!(learned.drop_reasoning);
+        assert!(learned.drop_cache_hint);
+        assert_eq!(learned.reasoning_cap, Some(ReasoningEffort::Low));
+        assert!(!learned.thinking_mode_retried);
     }
 }
