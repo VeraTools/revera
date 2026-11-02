@@ -114,7 +114,8 @@ comments or checks.
    fingerprinted.
 4. Everything provider- or subprocess-facing is bounded by
    `budget.run_max_seconds`, with a reserve kept for validation and the
-   final report. A budget breach yields `partial` with the reason in the
+   final report. Except for optional deduplication (which fails open and keeps
+   every accepted finding), a budget breach yields `partial` with the reason in the
    summary, never a silently truncated "clean" review.
 5. [Opt-in App fixes](server.md#fixes-opt-in) have a separate boundary and
    limits. A fixer can edit only a disposable head snapshot in a bubblewrap
@@ -132,7 +133,7 @@ comments or checks.
 | status | meaning |
 |---|---|
 | `complete` | every stage finished; zero findings means "reviewed, nothing found" |
-| `partial` | something was not checked: budget, provider error, retrieval unavailable, malformed model output, skipped fork |
+| `partial` | something was not checked: budget, provider error, retrieval unavailable, malformed model output, skipped fork; optional deduplication failure or budget exhaustion instead keeps all accepted findings without making the review partial |
 | `failed` | configuration/setup error or crash; no trustworthy report |
 
 The dashboard also labels jobs `queued`, `running`, `cancelled` or `skipped`.

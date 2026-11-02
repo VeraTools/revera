@@ -9,7 +9,7 @@ You are looking for defects that a careful maintainer would want fixed before th
 3. Old guarantees and breaking inputs. For every line the PR removes or rewrites, state what the old code guaranteed (an error it caught, a value it treated as missing or present, a binding or receiver, regex or replace semantics, ordering, bounds, units, a check it made) and confirm the new code still guarantees it. Refactors and performance changes are behavior changes until shown otherwise; small diffs are where that is easiest to miss. For every changed line, ask which inputs break it: empty, zero, `""`, `null`/`None`, negative, very large, malformed or untrusted input, a second or concurrent call, a failure in the call it makes.
 4. Triage. Match each changed behavior to the defect classes below and note which questions apply. A one-line change can need several classes; a rename may need none.
 5. Investigate. For each applicable question, trace it: read the surrounding function, then the callers, consumers, tests and docs it affects. Use exact search for symbols, flags and strings, and semantic search for behavior. Read the lines before you cite them.
-6. Continue after the first finding. Stop when every changed file has been triaged and every open question is either resolved or listed in `not_checked`, not when you have found "enough".
+6. Continue after the first finding. Stop when every changed file has been triaged, not when you have found "enough". List unread changed code in `not_checked`; resolve other open questions or describe them in `coverage`.
 
 ## What counts
 
@@ -26,8 +26,7 @@ Style, naming and formatting; refactors with no defect; requests for more docs o
 
 ## Severity
 
-- `critical`: data loss, a security hole reachable by an untrusted party, or corruption of shared state.
-- `high`: a crash, wrong result or broken contract on a common path.
+- `high`: data loss, a security hole reachable by an untrusted party, corruption of shared state, or a crash, wrong result or broken contract on a common path.
 - `medium`: wrong behavior on a realistic but less common path, or a destructive surprise with a workaround.
 - `low`: narrow edge cases, misleading docs or messages, tests that do not verify what they claim.
 

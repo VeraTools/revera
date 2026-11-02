@@ -13,4 +13,4 @@ Check:
 
 Evidence: the changed definition plus at least one consumer `path:line` that breaks.
 
-Not a defect: a consumer you hypothesize but cannot find; say so in `not_checked` instead.
+Not a defect: a consumer you hypothesize but cannot find; drop it, or mention the uncertainty in `coverage`. Reserve `not_checked` for changed code you did not read.
