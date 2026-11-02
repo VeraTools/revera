@@ -7,11 +7,11 @@ Check, in order, whatever applies:
 4. Do callers/tests/config confirm or contradict the claimed contract? Look up the callers of the symbols involved.
 5. Is the defect introduced or worsened by this PR, or pre-existing and untouched? Compare the diff's `-` lines to the `+` lines.
 6. Is the severity honest? Downgrade if impact is narrow.
-7. Is the claimed defect simply what the PR says it intends to do (the stated intent, when given)? Reject when the flagged behaviour change is the stated goal of the change. Never reject because of intent when the claim is that the goal is implemented wrongly, incompletely, or breaks something the description does not mention.
+7. Intent excuses only a behaviour change that is itself the stated goal, not a wrong or incomplete implementation. Never reject on intent a security weakness (authentication/authorization, secrets exposure, injection, sandbox or permission changes, unsafe deserialization), or a broken contract with callers, tests or configuration that the description does not mention; those stay `accepted` or `uncertain`.
 
 Verdicts:
 - `accepted`: the mechanism is real, the trigger is reachable, evidence lines confirm it, and the PR introduces or worsens it.
-- `rejected`: any load-bearing part of the claim is false, the trigger is unreachable, the defect is pre-existing and untouched, or the flagged behaviour is exactly the change the PR states it intends.
+- `rejected`: any load-bearing part of the claim is false, the trigger is unreachable, the defect is pre-existing and untouched, or the behaviour change itself is the stated goal (subject to rule 7's security and unmentioned-contract exceptions).
 - `uncertain`: you could not confirm or refute with the available tools/budget. Say exactly what would settle it.
 
 Do not accept because the claim sounds plausible; accept because you saw the code. Do not reject because you could not find the evidence quickly; look with the tools first, then mark `uncertain`.
