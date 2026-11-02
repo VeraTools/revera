@@ -3,8 +3,10 @@
 ## v0.11.0
 
 - Reviews follow a built-in **reviewer playbook**: a method (work out the
-  intent, list every changed behavior, check each against the defect classes,
-  keep going after the first finding), what counts as a defect, severity and
+  intent, list every changed behavior, check what removed lines guaranteed
+  and which inputs break each changed line, check each behavior against the
+  defect classes, keep going after the first finding, and report every
+  arguable defect for the validator to settle), what counts as a defect, severity and
   evidence rules, and twelve defect-class skills (logic, contracts, state,
   errors, concurrency, security, filesystem, subprocess, resources, config,
   tests and docs). The investigator prompt no longer tells the model to keep
@@ -29,15 +31,29 @@
   guidance, the list of already reported findings and `read_skill`.
 - A finding submitted without a title gets one from its claim instead of
   being dropped.
+- Accepted findings below `review.inline_min_severity` (default `medium`)
+  are listed in the summary instead of posted inline; set it to `low` to post
+  low findings inline as before. They do not block reuse of a finished
+  review.
+- The validator sees the PR title and description as untrusted context and
+  rejects a finding when the flagged behavior change is the stated goal. The
+  stated intent never excuses a security weakness or a broken contract the
+  description does not mention. A malformed verdict gets one corrected
+  resubmission, and a verdict without a rationale counts as uncertain.
 - A reviewer running out of time is asked to submit while one more reply
   still fits, instead of being cut off mid-request and losing everything it
-  found. When its time or tool budget ends, it is asked to list the changed
+  found. Ordinary turns stop at a soft deadline that keeps a reserve for a
+  low-effort wrap-up turn, and every request and tool batch stays inside the
+  hard budget. When its time or tool budget ends, it is asked to list the changed
   code it did not reach, so the review reports partial coverage instead of
   looking complete. That list no longer includes things no reviewer here can
   do, such as running tests or checking other platforms.
-- `eval/prs` scores reviews of real pull requests against defects other
-  reviewers reported and the authors confirmed; results are in
-  `docs/evaluation.md`.
+- `eval/real` is a held-out set of real bugs mined from 13 open-source
+  repositories (contributed in #69); the scorer matches findings to defects
+  by maximum bipartite matching and inline comments by finding id.
+- `eval/prs` scores reviews of nine real pull requests against defects
+  other reviewers reported and the authors confirmed. It is a small smoke
+  set; release numbers come from `eval/real` (see `docs/evaluation.md`).
 - The App handles a pull request whose base branch changes: running and
   queued reviews for the old base are cancelled, auto mode reviews against the
   new base, mention mode re-queues only a review someone asked for, and the

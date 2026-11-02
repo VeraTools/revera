@@ -406,6 +406,35 @@ with a placeholder title, the same engine reported 46 of 66 and with the
 commit's message 54 of 66, and its clean-commit comments fell from 4 of 16
 to 1 of 16. Reviews without a stated purpose understate any engine.
 
+### Rerun with the reviewer playbook (2026-11-02)
+
+The same held-out set was rerun with four builds at the same time,
+interleaved, on the same models and budgets as P2. The scorer had been
+corrected first: inline comments are matched to findings by their
+`revera-id` marker, inline precision uses its own matching, `also_valid`
+exemptions need an overlapping line window, and the clean-run column now
+counts every inline comment, not only unmatched ones. These numbers are
+therefore not comparable with the table above.
+
+| build | defects reported | inline TP | inline FP | clean runs with an inline comment | summary-only FP | median wall s | total cost |
+|---|---|---|---|---|---|---|---|
+| main (0.10.2) | 49/66 | 49 | 33 | 8 of 16 | 1 | 128 | $1.42 |
+| main + reviewer playbook | 53/66 | 52 | 44 | 10 of 16 | 8 | 142 | $1.85 |
+| main + recall changes above | 56/66 | 49 | 20 | 5 of 16 | 28 | 139 | $1.42 |
+| both (0.11.0) | 58/66 | 49 | 15 | 4 of 16 | 45 | 161 | $1.76 |
+
+The playbook alone finds more but also posts more wrong inline comments.
+Together with the recall changes, which send low findings to the summary
+and let the validator see the stated intent, it reports the most defects
+(58 against 49 of 66) and posts the fewest wrong inline comments (15
+against 33), at about a quarter more cost and wall time. The price is the
+summary: 45 findings there match no labelled defect. On the clean commits,
+12 of the 23 accepted findings are documentation or test-quality claims.
+Some look real on inspection (rich's new
+`Traceback(locals_overlow=...)` keyword is misspelled), but they are
+unlabelled. With two reps, differences of two or three defects are
+within run-to-run spread.
+
 ## Opt-in web search
 
 One paired run on five synthetic public cases used GLM `glm-5.3` as investigator
