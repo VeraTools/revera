@@ -250,25 +250,25 @@
     {
       key: 'agent_max_tool_calls',
       label: 'Tool calls per agent',
-      value: 25,
+      value: 50,
       hint: 'Maximum repository tool calls for each investigator or validator.',
     },
     {
       key: 'agent_max_seconds',
       label: 'Seconds per agent',
-      value: 300,
+      value: 900,
       hint: 'Time allowed for each investigator or validator.',
     },
     {
       key: 'run_max_requests',
       label: 'Requests per review',
-      value: 120,
+      value: 300,
       hint: 'Total HTTP attempts across the review, including retries.',
     },
     {
       key: 'run_max_seconds',
       label: 'Seconds per review',
-      value: 900,
+      value: 1800,
       hint: 'Time allowed for the whole review, including validation.',
     },
     {

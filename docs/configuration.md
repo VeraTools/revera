@@ -99,7 +99,8 @@ Naming a route does not enable execution or authorize publication; see
 | `model` | required | provider model id |
 | `base_url` | protocol default | required for `openai-chat` / `openai-responses`; `anthropic` and `gemini` default to the official endpoints |
 | `api_key_env` | required for HTTP protocols | *name* of the environment variable holding the key; the value is never logged or fingerprinted |
-| `max_output_tokens` | `4000` | |
+| `max_output_tokens` | `16000` | |
+| `timeout_secs` | `300` | per-request HTTP timeout in seconds; range `10`–`3600`; agent and run deadlines still apply |
 | `temperature` | `0.2` | |
 | `cache` | `true` | send explicit prompt-cache hints where the provider supports them |
 | `reasoning` | `medium` | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`, or the long form below |
@@ -107,6 +108,11 @@ Naming a route does not enable execution or authorize publication; see
 | `session_header` | — | header that carries a stable per-run session id |
 | `script` | — | `scripted` protocol only: path to a JSON transcript (tests, Action smoke) |
 | `fallback` | `[]` | ordered alternative routes; entries cannot contain `fallback` |
+
+Each fallback has its own `timeout_secs`; an inherited validator uses the
+investigator's timeout along with the rest of its route. Providers or proxies
+that cut silent non-streaming responses (for example after about 100–125 seconds)
+need keepalives on the proxy side for longer request timeouts to help.
 
 Reasoning long form:
 
@@ -244,16 +250,16 @@ Hard limits. Breaching one ends the affected stage and marks the run
 
 | key | default | notes |
 |---|---|---|
-| `agent_max_tool_calls` | `25` | per agent (investigator, validator, scout, worker) |
-| `agent_max_seconds` | `300` | per agent wall clock |
-| `run_max_requests` | `120` | model-provider HTTP attempts across the whole run, retries included; web evidence has separate shared limits |
-| `run_max_seconds` | `900` | run deadline; provider calls, tools and Vera subprocesses are bounded by the remaining time, with a reserve for validation and the report |
+| `agent_max_tool_calls` | `50` | per agent (investigator, validator, scout, worker) |
+| `agent_max_seconds` | `900` | per agent wall clock |
+| `run_max_requests` | `300` | model-provider HTTP attempts across the whole run, retries included; web evidence has separate shared limits |
+| `run_max_seconds` | `1800` | run deadline; provider calls, tools and Vera subprocesses are bounded by the remaining time, with a reserve for validation and the report |
 | `retries` | `3` | per request, honouring `Retry-After` |
 
-Larger repositories may need more agent time. Earlier runs benefited from
-`agent_max_seconds: 420`–`600`, but later runs still failed to submit within
-those budgets. See the [large-repository results](evaluation.md#e3-current-engine-end-to-end)
-before choosing a budget; more time does not guarantee completion.
+The defaults allow longer investigations, including on larger repositories.
+Earlier evaluations used smaller budgets; their timeouts do not describe the
+current defaults. See the [large-repository results](evaluation.md#e3-current-engine-end-to-end)
+before tuning a budget; more time does not guarantee completion.
 In the App, **Settings → Budgets** previews the Quick and Deep limits produced
 by these values. Custom profiles are labelled instead of showing built-in limits.
 
@@ -423,10 +429,10 @@ cache scope is the base branch's and their tree is the PR head.
 | key | default | notes |
 |---|---|---|
 | `delegated.max_questions` | `4` | questions the lead may plan |
-| `delegated.worker_max_tool_calls` | `12` | |
-| `delegated.worker_max_seconds` | `120` | |
+| `delegated.worker_max_tool_calls` | `24` | |
+| `delegated.worker_max_seconds` | `360` | |
 | `panel.focuses` | `[general, cross-file]` | one focus label per scout, in order; a single scout runs once per label |
-| `panel.scout_max_tool_calls` | `15` | |
+| `panel.scout_max_tool_calls` | `30` | |
 
 A focus is `general` (the whole changed surface) or a comma-separated list
 of enabled playbook skill names, for example `"logic,errors,state"`. Quote
@@ -458,7 +464,7 @@ and at most `review.concurrency` lanes run at once.
 When deep converts baseline to panel (including through `--strategy baseline`), each lane uses the effective
 `budget.agent_max_tool_calls` unless `panel.scout_max_tool_calls` was explicitly
 set. For example, a server budget of 50 tool calls gives each deep lane 50,
-rather than the panel default of 15. Explicit panel limits always win.
+rather than the panel default of 30. Explicit panel limits always win.
 
 | Setting | Built-in `quick` | Built-in `deep` |
 |---|---|---|
@@ -469,9 +475,9 @@ rather than the panel default of 15. Explicit panel limits always win.
 | `review.max_diff_bytes` | Unchanged | At least `400000`, keeping a higher configured value |
 | `review.max_findings` | Unchanged | At least `20`, keeping a higher configured value |
 
-With the default budget, quick allows 12 tool calls, 150 seconds per agent
-and 450 seconds per run, with the request limit unchanged at 120. Deep allows
-25 tool calls, 300 seconds per agent, 1800 seconds per run and 360 requests.
+With the default budget, quick allows 25 tool calls, 450 seconds per agent
+and 900 seconds per run, with the request limit unchanged at 300. Deep allows
+50 tool calls, 900 seconds per agent, 3000 seconds per run and 900 requests.
 The 3000-second deep limit leaves room before server jobs stop at 55 minutes.
 Retries and other review settings are unchanged.
 

@@ -134,10 +134,23 @@
         id={`${id}-tokens`}
         type="number"
         min="1"
-        value={config.get([...path, 'max_output_tokens'], 4000)}
+        value={config.get([...path, 'max_output_tokens'], 16000)}
         onchange={(event) =>
           config.set([...path, 'max_output_tokens'], event.currentTarget.valueAsNumber)}
       />
+    </div>
+    <div class="field">
+      <label for={`${id}-timeout`}>Request timeout (seconds)</label>
+      <input
+        id={`${id}-timeout`}
+        type="number"
+        min="10"
+        max="3600"
+        value={config.get([...path, 'timeout_secs'], 300)}
+        onchange={(event) =>
+          config.set([...path, 'timeout_secs'], event.currentTarget.valueAsNumber)}
+      />
+      <small>Agent and review deadlines still apply.</small>
     </div>
     <div class="field">
       <label for={`${id}-temperature`}>Temperature</label>

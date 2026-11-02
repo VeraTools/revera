@@ -1100,17 +1100,17 @@ async function checkDashboardQol() {
 
   const settings = await open('/settings?tab=budgets');
   await settings.page
-    .getByText('Quick: 12 tool calls and 2.5 min per agent, 7.5 min per review.', { exact: true })
+    .getByText('Quick: 25 tool calls and 7.5 min per agent, 15 min per review.', { exact: true })
     .waitFor();
   await settings.page
     .getByText(
-      'Deep: 50 tool calls and 10 min per agent, 30 min and 240 requests per review, diffs up to 400 KB, up to 20 findings.',
+      'Deep: 50 tool calls and 15 min per agent, 50 min and 900 requests per review, diffs up to 400 KB, up to 20 findings.',
       { exact: true },
     )
     .waitFor();
   await edit(settings.page, 'budget-agent_max_tool_calls', '40');
   await settings.page
-    .getByText('Quick: 20 tool calls and 2.5 min per agent, 7.5 min per review.', { exact: true })
+    .getByText('Quick: 20 tool calls and 7.5 min per agent, 15 min per review.', { exact: true })
     .waitFor();
   const profiles = await settings.page.evaluate(async () => {
     const { quickBudget, deepBudget } = await import('/src/lib/profiles.ts');
@@ -1133,8 +1133,9 @@ async function checkDashboardQol() {
   assert.equal(profiles.quick.agent_max_seconds, 30);
   assert.equal(profiles.quick.run_max_seconds, 60);
   assert.equal(profiles.deep.agent_max_seconds, 4000);
+  assert.equal(profiles.deep.agent_max_tool_calls, 1);
   assert.equal(profiles.deep.run_max_seconds, 3000);
-  assert.equal(profiles.deep.run_max_requests, 240);
+  assert.equal(profiles.deep.run_max_requests, 360);
   assert.equal(profiles.deep.review.max_diff_bytes, 500000);
   assert.equal(profiles.deep.review.max_findings, 25);
   await settings.context.close();

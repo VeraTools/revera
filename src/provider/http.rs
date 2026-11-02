@@ -200,10 +200,11 @@ impl HttpTransport {
         max_requests: u32,
         retries: u32,
         role: &str,
+        timeout_secs: u64,
     ) -> Result<Self, ProviderError> {
         let http = crate::tls::with_bundled_roots(reqwest::Client::builder())
             .user_agent(concat!("revera/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
         Ok(Self {

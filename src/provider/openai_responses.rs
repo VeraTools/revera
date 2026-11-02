@@ -60,9 +60,10 @@ impl HttpClient<OpenAiResponsesAdapter> {
         role: &str,
         cache_key: Option<String>,
     ) -> Result<Self, ProviderError> {
+        let timeout_secs = route.timeout_secs;
         Ok(Self {
             adapter: OpenAiResponsesAdapter::from_route(route)?.with_cache_key(cache_key),
-            transport: HttpTransport::new(ledger, max_requests, retries, role)?,
+            transport: HttpTransport::new(ledger, max_requests, retries, role, timeout_secs)?,
         })
     }
 }

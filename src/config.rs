@@ -233,6 +233,9 @@ pub struct ModelRoute {
     pub model: String,
     #[serde(default = "default_max_output")]
     pub max_output_tokens: u32,
+    /// Per-request HTTP timeout; agent and run deadlines still apply.
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
     /// Send explicit provider prompt-cache hints where supported.
     #[serde(default = "default_true")]
     pub cache: bool,
@@ -603,22 +606,25 @@ fn default_diff_bytes() -> usize {
     200_000
 }
 fn default_tool_calls() -> u32 {
-    25
+    50
 }
 fn default_agent_seconds() -> u64 {
-    300
+    900
 }
 fn default_run_requests() -> u32 {
-    120
+    300
 }
 fn default_run_seconds() -> u64 {
-    900
+    1800
 }
 fn default_retries() -> u32 {
     3
 }
 fn default_max_output() -> u32 {
-    4000
+    16000
+}
+fn default_timeout_secs() -> u64 {
+    300
 }
 fn default_temperature() -> f64 {
     0.2
@@ -639,16 +645,16 @@ fn default_max_questions() -> usize {
     4
 }
 fn default_worker_tool_calls() -> u32 {
-    12
+    24
 }
 fn default_worker_seconds() -> u64 {
-    120
+    360
 }
 fn default_focuses() -> Vec<String> {
     vec!["general".into(), "cross-file".into()]
 }
 fn default_scout_tool_calls() -> u32 {
-    15
+    30
 }
 
 impl Default for ReviewConfig {
@@ -984,6 +990,9 @@ pub fn is_opencode_host(base_url: &str) -> bool {
 fn check_route_shape(name: &str, r: &ModelRoute) -> Result<()> {
     for (i, fallback) in r.fallback.iter().enumerate() {
         check_route_shape(&format!("{name}.fallback[{i}]"), fallback)?;
+    }
+    if !(10..=3600).contains(&r.timeout_secs) {
+        bail!("models.{name}: timeout_secs must be between 10 and 3600 seconds");
     }
     match r.protocol {
         Protocol::OpenaiChat | Protocol::OpenaiResponses => {
@@ -1407,6 +1416,7 @@ impl Config {
                 "base_url": r.base_url.as_deref().map(identity_url),
                 "model": r.model,
                 "max_output_tokens": r.max_output_tokens,
+                "timeout_secs": r.timeout_secs,
                 "temperature": r.temperature,
                 "reasoning": r.reasoning.effort().as_str(),
                 "reasoning_budget": r.reasoning.effective_budget(),
