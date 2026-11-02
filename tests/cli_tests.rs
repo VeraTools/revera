@@ -265,7 +265,12 @@ fn twice_blank_validator_rationale_is_uncertain() {
     assert_eq!(validator_requests(&report), 2, "{report}");
     assert_eq!(report["findings"].as_array().unwrap().len(), 1);
     assert_eq!(report["findings"][0]["validation_status"], "uncertain");
-    assert_eq!(report["findings"][0]["rationale"], "malformed verdict");
+    assert!(
+        report["findings"][0]["rationale"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("validator returned malformed verdict: ")),
+        "{report}"
+    );
     assert_eq!(report["stats"]["accepted"], 0);
     assert!(report["plan"]["inline"].as_array().unwrap().is_empty());
 }

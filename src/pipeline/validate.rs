@@ -277,10 +277,11 @@ pub async fn validate_candidates(
                                 "ok".to_string()
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
                             clean = false;
                             cand.validation_status = Some(ValidationStatus::Uncertain);
-                            cand.rationale = Some("malformed verdict".into());
+                            cand.rationale =
+                                Some(format!("validator returned malformed verdict: {e}"));
                             "error:malformed verdict".to_string()
                         }
                     }
