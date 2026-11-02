@@ -183,3 +183,65 @@ fn diff_context_handles_empty_head_ranges_and_hunkless_files() {
             .ends_with("ranges: none")
     );
 }
+
+fn added_file(path: &str, text: &str) -> String {
+    format!("diff --git a/{path} b/{path}\n@@ -0,0 +1,1 @@\n+{text}\n")
+}
+
+#[test]
+fn truncation_keeps_source_before_docs_and_omitted_hunks_remain_available() {
+    let d = parse_unified(&format!(
+        "{}{}",
+        added_file("docs/a.md", &"prose ".repeat(100)),
+        added_file("src/z.rs", "fn changed() {}")
+    ));
+    let budget = d.file_excerpt("docs/a.md").len();
+    let rendered = d.render_truncated(budget);
+    assert_eq!(d.omitted_files(budget), ["docs/a.md"]);
+    assert!(rendered.contains("+fn changed() {}"));
+    assert!(!rendered.contains("+prose"));
+    assert!(rendered.contains("hunks still available through diff_context"));
+    assert!(d.hunk_containing("docs/a.md", 1).unwrap().contains("prose"));
+    assert!(d.diff_context("docs/a.md", 1).unwrap().contains("prose"));
+}
+
+#[test]
+fn truncation_preserves_output_and_within_class_order_and_agrees_on_omissions() {
+    let paths = [
+        "docs/a.md",
+        "src/z.rs",
+        "src/a.rs",
+        "tests/z.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+    ];
+    let text: String = paths.iter().map(|path| added_file(path, path)).collect();
+    let d = parse_unified(&text);
+    let budget = d.file_excerpt("src/z.rs").len();
+    let rendered = d.render_truncated(budget);
+    assert!(rendered.contains("+src/z.rs\n"));
+    assert!(!rendered.contains("+src/a.rs\n"));
+    let sections: Vec<_> = rendered.split("diff --git ").skip(1).collect();
+    let rendered_paths: Vec<_> = sections
+        .iter()
+        .map(|s| s.lines().next().unwrap().split(" b/").nth(1).unwrap())
+        .collect();
+    assert_eq!(rendered_paths, paths);
+    let omitted: Vec<_> = sections
+        .iter()
+        .zip(&rendered_paths)
+        .filter(|(s, _)| s.contains("[file diff omitted:"))
+        .map(|(_, path)| *path)
+        .collect();
+    assert_eq!(d.omitted_files(budget), omitted);
+    let budget: usize = paths[1..=4]
+        .iter()
+        .map(|path| d.file_excerpt(path).len())
+        .sum();
+    let rendered = d.render_truncated(budget);
+    for path in &paths[1..=4] {
+        assert!(rendered.contains(&format!("+{path}\n")), "{path}");
+    }
+    assert_eq!(d.omitted_files(budget), ["docs/a.md", "Cargo.lock"]);
+    assert_eq!(d.render_truncated(usize::MAX), d.render());
+}

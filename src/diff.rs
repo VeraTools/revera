@@ -166,23 +166,35 @@ impl DiffSet {
 
     /// Files whose diff `render_truncated(max_bytes)` omits.
     pub fn omitted_files(&self, max_bytes: usize) -> Vec<String> {
+        self.files
+            .iter()
+            .zip(self.selected_files(max_bytes))
+            .filter(|(_, selected)| !selected)
+            .map(|(f, _)| f.new_path.clone())
+            .collect()
+    }
+
+    fn selected_files(&self, max_bytes: usize) -> Vec<bool> {
+        let mut order: Vec<_> = (0..self.files.len()).collect();
+        order.sort_by_key(|&i| file_priority(&self.files[i].new_path));
+        let mut selected = vec![false; self.files.len()];
         let mut used = 0usize;
-        let mut out = vec![];
-        for f in &self.files {
-            let part = Self::render_file(f);
-            if used + part.len() > max_bytes {
-                out.push(f.new_path.clone());
-                used += Self::omitted_note(f).len();
+        for i in order {
+            let f = &self.files[i];
+            let bytes = Self::render_file(f).len();
+            if used.saturating_add(bytes) <= max_bytes {
+                selected[i] = true;
+                used += bytes;
             } else {
-                used += part.len();
+                used = used.saturating_add(Self::omitted_note(f).len());
             }
         }
-        out
+        selected
     }
 
     fn omitted_note(f: &FileDiff) -> String {
         format!(
-            "diff --git a/{} b/{}\n[file diff omitted: exceeds max_diff_bytes]\n",
+            "diff --git a/{} b/{}\n[file diff omitted: exceeds max_diff_bytes; hunks still available through diff_context]\n",
             f.old_path, f.new_path
         )
     }
@@ -190,13 +202,12 @@ impl DiffSet {
     /// Render truncated to `max_bytes` (per-file note when a file doesn't fit).
     pub fn render_truncated(&self, max_bytes: usize) -> String {
         let mut s = String::new();
-        for f in &self.files {
-            let part = Self::render_file(f);
-            if s.len() + part.len() > max_bytes {
-                s.push_str(&Self::omitted_note(f));
+        for (f, selected) in self.files.iter().zip(self.selected_files(max_bytes)) {
+            s.push_str(&if selected {
+                Self::render_file(f)
             } else {
-                s.push_str(&part);
-            }
+                Self::omitted_note(f)
+            });
         }
         s
     }
@@ -230,6 +241,127 @@ impl DiffSet {
             .map(Self::render_file)
             .collect()
     }
+}
+
+/// Budget priority: source, tests, build/config, prose/guidance, then low-signal artifacts.
+fn file_priority(path: &str) -> u8 {
+    let path = path.to_ascii_lowercase();
+    let parts: Vec<_> = path.split('/').collect();
+    let name = parts.last().copied().unwrap_or("");
+    let extension = name.rsplit_once('.').map_or("", |(_, ext)| ext);
+    if matches!(extension, "lock" | "lockb")
+        || matches!(
+            name,
+            "package-lock.json" | "npm-shrinkwrap.json" | "pnpm-lock.yaml" | "yarn.lock" | "go.sum"
+        )
+        || parts.iter().any(|part| {
+            matches!(
+                *part,
+                "vendor"
+                    | "vendors"
+                    | "vendored"
+                    | "third_party"
+                    | "third-party"
+                    | "node_modules"
+                    | "generated"
+                    | "__generated__"
+                    | "gen"
+                    | "dist"
+            )
+        })
+        || name.contains(".min.")
+        || name.contains(".generated.")
+        || name.contains(".g.")
+        || name.contains(".pb.")
+        || name.ends_with("_pb2.py")
+        || name.ends_with("_pb2_grpc.py")
+    {
+        return 4;
+    }
+    if (matches!(
+        extension,
+        "md" | "markdown" | "mdx" | "rst" | "txt" | "adoc" | "asciidoc"
+    ) && name != "cmakelists.txt")
+        || matches!(
+            name,
+            "readme" | "license" | "copying" | "changelog" | "contributing" | "authors" | "notice"
+        )
+        || parts.iter().any(|part| {
+            matches!(
+                *part,
+                "doc"
+                    | "docs"
+                    | "documentation"
+                    | "skill"
+                    | "skills"
+                    | "rule"
+                    | "rules"
+                    | ".agents"
+                    | ".claude"
+                    | ".opencode"
+                    | ".cursor"
+            )
+        })
+    {
+        return 3;
+    }
+    if parts.iter().any(|part| {
+        matches!(
+            *part,
+            "test" | "tests" | "__tests__" | "spec" | "specs" | "fixtures" | "testdata"
+        )
+    }) || name.starts_with("test_")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+        || name
+            .rsplit_once('.')
+            .is_some_and(|(stem, _)| stem.ends_with("_test") || stem.ends_with("_tests"))
+    {
+        return 1;
+    }
+    if matches!(
+        extension,
+        "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "jsonc"
+            | "json5"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "config"
+            | "xml"
+            | "gradle"
+            | "cmake"
+    ) || parts.contains(&".github")
+        || matches!(
+            name,
+            "makefile"
+                | "gnumakefile"
+                | "cmakelists.txt"
+                | "build.rs"
+                | "build"
+                | "build.bazel"
+                | "workspace"
+                | "workspace.bazel"
+                | "dockerfile"
+                | "containerfile"
+                | "justfile"
+                | "gemfile"
+                | "rakefile"
+                | "setup.py"
+                | ".gitignore"
+                | ".gitattributes"
+                | ".dockerignore"
+                | ".editorconfig"
+                | ".tool-versions"
+        )
+        || name.starts_with("dockerfile.")
+    {
+        return 2;
+    }
+    0
 }
 
 fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
@@ -462,4 +594,81 @@ pub fn parse_unified(text: &str) -> DiffSet {
         set.files.push(f);
     }
     set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_priority;
+
+    #[test]
+    fn diff_file_priority_classifies_common_paths() {
+        for (priority, paths) in [
+            (
+                0,
+                vec![
+                    "src/main.rs",
+                    "app/page.tsx",
+                    "lib/module.py",
+                    "scripts/run.sh",
+                ],
+            ),
+            (
+                1,
+                vec![
+                    "tests/api.rs",
+                    "src/parser_tests.rs",
+                    "pkg/api_test.go",
+                    "src/page.spec.ts",
+                    "test_api.py",
+                    "__tests__/app.ts",
+                ],
+            ),
+            (
+                2,
+                vec![
+                    "Cargo.toml",
+                    "package.json",
+                    ".github/workflows/ci.yml",
+                    "Dockerfile",
+                    "build.rs",
+                    "CMakeLists.txt",
+                    ".gitignore",
+                ],
+            ),
+            (
+                3,
+                vec![
+                    "README.md",
+                    "guide.rst",
+                    "notes.txt",
+                    "guide.adoc",
+                    "docs/example.rs",
+                    ".agents/skills/tool/run.py",
+                    ".claude/settings.json",
+                    ".opencode/rules/rule.ts",
+                    ".cursor/rules/rule.mdc",
+                    "skills/review/script.sh",
+                ],
+            ),
+            (
+                4,
+                vec![
+                    "Cargo.lock",
+                    "package-lock.json",
+                    "pnpm-lock.yaml",
+                    "go.sum",
+                    "vendor/src/lib.rs",
+                    "third_party/tests/api.rs",
+                    "app.min.js",
+                    "docs/generated/api.md",
+                    "src/model.generated.rs",
+                    "src/api.pb.go",
+                ],
+            ),
+        ] {
+            for path in paths {
+                assert_eq!(file_priority(path), priority, "{path}");
+            }
+        }
+    }
 }
