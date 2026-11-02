@@ -77,25 +77,87 @@ impl DiffSet {
                 .iter()
                 .any(|l| l.new_no == Some(line) && l.kind != DiffLineKind::Del);
             if in_range {
-                let mut s = format!(
-                    "@@ -{},{} +{},{} @@ {}\n",
-                    h.old_start, h.old_len, h.new_start, h.new_len, f.new_path
-                );
-                for l in &h.lines {
-                    let (pfx, nums) = match l.kind {
-                        DiffLineKind::Add => ('+', format!("    ->{}", l.new_no.unwrap_or(0))),
-                        DiffLineKind::Del => ('-', format!("{}->    ", l.old_no.unwrap_or(0))),
-                        DiffLineKind::Ctx => (
-                            ' ',
-                            format!("{}:{}", l.old_no.unwrap_or(0), l.new_no.unwrap_or(0)),
-                        ),
-                    };
-                    s.push_str(&format!("{} {:>12} {}\n", pfx, nums, l.text));
-                }
-                return Some(s);
+                return Some(Self::render_hunk(f, h));
             }
         }
         None
+    }
+
+    /// Exact diff context, or the nearest head-side hunk within 40 lines.
+    pub fn diff_context(&self, path: &str, line: u32) -> Result<String, String> {
+        if let Some(context) = self.hunk_containing(path, line) {
+            return Ok(context);
+        }
+        let f = self
+            .file(path)
+            .ok_or_else(|| format!("{path} is not changed in this pull request; use read_file"))?;
+        let nearest = f.hunks.iter().min_by_key(|h| {
+            let end = h.new_start.saturating_add(h.new_len.saturating_sub(1));
+            h.new_start
+                .saturating_sub(line)
+                .max(line.saturating_sub(end))
+        });
+        if let Some(h) = nearest {
+            let end = h.new_start.saturating_add(h.new_len.saturating_sub(1));
+            let distance = h
+                .new_start
+                .saturating_sub(line)
+                .max(line.saturating_sub(end));
+            if distance <= 40 {
+                return Ok(format!(
+                    "Requested line {path}:{line} is outside the diff; showing head-side range {}.\n{}",
+                    Self::head_range(h),
+                    Self::render_hunk(f, h)
+                ));
+            }
+        }
+        let ranges = f
+            .hunks
+            .iter()
+            .take(20)
+            .map(Self::head_range)
+            .collect::<Vec<_>>();
+        let ranges = if ranges.is_empty() {
+            "none".into()
+        } else {
+            ranges.join(", ")
+        };
+        let more = if f.hunks.len() > 20 { ", …" } else { "" };
+        Err(format!(
+            "no hunk within 40 lines of {path}:{line}; head-side hunk ranges: {ranges}{more}"
+        ))
+    }
+
+    fn head_range(h: &Hunk) -> String {
+        if h.new_len == 0 {
+            // A deletion-only hunk has an anchor, not a head-side line range.
+            format!("+{},0 (empty)", h.new_start)
+        } else {
+            format!(
+                "+{}..{}",
+                h.new_start,
+                h.new_start.saturating_add(h.new_len - 1)
+            )
+        }
+    }
+
+    fn render_hunk(f: &FileDiff, h: &Hunk) -> String {
+        let mut s = format!(
+            "@@ -{},{} +{},{} @@ {}\n",
+            h.old_start, h.old_len, h.new_start, h.new_len, f.new_path
+        );
+        for l in &h.lines {
+            let (pfx, nums) = match l.kind {
+                DiffLineKind::Add => ('+', format!("    ->{}", l.new_no.unwrap_or(0))),
+                DiffLineKind::Del => ('-', format!("{}->    ", l.old_no.unwrap_or(0))),
+                DiffLineKind::Ctx => (
+                    ' ',
+                    format!("{}:{}", l.old_no.unwrap_or(0), l.new_no.unwrap_or(0)),
+                ),
+            };
+            s.push_str(&format!("{} {:>12} {}\n", pfx, nums, l.text));
+        }
+        s
     }
 
     pub fn render(&self) -> String {

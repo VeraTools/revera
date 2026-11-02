@@ -754,9 +754,7 @@ impl ToolBox {
             "diff_context" => {
                 let path = args["path"].as_str().ok_or("missing path")?;
                 let line = args["line"].as_u64().ok_or("missing line")? as u32;
-                self.diff
-                    .hunk_containing(path, line)
-                    .ok_or_else(|| format!("no hunk containing {path}:{line}"))
+                self.diff.diff_context(path, line)
             }
             "vera_search" => {
                 let q = args["query"].as_str().ok_or("missing query")?;
