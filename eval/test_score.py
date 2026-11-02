@@ -146,6 +146,49 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(cells["T"]["inline FP"], "0")
         self.assertEqual(cells["legacy"]["clean-PR inline"], "-")
 
+    def test_rescore_writes_separate_output_for_exact_config_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports"
+            reports.mkdir()
+            source, output = root / "results.jsonl", root / "rescored.jsonl"
+            rows = [
+                {"config": cfg, "corpus": "real-clean-hono-61bee9f6", "rep": 1, "fp": 99}
+                for cfg in ("P0-glm", "P1-glm", "P0-glm-extra", "missing")
+            ]
+            original = "".join(json.dumps(r) + "\n" for r in rows)
+            source.write_text(original)
+            f = finding("unrelated string buffer issue", file="src/hono-base.ts")
+            report = {"status": "complete", "findings": [f], "plan": {"inline": [comment(f)]}}
+            for row in rows[:-1]:
+                (reports / f"{row['config']}-{row['corpus']}-1.json").write_text(json.dumps(report))
+            args = [
+                sys.executable,
+                str(HERE / "rescore.py"),
+                "--results",
+                str(source),
+                "--reports",
+                str(reports),
+                "--out",
+                str(output),
+                "P0-glm",
+                "P1-glm",
+                "missing",
+            ]
+            subprocess.run(args, check=True, capture_output=True, text=True)
+            rescored = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertEqual(source.read_text(), original)
+            for row in rescored[:2]:
+                self.assertEqual((row["fp"], row["fp_inline"], row["inline_comments"]), (1, 1, 1))
+            self.assertEqual(rescored[2:], rows[2:])
+            # An existing output, the input itself, and the tracked results
+            # are all refused rather than overwritten.
+            for forbidden in (output, source, HERE / "results.jsonl"):
+                args[args.index("--out") + 1] = str(forbidden)
+                result = subprocess.run(args, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(source.read_text(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

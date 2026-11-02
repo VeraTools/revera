@@ -1,63 +1,77 @@
 #!/usr/bin/env python3
-"""Re-score saved reports against the current truth files.
+"""Re-score saved reports against the current scorer and truth files, offline.
 
-    eval/rescore.py [CONFIG_PREFIX ...]
+    python3 eval/rescore.py --out "$HOME/.local/tmp/rescored.jsonl" P0-glm P1-glm P2-glm
 
-Rewrites eval/results.jsonl in place: every row whose config starts with one
-of the prefixes (all rows when none given) and whose report is still in
-eval/reports/ is replaced by a fresh eval/score.py line. Rows without a saved
-report, or whose truth file is missing, are kept unchanged. Use after a truth
-fix (new also_valid entries, corrected keywords) instead of paying for reruns.
+Reads eval/results.jsonl and eval/reports/ by default (--results and --reports
+override those inputs). Exact config labels select rows to re-score with
+eval/score.py; unselected rows and rows missing reports or truth are copied
+unchanged. Writes a NEW output file, never overwriting eval/results.jsonl or
+the input. Use after scoring/truth fixes instead of paying for new reviews.
 """
 
+import argparse
 import json
-import os
 import subprocess
 import sys
+from pathlib import Path
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-RESULTS = os.path.join(HERE, "results.jsonl")
-prefixes = sys.argv[1:]
+HERE = Path(__file__).resolve().parent
+RESULTS = HERE / "results.jsonl"
 
 
 def truth_for(corpus):
     for p in (
-        os.path.join(HERE, "corpus", corpus, "truth.json"),
-        os.path.join(HERE, "large", "truth", f"{corpus}.json"),
-        os.path.join(HERE, "real", "truth", f"{corpus}.json"),
+        HERE / "corpus" / corpus / "truth.json",
+        HERE / "large" / "truth" / f"{corpus}.json",
+        HERE / "real" / "truth" / f"{corpus}.json",
     ):
-        if os.path.exists(p):
+        if p.is_file():
             return p
     return None
 
 
-out, changed = [], 0
-for line in open(RESULTS):
-    if not line.strip():
-        continue
-    row = json.loads(line)
-    report = os.path.join(HERE, "reports", f"{row['config']}-{row['corpus']}-{row['rep']}.json")
-    truth = truth_for(row["corpus"])
-    wanted = not prefixes or any(row["config"].startswith(p) for p in prefixes)
-    if wanted and os.path.exists(report) and truth and row.get("status") != "failed":
-        new = subprocess.run(
-            [
-                sys.executable,
-                os.path.join(HERE, "score.py"),
-                report,
-                truth,
-                row["config"],
-                row["corpus"],
-                str(row["rep"]),
-                "" if row.get("diff_lines") is None else str(row["diff_lines"]),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        out.append(new)
-        changed += 1
-    else:
-        out.append(line.strip())
-open(RESULTS, "w").write("\n".join(out) + "\n")
-print(f"rescored {changed} of {len(out)} rows", file=sys.stderr)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", required=True, type=Path, help="new output JSONL file")
+    parser.add_argument("--results", type=Path, default=RESULTS)
+    parser.add_argument("--reports", type=Path, default=HERE / "reports")
+    parser.add_argument("configs", nargs="+", help="exact config labels to rescore")
+    args = parser.parse_args()
+    if args.out.resolve() in (RESULTS.resolve(), args.results.resolve()):
+        parser.error("--out must not overwrite results.jsonl or the input results")
+
+    out, changed = [], 0
+    for line in args.results.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        report = args.reports / f"{row['config']}-{row['corpus']}-{row['rep']}.json"
+        truth = truth_for(row["corpus"])
+        if row["config"] in args.configs and report.is_file() and truth:
+            new = subprocess.run(
+                [
+                    sys.executable,
+                    str(HERE / "score.py"),
+                    str(report),
+                    str(truth),
+                    row["config"],
+                    row["corpus"],
+                    str(row["rep"]),
+                    "" if row.get("diff_lines") is None else str(row["diff_lines"]),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            out.append(new)
+            changed += 1
+        else:
+            out.append(line.strip())
+    with args.out.open("x") as output:
+        output.write("\n".join(out) + "\n")
+    print(f"rescored {changed} of {len(out)} rows into {args.out}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
