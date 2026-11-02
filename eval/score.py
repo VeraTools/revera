@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Score one revera report against a corpus truth.json; prints one JSON line."""
 
+import hashlib
 import json
 import re
 import sys
@@ -59,18 +60,12 @@ def miss_stage(r, defect):
     return "never_proposed" if funnel is not None else "unattributed"
 
 
-def main():
-    report_path, truth_path, config, corpus, rep = sys.argv[1:6]
-    diff_lines = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else None
-    r = json.load(open(report_path))
-    truth = json.load(open(truth_path))
-
-    accepted = [f for f in r.get("findings", []) if f.get("validation_status") == "accepted"]
+def match_findings(findings, defects):
     # defect index -> matched finding index. Maximum bipartite matching
     # (augmenting paths), so a loosely matching finding cannot take the only
     # finding another defect could use. Keeps the association so per-defect
     # fields like cross_file_keywords stay attributable.
-    cand = [[i for i, f in enumerate(accepted) if is_tp(f, d)] for d in truth["defects"]]
+    cand = [[i for i, f in enumerate(findings) if is_tp(f, d)] for d in defects]
     owner = {}  # finding index -> defect index
 
     def augment(di, seen):
@@ -83,34 +78,74 @@ def main():
                 return True
         return False
 
-    for di in range(len(truth["defects"])):
+    for di in range(len(defects)):
         augment(di, set())
-    matches = {di: i for i, di in owner.items()}
+    return {di: i for i, di in owner.items()}
+
+
+def finding_id(f):
+    if f.get("id"):
+        return f["id"]
+    if "file" in f and "defect_key" in f:
+        # src/findings.rs::finding_id: hex(sha256(file + NUL + defect_key))[..12]
+        return hashlib.sha256((f["file"] + "\0" + f["defect_key"]).encode()).hexdigest()[:12]
+    return None
+
+
+def inline_findings(findings, comments):
+    ids = {
+        m[1]
+        for c in comments
+        if (m := re.search(r"<!-- revera-id:([0-9a-f]{12}) -->\s*\Z", c.get("body", "")))
+    }
+    if ids:
+        return [f for f in findings if finding_id(f) in ids]
+    # Legacy reports with no inline identity markers can only use anchors.
+    inline_at = {(c.get("file"), c.get("line")) for c in comments}
+    return [f for f in findings if (f.get("file"), f.get("start_line")) in inline_at]
+
+
+def main():
+    report_path, truth_path, config, corpus, rep = sys.argv[1:6]
+    diff_lines = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else None
+    r = json.load(open(report_path))
+    truth = json.load(open(truth_path))
+
+    accepted = [f for f in r.get("findings", []) if f.get("validation_status") == "accepted"]
+    matches = match_findings(accepted, truth["defects"])
     tp = len(matches)
     fn = len(truth["defects"]) - tp
     fp = len(accepted) - len(matches)
 
-    # real defects outside the planted set: same file and a keyword hit.
+    # Real defects outside the planted set: same file, overlapping lines
+    # when a window is given, and a defect-specific keyword hit.
     # They count as neither TP nor FP, and are reported as extra_valid.
     def also_valid(f):
         text = (f.get("title", "") + " " + f.get("claim", "")).lower()
         return any(
-            f.get("file") == a["file"] and any(k.lower() in text for k in a["keywords"])
+            f.get("file") == a["file"]
+            and (
+                not a.get("lines")
+                or (
+                    (f.get("start_line") or 0) <= a["lines"][1]
+                    and (f.get("end_line") or f.get("start_line") or 0) >= a["lines"][0]
+                )
+            )
+            and any(k.lower() in text for k in a["keywords"])
             for a in truth.get("also_valid", [])
         )
 
     unmatched = [f for i, f in enumerate(accepted) if i not in matches.values()]
     extra_valid = sum(1 for f in unmatched if also_valid(f))
     fp -= extra_valid
-    # inline vs summary: a finding was posted inline when the plan holds an
-    # inline comment at its (anchored) file and start line
-    inline_at = {(c.get("file"), c.get("line")) for c in r.get("plan", {}).get("inline", [])}
-
-    def is_inline(f):
-        return (f.get("file"), f.get("start_line")) in inline_at
-
-    tp_inline = sum(1 for i in matches.values() if is_inline(accepted[i]))
-    fp_inline = sum(1 for f in unmatched if is_inline(f) and not also_valid(f))
+    # Match independently: a summary finding must not consume a defect that
+    # an actual inline comment also found, nor inherit its collocated anchor.
+    inline = inline_findings(accepted, r.get("plan", {}).get("inline", []))
+    inline_matches = match_findings(inline, truth["defects"])
+    tp_inline = len(inline_matches)
+    fp_inline = sum(
+        1 for i, f in enumerate(inline) if i not in inline_matches.values() and not also_valid(f)
+    )
     miss_stages = [miss_stage(r, d) for di, d in enumerate(truth["defects"]) if di not in matches]
     tp_high = sum(
         1 for i in matches.values() if accepted[i].get("severity") in ("high", "critical")

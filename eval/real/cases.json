@@ -366,7 +366,7 @@
    {
     "file": "src/hono-base.ts",
     "keywords": [
-     "string",
+     "string args",
      "typeof handler"
     ]
    }

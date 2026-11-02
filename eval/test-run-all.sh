@@ -48,3 +48,4 @@ if CORPORA="bogus" RUN_ALL_DRY_RUN=1 bash "$HERE/run-all.sh" 1 2>/dev/null; then
 fi
 
 echo "run-all.sh planning OK"
+python3 "$HERE/test_score.py"
