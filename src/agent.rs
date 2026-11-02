@@ -190,9 +190,9 @@ pub async fn run_agent_checked(
         .clamp(Duration::from_secs(10), Duration::from_secs(90))
         .min(total / 4);
     let soft = total - reserve;
-    // Once ordinary work starts, crossing the soft deadline (even in a
-    // successful turn) gets only the reserve, never hard-budget grace.
-    let mut ordinary_work_started = false;
+    // A soft-deadline timeout gets only the reserve. A successful late turn
+    // may instead receive grace if its notice is sent after the hard deadline.
+    let mut soft_timed_out = false;
     let mut hard_notice_grace = false;
     let wrap_up = |name: &str| {
         ChatMessage::user(format!(
@@ -215,7 +215,7 @@ pub async fn run_agent_checked(
         let tools_up = tool_calls >= budget.max_tool_calls;
         if (time_up || tools_up) && !budget_notice_sent {
             budget_notice_sent = true;
-            hard_notice_grace = time_up && start.elapsed() >= total && !ordinary_work_started;
+            hard_notice_grace = time_up && start.elapsed() >= total && !soft_timed_out;
             budget_stop = if time_up {
                 StopReason::TimeBudget
             } else {
@@ -246,7 +246,6 @@ pub async fn run_agent_checked(
                 hard_left()
             }
         } else {
-            ordinary_work_started = true;
             soft_left()
         };
         if limit.is_zero() {
@@ -291,6 +290,7 @@ pub async fn run_agent_checked(
                 tracing::warn!("model request hit the soft deadline; requesting wrap-up");
                 budget_notice_sent = true;
                 budget_stop = StopReason::TimeBudget;
+                soft_timed_out = true;
                 messages.push(wrap_up(&terminal_tool.name));
                 continue;
             }
@@ -447,13 +447,18 @@ pub async fn run_agent_checked(
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
         let tool_limit = soft_left();
         if tool_limit.is_zero() {
-            return Ok(AgentRun {
-                final_call: None,
-                transcript_len: messages.len(),
-                tool_calls,
-                stopped: StopReason::TimeBudget,
-                repaired,
-            });
+            // A successful late turn can return tool calls after the hard
+            // deadline. Account for the batch without starting more work,
+            // then send its budget notice on the next iteration.
+            for c in &msg.tool_calls {
+                messages.push(ChatMessage::tool(
+                    c.id.clone(),
+                    c.name.clone(),
+                    r#"{"error":"not executed: time budget"}"#.to_string(),
+                ));
+            }
+            tool_calls += exec.len() as u32;
+            continue;
         }
         let results = match tokio::time::timeout(tool_limit, run_tool_calls(toolbox, exec)).await {
             Ok(r) => r,
@@ -471,6 +476,7 @@ pub async fn run_agent_checked(
                 tool_calls += exec.len() as u32;
                 budget_notice_sent = true;
                 budget_stop = StopReason::TimeBudget;
+                soft_timed_out = true;
                 messages.push(wrap_up(&terminal_tool.name));
                 continue;
             }

@@ -600,26 +600,51 @@ async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
 }
 
 /// A provider future can finish after the deadline without yielding to the
-/// timer. Its successful ordinary turn must not enable hard-budget grace.
-struct BlockingThenHang;
+/// timer. Its notice is sent after the hard deadline and receives grace;
+/// the late tool batch is accounted for but never executed.
+struct BlockingThenSubmit;
 
 #[async_trait::async_trait]
-impl ModelClient for BlockingThenHang {
+impl ModelClient for BlockingThenSubmit {
     async fn complete(
         &self,
         m: &[ChatMessage],
-        _t: &[ToolSpec],
+        t: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
         if m.len() == 2 {
             std::thread::sleep(std::time::Duration::from_millis(1100));
             return Ok(Completion {
-                message: assistant_text("still researching"),
+                message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
                 usage: Usage::default(),
                 model: "blocking".into(),
                 latency_ms: 0,
             });
         }
-        std::future::pending().await
+        assert!(m.iter().any(|message| {
+            message
+                .content
+                .as_deref()
+                .is_some_and(|s| s.contains("Budget exhausted"))
+        }));
+        assert!(m.iter().any(|message| {
+            message.role == Role::Tool
+                && message
+                    .content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("not executed: time budget"))
+        }));
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].name, "submit_findings");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        Ok(Completion {
+            message: assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [], "coverage": "budget"}),
+            )]),
+            usage: Usage::default(),
+            model: "blocking".into(),
+            latency_ms: 0,
+        })
     }
 
     fn route_label(&self) -> String {
@@ -628,10 +653,10 @@ impl ModelClient for BlockingThenHang {
 }
 
 #[tokio::test]
-async fn successful_ordinary_turn_past_hard_deadline_does_not_enable_grace() {
+async fn successful_ordinary_turn_past_hard_deadline_allows_notice_grace() {
     let start = std::time::Instant::now();
     let run = run_agent(
-        &BlockingThenHang,
+        &BlockingThenSubmit,
         "s",
         "u",
         &toolbox(),
@@ -643,7 +668,9 @@ async fn successful_ordinary_turn_past_hard_deadline_does_not_enable_grace() {
     )
     .await
     .unwrap();
-    assert_eq!(run.stopped, StopReason::TimeBudget);
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert_eq!(run.tool_calls, 1);
+    assert!(run.final_call.is_some());
     assert!(start.elapsed() <= std::time::Duration::from_millis(1500));
 }
 
