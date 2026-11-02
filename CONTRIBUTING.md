@@ -85,6 +85,12 @@ otherwise).
 6. Dispatch `release-promote.yml` with the tag. It moves `vX`, marks the
    release Latest and reads both back, then points the `:0` and `:latest`
    images at the release image.
+
+   `release-verify.yml` and `release-promote.yml` both wait for a reviewer
+   of the `release-verify` environment. Approve on the run page, or with
+   `gh api -X POST repos/VeraTools/revera/actions/runs/<run-id>/pending_deployments
+   -F 'environment_ids[]=<environment-id>' -f state=approved -f comment=<text>`;
+   the API rejects an approval without `comment`.
 7. Open a small follow-up PR so `dogfood-released.yml` exercises the
    promoted `@v0` Action.
 
