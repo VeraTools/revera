@@ -469,13 +469,32 @@ pub struct DelegatedConfig {
     pub worker_max_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct PanelConfig {
-    #[serde(default = "default_focuses")]
     pub focuses: Vec<String>,
-    #[serde(default = "default_scout_tool_calls")]
     pub scout_max_tool_calls: u32,
+    pub focuses_explicit: bool,
+    pub scout_max_tool_calls_explicit: bool,
+}
+
+impl<'de> Deserialize<'de> for PanelConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            focuses: Option<Vec<String>>,
+            scout_max_tool_calls: Option<u32>,
+        }
+        let raw = Raw::deserialize(d)?;
+        Ok(Self {
+            focuses_explicit: raw.focuses.is_some(),
+            focuses: raw.focuses.unwrap_or_else(default_focuses),
+            scout_max_tool_calls_explicit: raw.scout_max_tool_calls.is_some(),
+            scout_max_tool_calls: raw
+                .scout_max_tool_calls
+                .unwrap_or_else(default_scout_tool_calls),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -540,6 +559,11 @@ impl Default for WebSearchConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Trusted operator playbook, loaded separately from repository YAML.
+    #[serde(skip)]
+    pub playbook: crate::playbook::Playbook,
+    #[serde(skip)]
+    builtin_deep: bool,
     #[serde(default)]
     pub review: ReviewConfig,
     #[serde(default)]
@@ -674,6 +698,8 @@ impl Default for PanelConfig {
         Self {
             focuses: default_focuses(),
             scout_max_tool_calls: default_scout_tool_calls(),
+            focuses_explicit: false,
+            scout_max_tool_calls_explicit: false,
         }
     }
 }
@@ -1055,6 +1081,17 @@ impl Config {
     }
 
     fn expand_and_validate(&mut self, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+        for focus in &self.panel.focuses {
+            if focus != "general"
+                && !focus
+                    .split(',')
+                    .all(|s| crate::playbook::valid_name(s.trim()))
+            {
+                bail!(
+                    "panel.focuses entry {focus:?}: expected general or comma-separated skill names"
+                );
+            }
+        }
         if self.review.notes.chars().count() > crate::guidance::MAX_NOTES_CHARS {
             bail!("review.notes must be at most 8000 characters");
         }
@@ -1139,6 +1176,15 @@ impl Config {
             .validator
             .as_ref()
             .unwrap_or(&self.models.investigator)
+    }
+
+    /// Resolve CLI overrides before the built-in deep baseline-to-panel rule.
+    /// User-defined profiles named deep do not opt into this rule.
+    pub fn effective_strategy(&self, strategy: Option<Strategy>) -> Strategy {
+        match strategy.unwrap_or(self.review.strategy) {
+            Strategy::Baseline if self.builtin_deep => Strategy::Panel,
+            strategy => strategy,
+        }
     }
 
     pub fn effective_fixer(&self) -> &ModelRoute {
@@ -1383,6 +1429,7 @@ impl Config {
             "guidance": self.review.guidance.as_str(),
             "guidance_max_bytes": self.review.guidance_max_bytes,
             "notes": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(self.review.notes.as_bytes())),
+            "playbook": self.playbook.digest,
             "web_search": self.web_search,
             "concurrency": self.review.concurrency,
             "max_tool_output_bytes": self.review.max_tool_output_bytes,
@@ -1401,7 +1448,7 @@ impl Config {
             },
             "panel": {
                 "focuses": self.panel.focuses,
-                "scout_max_tool_calls": self.panel.scout_max_tool_calls,
+                "scout_max_tool_calls": self.scout_tool_calls(),
             },
             "investigator": route(&self.models.investigator),
             "validator": route(self.effective_validator()),
@@ -1418,13 +1465,63 @@ impl Config {
         })
     }
 
+    /// Per-scout tool calls. A built-in deep review that became a panel only
+    /// through a CLI strategy override still gives each pass the agent budget.
+    pub fn scout_tool_calls(&self) -> u32 {
+        if self.builtin_deep && !self.panel.scout_max_tool_calls_explicit {
+            self.budget.agent_max_tool_calls
+        } else {
+            self.panel.scout_max_tool_calls
+        }
+    }
+
+    /// Drop classes the loaded playbook disables from focuses Revera chose
+    /// itself; explicitly configured focuses still fail on a disabled class.
+    pub fn prune_disabled_focuses(&mut self) {
+        if self.panel.focuses_explicit {
+            return;
+        }
+        let enabled = self.playbook.names();
+        let focuses: Vec<String> = self
+            .panel
+            .focuses
+            .iter()
+            .filter_map(|focus| {
+                if focus == "general" {
+                    return Some(focus.clone());
+                }
+                let kept: Vec<&str> = focus
+                    .split(',')
+                    .filter(|c| enabled.contains(&crate::pipeline::panel::canonical_class(c)))
+                    .collect();
+                (!kept.is_empty()).then(|| kept.join(","))
+            })
+            .collect();
+        self.panel.focuses = focuses;
+    }
+
     pub fn apply_profile(&mut self, name: &str) -> Result<()> {
+        let builtin_deep = name == "deep" && !self.profiles.contains_key(name);
+        let deep_panel = builtin_deep && self.review.strategy == Strategy::Baseline;
         let p = self
             .profiles
             .get(name)
             .cloned()
             .or_else(|| ProfileOverride::builtin(name, &self.budget, &self.review))
             .with_context(|| format!("unknown profile {name:?}"))?;
+        self.builtin_deep = builtin_deep;
+        if builtin_deep && !self.panel.focuses_explicit {
+            self.panel.focuses = [
+                "general",
+                "logic,errors,state",
+                "contracts,config,concurrency",
+                "filesystem,subprocess,security,resources",
+                "docs,tests",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        }
         if let Some(r) = &p.review {
             if let Some(v) = r.strategy {
                 self.review.strategy = v;
@@ -1477,6 +1574,9 @@ impl Config {
                 self.budget.retries = v;
             }
         }
+        if deep_panel && !self.panel.scout_max_tool_calls_explicit {
+            self.panel.scout_max_tool_calls = self.budget.agent_max_tool_calls;
+        }
         Ok(())
     }
 }
@@ -1493,24 +1593,18 @@ impl ProfileOverride {
                 (budget.run_max_seconds / 2).max(60),
             ),
             "deep" => (
-                budget.agent_max_tool_calls.saturating_mul(2),
-                budget.agent_max_seconds.max(
-                    budget
-                        .agent_max_seconds
-                        .saturating_mul(2)
-                        .min(DEEP_MAX_SECONDS),
-                ),
-                budget.run_max_seconds.max(
-                    budget
-                        .run_max_seconds
-                        .saturating_mul(2)
-                        .min(DEEP_MAX_SECONDS),
-                ),
+                budget.agent_max_tool_calls,
+                budget.agent_max_seconds,
+                budget
+                    .run_max_seconds
+                    .saturating_mul(2)
+                    .min(DEEP_MAX_SECONDS),
             ),
             _ => return None,
         };
         Some(Self {
             review: (name == "deep").then_some(ReviewOverride {
+                strategy: (review.strategy == Strategy::Baseline).then_some(Strategy::Panel),
                 max_diff_bytes: Some(review.max_diff_bytes.max(400000)),
                 max_findings: Some(review.max_findings.max(20)),
                 ..Default::default()
@@ -1520,7 +1614,7 @@ impl ProfileOverride {
                 agent_max_seconds: Some(agent_seconds),
                 run_max_seconds: Some(run_seconds),
                 run_max_requests: (name == "deep")
-                    .then_some(budget.run_max_requests.saturating_mul(2)),
+                    .then_some(budget.run_max_requests.saturating_mul(3)),
                 ..Default::default()
             }),
         })

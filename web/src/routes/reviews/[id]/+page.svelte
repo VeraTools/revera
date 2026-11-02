@@ -243,6 +243,7 @@
               <summary
                 ><div class="finding-top">
                   <Status status={finding.severity} />
+                  {#if finding.category}<span class="badge">{finding.category}</span>{/if}
                   {#if finding.html_url}<a
                       class="mono text-link"
                       href={finding.html_url}

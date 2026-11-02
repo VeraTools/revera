@@ -50,6 +50,7 @@ const fixtures: PullSummary[] = definitions.map(([repo, number, title, author, s
   head_sha: number === 227 ? 'f'.repeat(40) : head,
   head_ref: number === 234 ? 'fix/search-state' : `topic/${number}`,
   base_ref: 'main',
+  base_sha: 'b'.repeat(40),
   created_at: ago(3 * 1440 + i * 60),
   updated_at: ago(i * 14 + 3),
   url: `https://github.com/${repo}/pull/${number}`,
@@ -76,6 +77,8 @@ export function annotatePullJob(job: JobSummary) {
     title: pull.title,
     author: pull.author,
     head_sha: pull.head_sha,
+    base_ref: pull.base_ref,
+    base_sha: pull.base_sha,
     pr_url: pull.url,
   });
 }
@@ -98,6 +101,7 @@ function reviewFor(pull: PullSummary, jobs: JobSummary[]): PullReview {
           status: job.status,
           mode: job.mode,
           head_sha: job.head_sha || null,
+          base_ref: job.base_ref || null,
           findings: { ...job.findings },
           finished_at: job.finished_at || null,
           queued_at: job.queued_at,
@@ -108,7 +112,7 @@ function reviewFor(pull: PullSummary, jobs: JobSummary[]): PullReview {
       ? 'reviewing'
       : !job
         ? 'not_reviewed'
-        : job.head_sha !== pull.head_sha
+        : job.head_sha !== pull.head_sha || job.base_ref !== pull.base_ref
           ? 'outdated'
           : ['failed', 'cancelled'].includes(job.status)
             ? 'failed'
@@ -151,6 +155,8 @@ function seed(jobs: JobSummary[]) {
       title: pull.title,
       author: pull.author,
       head_sha: pull.head_sha,
+      base_ref: pull.base_ref,
+      base_sha: pull.base_sha,
       trigger: 'manual',
       mode: pull.mode,
       status,

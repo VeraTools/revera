@@ -645,6 +645,7 @@ async fn injectable_child_runs_with_base_config_and_completes_check() {
 profile=standard
 guidance=inherit
 notes=unset
+playbook=unset
 while [ $# -gt 0 ]; do
   case $1 in
     --out) out=$2; shift;;
@@ -653,10 +654,13 @@ while [ $# -gt 0 ]; do
     --profile) profile=$2; shift;;
     --guidance) guidance=$2; shift;;
     --notes-file) [ -f "$2" ] || exit 1; notes=$(cat "$2"); shift;;
+    --playbook-dir) [ "$(cat "$2/reviewer.md")" = 'Server method' ] || exit 1; playbook=$2; shift;;
   esac
   shift
 done
 [ "$profile" = "$EXPECTED_PROFILE" ] || exit 1
+if [ "$profile" = quick ]; then [ "$playbook" = unset ] || exit 1;
+else [ "$playbook" != unset ] || exit 1; fi
 case $profile in
   quick) [ "$guidance" = inherit ] && [ "$notes" = unset ] || exit 1;;
   standard) [ "$guidance" = skills ] && [ "$notes" = 'inspect migrations' ] || exit 1;;
@@ -676,6 +680,14 @@ JSON
             prefix: vec![script.display().to_string()],
         };
         let (data, server) = server(&mock, runner, true).await;
+        if mode != dashboard::Mode::Quick {
+            crate::fsutil::write_repo_file(
+                data.path(),
+                Path::new("playbook/reviewer.md"),
+                b"Server method",
+            )
+            .unwrap();
+        }
         server.dashboard.lock().await.preferences.repos.insert(
             "owner/repo".into(),
             dashboard::RepoPreference {
@@ -838,6 +850,64 @@ async fn reconcile_api_first_sighting_and_stale_head_are_not_backfilled() {
     assert_eq!(server.queue.lock().await.pending.len(), 1);
 }
 
+#[tokio::test]
+async fn superseding_reviews_record_replacement_head_in_metadata() {
+    for running in [false, true] {
+        let mock = MockServer::start().await;
+        let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+        let current = job(&"a".repeat(40));
+        server.enqueue(current.clone()).await;
+        let cancel = if running {
+            let (_, cancel) = server.queue.lock().await.take().unwrap();
+            server.transition(&current, "running", None).await.unwrap();
+            Some(cancel)
+        } else {
+            None
+        };
+        let replacement = job("123456789abcdef0123456789abcdef0123456789a");
+        server.enqueue(replacement.clone()).await;
+        if let Some(cancel) = cancel {
+            assert!(*cancel.borrow());
+        }
+        assert_eq!(
+            server.queue.lock().await.pending[&current.key()].id,
+            replacement.id
+        );
+        let dashboard = server.dashboard.lock().await;
+        let summary = &dashboard.jobs[&current.id];
+        assert_eq!(summary.status, "cancelled");
+        assert_eq!(summary.reason.as_deref(), Some("superseded by 1234567"));
+        let meta: Value = serde_json::from_slice(
+            &std::fs::read(data.path().join("jobs").join(&current.id).join("meta.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["status"], "cancelled");
+        assert_eq!(meta["reason"], "superseded by 1234567");
+    }
+}
+
+#[tokio::test]
+async fn same_head_coalescing_and_forced_reruns_do_not_cancel_running_metadata() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let current = job(&"a".repeat(40));
+    server.enqueue(current.clone()).await;
+    let (_, cancel) = server.queue.lock().await.take().unwrap();
+    server.transition(&current, "running", None).await.unwrap();
+    server.enqueue(job(current.head())).await;
+    assert!(server.queue.lock().await.pending.is_empty());
+    let mut forced = job(current.head());
+    if let events::Kind::Review { force, .. } = &mut forced.kind {
+        *force = true;
+    }
+    server.enqueue(forced).await;
+    assert!(!*cancel.borrow());
+    let dashboard = server.dashboard.lock().await;
+    let summary = &dashboard.jobs[&current.id];
+    assert_eq!(summary.status, "running");
+    assert_eq!(summary.reason, None);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn supersede_kills_child_group_cancels_check_and_does_not_record_head() {
@@ -894,6 +964,7 @@ async fn supersede_kills_child_group_cancels_check_and_does_not_record_head() {
         .expect(1)
         .mount(&mock)
         .await;
+    let current_id = current.id.clone();
     server.enqueue(current).await;
     let (running, cancel) = server.queue.lock().await.take().unwrap();
     let server_copy = server.clone();
@@ -921,6 +992,12 @@ async fn supersede_kills_child_group_cancels_check_and_does_not_record_head() {
     let requests = mock.received_requests().await.unwrap();
     let check: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
     assert_eq!(check["conclusion"], "cancelled");
+    let meta: Value = serde_json::from_slice(
+        &std::fs::read(data.path().join("jobs").join(&current_id).join("meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["status"], "cancelled");
+    assert_eq!(meta["reason"], "superseded by ccccccc");
     #[cfg(target_os = "linux")]
     {
         // A killed descendant may briefly remain as a zombie awaiting its host reaper.
@@ -2578,5 +2655,10 @@ mod external_tests;
 mod handoff_tests;
 #[path = "installation_tests.rs"]
 mod installation_tests;
+#[path = "pr_races_tests.rs"]
+mod pr_races_tests;
 #[path = "pulls_tests.rs"]
 mod pulls_tests;
+
+#[path = "playbook_tests.rs"]
+mod playbook_tests;

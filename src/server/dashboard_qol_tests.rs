@@ -27,12 +27,14 @@ fn builtin_profiles_scale_raised_budgets() {
     assert_eq!(quick.review.max_findings, standard.review.max_findings);
     let mut deep = standard.clone();
     deep.apply_profile("deep").unwrap();
-    assert_eq!(limits(&deep), (100, 1800, 600, 3000));
+    assert_eq!(limits(&deep), (50, 900, 900, 3000));
     assert_eq!(deep.review.max_diff_bytes, 400000);
     assert_eq!(deep.review.max_findings, 20);
+    assert_eq!(quick.review.strategy, standard.review.strategy);
+    assert_eq!(deep.review.strategy, crate::config::Strategy::Panel);
+    assert_eq!(deep.panel.scout_max_tool_calls, 50);
     for config in [quick, deep] {
         assert_eq!(config.budget.retries, 7);
-        assert_eq!(config.review.strategy, standard.review.strategy);
         assert_eq!(config.review.validate, standard.review.validate);
         assert_eq!(config.vera.index_identity(), standard.vera.index_identity());
     }
@@ -50,7 +52,7 @@ fn deep_preserves_larger_review_limits_and_budgets_saturate() {
     config.budget.agent_max_seconds = u64::MAX;
     config.budget.run_max_seconds = u64::MAX;
     config.apply_profile("deep").unwrap();
-    assert_eq!(limits(&config), (u32::MAX, u64::MAX, u32::MAX, u64::MAX));
+    assert_eq!(limits(&config), (u32::MAX, u64::MAX, u32::MAX, 3000));
     assert_eq!(config.review.max_diff_bytes, 600000);
     assert_eq!(config.review.max_findings, 30);
 

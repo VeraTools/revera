@@ -15,6 +15,40 @@ in `settings.json`, not YAML review settings.
 
 Setup guides: [GitHub App](server.md), [Action](action.md), [local CLI](cli.md).
 
+## Reviewer playbook
+
+Every review embeds `playbook/reviewer.md` and twelve defect-class skills:
+`logic`, `contracts`, `state`, `errors`, `concurrency`, `security`, `filesystem`,
+`subprocess`, `resources`, `config`, `tests` and `docs`. This playbook is separate
+from repository guidance, which remains off by default.
+
+Use `revera review --playbook-dir <DIR>` to load trusted operator overrides.
+The directory may contain `reviewer.md` and `skills/<name>.md`. A built-in name
+replaces that class; a new name adds one. In event mode the directory must be
+outside the checkout after resolving both paths, including for `--private`
+reviews. Operator-chosen symlinks in the root path are allowed. Private reviews
+may use operator playbooks even though repository guidance is disabled.
+
+Each skill has front matter followed by Markdown:
+
+```markdown
+---
+name: logic
+description: Local logic and boundary checks.
+enabled: true
+---
+Check concrete inputs at each changed boundary.
+```
+
+`name` must equal the file stem and match `[a-z0-9][a-z0-9-]{0,39}`.
+`description` is required, one line, at most 300 characters. `enabled` defaults
+to `true`; `false` disables a class. Unknown front matter keys are errors.
+Limits are 16 KiB for the reviewer, 8 KiB per skill, 64 KiB of effective
+enabled content and 24 skills including disabled entries. Symlinks inside the directory,
+non-regular files, invalid UTF-8 and unexpected entries are rejected; hidden
+non-Markdown temporary files are ignored. Effective content changes invalidate
+the review fingerprint but keep the Vera index warm.
+
 The smallest valid file is one investigator route:
 
 ```yaml
@@ -394,6 +428,18 @@ cache scope is the base branch's and their tree is the PR head.
 | `panel.focuses` | `[general, cross-file]` | one focus label per scout, in order; a single scout runs once per label |
 | `panel.scout_max_tool_calls` | `15` | |
 
+A focus is `general` (the whole changed surface) or a comma-separated list
+of enabled playbook skill names, for example `"logic,errors,state"`. Quote
+comma-separated entries inside YAML flow lists. Custom classes are allowed;
+unknown or disabled names in an explicit `panel.focuses` fail before any model
+call and list valid names. Focuses Revera supplies itself (the default and
+deep's lanes) skip disabled classes, and a lane left with none is dropped.
+Legacy `cross-file` means `contracts`, and `data` means `logic`. Focused lanes
+triage every changed file against their classes first, but may still report
+other defects they notice. No scout routes means every lane uses the
+investigator; a single route is repeated, and multiple routes must match the
+number of focuses. Concurrency and the validation reserve still apply.
+
 ## `profiles`
 
 Profiles override selected `review` and `budget` keys. Select one with
@@ -402,21 +448,30 @@ deep modes select the matching profile; standard mode applies no profile.
 Profiles are applied before strategy resolution and credential checks.
 
 `quick` and `deep` work without a `profiles` block. Their budgets scale from
-your configured `budget` at the time the profile is applied, keeping the
-configured strategy and validation:
+your configured `budget` at the time the profile is applied. Validation stays
+unchanged. Deep switches a baseline review to a panel; delegated and panel
+strategies stay as configured. Unless `panel.focuses` is explicitly set, deep
+uses five lanes: `general`, `logic,errors,state`,
+`contracts,config,concurrency`, `filesystem,subprocess,security,resources`,
+and `docs,tests`. Lanes without a scout route use the investigator route,
+and at most `review.concurrency` lanes run at once.
+When deep converts baseline to panel (including through `--strategy baseline`), each lane uses the effective
+`budget.agent_max_tool_calls` unless `panel.scout_max_tool_calls` was explicitly
+set. For example, a server budget of 50 tool calls gives each deep lane 50,
+rather than the panel default of 15. Explicit panel limits always win.
 
 | Setting | Built-in `quick` | Built-in `deep` |
 |---|---|---|
-| `budget.agent_max_tool_calls` | Half, rounded down; at least 1 | Double |
-| `budget.agent_max_seconds` | Half, rounded down; at least 30 | Double, up to 3000 seconds; never below your configured value |
-| `budget.run_max_seconds` | Half, rounded down; at least 60 | Double, up to 3000 seconds; never below your configured value |
-| `budget.run_max_requests` | Unchanged | Double |
+| `budget.agent_max_tool_calls` | Half, rounded down; at least 1 | Unchanged |
+| `budget.agent_max_seconds` | Half, rounded down; at least 30 | Unchanged |
+| `budget.run_max_seconds` | Half, rounded down; at least 60 | Double, capped at 3000 seconds |
+| `budget.run_max_requests` | Unchanged | Triple |
 | `review.max_diff_bytes` | Unchanged | At least `400000`, keeping a higher configured value |
 | `review.max_findings` | Unchanged | At least `20`, keeping a higher configured value |
 
 With the default budget, quick allows 12 tool calls, 150 seconds per agent
 and 450 seconds per run, with the request limit unchanged at 120. Deep allows
-50 tool calls, 600 seconds per agent, 1800 seconds per run and 240 requests.
+25 tool calls, 300 seconds per agent, 1800 seconds per run and 360 requests.
 The 3000-second deep limit leaves room before server jobs stop at 55 minutes.
 Retries and other review settings are unchanged.
 
@@ -431,7 +486,8 @@ profiles:
     budget: { agent_max_tool_calls: 40, agent_max_seconds: 600, run_max_seconds: 1500 }
 ```
 
-`--strategy` on the command line overrides both the file and the profile.
+`--strategy` on the command line overrides both the file and the profile;
+the built-in deep profile still turns an effective baseline into a panel.
 
 ## Command line
 

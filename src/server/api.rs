@@ -105,6 +105,7 @@ pub fn router(server: Arc<Server>) -> Router<Arc<Server>> {
         .merge(super::external::router())
         .merge(super::fixes::router())
         .merge(super::guidance::router())
+        .merge(super::playbook::router())
         .route("/api/events", get(events))
         .route("/api", any(|| async { StatusCode::NOT_FOUND }))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
@@ -982,6 +983,11 @@ async fn submit_review(
             .preferences
             .mode(&repo.full_name),
     );
+    let admission = server.queue.lock().await.review_admission((
+        repo.id,
+        number,
+        super::events::Source::Installed,
+    ));
     let pr = fetch_pr(server, &repo, number).await?;
     if pr["state"].as_str() == Some("closed") {
         return Err(Error(StatusCode::CONFLICT, "PR is closed".into()));
@@ -996,7 +1002,7 @@ async fn submit_review(
         trigger,
     );
     job.mode = mode;
-    let id = super::pulls::enqueue_review(server, job).await?;
+    let id = super::pulls::enqueue_review(server, job, &admission).await?;
     Ok(output(json!({"id": id})))
 }
 async fn rerun(

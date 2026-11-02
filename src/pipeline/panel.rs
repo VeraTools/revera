@@ -1,5 +1,5 @@
 use super::common::{
-    PrepareOut, ReviewRequest, findings_terminal_check, finish, investigator_user,
+    PrepareOut, ReviewRequest, clamp_budget, findings_terminal_check, finish, investigator_user,
     parse_findings_checked, parse_not_checked, prepare,
 };
 use super::make_client;
@@ -9,17 +9,55 @@ use crate::findings::Finding;
 use crate::prompts;
 use crate::report::RunReport;
 use crate::state::ReviewState;
-use crate::tools::terminal_submit_findings_spec;
+use crate::tools::submit_findings_spec;
 use anyhow::Result;
 use futures::stream::StreamExt;
 
-/// Parse `## <focus>` sections out of prompts/scout_focus.md.
+/// Render the general section or the defect-class focus template.
 pub fn focus_addendum(focus: &str) -> Option<String> {
+    focus_addendum_for(focus, &crate::playbook::Playbook::builtin()).ok()
+}
+
+pub(crate) fn canonical_class(name: &str) -> &str {
+    match name.trim() {
+        "cross-file" => "contracts",
+        "data" => "logic",
+        name => name,
+    }
+}
+
+pub fn validate_focuses(focuses: &[String], playbook: &crate::playbook::Playbook) -> Result<()> {
+    if focuses.is_empty() {
+        anyhow::bail!("panel.focuses must contain at least one entry");
+    }
+    for focus in focuses {
+        focus_addendum_for(focus, playbook)?;
+    }
+    Ok(())
+}
+
+pub fn focus_addendum_for(focus: &str, playbook: &crate::playbook::Playbook) -> Result<String> {
+    let classes: Vec<_> = focus.split(',').map(canonical_class).collect();
+    if focus != "general" {
+        for name in &classes {
+            if playbook.skill(name).is_none() {
+                anyhow::bail!(
+                    "unknown panel focus {name:?}; valid names: general, {} (legacy aliases: cross-file, data)",
+                    playbook.names().join(", ")
+                );
+            }
+        }
+    }
+    let section = if focus == "general" {
+        "general"
+    } else {
+        "classes"
+    };
     let mut in_section = false;
     let mut out = String::new();
-    for line in prompts::SCOUT_FOCUS.lines() {
+    for line in prompts::FOCUS.lines() {
         if let Some(name) = line.strip_prefix("## ") {
-            in_section = name.trim() == focus;
+            in_section = name.trim() == section;
             continue;
         }
         if in_section {
@@ -29,9 +67,9 @@ pub fn focus_addendum(focus: &str) -> Option<String> {
     }
     let out = out.trim();
     if out.is_empty() {
-        None
+        anyhow::bail!("missing focus template {section}")
     } else {
-        Some(out.to_string())
+        Ok(crate::redact::text(&out.replace("{classes}", &classes.join(", "))).into_owned())
     }
 }
 
@@ -79,7 +117,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let lanes = scout_lanes(&scouts, &cfg.panel.focuses, &cfg.models.investigator)?;
     let n_scouts = lanes.len();
 
-    let terminal = terminal_submit_findings_spec();
+    let terminal = submit_findings_spec(&cfg.playbook);
     let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes)
         + &prep.guidance.prompt_block()
         + &prep.tracked_block(cfg.review.validate);
@@ -88,7 +126,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
     let tb0 = prep.toolbox.clone();
     let timing0 = prep.timing.clone();
     let wall = prep.wall;
-    let lane_budget = prep.budget(cfg.panel.scout_max_tool_calls, cfg.budget.agent_max_seconds);
+    let investigation_deadline = prep.investigation_deadline();
     let lane_futs = lanes.iter().map(|(focus, route)| {
         let ledger = ledger0.clone();
         let tb = tb0.clone();
@@ -96,12 +134,11 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         let terminal = terminal.clone();
         let focus = focus.clone();
         let route = route.clone();
-        let budget = lane_budget.clone();
         let retries = cfg.budget.retries;
         let timing = timing0.clone();
         async move {
             let lane_start = std::time::Instant::now();
-            if ledger.request_count() >= max_req {
+            if ledger.request_count() >= max_req || lane_start >= investigation_deadline {
                 timing.record(
                     "lane",
                     &format!("panel:{focus}"),
@@ -111,6 +148,11 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 );
                 return (focus, None, lane_start);
             }
+            let budget = clamp_budget(
+                cfg.scout_tool_calls(),
+                cfg.budget.agent_max_seconds,
+                investigation_deadline,
+            );
             let key = super::cache_key(cfg, "panel", &focus, None);
             let client = match make_client(
                 &route,
@@ -122,23 +164,29 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                 &terminal.name,
             ) {
                 Ok(c) => c,
-                Err(e) => return (focus, Some(Err(e)), lane_start),
+                Err(e) => return (focus, Some(Ok(Err(e))), lane_start),
             };
-            let addendum = focus_addendum(&focus).unwrap_or_default();
+            let addendum =
+                focus_addendum_for(&focus, &cfg.playbook).expect("validated before prepare");
             let system = format!(
-                "{}\n\n# Focus: {}\n\n{}",
+                "{}{}\n\n# Focus: {}\n\n{}",
                 prompts::INVESTIGATOR,
+                cfg.playbook.investigator_block(),
                 focus,
                 addendum
             );
-            let run = run_agent_checked(
-                client.as_ref(),
-                &system,
-                &user,
-                &tb,
-                &terminal,
-                &budget,
-                &findings_terminal_check,
+            // Even the agent's terminal grace must leave validation time intact.
+            let run = tokio::time::timeout_at(
+                investigation_deadline.into(),
+                run_agent_checked(
+                    client.as_ref(),
+                    &system,
+                    &user,
+                    &tb,
+                    &terminal,
+                    &budget,
+                    &findings_terminal_check,
+                ),
             )
             .await;
             (focus, Some(run), lane_start)
@@ -155,7 +203,7 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
             continue;
         };
         let outcome = match run {
-            Ok(r) => match r.stopped {
+            Ok(Ok(r)) => match r.stopped {
                 crate::agent::StopReason::Terminal => {
                     prep.stats.repaired |= r.repaired;
                     let Some(call) = &r.final_call else {
@@ -213,10 +261,15 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
                     "error".into()
                 }
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 prep.partial_reasons
                     .push(format!("scout {focus} failed: {e}"));
                 format!("error:{}", crate::text::excerpt_bytes(&e.to_string(), 60))
+            }
+            Err(_) => {
+                prep.partial_reasons
+                    .push(format!("scout {focus} reached investigation deadline"));
+                "timeout".into()
             }
         };
         prep.timing.record(
@@ -228,8 +281,9 @@ pub async fn run(cfg: &Config, req: &ReviewRequest) -> Result<(RunReport, Review
         );
     }
     if skipped > 0 {
-        prep.partial_reasons
-            .push(format!("run budget exhausted before {skipped} lanes"));
+        prep.partial_reasons.push(format!(
+            "investigation deadline or run budget exhausted before {skipped} lanes"
+        ));
     }
     let n_raw = raw.len();
     let n_unique = crate::findings::collapse(raw.clone()).len();

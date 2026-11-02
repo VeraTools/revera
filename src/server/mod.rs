@@ -9,6 +9,7 @@ mod external;
 mod fixes;
 mod guidance;
 mod mentions;
+mod playbook;
 mod pulls;
 mod queue;
 mod reconcile;
@@ -91,6 +92,7 @@ pub(super) struct Server {
     fix_notify: Notify,
     guidance_cache: Mutex<guidance::Cache>,
     pulls: std::sync::Mutex<pulls::Cache>,
+    playbook: Mutex<()>,
 }
 
 impl Server {
@@ -108,8 +110,25 @@ impl Server {
 
     async fn enqueue_inner(
         &self,
+        job: events::Job,
+        admission: Option<&queue::ReviewAdmission>,
+    ) -> bool {
+        self.enqueue_checked(job, admission, false).await
+    }
+
+    async fn enqueue_reconcile(
+        &self,
+        job: events::Job,
+        admission: &queue::ReviewAdmission,
+    ) -> bool {
+        self.enqueue_checked(job, Some(admission), true).await
+    }
+
+    async fn enqueue_checked(
+        &self,
         mut job: events::Job,
         admission: Option<&queue::ReviewAdmission>,
+        reconcile: bool,
     ) -> bool {
         let preferences = self.dashboard.lock().await.preferences.clone();
         if job.repo.source() == events::Source::Installed
@@ -154,6 +173,29 @@ impl Server {
         {
             return false;
         }
+        if reconcile {
+            if queue.contains(job.key()) {
+                return false;
+            }
+            if matches!(job.kind, events::Kind::Review { .. }) {
+                if !self.pulls.lock().unwrap().current(&job) {
+                    return false;
+                }
+                // Runner completion commits its checkpoint under this same queue
+                // lock, so a job built before a later await cannot run twice.
+                let current = self.seen.lock().await.review_current(&job);
+                if current
+                    && !self
+                        .dashboard
+                        .lock()
+                        .await
+                        .unconfigured_reviews(&job.repo.full_name)
+                        .contains(&job.key().1)
+                {
+                    return false;
+                }
+            }
+        }
         let previous = queue.pending.get(&job.key()).cloned();
         queue.enqueue(job.clone());
         let mut accepted = queue
@@ -162,15 +204,31 @@ impl Server {
             .is_some_and(|j| j.id == job.id);
         let mut skipped = false;
         if accepted && !matches!(job.kind, events::Kind::Remove) {
-            if let Some(previous) = previous
-                && let Err(e) = self
-                    .transition(&previous, "cancelled", Some("superseded".into()))
+            let reason = if matches!(job.kind, events::Kind::Review { .. }) {
+                format!(
+                    "superseded by {}",
+                    job.head().chars().take(7).collect::<String>()
+                )
+            } else {
+                "superseded".into()
+            };
+            let running = queue
+                .running
+                .get(&job.key())
+                .filter(|running| {
+                    matches!(job.kind, events::Kind::Review { .. }) && *running.cancel.borrow()
+                })
+                .map(|running| running.job.clone());
+            for previous in previous.into_iter().chain(running) {
+                if let Err(e) = self
+                    .transition(&previous, "cancelled", Some(reason.clone()))
                     .await
-            {
-                tracing::warn!(
-                    "job metadata: {}",
-                    crate::redact::diagnostic(&e.to_string())
-                );
+                {
+                    tracing::warn!(
+                        "job metadata: {}",
+                        crate::redact::diagnostic(&e.to_string())
+                    );
+                }
             }
             let mut summary = dashboard::JobSummary::queued(&job);
             if self.config_yaml().is_ok_and(|yaml| yaml.is_none()) {
@@ -307,11 +365,17 @@ impl Server {
     async fn handle(&self, app: &app::App, event: events::Event) -> Result<()> {
         match event {
             events::Event::Job(job) => self.enqueue(job).await,
+            events::Event::Retarget(job) => self.retarget(job).await?,
             events::Event::Close(repo, number) => {
                 self.close((repo, number, events::Source::Installed))
                     .await?
             }
             events::Event::Rerequest(repo, number) => {
+                let admission = self.queue.lock().await.review_admission((
+                    repo.id,
+                    number,
+                    events::Source::Installed,
+                ));
                 if self
                     .dashboard
                     .lock()
@@ -347,17 +411,20 @@ impl Server {
                         .await
                         .preferences
                         .mode(&repo.full_name);
-                    self.enqueue(events::Job {
-                        id: uuid::Uuid::new_v4().simple().to_string(),
-                        trigger: "rerun".into(),
-                        mode,
-                        repo,
-                        kind: events::Kind::Review {
-                            number,
-                            pr,
-                            force: true,
+                    self.enqueue_inner(
+                        events::Job {
+                            id: uuid::Uuid::new_v4().simple().to_string(),
+                            trigger: "rerun".into(),
+                            mode,
+                            repo,
+                            kind: events::Kind::Review {
+                                number,
+                                pr,
+                                force: true,
+                            },
                         },
-                    })
+                        Some(&admission),
+                    )
                     .await;
                 }
             }
@@ -562,6 +629,7 @@ async fn initialize(
         fix_notify: Notify::new(),
         guidance_cache: Mutex::new(guidance::Cache::default()),
         pulls: std::sync::Mutex::new(pulls::Cache::default()),
+        playbook: Mutex::new(()),
     });
     if let Err(error) = server.recover_checks().await {
         tracing::warn!(
@@ -879,6 +947,16 @@ async fn webhook(State(server): State<Arc<Server>>, headers: HeaderMap, body: By
     }
     let preferences = server.dashboard.lock().await.preferences.clone();
     if event == "pull_request" {
+        if let (Some(repo), Some(number)) = (
+            payload["repository"]["id"].as_u64(),
+            payload["number"].as_u64(),
+        ) {
+            server
+                .queue
+                .lock()
+                .await
+                .observe_pull((repo, number, events::Source::Installed));
+        }
         server.pulls.lock().unwrap().webhook(&payload);
     }
     if event == "check_run" && payload["action"] == "requested_action" {

@@ -127,6 +127,11 @@ pub async fn validate_candidates(
         let terminal = terminal.clone();
         let role = role.to_string();
         let cand = c.clone();
+        let checklist = if recheck {
+            String::new()
+        } else {
+            class_checklist(&cfg.playbook, &cand.category)
+        };
         let cand_id = c.id();
         let excerpt = diff.file_excerpt(&cand.file);
         let cache_key = super::cache_key(cfg, strategy_name, &role, Some(&cand.file));
@@ -188,7 +193,7 @@ pub async fn validate_candidates(
                     excerpt,
                     serde_json::to_string_pretty(&cand).unwrap_or_default()
                 )
-            };
+            } + &checklist;
             let run = run_agent_checked(
                 client.as_ref(),
                 &system,
@@ -344,6 +349,19 @@ pub fn validator_terminal() -> ToolSpec {
 
 pub fn validator_prompt() -> &'static str {
     prompts::VALIDATOR
+}
+
+pub fn class_checklist(playbook: &crate::playbook::Playbook, category: &str) -> String {
+    playbook
+        .skill(category)
+        .map(|s| {
+            crate::redact::text(&format!(
+                "\n\nClass checklist ({}). Use it to look for counterevidence:\n{}",
+                s.name, s.body
+            ))
+            .into_owned()
+        })
+        .unwrap_or_default()
 }
 
 pub fn recheck_prompt() -> &'static str {

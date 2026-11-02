@@ -1,0 +1,4 @@
+- Full-text-only indexing builds a BM25 index without embeddings.
+- `--index-dir` selects the index for search and maintenance commands; `vera index --save DIR` sets where a new index is written.
+- Replacing an existing index asks for confirmation unless `--yes` is passed. A full-text-only rebuild replaces the whole index, including any vectors.
+- Updates, watch, stats, overview, references, and doctor use the selected index directory.

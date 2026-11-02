@@ -306,6 +306,8 @@ pub struct JobSummary {
     pub repo_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
     /// Persisted by `persist_job`, but never included in dashboard responses.
     #[serde(default, skip_serializing)]
     pub check: Option<CheckRecovery>,
@@ -361,6 +363,10 @@ impl JobSummary {
             repo_id: Some(job.repo.id),
             base_sha: match &job.kind {
                 Kind::Review { pr, .. } => string(&pr["base"]["sha"]),
+                _ => None,
+            },
+            base_ref: match &job.kind {
+                Kind::Review { pr, .. } => string(&pr["base"]["ref"]),
                 _ => None,
             },
             id: job.id.clone(),
@@ -768,8 +774,8 @@ impl Server {
             })
             .cloned()
             .collect();
-        for mut job in jobs {
-            let check = job.check.as_mut().unwrap();
+        for job in jobs {
+            let check = job.check.as_ref().unwrap();
             let owner = check.repo.full_name.split('/').next().unwrap_or("");
             let inventory = self.installations.lock().await;
             let inaccessible = !inventory.install_url.is_empty()
@@ -779,8 +785,10 @@ impl Server {
                     .any(|i| i.id == check.repo.installation && i.allowed && !i.suspended);
             drop(inventory);
             if inaccessible || !self.allowed_owner(&app, owner).await {
-                check.pending = false;
-                self.update_job(job).await?;
+                let queue = self.queue.lock().await;
+                if !queue.active_id(&job.id) {
+                    self.clear_check(&job.id, check.id).await?;
+                }
                 continue;
             }
             let token = self
@@ -797,6 +805,26 @@ impl Server {
                 .api
                 .request(reqwest::Method::GET, &path, &token, None)
                 .await?;
+            // The candidate snapshot predates network waits. Hold the queue
+            // lock through cancellation so a newly active job keeps its check.
+            let queue = self.queue.lock().await;
+            if queue.active_id(&job.id) {
+                continue;
+            }
+            let pending = self
+                .dashboard
+                .lock()
+                .await
+                .jobs
+                .get(&job.id)
+                .is_some_and(|job| {
+                    job.check
+                        .as_ref()
+                        .is_some_and(|live| live.id == check.id && live.pending)
+                });
+            if !pending {
+                continue;
+            }
             if current["status"].as_str() != Some("completed") {
                 self.api
                     .request(
@@ -811,14 +839,43 @@ impl Server {
                     )
                     .await?;
             }
-            check.pending = false;
-            self.update_job(job).await?;
+            self.clear_check(&job.id, check.id).await?;
         }
         Ok(())
     }
 
-    pub async fn update_job(&self, mut summary: JobSummary) -> Result<()> {
+    async fn clear_check(&self, id: &str, check_id: u64) -> Result<()> {
+        self.patch_job(id, |job| {
+            if let Some(check) = &mut job.check
+                && check.id == check_id
+            {
+                check.pending = false;
+            }
+        })
+        .await
+    }
+
+    pub async fn update_job(&self, summary: JobSummary) -> Result<()> {
+        let id = summary.id.clone();
+        self.change_job(&id, |_| Ok(summary)).await
+    }
+
+    pub async fn patch_job(&self, id: &str, patch: impl FnOnce(&mut JobSummary)) -> Result<()> {
+        self.change_job(id, |previous| {
+            let mut summary = previous.cloned().context("job summary missing")?;
+            patch(&mut summary);
+            Ok(summary)
+        })
+        .await
+    }
+
+    async fn change_job(
+        &self,
+        id: &str,
+        change: impl FnOnce(Option<&JobSummary>) -> Result<JobSummary>,
+    ) -> Result<()> {
         let mut dashboard = self.dashboard.lock().await;
+        let mut summary = change(dashboard.jobs.get(id))?;
         if summary.check.is_none() {
             summary.check = dashboard
                 .jobs
@@ -850,16 +907,12 @@ impl Server {
         if matches!(job.kind, Kind::Remove) {
             return Ok(());
         }
-        let mut summary = self
-            .dashboard
-            .lock()
-            .await
-            .jobs
-            .get(&job.id)
-            .cloned()
-            .unwrap_or_else(|| JobSummary::queued(job));
-        summary.set_state(status, reason);
-        self.update_job(summary).await
+        self.change_job(&job.id, |previous| {
+            let mut summary = previous.cloned().unwrap_or_else(|| JobSummary::queued(job));
+            summary.set_state(status, reason);
+            Ok(summary)
+        })
+        .await
     }
     pub async fn prune_jobs(&self) -> Result<()> {
         let queue = self.queue.lock().await;

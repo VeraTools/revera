@@ -179,6 +179,16 @@ pub async fn run_agent_checked(
     let mut budget_reminded = false;
     let mut budget_warned = false;
     let mut budget_stop = StopReason::ToolBudget;
+    // a forced submission should say what it did not finish, so the run
+    // reports partial coverage instead of looking complete
+    let unfinished = if terminal_tool.parameters["properties"]
+        .get("not_checked")
+        .is_some()
+    {
+        " Include every finding you already have, and list each changed area you did not finish checking in `not_checked`."
+    } else {
+        ""
+    };
     let start = Instant::now();
     let total = Duration::from_secs(budget.max_seconds);
     // Ordinary turns run against a soft deadline; the last part of the budget
@@ -196,13 +206,18 @@ pub async fn run_agent_checked(
     let mut hard_notice_grace = false;
     let wrap_up = |name: &str| {
         ChatMessage::user(format!(
-            "Budget exhausted; call {name} now with what you have"
+            "Budget exhausted; call {name} now with what you have.{unfinished}"
         ))
     };
     let hard_left = || total.saturating_sub(start.elapsed());
+    let soft_deadline = |slowest_reply: Duration| {
+        let adaptive_reserve = (slowest_reply * 2).min(total / 2);
+        soft.min(total - adaptive_reserve)
+    };
     // The soft minimum must never extend an await beyond the hard deadline.
-    let soft_left = || {
-        soft.saturating_sub(start.elapsed())
+    let soft_left = |deadline: Duration| {
+        deadline
+            .saturating_sub(start.elapsed())
             .max(Duration::from_secs(1))
             .min(hard_left())
     };
@@ -210,8 +225,17 @@ pub async fn run_agent_checked(
     // a tool-budget stop gets one reminder only while a useful reply fits
     let time_left = || total.saturating_sub(start.elapsed()) >= REPAIR_MIN_LEFT;
 
+    // Once replies have shown how long they take, the submission is
+    // requested while two more still fit (this one and a repair or slow
+    // final reply), instead of cutting a request off at the deadline and
+    // losing everything found so far.
+    let mut slowest_reply = Duration::ZERO;
+
     loop {
-        let time_up = start.elapsed() > soft;
+        // past the soft deadline, or once the slowest reply so far would
+        // no longer fit twice (this one and a repair or slow final reply)
+        let effective_soft = soft_deadline(slowest_reply);
+        let time_up = start.elapsed() > effective_soft;
         let tools_up = tool_calls >= budget.max_tool_calls;
         if (time_up || tools_up) && !budget_notice_sent {
             budget_notice_sent = true;
@@ -230,7 +254,7 @@ pub async fn run_agent_checked(
             // of being cut off mid-investigation
             budget_warned = true;
             messages.push(ChatMessage::user(format!(
-                "{} tool calls left. Finish the checks that matter most, then call {}.",
+                "{} tool calls left. Finish the checks that matter most, then call {}.{unfinished}",
                 budget.max_tool_calls - tool_calls,
                 terminal_tool.name
             )));
@@ -246,7 +270,7 @@ pub async fn run_agent_checked(
                 hard_left()
             }
         } else {
-            soft_left()
+            soft_left(effective_soft)
         };
         if limit.is_zero() {
             return Ok(AgentRun {
@@ -272,8 +296,12 @@ pub async fn run_agent_checked(
         } else {
             client.complete(&messages, turn_specs)
         };
+        let asked = Instant::now();
         let completion = match tokio::time::timeout(limit, call).await {
-            Ok(Ok(c)) => c,
+            Ok(Ok(c)) => {
+                slowest_reply = slowest_reply.max(asked.elapsed());
+                c
+            }
             Ok(Err(e)) => {
                 tracing::warn!("model request failed: {e}");
                 return Ok(AgentRun {
@@ -358,7 +386,7 @@ pub async fn run_agent_checked(
                 if budget_stop == StopReason::ToolBudget && !budget_reminded && time_left() {
                     budget_reminded = true;
                     messages.push(ChatMessage::user(format!(
-                        "Tool budget exhausted. Call `{}` now with what you have.",
+                        "Tool budget exhausted. Call `{}` now with what you have.{unfinished}",
                         terminal_tool.name
                     )));
                     continue;
@@ -445,8 +473,9 @@ pub async fn run_agent_checked(
         // tool results so the transcript stays valid for the API
         let remaining = budget.max_tool_calls.saturating_sub(tool_calls) as usize;
         let (exec, skipped) = msg.tool_calls.split_at(remaining.min(msg.tool_calls.len()));
-        let tool_limit = soft_left();
-        if tool_limit.is_zero() || start.elapsed() >= soft {
+        let effective_soft = soft_deadline(slowest_reply);
+        let tool_limit = soft_left(effective_soft);
+        if tool_limit.is_zero() || start.elapsed() >= effective_soft {
             // A successful late turn can return tool calls after the soft or
             // hard deadline. Running them could spend the reserve meant for
             // the wrap-up turn, so account for the batch without starting

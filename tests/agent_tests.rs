@@ -425,6 +425,140 @@ impl ModelClient for SlowThenSubmit {
     }
 }
 
+#[tokio::test]
+async fn budget_notices_ask_for_unfinished_areas_when_the_terminal_accepts_them() {
+    for (spec, asks) in [
+        (revera::tools::terminal_submit_findings_spec(), true),
+        (terminal(), false),
+    ] {
+        let replies = (0..10)
+            .map(|_| assistant_calls(vec![("list_changed_files", json!({}))]))
+            .collect();
+        let rec = Recorder::new(replies);
+        let b = AgentBudget {
+            max_tool_calls: 10,
+            max_seconds: 600,
+        };
+        run_agent(&rec, "s", "u", &toolbox(), &spec, &b)
+            .await
+            .unwrap();
+        let reqs = rec.requests.lock().unwrap();
+        let user: Vec<&str> = reqs
+            .last()
+            .unwrap()
+            .0
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .filter_map(|m| m.content.as_deref())
+            .collect();
+        for prefix in ["2 tool calls left", "Budget exhausted"] {
+            let notice = user.iter().find(|t| t.starts_with(prefix)).unwrap();
+            assert_eq!(notice.contains("`not_checked`"), asks, "{notice}");
+        }
+    }
+}
+
+/// Researches until only the terminal tool is offered; every reply is slow.
+struct SlowResearcher;
+
+#[async_trait::async_trait]
+impl ModelClient for SlowResearcher {
+    async fn complete(
+        &self,
+        _m: &[ChatMessage],
+        t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let message = if t.len() == 1 {
+            assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [], "coverage": "partial"}),
+            )])
+        } else {
+            assistant_calls(vec![("list_changed_files", json!({}))])
+        };
+        Ok(Completion {
+            message,
+            usage: Usage::default(),
+            model: "slow".into(),
+            latency_ms: 1100,
+        })
+    }
+    fn route_label(&self) -> String {
+        "slow".into()
+    }
+}
+
+struct FixedLatencyResearcher {
+    started: Mutex<Vec<bool>>,
+    completed: Mutex<Vec<bool>>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for FixedLatencyResearcher {
+    async fn complete(
+        &self,
+        _messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        let submitting = tools.len() == 1;
+        self.started.lock().unwrap().push(submitting);
+        // Longer than the 1 s minimum timeout, so the second research turn
+        // is interrupted even when that floor extends the adaptive deadline.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        self.completed.lock().unwrap().push(submitting);
+        let message = if submitting {
+            assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [], "coverage": "partial"}),
+            )])
+        } else {
+            assistant_calls(vec![("list_changed_files", json!({}))])
+        };
+        Ok(Completion {
+            message,
+            usage: Usage::default(),
+            model: "fixed-latency".into(),
+            latency_ms: 1100,
+        })
+    }
+
+    fn route_label(&self) -> String {
+        "fixed-latency".into()
+    }
+}
+
+#[tokio::test]
+async fn adaptive_deadline_cuts_second_research_turn_and_preserves_submission() {
+    let client = FixedLatencyResearcher {
+        started: Mutex::new(vec![]),
+        completed: Mutex::new(vec![]),
+    };
+    let start = std::time::Instant::now();
+    let run = run_agent(
+        &client,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 10,
+            max_seconds: 4,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert!(run.final_call.is_some());
+    assert_eq!(*client.started.lock().unwrap(), [false, false, true]);
+    assert_eq!(*client.completed.lock().unwrap(), [false, true]);
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(4500),
+        "ran {:?} on a 4 s budget",
+        start.elapsed()
+    );
+}
+
 /// A completion still in flight at the soft deadline is dropped and the
 /// reserve is spent on a low-effort wrap-up turn, so candidates are
 /// submitted instead of the whole investigation being discarded. The run
@@ -528,10 +662,10 @@ async fn malformed_verdict_gets_one_corrected_resubmission() {
     assert!(seen[1].contains("validation_status"), "{}", seen[1]);
 }
 
-/// Finishes a research turn just after the soft deadline (inside the hard
-/// budget), then hangs on the wrap-up turn.
+/// Finishes a research turn after the adaptive soft deadline (inside the hard
+/// budget), then hangs specifically on the terminal-only wrap-up request.
 struct LateThenHang {
-    calls: Mutex<u32>,
+    terminal_requested: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
@@ -539,32 +673,20 @@ impl ModelClient for LateThenHang {
     async fn complete(
         &self,
         _m: &[ChatMessage],
-        _t: &[ToolSpec],
+        tools: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
-        let n = {
-            let mut c = self.calls.lock().unwrap();
-            *c += 1;
-            *c
-        };
-        // turn 1 ends just before the soft deadline (1.5 s on a 2 s budget);
-        // turn 2 starts inside it with the 1 s minimum timeout and ends just
-        // after it, so the budget notice follows a successful turn
-        let pause = match n {
-            1 => Some(1450),
-            2 => Some(200),
-            _ => None,
-        };
-        if let Some(ms) = pause {
-            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-            return Ok(Completion {
-                message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
-                usage: Usage::default(),
-                model: "stub".into(),
-                latency_ms: 0,
-            });
+        if tools.len() == 1 {
+            *self.terminal_requested.lock().unwrap() = true;
+            std::future::pending::<()>().await;
+            unreachable!()
         }
-        std::future::pending::<()>().await;
-        unreachable!()
+        tokio::time::sleep(std::time::Duration::from_millis(1450)).await;
+        Ok(Completion {
+            message: assistant_calls(vec![("read_file", json!({"path": "nope.rs"}))]),
+            usage: Usage::default(),
+            model: "stub".into(),
+            latency_ms: 0,
+        })
     }
     fn route_label(&self) -> String {
         "late".into()
@@ -575,11 +697,12 @@ impl ModelClient for LateThenHang {
 /// hard budget, not the extra grace that applies once it is already spent.
 #[tokio::test]
 async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
+    let client = LateThenHang {
+        terminal_requested: Mutex::new(false),
+    };
     let t0 = std::time::Instant::now();
     let r = run_agent(
-        &LateThenHang {
-            calls: Mutex::new(0),
-        },
+        &client,
         "s",
         "u",
         &toolbox(),
@@ -591,6 +714,7 @@ async fn wrap_up_after_the_soft_deadline_stays_inside_the_hard_budget() {
     )
     .await
     .unwrap();
+    assert!(*client.terminal_requested.lock().unwrap());
     assert_eq!(r.stopped, StopReason::TimeBudget);
     assert!(
         t0.elapsed() <= std::time::Duration::from_millis(2500),
@@ -675,6 +799,26 @@ async fn successful_ordinary_turn_past_hard_deadline_allows_notice_grace() {
 }
 
 #[tokio::test]
+async fn successful_ordinary_turn_past_adaptive_deadline_skips_tools() {
+    let run = run_agent(
+        &BlockingThenSubmit,
+        "s",
+        "u",
+        &toolbox(),
+        &terminal(),
+        &AgentBudget {
+            max_tool_calls: 5,
+            max_seconds: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert_eq!(run.tool_calls, 1);
+    assert!(run.final_call.is_some());
+}
+
+#[tokio::test]
 async fn already_spent_hard_budget_still_allows_one_grace_submission() {
     let stub = Stub {
         replies: Mutex::new(VecDeque::new()),
@@ -693,4 +837,17 @@ async fn already_spent_hard_budget_still_allows_one_grace_submission() {
     .await
     .unwrap();
     assert_eq!(run.stopped, StopReason::Terminal);
+}
+
+#[tokio::test]
+async fn time_budget_notice_comes_while_a_reply_still_fits() {
+    let b = AgentBudget {
+        max_tool_calls: 100,
+        max_seconds: 5,
+    };
+    let run = run_agent(&SlowResearcher, "s", "u", &toolbox(), &terminal(), &b)
+        .await
+        .unwrap();
+    assert_eq!(run.stopped, StopReason::Terminal);
+    assert!(run.final_call.is_some());
 }

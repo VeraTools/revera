@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { checkFixes, fixScreenshots } from './browser-fixes.mjs';
 import { checkReviewRegressions } from './browser-review-regressions.mjs';
 import { checkPullRegressions } from './browser-pull-regressions.mjs';
+import { checkPlaybook } from './browser-playbook.mjs';
 
 const base = process.env.REVERA_WEB_URL || 'http://127.0.0.1:5173';
 const emptyYaml = process.argv.includes('--empty-yaml');
@@ -1360,6 +1361,8 @@ async function checkManifestChoices() {
 }
 
 try {
+  if (!emptyYaml && !process.argv.includes('--screenshots-only'))
+    await checkPlaybook({ open, output });
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))
     await checkPullRegressions({ open, output });
   if (!emptyYaml && !process.argv.includes('--screenshots-only'))

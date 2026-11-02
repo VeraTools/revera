@@ -134,6 +134,15 @@ impl Job {
             _ => "",
         }
     }
+    pub fn base_ref(&self) -> &str {
+        match &self.kind {
+            Kind::Review { pr, .. } => pr["base"]["ref"].as_str().unwrap_or(""),
+            _ => "",
+        }
+    }
+    pub fn same_content(&self, other: &Self) -> bool {
+        self.head() == other.head() && self.base_ref() == other.base_ref()
+    }
     pub fn event(&self) -> Value {
         match &self.kind {
             Kind::Review { number, pr, .. } => {
@@ -148,9 +157,99 @@ impl Job {
     }
 }
 
+impl super::Server {
+    pub(super) async fn retarget(&self, mut job: Job) -> Result<()> {
+        let preferences = self.dashboard.lock().await.preferences.clone();
+        let trigger = preferences.trigger(&job.repo.full_name);
+        let mut queue = self.queue.lock().await;
+        let key = job.key();
+        let requested = queue
+            .pending
+            .get(&key)
+            .into_iter()
+            .chain(
+                queue
+                    .running
+                    .get(&key)
+                    .filter(|running| !*running.cancel.borrow())
+                    .map(|running| &running.job),
+            )
+            // Preserve an explicit request even if an automatic job was also
+            // queued; prefer the pending (newer) request when both are explicit.
+            .find(|previous| {
+                previous.base_ref() != job.base_ref()
+                    && matches!(previous.trigger.as_str(), "manual" | "mention" | "rerun")
+            })
+            .cloned();
+        let cancelled: Vec<_> = queue
+            .pending
+            .get(&key)
+            .into_iter()
+            .chain(queue.running.get(&key).map(|running| &running.job))
+            .filter(|previous| previous.base_ref() != job.base_ref())
+            .cloned()
+            .collect();
+        if queue
+            .pending
+            .get(&key)
+            .is_some_and(|previous| previous.base_ref() != job.base_ref())
+        {
+            queue.pending.remove(&key);
+        }
+        if let Some(running) = queue.running.get(&key)
+            && running.job.base_ref() != job.base_ref()
+        {
+            let _ = running.cancel.send(true);
+        }
+        for previous in cancelled {
+            if let Err(error) = self
+                .transition(
+                    &previous,
+                    "cancelled",
+                    Some("superseded: base changed".into()),
+                )
+                .await
+            {
+                tracing::warn!(error = %crate::redact::diagnostic(&format!("{error:#}")),
+                    "could not persist superseded review cancellation");
+            }
+        }
+        let admission = queue.review_admission(key);
+        drop(queue);
+        match trigger {
+            Trigger::Off => return Ok(()),
+            Trigger::Auto => {}
+            Trigger::Mention => {
+                let Some(previous) = requested.as_ref() else {
+                    return Ok(());
+                };
+                job.trigger = "mention".into();
+                job.mode = previous.mode;
+            }
+        }
+        if let Some(previous) = requested
+            && matches!(previous.trigger.as_str(), "manual" | "mention" | "rerun")
+        {
+            job.trigger = previous.trigger;
+            job.mode = previous.mode;
+            if let Kind::Review {
+                force: previous_force,
+                ..
+            } = previous.kind
+                && let Kind::Review { force, .. } = &mut job.kind
+            {
+                *force = previous_force;
+            }
+        }
+        self.enqueue_inner(job, Some(&admission)).await;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub enum Event {
     Job(Job),
+    Retarget(Job),
     Close(u64, u64),
     Rerequest(Repo, u64),
     Mention(super::mentions::Request),
@@ -206,6 +305,19 @@ pub fn map_with_preferences(
         ));
     }
     let trigger = preferences.trigger(&repo.full_name);
+    if event == "pull_request" && action == "edited" && v["changes"].get("base").is_some() {
+        let mut job = Job::new(
+            repo.clone(),
+            Kind::Review {
+                number: v["number"].as_u64().context("event missing PR number")?,
+                pr: v["pull_request"].clone(),
+                force: false,
+            },
+            "auto",
+        );
+        job.mode = preferences.mode(&repo.full_name);
+        return Ok(Event::Retarget(job));
+    }
     if trigger == Trigger::Off {
         return Ok(Event::Ignore);
     }

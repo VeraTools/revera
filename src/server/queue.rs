@@ -42,6 +42,29 @@ mod tests {
     }
 
     #[test]
+    fn listing_observations_only_invalidate_touched_prs_and_are_pruned() {
+        let mut queue = Queue::default();
+        let first = queue.review_admission((1, 0, Installed));
+        queue.observe_pull((1, 7, Installed));
+        assert!(!queue.admits((1, 7, Installed), &first));
+        assert!(queue.admits((1, 8, Installed), &first));
+        assert!(queue.admits((1, 0, Installed), &first));
+        let next = queue.review_admission((1, 0, Installed));
+        assert!(queue.admits((1, 7, Installed), &next));
+        queue.close((1, 8, Installed));
+        assert!(!queue.admits((1, 8, Installed), &next));
+        assert!(queue.admits((1, 7, Installed), &next));
+        assert!(queue.admits((1, 0, Installed), &next));
+        drop(first);
+        drop(next);
+        let _other = queue.review_admission((2, 0, Installed));
+        assert!(
+            queue.observations.is_empty(),
+            "expired listings retain no PR history"
+        );
+    }
+
+    #[test]
     fn configured_external_concurrency_allows_two_and_holds_the_third() {
         use crate::server::events::{Job, Kind, Repo, Source};
         let mut queue = Queue::default();
@@ -75,7 +98,11 @@ mod tests {
     }
 }
 
-pub struct ReviewAdmission(Arc<()>);
+pub struct ReviewAdmission {
+    key: Key,
+    token: Arc<()>,
+    observed_at: u64,
+}
 
 #[derive(Default)]
 pub struct Queue {
@@ -84,24 +111,53 @@ pub struct Queue {
     // Only in-flight lookups keep tokens alive. Expired entries are pruned when
     // admitting the next lookup, rather than retaining every PR ever closed.
     admissions: BTreeMap<Key, Weak<()>>,
+    observation_sequence: u64,
+    // Pruned on the next admission after the repository listing's token expires.
+    observations: BTreeMap<Key, u64>,
 }
 
 impl Queue {
     pub fn review_admission(&mut self, key: Key) -> ReviewAdmission {
         self.admissions.retain(|_, token| token.strong_count() > 0);
+        self.observations
+            .retain(|key, _| self.admissions.contains_key(&(key.0, 0, key.2)));
         let token = self.admissions.entry(key).or_default();
         let current = token.upgrade().unwrap_or_else(|| {
             let current = Arc::new(());
             *token = Arc::downgrade(&current);
             current
         });
-        ReviewAdmission(current)
+        ReviewAdmission {
+            key,
+            token: current,
+            observed_at: self.observation_sequence,
+        }
     }
 
     pub fn admits(&self, key: Key, admission: &ReviewAdmission) -> bool {
-        self.admissions
-            .get(&key)
-            .is_some_and(|current| current.ptr_eq(&Arc::downgrade(&admission.0)))
+        (admission.key == key || admission.key == (key.0, 0, key.2))
+            && self
+                .admissions
+                .get(&admission.key)
+                .is_some_and(|current| current.ptr_eq(&Arc::downgrade(&admission.token)))
+            && (admission.key.1 != 0
+                || self
+                    .observations
+                    .get(&key)
+                    .is_none_or(|at| *at <= admission.observed_at))
+    }
+
+    /// Expire only this PR's candidates in in-flight listings, including PRs
+    /// absent when the listing began. Other PRs and index jobs remain eligible.
+    pub fn observe_pull(&mut self, key: Key) {
+        if self
+            .admissions
+            .get(&(key.0, 0, key.2))
+            .is_some_and(|token| token.strong_count() > 0)
+        {
+            self.observation_sequence += 1;
+            self.observations.insert(key, self.observation_sequence);
+        }
     }
 
     pub fn enqueue(&mut self, job: Job) {
@@ -111,13 +167,14 @@ impl Queue {
                 self.pending.insert(key, job);
                 return;
             }
-            if running.job.head() == job.head()
+            if running.job.same_content(&job)
                 && matches!(job.kind, Kind::Review { force: true, .. })
             {
                 self.pending.insert(key, job);
                 return;
             }
-            if running.job.head() == job.head()
+            if running.job.same_content(&job)
+                && !*running.cancel.borrow()
                 && !matches!(job.kind, Kind::Review { force: true, .. } | Kind::Remove)
             {
                 return;
@@ -128,6 +185,7 @@ impl Queue {
     }
 
     pub fn close(&mut self, key: Key) {
+        self.observe_pull(key);
         self.admissions.remove(&key);
         self.pending.remove(&key);
         if let Some(running) = self.running.get(&key) {
@@ -164,6 +222,11 @@ impl Queue {
 
     pub fn contains(&self, key: Key) -> bool {
         self.pending.contains_key(&key) || self.running.contains_key(&key)
+    }
+
+    pub fn active_id(&self, id: &str) -> bool {
+        self.pending.values().any(|job| job.id == id)
+            || self.running.values().any(|running| running.job.id == id)
     }
 
     #[cfg(test)]

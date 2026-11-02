@@ -25,52 +25,7 @@ enum Cmd {
     },
     /// Run a self-hosted GitHub App backend.
     Serve(crate::server::Settings),
-    Review {
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
-        #[arg(long)]
-        base: Option<String>,
-        #[arg(long)]
-        head: Option<String>,
-        /// GitHub event payload path (pull_request / pull_request_target).
-        #[arg(long)]
-        event: Option<PathBuf>,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        profile: Option<String>,
-        /// Override the repository guidance level (base commit only).
-        #[arg(long, value_enum)]
-        guidance: Option<crate::config::GuidanceMode>,
-        /// Append operator review notes from a UTF-8 file (8000 characters total).
-        #[arg(long)]
-        notes_file: Option<PathBuf>,
-        #[arg(long)]
-        strategy: Option<StrategyArg>,
-        #[arg(long)]
-        publish: Option<PublishArg>,
-        #[arg(long)]
-        out: Option<PathBuf>,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        /// Re-review even when the patch is identical to stored state.
-        #[arg(long)]
-        force: bool,
-        /// Override the GitHub bot identity (for installation tokens).
-        #[arg(long)]
-        bot_login: Option<String>,
-        /// Private external review: operator config only, no GitHub API, no repo guidance.
-        #[arg(long)]
-        private: bool,
-        /// Dashboard deep link for this review.
-        #[arg(long)]
-        review_url: Option<String>,
-        /// Offer link only; does not authorize fix execution.
-        #[arg(long)]
-        fix_url: Option<String>,
-    },
+    Review(Box<ReviewArgs>),
     /// Build or refresh the Vera index without reviewing.
     Index {
         #[arg(long, default_value = ".")]
@@ -153,69 +108,58 @@ pub async fn run() -> i32 {
             event,
             repo,
         } => cache_key(config, profile, event, repo).await,
-        Cmd::Review {
-            repo,
-            base,
-            head,
-            event,
-            config,
-            profile,
-            guidance,
-            notes_file,
-            strategy,
-            publish,
-            out,
-            title,
-            body_file,
-            force,
-            bot_login,
-            private,
-            review_url,
-            fix_url,
-        } => {
-            review(ReviewArgs {
-                repo,
-                base,
-                head,
-                event,
-                config,
-                profile,
-                guidance,
-                notes_file,
-                strategy,
-                publish,
-                out,
-                title,
-                body_file,
-                force,
-                bot_login,
-                private,
-                review_url,
-                fix_url,
-            })
-            .await
-        }
+        Cmd::Review(args) => review(*args).await,
     }
 }
 
+#[derive(clap::Args)]
 struct ReviewArgs {
+    #[arg(long, default_value = ".")]
     repo: PathBuf,
+    #[arg(long)]
     base: Option<String>,
+    #[arg(long)]
     head: Option<String>,
+    /// GitHub event payload path (pull_request / pull_request_target).
+    #[arg(long)]
     event: Option<PathBuf>,
+    #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long)]
     profile: Option<String>,
+    /// Override the repository guidance level (base commit only).
+    #[arg(long, value_enum)]
     guidance: Option<crate::config::GuidanceMode>,
+    /// Append operator review notes from a UTF-8 file (8000 characters total).
+    #[arg(long)]
     notes_file: Option<PathBuf>,
+    /// Load trusted reviewer method and defect classes from an operator directory.
+    #[arg(long)]
+    playbook_dir: Option<PathBuf>,
+    #[arg(long)]
     strategy: Option<StrategyArg>,
+    #[arg(long)]
     publish: Option<PublishArg>,
+    #[arg(long)]
     out: Option<PathBuf>,
+    #[arg(long)]
     title: Option<String>,
+    #[arg(long)]
     body_file: Option<PathBuf>,
+    /// Re-review even when the patch is identical to stored state.
+    #[arg(long)]
     force: bool,
+    /// Override the GitHub bot identity (for installation tokens).
+    #[arg(long)]
     bot_login: Option<String>,
+    /// Private external review: operator config only, no GitHub API, no repo guidance.
+    #[arg(long)]
     private: bool,
+    /// Dashboard deep link for this review.
+    #[arg(long)]
     review_url: Option<String>,
+    /// Offer link only; does not authorize fix execution.
+    #[arg(long)]
     fix_url: Option<String>,
 }
 
@@ -523,21 +467,55 @@ async fn review(a: ReviewArgs) -> i32 {
     if let Some(login) = &a.bot_login {
         cfg.github.bot_login.clone_from(login);
     }
+    // Resolve the operator's root once, then check and load that same path.
+    let playbook_dir = match a
+        .playbook_dir
+        .as_deref()
+        .map(std::path::Path::canonicalize)
+        .transpose()
+    {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "error: resolve --playbook-dir: {}",
+                crate::redact::diagnostic(&error.to_string())
+            );
+            return 1;
+        }
+    };
     // event mode: a notes file inside the checkout is PR content, and notes
     // are trusted operator instructions
-    if ev.is_some()
-        && !a.private
-        && let Some(path) = a.notes_file.as_deref()
-    {
+    for (flag, path) in [
+        (
+            "--notes-file",
+            a.notes_file.as_deref().filter(|_| !a.private),
+        ),
+        ("--playbook-dir", a.playbook_dir.as_deref()),
+        ("--playbook-dir", playbook_dir.as_deref()),
+    ] {
+        let Some(path) = path.filter(|_| ev.is_some()) else {
+            continue;
+        };
         let cwd = std::env::current_dir().unwrap_or_default();
         let abs = lexical_abs(&cwd, path);
         let root = repo.canonicalize().unwrap_or_else(|_| repo.clone());
         let inside = |p: &std::path::Path| p.starts_with(&repo) || p.starts_with(&root);
         if inside(&abs) || abs.canonicalize().is_ok_and(|p| inside(&p)) {
-            eprintln!("error: in event mode --notes-file must be outside the checkout");
+            eprintln!("error: in event mode {flag} must be outside the checkout");
             return 1;
         }
     }
+    cfg.playbook = match crate::playbook::Playbook::load(playbook_dir.as_deref()) {
+        Ok(playbook) => playbook,
+        Err(error) => {
+            eprintln!(
+                "error: {}",
+                crate::redact::diagnostic(&format!("{error:#}"))
+            );
+            return 1;
+        }
+    };
+    cfg.prune_disabled_focuses();
     if let Err(error) =
         apply_guidance_overrides(&mut cfg, a.guidance, a.notes_file.as_deref(), a.private)
     {
@@ -551,7 +529,7 @@ async fn review(a: ReviewArgs) -> i32 {
         cfg.vera.home = None;
     }
     eprintln!("config: {origin}");
-    let effective_strategy = strategy.unwrap_or(cfg.review.strategy);
+    let effective_strategy = cfg.effective_strategy(strategy);
     let publish = if a.private {
         PublishMode::DryRun
     } else {
@@ -883,7 +861,7 @@ async fn doctor(
     };
     println!("config: ok ({})", path.display());
 
-    let strategy = strategy_override.unwrap_or(cfg.review.strategy);
+    let strategy = cfg.effective_strategy(strategy_override);
     let mut notes = String::new();
     if overridden {
         notes.push_str(" (--strategy override)");
@@ -1159,7 +1137,7 @@ mod report_fix_tests {
 
     #[test]
     fn guidance_and_notes_flags_change_review_key_and_private_ignores_them() {
-        use super::{Cli, Cmd, apply_guidance_overrides};
+        use super::{Cli, Cmd, ReviewArgs, apply_guidance_overrides};
         use clap::Parser;
         let d = tempfile::tempdir().unwrap();
         crate::fsutil::write_atomic_in(d.path(), "notes.md", b"focus on migrations").unwrap();
@@ -1173,14 +1151,14 @@ mod report_fix_tests {
             notes.to_str().unwrap(),
         ])
         .unwrap();
-        let Cmd::Review {
+        let Cmd::Review(args) = cli.cmd else {
+            panic!("review flags")
+        };
+        let ReviewArgs {
             guidance,
             notes_file,
             ..
-        } = cli.cmd
-        else {
-            panic!("review flags")
-        };
+        } = *args;
         let mut cfg = crate::config::Config::parse(
             "models:\n  investigator: {protocol: scripted, script: /dev/null, model: m}\n",
             "test",

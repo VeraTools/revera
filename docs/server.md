@@ -54,6 +54,25 @@ callback then close. The `/setup` page remains available for configuration
 and recovery. Until model configuration is saved, jobs are skipped without
 creating PR checks. The dashboard writes `/data/revera.yaml` when you save models.
 
+## Reviewer playbook
+
+Open **Playbook** in the dashboard to edit the shared reviewer method and
+defect-class skills, disable a class, add a custom class, or reset an override
+to its built-in text. These trusted operator instructions apply to all future
+reviews, including installed repositories, private/external reviews and fix
+follow-up reviews. They do not apply to index jobs.
+
+Overrides live in `<data-dir>/playbook/reviewer.md` and
+`<data-dir>/playbook/skills/<name>.md` (`/data/playbook` by default). Saving text
+identical to the built-in removes the override, so later built-in updates apply.
+Every edit validates the complete resulting playbook before writing. Content
+containing a registered secret is rejected, not silently redacted.
+
+Effective edits change the review fingerprint, invalidating completed review
+reuse without rebuilding the Vera index. If a hand-edited file is invalid,
+reviews fail with the file's error; the Playbook page still shows built-ins and
+an error notice for recovery. See [format and limits](configuration.md#reviewer-playbook).
+
 ## Review guidance
 
 Set a per-repository guidance level and operator notes in **Repositories →
@@ -154,12 +173,21 @@ Trigger and mode are independent; a repository can inherit either default.
 
 | Trigger | Behavior |
 |---|---|
-| `mention` (default) | Review on command or manual request; keep the index warm on default-branch pushes |
-| `auto` | Also review opened, reopened, updated and ready-for-review PRs, and recover missed head changes |
+| `mention` (default) | Review on command or manual request; a PR that opens, reopens or becomes ready for review warms its default-branch index |
+| `auto` | Also review opened, reopened, updated and ready-for-review PRs, and recover missed head or base-branch changes |
 | `off` | Stop new reviews and indexing, including mentions and manual requests |
 
 Changing a trigger or mode does not cancel work already queued or running. Removal
 and cancellation still work when a repository is off.
+
+Retargeting a PR to a different base branch cancels reviews against its old
+base (`superseded: base changed`). Auto mode queues a replacement; mention mode
+does so only when an explicitly requested review was already queued or running,
+preserving its mode.
+A completed review against another base branch appears outdated, and publication
+is skipped if the head or base branch changed during the run. New commits on the
+same base branch alone do not make a review outdated or block publication.
+Reconciliation keeps its no-backfill baseline when first discovering open PRs.
 
 | Mode | Behavior |
 |---|---|
@@ -167,8 +195,9 @@ and cancellation still work when a repository is off.
 | `quick` | Apply the `quick` profile for a smaller budget |
 | `deep` | Apply the `deep` profile for a larger budget |
 
-Built-in quick and deep modes scale from your configured budget, keeping
-the configured strategy and validation.
+Built-in quick and deep modes scale from your configured budget and leave
+validation unchanged. Deep converts baseline to the five-lane panel; its lanes
+inherit the agent tool-call budget unless the panel limit is explicitly set.
 Custom profiles with those names replace the built-ins. See
 [profile defaults](configuration.md#profiles).
 
@@ -812,6 +841,14 @@ Back up the data directory, then update with the same volume:
 
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
+
+### From 0.10.x to 0.11.0
+
+No change is required. Reviews use the built-in playbook until you edit it on
+the **Playbook** page. `deep` reviews now run five focused passes and take
+longer and use more requests than before; the first review after the upgrade
+does not reuse earlier results, because the playbook is part of the review
+identity.
 
 ### From 0.9.x to 0.10.0
 

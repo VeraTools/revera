@@ -236,6 +236,8 @@ pub struct SeenRepo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexed_sha: Option<String>,
     pub heads: BTreeMap<u64, String>,
+    #[serde(default)]
+    pub base_refs: BTreeMap<u64, String>,
     /// A webhook can finish before the first inventory of open PRs.
     #[serde(default)]
     pub initialized: bool,
@@ -273,7 +275,7 @@ impl Seen {
         retry_index: bool,
     ) -> Vec<Job> {
         if !self.0.get(&repo.id).is_some_and(|known| known.initialized) {
-            let heads = prs
+            let mut heads: BTreeMap<_, _> = prs
                 .iter()
                 .filter(|pr| {
                     !pr["number"]
@@ -282,6 +284,21 @@ impl Seen {
                 })
                 .filter_map(|pr| Some((pr["number"].as_u64()?, pr["head"]["sha"].as_str()?.into())))
                 .collect();
+            let mut base_refs: BTreeMap<_, _> = prs
+                .iter()
+                .filter_map(|pr| {
+                    let number = pr["number"].as_u64()?;
+                    (!retry.contains(&number))
+                        .then(|| (number, pr["base"]["ref"].as_str().unwrap_or("").into()))
+                })
+                .collect();
+            // A current run may finish while the first listing is in flight.
+            // Its PR can be excluded by the listing's observation token; keep
+            // that completed checkpoint rather than losing it to the baseline.
+            if let Some(known) = self.0.get(&repo.id) {
+                heads.extend(known.heads.clone());
+                base_refs.extend(known.base_refs.clone());
+            }
             self.0.insert(
                 repo.id,
                 SeenRepo {
@@ -292,6 +309,7 @@ impl Seen {
                         repo.pushed_at.clone()
                     },
                     heads,
+                    base_refs,
                     indexed_sha: self
                         .0
                         .get(&repo.id)
@@ -303,6 +321,18 @@ impl Seen {
         }
         let known = self.0.get_mut(&repo.id).expect("initialized repository");
         known.repo = repo.clone();
+        // Older checkpoints recorded only heads. Establish their base baseline
+        // without backfilling reviews during an upgrade.
+        for pr in prs {
+            if let Some(number) = pr["number"].as_u64()
+                && known.heads.get(&number).map(String::as_str) == pr["head"]["sha"].as_str()
+            {
+                known
+                    .base_refs
+                    .entry(number)
+                    .or_insert_with(|| pr["base"]["ref"].as_str().unwrap_or("").into());
+            }
+        }
         let mut jobs = Vec::new();
         if preferences.index_on_push
             && preferences.trigger(&repo.full_name) != Trigger::Off
@@ -323,6 +353,8 @@ impl Seen {
         }) {
             if let (Some(number), Some(head)) = (pr["number"].as_u64(), pr["head"]["sha"].as_str())
                 && (known.heads.get(&number).map(String::as_str) != Some(head)
+                    || known.base_refs.get(&number).map(String::as_str)
+                        != Some(pr["base"]["ref"].as_str().unwrap_or(""))
                     || retry.contains(&number))
             {
                 jobs.push(Job {
@@ -347,6 +379,13 @@ impl Seen {
         }
     }
 
+    pub fn review_current(&self, job: &Job) -> bool {
+        self.0.get(&job.repo.id).is_some_and(|known| {
+            known.heads.get(&job.key().1).map(String::as_str) == Some(job.head())
+                && known.base_refs.get(&job.key().1).map(String::as_str) == Some(job.base_ref())
+        })
+    }
+
     pub fn finished(&mut self, job: &Job, indexed_sha: Option<&str>) {
         if job.repo.source() == super::events::Source::External {
             return;
@@ -356,11 +395,13 @@ impl Seen {
             pushed_at: String::new(),
             indexed_sha: None,
             heads: BTreeMap::new(),
+            base_refs: BTreeMap::new(),
             initialized: false,
         });
         match &job.kind {
             Kind::Review { number, .. } => {
                 known.heads.insert(*number, job.head().into());
+                known.base_refs.insert(*number, job.base_ref().into());
             }
             Kind::Index => {
                 known.pushed_at.clone_from(&job.repo.pushed_at);
@@ -546,6 +587,12 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
             {
                 anyhow::bail!("repository owner differs from installation account");
             }
+            let admission = server.queue.lock().await.review_admission((
+                repo.id,
+                0,
+                super::events::Source::Installed,
+            ));
+            let generation = server.pulls.lock().unwrap().generation(repo.id);
             let prs = server
                 .api
                 .list(
@@ -554,7 +601,12 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                     None,
                 )
                 .await?;
-            server.pulls.lock().unwrap().listing(&repo, &prs);
+            server
+                .pulls
+                .lock()
+                .unwrap()
+                .listing_since(&repo, &prs, generation);
+            let queue = server.queue.lock().await;
             let mut seen = server.seen.lock().await;
             let before = seen.0.get(&repo.id).map(serde_json::to_value).transpose()?;
             let (preferences, retry, retry_at) = {
@@ -569,13 +621,30 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                         .flatten(),
                 )
             };
-            let jobs = seen.observe_with_preferences(
-                &repo,
-                &prs,
-                &preferences,
-                &retry,
-                retry_at.is_some(),
-            );
+            let jobs = if queue.admits((repo.id, 0, super::events::Source::Installed), &admission) {
+                let observed: Vec<_> = prs
+                    .iter()
+                    .filter(|pr| {
+                        pr["number"].as_u64().is_some_and(|number| {
+                            queue.admits(
+                                (repo.id, number, super::events::Source::Installed),
+                                &admission,
+                            )
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                seen.observe_with_preferences(
+                    &repo,
+                    &observed,
+                    &preferences,
+                    &retry,
+                    retry_at.is_some(),
+                )
+            } else {
+                Vec::new()
+            };
+            drop(queue);
             // An unchanged repository needs no rewrite of the whole seen state,
             // unless an earlier write failed and memory is ahead of disk.
             if server
@@ -624,19 +693,21 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 {
                     continue;
                 }
-                if !server.queue.lock().await.contains(job.key()) {
-                    if matches!(job.kind, Kind::Index)
-                        && index_head_current(server, &repo, &token).await
-                    {
-                        let mut seen = server.seen.lock().await;
-                        if let Some(known) = seen.0.get_mut(&repo.id) {
-                            known.pushed_at.clone_from(&repo.pushed_at);
-                        }
-                        save(server, &seen).await?;
-                        continue;
-                    }
-                    server.enqueue(job).await;
+                if matches!(job.kind, Kind::Index) && server.queue.lock().await.contains(job.key())
+                {
+                    continue;
                 }
+                if matches!(job.kind, Kind::Index)
+                    && index_head_current(server, &repo, &token).await
+                {
+                    let mut seen = server.seen.lock().await;
+                    if let Some(known) = seen.0.get_mut(&repo.id) {
+                        known.pushed_at.clone_from(&repo.pushed_at);
+                    }
+                    save(server, &seen).await?;
+                    continue;
+                }
+                server.enqueue_reconcile(job, &admission).await;
             }
             server.notify.notify_one();
         }

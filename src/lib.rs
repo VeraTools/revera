@@ -10,6 +10,7 @@ pub mod github;
 pub mod guidance;
 pub mod handoff;
 pub mod pipeline;
+pub mod playbook;
 pub mod prompts;
 pub mod provider;
 pub mod redact;

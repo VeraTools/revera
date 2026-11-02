@@ -1,0 +1,40 @@
+# Real-PR evaluation: gpt-6.1-sol investigator and glm-5.3 validator, both
+# at high reasoning; Vera API retrieval with Qwen3 embeddings and reranker;
+# repository guidance at `skills`; dry-run publication. Web search and fallback
+# routes are off. Uses REVERA_MODEL_* and REVERA_EMBEDDING_* variables.
+review:
+  publish: dry-run
+  max_findings: 32
+  guidance: skills
+models:
+  investigator:
+    protocol: openai-responses
+    base_url: ${REVERA_MODEL_BASE_URL}
+    api_key_env: REVERA_MODEL_API_KEY
+    model: gpt-6.1-sol
+    max_output_tokens: 32000
+    reasoning: high
+  validator:
+    protocol: openai-chat
+    base_url: ${REVERA_MODEL_BASE_URL}
+    api_key_env: REVERA_MODEL_API_KEY
+    model: glm-5.3
+    max_output_tokens: 16000
+    temperature: 0.2
+    reasoning: high
+vera:
+  backend: api
+  embedding:
+    base_url: ${REVERA_EMBEDDING_BASE_URL}
+    model: qwen/qwen3-embedding-8b
+    api_key_env: REVERA_EMBEDDING_API_KEY
+    max_in_flight_inputs: 64
+  reranker:
+    base_url: ${REVERA_EMBEDDING_BASE_URL}
+    model: qwen/qwen3-reranker-8b
+    api_key_env: REVERA_EMBEDDING_API_KEY
+budget:
+  agent_max_tool_calls: 50
+  agent_max_seconds: 900
+  run_max_requests: 300
+  run_max_seconds: 2400

@@ -26,6 +26,8 @@ pub enum FindingState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateFinding {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
     pub status: FindingState,
     pub file: String,
     pub start_line: u32,
@@ -81,6 +83,7 @@ impl StateFinding {
     fn from_finding(f: &Finding, status: FindingState) -> Self {
         Self {
             id: f.id(),
+            category: f.category.clone(),
             status,
             file: f.file.clone(),
             start_line: f.start_line,
@@ -110,6 +113,8 @@ impl StateFinding {
     /// Rebuild a `Finding` for rechecking, from the retained detail.
     pub fn to_finding(&self) -> Finding {
         Finding {
+            category: self.category.clone(),
+            duplicate_of: None,
             suggestion: None,
             defect_key: self.defect_key.clone(),
             severity: self.severity,
@@ -338,6 +343,10 @@ impl ReviewState {
     /// back open is a reopen and needs publishing again. Returns true when
     /// the call reopened a previously closed finding.
     pub fn upsert(&mut self, f: &Finding, status: FindingState) -> bool {
+        if f.duplicate_of.is_some() {
+            self.findings.retain(|old| old.id != f.id());
+            return false;
+        }
         let id = f.id();
         if let Some(e) = self.findings.iter_mut().find(|x| x.id == id) {
             let reopened = matches!(e.status, FindingState::Resolved | FindingState::Rejected)

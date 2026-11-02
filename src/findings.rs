@@ -43,6 +43,10 @@ pub struct Evidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub defect_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<String>,
     pub severity: Severity,
     pub file: String,
     pub start_line: u32,
@@ -173,6 +177,7 @@ pub fn accepted_counts(findings: &[Finding]) -> AcceptedCounts {
         findings
             .iter()
             .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
+            .filter(|f| f.duplicate_of.is_none())
             .map(|f| match f.severity {
                 Severity::High => "high",
                 Severity::Medium => "medium",
@@ -187,6 +192,7 @@ pub fn accepted_values(report: &serde_json::Value) -> impl Iterator<Item = &serd
         .into_iter()
         .flatten()
         .filter(|f| f["validation_status"].as_str() == Some("accepted"))
+        .filter(|f| f["duplicate_of"].is_null())
 }
 
 pub fn accepted_counts_json(report: &serde_json::Value) -> AcceptedCounts {
@@ -290,6 +296,9 @@ pub fn collapse(candidates: Vec<Finding>) -> Vec<Finding> {
         match dup {
             Some(i) => {
                 let o = &mut out[i];
+                if o.category.is_empty() && !c.category.is_empty() {
+                    o.category.clone_from(&c.category);
+                }
                 if c.severity > o.severity {
                     o.severity = c.severity;
                 }

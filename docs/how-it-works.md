@@ -5,6 +5,17 @@ touches the pull request (diffing, review identity, state, anchoring and
 publication), and the configured models do the reasoning. This document
 describes the pipeline, its boundaries and the state it keeps.
 
+The built-in reviewer playbook supplies the investigation method and twelve
+defect-class checklists. An operator can replace or extend it with
+[`--playbook-dir`](configuration.md#reviewer-playbook). Baseline and panel
+system prompts include the whole playbook; the delegated lead gets it while
+planning, and workers and synthesis get the class checklists. Repository
+guidance and the already-tracked findings also reach workers and synthesis;
+both can read listed project skills. A candidate's normalized `category`
+selects an enabled checklist for the validator's user message, leaving the
+system prompt identical across candidates. Rechecks are unchanged. Playbook
+content affects review identity, not the Vera index cache.
+
 ## Pipeline
 
 ```text
@@ -62,6 +73,18 @@ summary only when `review.publish_uncertain` is on. Optional per-role
 switching providers replays the full conversation and keeps the last
 successful alternative for that role for the remainder of the run.
 
+**Deduplicate.** After validation, when at least two accepted items (including
+previously posted, still-open findings) could repeat a defect, one bounded
+request on the validator route groups only the same root cause and fix. It
+has no repository tools and can only remove publication, never accept a
+finding. A posted finding wins; otherwise the highest severity wins, with
+candidate order breaking ties and evidence locations retained. Removed
+findings remain in the report with `duplicate_of`, count in `stats.duplicates`,
+and are excluded from publication and stored state. Errors or exhausted
+budgets keep everything without making the review partial. Rediscoveries and
+unposted rechecks are first combined by stable finding ID. The request uses at
+most 60 seconds of post-validation time, leaving 10 seconds for finalization.
+
 **Reconcile and publish.** Inline comments require the finding to sit on a
 head-side line of a diff hunk. Accepted findings below
 `review.inline_min_severity` (default `medium`) are listed in the summary
@@ -91,7 +114,8 @@ comments or checks.
    fingerprinted.
 4. Everything provider- or subprocess-facing is bounded by
    `budget.run_max_seconds`, with a reserve kept for validation and the
-   final report. A budget breach yields `partial` with the reason in the
+   final report. Except for optional deduplication (which fails open and keeps
+   every accepted finding), a budget breach yields `partial` with the reason in the
    summary, never a silently truncated "clean" review.
 5. [Opt-in App fixes](server.md#fixes-opt-in) have a separate boundary and
    limits. A fixer can edit only a disposable head snapshot in a bubblewrap
@@ -109,7 +133,7 @@ comments or checks.
 | status | meaning |
 |---|---|
 | `complete` | every stage finished; zero findings means "reviewed, nothing found" |
-| `partial` | something was not checked: budget, provider error, retrieval unavailable, malformed model output, skipped fork |
+| `partial` | something was not checked: budget, provider error, retrieval unavailable, malformed model output, skipped fork; optional deduplication failure or budget exhaustion instead keeps all accepted findings without making the review partial |
 | `failed` | configuration/setup error or crash; no trustworthy report |
 
 The dashboard also labels jobs `queued`, `running`, `cancelled` or `skipped`.

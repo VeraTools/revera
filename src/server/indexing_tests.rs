@@ -204,19 +204,26 @@ async fn mention_pr_warmup_uses_default_base_and_reviewability_not_push_preferen
                 ));
             }
             assert!(mock.received_requests().await.unwrap().is_empty());
+            drop(queue);
+            // MockServer's Drop blocks on a Tokio lock. If this loop has spent
+            // the task's cooperative budget, that lock defers its wake-up to
+            // the scheduler, which never runs again; yield to reset the budget.
+            tokio::task::yield_now().await;
         }
     }
 }
 
 #[tokio::test]
 async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
-    for (enabled, pushed_at, response, queued, lookups) in [
-        (false, "two", Some(INDEXED), false, 0),
-        (true, "two", Some(INDEXED), false, 1),
-        (true, "two", Some(NEXT), true, 1),
-        (true, "two", None, true, 1),
-        (true, "two", Some("invalid"), true, 1),
-        (true, "one", Some(NEXT), false, 0),
+    for (enabled, pushed_at, response, queued, lookups, active) in [
+        (false, "two", Some(INDEXED), false, 0, "none"),
+        (true, "two", Some(INDEXED), false, 1, "none"),
+        (true, "two", Some(NEXT), true, 1, "none"),
+        (true, "two", None, true, 1, "none"),
+        (true, "two", Some("invalid"), true, 1, "none"),
+        (true, "one", Some(NEXT), false, 0, "none"),
+        (true, "two", Some(NEXT), true, 0, "pending"),
+        (true, "two", Some(NEXT), false, 0, "running"),
     ] {
         let mock = MockServer::start().await;
         let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
@@ -230,6 +237,13 @@ async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
             record_index(&mut seen, &previous, INDEXED);
             // Production persists every seen change as it is made.
             reconcile::save(&server, &seen).await.unwrap();
+        }
+        let index = events::Job::new(previous.clone(), events::Kind::Index, "push");
+        if active != "none" {
+            server.enqueue(index.clone()).await;
+            if active == "running" {
+                server.queue.lock().await.take().unwrap();
+            }
         }
         value["pushed_at"] = json!(pushed_at);
         inventory(&mock, value, vec![], 1).await;
@@ -259,10 +273,20 @@ async fn reconcile_checks_default_head_only_for_opted_in_push_candidates() {
                 events::Kind::Index
             ));
         }
+        if active == "pending" {
+            assert_eq!(queue.pending[&index.key()].id, index.id);
+        }
+        if active == "running" {
+            assert_eq!(queue.running[&index.key()].job.id, index.id);
+        }
         let saved: reconcile::Seen = dashboard::read_json(data.path(), "seen.json").unwrap();
         assert_eq!(
             saved.0[&1].pushed_at,
-            if queued { "one" } else { pushed_at }
+            if queued || active == "running" {
+                "one"
+            } else {
+                pushed_at
+            }
         );
         assert!(saved.index_current(1, INDEXED));
     }
@@ -502,7 +526,7 @@ async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks
         let scratch = tempfile::tempdir().unwrap();
         let marker = scratch.path().join("indexed-head");
         let command = format!(
-            "git rev-parse HEAD > '{}.tmp' && mv '{}.tmp' '{}'; {}",
+            "[ \"$1\" = index ] || exit 1; for arg in \"$@\"; do [ \"$arg\" != --playbook-dir ] || exit 1; done; git rev-parse HEAD > '{}.tmp' && mv '{}.tmp' '{}'; {}",
             marker.display(),
             marker.display(),
             marker.display(),
@@ -518,6 +542,13 @@ async fn only_successful_index_records_actual_fetch_sha_and_stale_checkout_locks
             prefix: vec!["-c".into(), command, "fixture".into()],
         };
         let (data, server) = server(&mock, runner, true).await;
+        // Even an invalid playbook must neither be loaded nor forwarded for index.
+        crate::fsutil::write_repo_file(
+            data.path(),
+            Path::new("playbook/skills/logic.md"),
+            b"invalid",
+        )
+        .unwrap();
         let source = scratch.path().join("source");
         std::fs::create_dir(&source).unwrap();
         git(&source, &["init", "-qb", "main"]);

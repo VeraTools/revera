@@ -4,6 +4,8 @@ use revera::state::{FindingState, ReviewState, recheck_transition};
 
 fn finding(file: &str, key: &str, line: u32) -> Finding {
     Finding {
+        category: String::new(),
+        duplicate_of: None,
         defect_key: key.into(),
         severity: Severity::High,
         file: file.into(),

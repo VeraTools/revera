@@ -4,7 +4,8 @@ pub const RECHECK: &str = include_str!("../prompts/recheck.md");
 pub const LEAD_PLAN: &str = include_str!("../prompts/lead_plan.md");
 pub const LEAD_SYNTHESIZE: &str = include_str!("../prompts/lead_synthesize.md");
 pub const WORKER: &str = include_str!("../prompts/worker.md");
-pub const SCOUT_FOCUS: &str = include_str!("../prompts/scout_focus.md");
+pub const FOCUS: &str = include_str!("../prompts/focus.md");
+pub const DEDUP: &str = include_str!("../prompts/dedup.md");
 
 /// Hash of every prompt text: part of the review identity so edited
 /// prompts never reuse a stored result.
@@ -18,13 +19,19 @@ pub fn prompt_version() -> String {
         LEAD_PLAN,
         LEAD_SYNTHESIZE,
         WORKER,
-        SCOUT_FOCUS,
+        FOCUS,
+        DEDUP,
         crate::guidance::GUIDANCE_PROMPT,
         crate::guidance::SKILLS_PROMPT,
         crate::guidance::NOTES_PROMPT,
     ] {
         h.update(p.as_bytes());
         h.update([0]);
+    }
+    h.update(crate::playbook::BUILTIN_REVIEWER.as_bytes());
+    for (_, text) in crate::playbook::BUILTIN_SKILLS {
+        h.update([0]);
+        h.update(text.as_bytes());
     }
     hex::encode(&h.finalize()[..8])
 }

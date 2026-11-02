@@ -44,5 +44,9 @@ reviews; the Action uses workflow events.
   All of it comes from the base commit. `review.notes` adds the operator's own
   instructions. The App sets both per repository under Repositories → Review
   guidance.
+- Repository-specific rules belong in guidance and notes. The reviewer
+  playbook (method and defect-class skills, built in) is operator-wide:
+  `--playbook-dir` or the App's Playbook page. Do not suggest editing it for
+  one repository's conventions.
 - Report what was actually checked: say "doctor passed" or "live review ran",
   not "working", when only one of them happened.

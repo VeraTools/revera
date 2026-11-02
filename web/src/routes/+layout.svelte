@@ -11,6 +11,7 @@
     Wrench,
     FolderGit2,
     Settings,
+    BookOpen,
     ChevronDown,
     LogOut,
     ArrowUpRight,
@@ -59,6 +60,7 @@
     { href: '/reviews', name: 'Reviews', icon: GitPullRequest },
     { href: '/fixes', name: 'Fixes', icon: Wrench },
     { href: '/repositories', name: 'Repositories', icon: FolderGit2 },
+    { href: '/playbook', name: 'Playbook', icon: BookOpen },
     { href: '/settings', name: 'Settings', icon: Settings },
   ];
   const isSetup = $derived(page.url.pathname === '/setup');

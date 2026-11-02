@@ -6,7 +6,9 @@ use revera::diff::DiffSet;
 use revera::findings::{Finding, Severity, ValidationStatus};
 use revera::github::api::GhComment;
 use revera::github::publish::{Identity, encode_state, find_managed};
-use revera::pipeline::common::{findings_terminal_check, parse_findings_checked};
+use revera::pipeline::common::{
+    findings_terminal_check, malformed_finding_diagnostic, parse_findings_checked,
+};
 use revera::provider::{
     ChatMessage, Completion, LedgerHandle, ModelClient, ProviderError, Role, ToolCall, ToolSpec,
     Usage,
@@ -22,6 +24,8 @@ use std::sync::{Arc, Mutex};
 
 fn finding(file: &str, key: &str, line: u32) -> Finding {
     Finding {
+        category: String::new(),
+        duplicate_of: None,
         defect_key: key.into(),
         severity: Severity::High,
         file: file.into(),
@@ -74,15 +78,71 @@ fn mixed_validity_keeps_valid_and_flags_problem() {
 }
 
 #[test]
+fn missing_title_is_derived_instead_of_dropping_the_finding() {
+    let mut from_claim = valid_finding_json();
+    from_claim.as_object_mut().unwrap().remove("title");
+    from_claim["claim"] = json!("The cache key omits the base. Reviews reuse stale state.");
+    let mut from_summary = valid_finding_json();
+    from_summary["title"] = json!("  ");
+    from_summary["summary"] = json!("Stale cache key");
+    let mut from_key = valid_finding_json();
+    from_key.as_object_mut().unwrap().remove("title");
+    from_key.as_object_mut().unwrap().remove("claim");
+    from_key["defect_key"] = json!("cache_key_omits_base");
+    let mut long = valid_finding_json();
+    long.as_object_mut().unwrap().remove("title");
+    long["claim"] = json!(
+        "The repository's agent setup instructions still tell users to add the index directory to their ignore file, contradicting the new behavior"
+    );
+    let parsed =
+        parse_findings_checked(&json!({"findings": [from_claim, from_summary, from_key, long]}));
+    let titles: Vec<_> = parsed.findings.iter().map(|f| f.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "The cache key omits the base",
+            "Stale cache key",
+            "The repository's agent setup instructions still tell users to add the index directory...",
+        ]
+    );
+    assert!(titles[2].len() <= 90);
+    // no claim: still malformed (claim is required), and reported
+    assert_eq!(parsed.dropped, 1);
+    assert!(parsed.problem.unwrap().contains("claim"));
+
+    let mut punctuation = valid_finding_json();
+    punctuation.as_object_mut().unwrap().remove("title");
+    punctuation["claim"] = json!("...");
+    punctuation["defect_key"] = json!("cache_key_omits_base");
+    let parsed = parse_findings_checked(&json!({"findings": [punctuation]}));
+    assert_eq!(parsed.dropped, 0);
+    assert_eq!(parsed.findings[0].title, "cache key omits base");
+}
+
+#[test]
+fn malformed_finding_diagnostic_redacts_field_names() {
+    let secret = "outcome-test-secret-7f3a9c";
+    revera::redact::register(secret);
+    let v = json!({secret: 1, "severity": "high"});
+    let e = serde_json::from_value::<revera::findings::Finding>(v.clone()).unwrap_err();
+    let msg = malformed_finding_diagnostic(&e, &v);
+    assert!(msg.contains("dropping malformed finding"));
+    assert!(msg.contains("severity"));
+    assert!(!msg.contains(secret), "{msg}");
+}
+
+#[test]
 fn investigator_cannot_supply_a_publishable_validated_fix() {
     let mut submitted = valid_finding_json();
     submitted["suggested_fix"] = json!("investigator proposal");
     submitted["validated_fix"] = json!("forged validator approval");
+    submitted["duplicate_of"] = json!("forged-removal");
     let parsed = parse_findings_checked(&json!({"findings": [submitted]}));
     assert_eq!(parsed.findings.len(), 1);
     let f = &parsed.findings[0];
     assert_eq!(f.suggested_fix.as_deref(), Some("investigator proposal"));
     assert_eq!(f.validated_fix, None);
+    assert_eq!(f.duplicate_of, None);
     assert!(!finding_body(f).contains("forged validator approval"));
 }
 

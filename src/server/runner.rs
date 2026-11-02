@@ -505,7 +505,23 @@ async fn execute_external(
     if let Some(profile) = job.mode.profile() {
         command.arg("--profile").arg(profile);
     }
+    review_playbook(server, &mut command)?;
     logged(&mut command, log).await
+}
+
+/// Both review launch paths use operator files; index commands never do.
+pub(super) fn review_playbook(server: &Server, command: &mut Command) -> Result<()> {
+    let dir = server.settings.data_dir.join("playbook");
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.file_type().is_dir() => {
+            crate::playbook::Playbook::load(Some(&dir)).context("load server review playbook")?;
+            command.arg("--playbook-dir").arg(dir);
+        }
+        Ok(_) => anyhow::bail!("server playbook root must be a real directory, not a symlink"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("read server playbook directory"),
+    }
+    Ok(())
 }
 
 async fn execute(
@@ -656,21 +672,16 @@ async fn execute(
                     .as_u64()
                     .context("check response missing id")?,
             );
-            let mut summary = server
-                .dashboard
-                .lock()
-                .await
-                .jobs
-                .get(&job.id)
-                .cloned()
-                .context("job summary missing")?;
-            summary.check_run_url = response["html_url"].as_str().map(str::to_owned);
-            summary.check = Some(super::dashboard::CheckRecovery {
-                id: execution.check.unwrap(),
-                repo: job.repo.clone(),
-                pending: true,
-            });
-            server.update_job(summary).await?;
+            server
+                .patch_job(&job.id, |summary| {
+                    summary.check_run_url = response["html_url"].as_str().map(str::to_owned);
+                    summary.check = Some(super::dashboard::CheckRecovery {
+                        id: execution.check.unwrap(),
+                        repo: job.repo.clone(),
+                        pending: true,
+                    });
+                })
+                .await?;
             let event = execution.report.parent().unwrap().join("event.json");
             let mut value = job.event();
             crate::redact::json(&mut value);
@@ -709,6 +720,7 @@ async fn execute(
             if let Some(profile) = job.mode.profile() {
                 command.arg("--profile").arg(profile);
             }
+            review_playbook(server, &mut command)?;
             let preference = server
                 .dashboard
                 .lock()
@@ -850,18 +862,13 @@ async fn complete_check(
     {
         body["actions"] = json!([{"label":"Fix with Revera","description":"Open a fix request","identifier":"revera_fix"}]);
     }
-    let mut summary = server
-        .dashboard
-        .lock()
-        .await
-        .jobs
-        .get(&job.id)
-        .cloned()
-        .context("job summary missing")?;
-    if let Some(check) = &mut summary.check {
-        check.pending = true;
-    }
-    server.update_job(summary).await?;
+    server
+        .patch_job(&job.id, |summary| {
+            if let Some(check) = &mut summary.check {
+                check.pending = true;
+            }
+        })
+        .await?;
     server
         .api
         .request(
@@ -871,18 +878,13 @@ async fn complete_check(
             Some(body),
         )
         .await?;
-    let mut summary = server
-        .dashboard
-        .lock()
-        .await
-        .jobs
-        .get(&job.id)
-        .cloned()
-        .context("job summary missing")?;
-    if let Some(check) = &mut summary.check {
-        check.pending = false;
-    }
-    server.update_job(summary).await?;
+    server
+        .patch_job(&job.id, |summary| {
+            if let Some(check) = &mut summary.check {
+                check.pending = false;
+            }
+        })
+        .await?;
     Ok(())
 }
 
@@ -1044,35 +1046,30 @@ async fn finish_summary(
         reason
     };
     let skipped = !cancelled && reason.as_ref().is_some_and(|s| s.starts_with("fork PR:"));
-    let mut summary = server
-        .dashboard
-        .lock()
+    server
+        .patch_job(&job.id, |summary| {
+            summary.set_state(if skipped { "skipped" } else { status }, reason);
+            if let Some(report) = report {
+                let counts = crate::findings::accepted_counts_json(&report);
+                summary.findings = super::dashboard::FindingCounts {
+                    total: counts.total,
+                    high: counts.high,
+                    medium: counts.medium,
+                    low: counts.low,
+                    carried: report["carried"]
+                        .as_array()
+                        .map_or(0, |items| items.len() as u64),
+                };
+                if !report["ledger"].is_null() {
+                    summary.tokens = Some(json!({
+                        "prompt": report["ledger"]["prompt_tokens"].as_u64().unwrap_or(0),
+                        "completion": report["ledger"]["completion_tokens"].as_u64().unwrap_or(0),
+                        "cached": report["ledger"]["cached_prompt_tokens"].as_u64().unwrap_or(0)
+                    }));
+                }
+            }
+        })
         .await
-        .jobs
-        .get(&job.id)
-        .cloned()
-        .context("job summary missing")?;
-    summary.set_state(if skipped { "skipped" } else { status }, reason);
-    if let Some(report) = report {
-        let counts = crate::findings::accepted_counts_json(&report);
-        summary.findings = super::dashboard::FindingCounts {
-            total: counts.total,
-            high: counts.high,
-            medium: counts.medium,
-            low: counts.low,
-            carried: report["carried"]
-                .as_array()
-                .map_or(0, |items| items.len() as u64),
-        };
-        if !report["ledger"].is_null() {
-            summary.tokens = Some(json!({
-                "prompt": report["ledger"]["prompt_tokens"].as_u64().unwrap_or(0),
-                "completion": report["ledger"]["completion_tokens"].as_u64().unwrap_or(0),
-                "cached": report["ledger"]["cached_prompt_tokens"].as_u64().unwrap_or(0)
-            }));
-        }
-    }
-    server.update_job(summary).await
 }
 
 fn failure_reason(path: &Path, exit: i32) -> String {

@@ -10,7 +10,7 @@ use crate::prompts;
 use crate::provider::ToolSpec;
 use crate::report::RunReport;
 use crate::state::ReviewState;
-use crate::tools::terminal_submit_findings_spec;
+use crate::tools::submit_findings_spec;
 use anyhow::Result;
 
 /// Baseline single-lane investigation.
@@ -46,11 +46,16 @@ pub(crate) async fn investigate(
     let user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes)
         + &prep.guidance.prompt_block()
         + &prep.tracked_block(cfg.review.validate);
-    let terminal: ToolSpec = terminal_submit_findings_spec();
+    let terminal: ToolSpec = submit_findings_spec(&cfg.playbook);
+    let system = format!(
+        "{}{}",
+        prompts::INVESTIGATOR,
+        cfg.playbook.investigator_block()
+    );
     let lane_start = std::time::Instant::now();
     let run = run_agent_checked(
         investigator.as_ref(),
-        prompts::INVESTIGATOR,
+        &system,
         &user,
         &prep.toolbox,
         &terminal,

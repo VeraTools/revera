@@ -1,6 +1,6 @@
 use super::common::{
-    PrepareOut, ReviewRequest, findings_terminal_check, finish, investigator_user,
-    parse_candidate_findings, parse_findings_checked, prepare,
+    PrepareOut, ReviewRequest, clamp_budget, findings_terminal_check, finish, investigator_user,
+    parse_candidate_findings, parse_findings_checked, parse_not_checked, prepare,
 };
 use super::make_client;
 use crate::agent::{run_agent, run_agent_checked};
@@ -9,9 +9,7 @@ use crate::findings::Finding;
 use crate::prompts;
 use crate::report::RunReport;
 use crate::state::ReviewState;
-use crate::tools::{
-    terminal_submit_findings_spec, terminal_submit_plan_spec, terminal_submit_worker_result_spec,
-};
+use crate::tools::{submit_findings_spec, submit_worker_result_spec, terminal_submit_plan_spec};
 use anyhow::Result;
 use futures::stream::StreamExt;
 use serde::Deserialize;
@@ -21,6 +19,7 @@ use serde::Deserialize;
 /// can still discover untouched files.
 pub const WORKER_TOOLS: &[&str] = &[
     "read_file",
+    "read_skill",
     "list_changed_files",
     "diff_context",
     "grep_repo",
@@ -102,15 +101,17 @@ async fn delegated_candidates(
         &plan_terminal.name,
     )?;
     let mut user = investigator_user(req, &prep.diff, cfg.review.max_diff_bytes)
-        + &prep.guidance.prompt_block();
+        + &prep.guidance.prompt_block()
+        + &prep.tracked_block(cfg.review.validate);
     if !prep.rechecks.is_empty() {
         user.push_str("\n\nPrior findings under recheck:\n");
         for r in &prep.rechecks {
             user.push_str(&format!("- {}:{} {}\n", r.file, r.start_line, r.title));
         }
     }
-    let system =
-        prompts::LEAD_PLAN.replace("{max_questions}", &cfg.delegated.max_questions.to_string());
+    let system = prompts::LEAD_PLAN
+        .replace("{max_questions}", &cfg.delegated.max_questions.to_string())
+        + &cfg.playbook.investigator_block();
     let plan_start = std::time::Instant::now();
     let plan_tools = prep.toolbox.without_web();
     let run = run_agent(
@@ -162,12 +163,9 @@ async fn delegated_candidates(
 
     // ---- 2. workers concurrently ----
     let worker_routes = cfg.models.workers.as_deref().unwrap_or(&[]);
-    let worker_terminal = terminal_submit_worker_result_spec();
+    let worker_terminal = submit_worker_result_spec(&cfg.playbook);
     let worker_tb = std::sync::Arc::new(prep.toolbox.restricted(WORKER_TOOLS));
-    let lane_budget = prep.budget(
-        cfg.delegated.worker_max_tool_calls,
-        cfg.delegated.worker_max_seconds,
-    );
+    let investigation_deadline = prep.investigation_deadline();
     // Create clients in lane order so scripted conversations pop deterministically.
     let mut worker_clients = Vec::new();
     for (i, _q) in questions.iter().enumerate() {
@@ -187,6 +185,7 @@ async fn delegated_candidates(
         worker_clients.push(c);
     }
     let max_req = cfg.budget.run_max_requests;
+    let worker_context = prep.guidance.prompt_block() + &prep.tracked_block(cfg.review.validate);
     let lane_futs = questions.iter().enumerate().map(|(i, q)| {
         let client = worker_clients[i].clone();
         let worker_model = select_worker_route(worker_routes, &cfg.models.investigator, i)
@@ -194,7 +193,6 @@ async fn delegated_candidates(
             .clone();
         let tb = worker_tb.clone();
         let terminal = worker_terminal.clone();
-        let budget = lane_budget.clone();
         let ledger = prep.ledger.clone();
         let timing = prep.timing.clone();
         let wall = prep.wall;
@@ -212,10 +210,11 @@ async fn delegated_candidates(
             q.stop_condition,
             q.files_hint.join(", "),
             prep.diff.render_truncated(cfg.review.max_diff_bytes),
-        );
+        ) + &worker_context;
+        let worker_system = format!("{}\n\n{}", prompts::WORKER, cfg.playbook.classes_block());
         async move {
             let lane_start = std::time::Instant::now();
-            if ledger.request_count() >= max_req {
+            if ledger.request_count() >= max_req || lane_start >= investigation_deadline {
                 timing.record(
                     "lane",
                     &format!("worker:{qid}"),
@@ -225,14 +224,19 @@ async fn delegated_candidates(
                 );
                 return (i, qid, worker_model, None, lane_start);
             }
-            let run = run_agent(
+            let budget = clamp_budget(
+                cfg.delegated.worker_max_tool_calls,
+                cfg.delegated.worker_max_seconds,
+                investigation_deadline,
+            );
+            let run = tokio::time::timeout_at(investigation_deadline.into(), run_agent(
                 client.as_ref(),
-                prompts::WORKER,
+                &worker_system,
                 &qtext,
                 &tb,
                 &terminal,
                 &budget,
-            )
+            ))
             .await;
             (i, qid, worker_model, Some(run), lane_start)
         }
@@ -248,7 +252,7 @@ async fn delegated_candidates(
         };
         let mut lane_outcome = "ok";
         let report = match run {
-            Ok(r) => match r.final_call {
+            Ok(Ok(r)) => match r.final_call {
                 Some(call) => {
                     let a = &call.arguments;
                     let result = a["result"].as_str().unwrap_or("answered").to_string();
@@ -302,7 +306,7 @@ async fn delegated_candidates(
                     }
                 }
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 lane_outcome = "error";
                 WorkerReport {
                     question_id: qid.clone(),
@@ -311,6 +315,17 @@ async fn delegated_candidates(
                     raw: String::new(),
                     findings: vec![],
                     gaps: vec![format!("question {qid}: worker failed: {e}")],
+                }
+            }
+            Err(_) => {
+                lane_outcome = "timeout";
+                WorkerReport {
+                    question_id: qid.clone(),
+                    result: "blocked".into(),
+                    answer: "worker reached investigation deadline".into(),
+                    raw: String::new(),
+                    findings: vec![],
+                    gaps: vec![format!("question {qid}: investigation deadline reached")],
                 }
             }
         };
@@ -329,8 +344,9 @@ async fn delegated_candidates(
         reports.push(report);
     }
     if skipped > 0 {
-        prep.partial_reasons
-            .push(format!("run budget exhausted before {skipped} lanes"));
+        prep.partial_reasons.push(format!(
+            "investigation deadline or run budget exhausted before {skipped} lanes"
+        ));
     }
     for r in &reports {
         for g in &r.gaps {
@@ -343,6 +359,18 @@ async fn delegated_candidates(
     }
 
     // ---- 3. lead synthesizes ----
+    if std::time::Instant::now() >= investigation_deadline {
+        prep.timing.record(
+            "synthesis",
+            "lead",
+            std::time::Instant::now(),
+            prep.wall,
+            "skipped",
+        );
+        prep.partial_reasons
+            .push("investigation deadline reached before lead synthesis".into());
+        return Ok(reports.into_iter().flat_map(|r| r.findings).collect());
+    }
     let mut worker_section = String::new();
     for r in &reports {
         worker_section.push_str(&format!(
@@ -355,8 +383,14 @@ async fn delegated_candidates(
         req.title.as_deref().unwrap_or("(untitled)"),
         prep.diff.render_truncated(cfg.review.max_diff_bytes),
         worker_section,
+    ) + &prep.guidance.prompt_block()
+        + &prep.tracked_block(cfg.review.validate);
+    let synth_system = format!(
+        "{}\n\n{}",
+        prompts::LEAD_SYNTHESIZE,
+        cfg.playbook.classes_block()
     );
-    let synth_terminal = terminal_submit_findings_spec();
+    let synth_terminal = submit_findings_spec(&cfg.playbook);
     let lead2 = make_client(
         &lead_route,
         "lead",
@@ -366,18 +400,31 @@ async fn delegated_candidates(
         cfg.budget.retries,
         &synth_terminal.name,
     )?;
-    let read_only_tb = std::sync::Arc::new(prep.toolbox.restricted(&["read_file"]));
+    let read_only_tb = std::sync::Arc::new(prep.toolbox.restricted(&["read_file", "read_skill"]));
     let synth_start = std::time::Instant::now();
-    let run = run_agent_checked(
-        lead2.as_ref(),
-        prompts::LEAD_SYNTHESIZE,
-        &synth_user,
-        &read_only_tb,
-        &synth_terminal,
-        &prep.budget(4, cfg.budget.agent_max_seconds),
-        &findings_terminal_check,
+    let run = tokio::time::timeout_at(
+        investigation_deadline.into(),
+        run_agent_checked(
+            lead2.as_ref(),
+            &synth_system,
+            &synth_user,
+            &read_only_tb,
+            &synth_terminal,
+            &prep.budget(4, cfg.budget.agent_max_seconds),
+            &findings_terminal_check,
+        ),
     )
-    .await?;
+    .await;
+    let run = match run {
+        Ok(run) => run?,
+        Err(_) => {
+            prep.timing
+                .record("synthesis", "lead", synth_start, prep.wall, "timeout");
+            prep.partial_reasons
+                .push("lead synthesis reached investigation deadline".into());
+            return Ok(reports.into_iter().flat_map(|r| r.findings).collect());
+        }
+    };
     prep.stats.repaired |= run.repaired;
     let synth_outcome = match run.stopped {
         crate::agent::StopReason::Terminal if run.final_call.is_none() => "error",
@@ -396,14 +443,16 @@ async fn delegated_candidates(
                     .as_str()
                     .unwrap_or("(none)")
                     .to_string();
-                for u in call.arguments["unresolved"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(s) = u.as_str() {
-                        prep.coverage_gaps.push(s.to_string());
-                    }
+                let unchecked = parse_not_checked(&serde_json::json!({
+                    "not_checked": call.arguments.get("not_checked")
+                        .or_else(|| call.arguments.get("unresolved"))
+                }));
+                if !unchecked.is_empty() {
+                    prep.partial_reasons.push(format!(
+                        "lead synthesis reported {} unchecked area(s)",
+                        unchecked.len()
+                    ));
+                    prep.coverage_gaps.extend(unchecked);
                 }
                 let parsed = parse_findings_checked(&call.arguments);
                 prep.stats.malformed_findings += parsed.dropped;
@@ -536,26 +585,42 @@ vera: {}
 
     #[tokio::test]
     async fn run_budget_skips_lanes() {
-        let c = cfg();
+        let mut c = cfg();
         let ledger = LedgerHandle::new();
-        // exhaust the budget before lanes start
-        for _ in 0..2 {
-            ledger.record(LedgerEntry {
-                route: "r".into(),
-                model: "m".into(),
-                ..Default::default()
-            });
-        }
-        // emulate the lane gate used by delegated_candidates:
-        // `ledger.request_count() >= max_req` -> lane skipped
-        let mut c = c;
+        // The planner's one request exhausts the remaining budget before workers start.
+        ledger.record(LedgerEntry {
+            route: "r".into(),
+            model: "m".into(),
+            ..Default::default()
+        });
         c.budget.run_max_requests = 2;
-        let max_req = c.budget.run_max_requests;
-        let skipped = (0..3).filter(|_| ledger.request_count() >= max_req).count();
-        assert_eq!(skipped, 3);
-
-        // full-path check: prepared + skip -> partial_reasons gains the note
-        let repo = std::env::temp_dir();
+        let data = tempfile::tempdir().unwrap();
+        let repo = data.path().to_path_buf();
+        let script = serde_json::json!({"roles": {"lead": [
+            [{"tool_calls": [{"name": "submit_plan", "arguments": {"questions":
+                (0..3).map(|i| serde_json::json!({"id": format!("q{i}"), "question": "Check behavior"})).collect::<Vec<_>>()
+            }}]}],
+            [{"tool_calls": [{"name": "submit_findings", "arguments": {"findings": [], "coverage": "Workers skipped"}}]}]
+        ]}});
+        crate::fsutil::write_atomic_in(
+            data.path(),
+            "script.json",
+            &serde_json::to_vec(&script).unwrap(),
+        )
+        .unwrap();
+        c.models.investigator.protocol = crate::config::Protocol::Scripted;
+        c.models.investigator.script = Some(repo.join("script.json"));
+        c.models.workers = None;
+        let req = ReviewRequest {
+            repo: repo.clone(),
+            base: "b".into(),
+            head: Some("h".into()),
+            title: None,
+            body: String::new(),
+            strategy_override: None,
+            force: false,
+            repository_public: false,
+        };
         let vera = Arc::new(VeraClient {
             exe: "true".into(),
             repo_root: repo.clone(),
@@ -599,14 +664,24 @@ vera: {}
             timing: crate::timing::Recorder::default(),
             intent: String::new(),
         };
-        if skipped > 0 {
-            prep.partial_reasons
-                .push(format!("run budget exhausted before {skipped} lanes"));
-        }
+        let findings = delegated_candidates(&c, &req, &mut prep).await.unwrap();
+        assert!(findings.is_empty());
+        assert_eq!(
+            prep.partial_reasons,
+            ["investigation deadline or run budget exhausted before 3 lanes"]
+        );
+        let timing = prep.timing.finish(prep.wall);
+        let lanes: Vec<_> = timing.phases.iter().filter(|p| p.phase == "lane").collect();
+        assert_eq!(lanes.len(), 3);
+        assert!(lanes.iter().all(|p| p.outcome == "skipped"));
         assert!(
-            prep.partial_reasons
+            ledger
+                .0
+                .lock()
+                .unwrap()
+                .entries
                 .iter()
-                .any(|r| r == "run budget exhausted before 3 lanes")
+                .all(|e| e.role != "workers")
         );
     }
 }

@@ -103,6 +103,8 @@ impl Default for Publication {
 pub struct RunStats {
     /// Candidates after collapse/dedupe, before validation.
     pub candidates: usize,
+    #[serde(default)]
+    pub duplicates: usize,
     pub accepted: usize,
     pub rejected: usize,
     pub uncertain: usize,
@@ -166,6 +168,8 @@ pub struct RunReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarriedFinding {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
     /// Retained to reconstruct the stable finding identity, not a new verdict.
     pub defect_key: String,
     pub severity: crate::findings::Severity,
@@ -183,6 +187,7 @@ impl CarriedFinding {
     pub fn from_state(f: &crate::state::StateFinding) -> Self {
         Self {
             id: f.id.clone(),
+            category: f.category.clone(),
             defect_key: f.defect_key.clone(),
             severity: f.severity,
             title: f.title.clone(),
@@ -200,6 +205,7 @@ impl CarriedFinding {
     pub fn to_finding(&self) -> Finding {
         let state = crate::state::StateFinding {
             id: self.id.clone(),
+            category: self.category.clone(),
             defect_key: self.defect_key.clone(),
             severity: self.severity,
             title: self.title.clone(),
@@ -238,6 +244,7 @@ impl RunReport {
         self.findings
             .iter()
             .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
+            .filter(|f| f.duplicate_of.is_none())
             .cloned()
             .chain(self.carried.iter().map(CarriedFinding::to_finding))
             .collect()
@@ -444,11 +451,7 @@ fn plural(n: usize, one: &str) -> String {
 pub fn summary_markdown(inp: &Summary<'_>) -> String {
     let status = inp.status.unwrap_or(RunStatus::Complete);
     let mut s = String::from("## Revera review\n\n");
-    let accepted: Vec<&Finding> = inp
-        .findings
-        .iter()
-        .filter(|f| f.validation_status == Some(ValidationStatus::Accepted))
-        .collect();
+    let accepted: Vec<&Finding> = inp.findings.iter().filter(|f| is_publishable(f)).collect();
     let counts = crate::findings::accepted_counts(inp.findings);
     let uncertain = inp
         .findings
