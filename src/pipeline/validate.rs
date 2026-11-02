@@ -236,12 +236,11 @@ pub async fn validate_candidates(
                     final_call: Some(call),
                     ..
                 }) => {
-                    let keys = call
-                        .arguments
-                        .as_object()
-                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
-                        .unwrap_or_else(|| "not an object".into());
-                    match serde_json::from_value::<Verdict>(call.arguments) {
+                    // The one repair attempt is final even if malformed; do
+                    // not treat a parseable but unexplained verdict as authority.
+                    match verdict_terminal_check(&call.arguments).and_then(|()| {
+                        serde_json::from_value::<Verdict>(call.arguments).map_err(|e| e.to_string())
+                    }) {
                         Ok(v) => {
                             let approved_fix = approved_fix(&v);
                             cand.validation_status = Some(v.validation_status);
@@ -278,13 +277,10 @@ pub async fn validate_candidates(
                                 "ok".to_string()
                             }
                         }
-                        Err(e) => {
+                        Err(_) => {
                             clean = false;
                             cand.validation_status = Some(ValidationStatus::Uncertain);
-                            cand.rationale = Some(format!(
-                                "validator returned malformed verdict: {e} (submitted keys: {})",
-                                crate::text::excerpt_bytes(&keys, 200)
-                            ));
+                            cand.rationale = Some("malformed verdict".into());
                             "error:malformed verdict".to_string()
                         }
                     }
