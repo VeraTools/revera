@@ -373,9 +373,9 @@ differs:
 
 | config | defects reported | inline TP | inline FP | unrelated inline comments | clean runs with an inline comment | uncertain verdicts | median wall s | total cost |
 |---|---|---|---|---|---|---|---|---|
-| P0-cliproxy-glm (main before this change) | 52/66 | 50 | 31 | 23 | 2 of 16 | 1 | 119 | $1.28 |
-| P1-cliproxy-glm (first version of the changes) | 54/66 | 45 | 18 | 12 | 1 of 16 | 6 | 139 | $1.38 |
-| P2-cliproxy-glm (final version) | 58/66 | 47 | 29 | 17 | 1 of 16 | 4 | 116 | $1.46 |
+| P0-glm (main before this change) | 52/66 | 50 | 31 | 23 | 2 of 16 | 1 | 119 | $1.28 |
+| P1-glm (first version of the changes) | 54/66 | 45 | 18 | 12 | 1 of 16 | 6 | 139 | $1.38 |
+| P2-glm (final version) | 58/66 | 47 | 29 | 17 | 1 of 16 | 4 | 116 | $1.46 |
 
 The changes measured are: a soft deadline that keeps a reserve for a
 low-effort wrap-up turn, a recall-first investigator method, the validator
