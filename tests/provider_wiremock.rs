@@ -1902,7 +1902,7 @@ async fn openai_chat_max_passes_through_for_non_gpt5() {
 }
 
 #[tokio::test]
-async fn openai_chat_remembers_400_effort_cap_and_records_it() {
+async fn openai_chat_400_effort_cap_is_per_request_and_recorded_truthfully() {
     let server = MockServer::start().await;
     // first attempt: requested "max" verbatim -> 400 mentions reasoning_effort
     Mock::given(method("POST"))
@@ -1910,7 +1910,7 @@ async fn openai_chat_remembers_400_effort_cap_and_records_it() {
         .respond_with(
             ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
         )
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     // same-slot retry: capped at "high" -> success
@@ -1940,23 +1940,32 @@ async fn openai_chat_remembers_400_effort_cap_and_records_it() {
         .unwrap();
     server.verify().await;
     let entries = &ledger.0.lock().unwrap().entries;
-    assert_eq!(entries.len(), 3);
-    assert_eq!(entries[1].effective_reasoning, "high");
-    let last = entries.last().unwrap();
-    assert_eq!(last.requested_reasoning, "max");
-    assert_eq!(last.effective_reasoning, "high");
-    assert_eq!(last.role, "test");
+    assert_eq!(entries.len(), 4);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.effective_reasoning.as_str())
+            .collect::<Vec<_>>(),
+        ["max", "high", "max", "high"]
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|e| e.requested_reasoning == "max" && e.role == "test")
+    );
+    assert!(entries[0].error.is_some() && entries[2].error.is_some());
+    assert!(entries[1].error.is_none() && entries[3].error.is_none());
 }
 
 #[tokio::test]
-async fn openai_chat_remembers_dropped_reasoning_after_a_second_400() {
+async fn openai_chat_dropped_reasoning_is_per_request_and_recorded_truthfully() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({"reasoning_effort": "max"})))
         .respond_with(
             ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
         )
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     // capped retry also rejected -> next retry carries no reasoning field
@@ -1965,7 +1974,7 @@ async fn openai_chat_remembers_dropped_reasoning_after_a_second_400() {
         .respond_with(
             ResponseTemplate::new(400).set_body_string("unrecognized field: reasoning_effort"),
         )
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -1993,17 +2002,27 @@ async fn openai_chat_remembers_dropped_reasoning_after_a_second_400() {
         .unwrap();
     server.verify().await;
     let reqs = server.received_requests().await.unwrap();
-    assert_eq!(reqs.len(), 4);
-    let body3: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
-    assert!(body3.get("reasoning_effort").is_none(), "{body3}");
-    assert!(body3.get("reasoning").is_none(), "{body3}");
+    assert_eq!(reqs.len(), 6);
+    for index in [2, 5] {
+        let body: serde_json::Value = serde_json::from_slice(&reqs[index].body).unwrap();
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+        assert!(body.get("reasoning").is_none(), "{body}");
+    }
     let body4: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
-    assert!(body4.get("reasoning_effort").is_none(), "{body4}");
-    assert!(body4.get("reasoning").is_none(), "{body4}");
+    assert_eq!(body4["reasoning_effort"], "max", "{body4}");
     let entries = &ledger.0.lock().unwrap().entries;
-    let last = entries.last().unwrap();
-    assert_eq!(last.requested_reasoning, "max");
-    assert_eq!(last.effective_reasoning, "none");
+    assert_eq!(entries.len(), 6);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.effective_reasoning.as_str())
+            .collect::<Vec<_>>(),
+        ["max", "high", "none", "max", "high", "none"]
+    );
+    assert!(entries.iter().all(|e| e.requested_reasoning == "max"));
+    for (index, entry) in entries.iter().enumerate() {
+        assert_eq!(entry.error.is_none(), index % 3 == 2);
+    }
 }
 
 #[tokio::test]

@@ -60,18 +60,14 @@ impl Default for AttemptState {
 }
 
 impl AttemptState {
-    /// Merge reusable adjustments without weakening anything already learned.
-    /// Retry guards belong to one request and are deliberately not copied.
+    /// Merge only rejected-field adjustments: token key, temperature and cache hints.
+    /// Reasoning fallbacks and retry guards stay per-request and are never copied.
     fn merge_adjustments(&mut self, other: &Self) {
         if other.tokens_key == "max_completion_tokens" {
             self.tokens_key.clone_from(&other.tokens_key);
         }
         self.drop_temperature |= other.drop_temperature;
-        self.drop_reasoning |= other.drop_reasoning;
         self.drop_cache_hint |= other.drop_cache_hint;
-        if let Some(cap) = other.reasoning_cap {
-            self.reasoning_cap = Some(self.reasoning_cap.map_or(cap, |current| current.min(cap)));
-        }
     }
 }
 
@@ -193,7 +189,8 @@ pub struct HttpTransport {
     pub retries: u32,
     /// Pipeline role recorded on every ledger entry.
     pub role: String,
-    /// Client-local 400 adjustments confirmed by a usable successful response.
+    /// Client-local rejected-field adjustments confirmed by a usable success.
+    /// Reasoning drops and caps are never learned across requests.
     learned: Mutex<AttemptState>,
 }
 
@@ -360,7 +357,6 @@ impl HttpTransport {
                         );
                         return Err(err);
                     }
-                    let previous_cap = attempt.reasoning_cap;
                     let parsed = match adapter.parse(status, &text, &mut attempt) {
                         Parse::Ok(message, _)
                             if message.tool_calls.is_empty()
@@ -408,13 +404,7 @@ impl HttpTransport {
                         }
                         Parse::RetrySameSlot(reason) => {
                             if status == 400 {
-                                let mut adjustment = attempt.clone();
-                                // A caller's complete_capped limit is not a
-                                // provider compatibility adjustment.
-                                if adjustment.reasoning_cap == previous_cap {
-                                    adjustment.reasoning_cap = None;
-                                }
-                                pending.merge_adjustments(&adjustment);
+                                pending.merge_adjustments(&attempt);
                             }
                             self.record(
                                 &tel,
@@ -554,7 +544,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn learned_adjustments_merge_without_weakening_or_copying_retry_guards() {
+    fn learned_adjustments_merge_without_weakening_or_copying_reasoning_or_retry_guards() {
         let mut learned = AttemptState::default();
         learned.merge_adjustments(&AttemptState {
             tokens_key: "max_completion_tokens".into(),
@@ -571,9 +561,20 @@ mod tests {
         });
         assert_eq!(learned.tokens_key, "max_completion_tokens");
         assert!(learned.drop_temperature);
-        assert!(learned.drop_reasoning);
+        assert!(!learned.drop_reasoning);
         assert!(learned.drop_cache_hint);
-        assert_eq!(learned.reasoning_cap, Some(ReasoningEffort::Low));
+        assert_eq!(learned.reasoning_cap, None);
         assert!(!learned.thinking_mode_retried);
+
+        let mut request = AttemptState {
+            drop_reasoning: true,
+            reasoning_cap: Some(ReasoningEffort::Low),
+            ..AttemptState::default()
+        };
+        request.merge_adjustments(&learned);
+        assert!(request.drop_reasoning);
+        assert_eq!(request.reasoning_cap, Some(ReasoningEffort::Low));
+        assert!(request.drop_temperature && request.drop_cache_hint);
+        assert_eq!(request.tokens_key, "max_completion_tokens");
     }
 }

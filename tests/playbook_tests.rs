@@ -407,7 +407,8 @@ async fn queued_lanes_respect_investigation_deadline(strategy: &str, seconds: u6
     }).mount(&server).await;
     let (_d, req) = fixture();
     let mut cfg = config(&server.uri(), strategy);
-    cfg.review.concurrency = 4;
+    // Serial admission keeps later lanes queued until the one-second cutoff.
+    cfg.review.concurrency = if seconds == 1 { 1 } else { 4 };
     cfg.panel.focuses = vec![
         "general".into(),
         "logic,errors,state".into(),
@@ -426,6 +427,12 @@ async fn queued_lanes_respect_investigation_deadline(strategy: &str, seconds: u6
         .collect();
     assert_eq!(lanes.len(), 5);
     let skipped: Vec<_> = lanes.iter().filter(|p| p.outcome == "skipped").collect();
+    if seconds == 1 {
+        assert!(
+            !skipped.is_empty(),
+            "queued lanes must be skipped: {lanes:?}"
+        );
+    }
     // Under load the fifth lane may reach admission on either side of the
     // cutoff; derive counts from actual admission, not a scheduling guess.
     let ran = lanes.len() - skipped.len();
@@ -437,17 +444,16 @@ async fn queued_lanes_respect_investigation_deadline(strategy: &str, seconds: u6
             .all(|p| p.outcome == "timeout")
     );
     let investigation_ms = if seconds == 4 { 3000 } else { 1000 };
+    // 800 ms tolerates timeout wake-up jitter but rejects an extra 2 s grace turn.
     assert!(
         lanes
             .iter()
-            .all(|p| p.start_ms + p.duration_ms < investigation_ms + 1500),
+            .all(|p| p.start_ms + p.duration_ms < investigation_ms + 800),
         "lanes must leave the validation reserve untouched: {lanes:?}"
     );
     assert_eq!(report.status, revera::report::RunStatus::Partial);
     // A running lane must have passed admission before the investigation
-    // cutoff, even if the runtime resumes its timeout late. The 1.5 s upper
-    // slack above tolerates loaded CI but still catches the queued lane's
-    // unbounded 2 s terminal grace on the four-second case.
+    // cutoff, even if the runtime resumes its timeout late.
     assert!(
         lanes
             .iter()

@@ -182,7 +182,8 @@ and cancellation still work when a repository is off.
 
 Retargeting a PR to a different base branch cancels reviews against its old
 base (`superseded: base changed`). Auto mode queues a replacement; mention mode
-does so only when a review was already queued or running, preserving its mode.
+does so only when an explicitly requested review was already queued or running,
+preserving its mode.
 A completed review against another base branch appears outdated, and publication
 is skipped if the head or base branch changed during the run. New commits on the
 same base branch alone do not make a review outdated or block publication.

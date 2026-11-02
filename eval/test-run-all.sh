@@ -49,3 +49,4 @@ fi
 
 echo "run-all.sh planning OK"
 python3 "$HERE/test_score.py"
+bash "$HERE/prs/test-run.sh"

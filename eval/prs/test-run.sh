@@ -2,6 +2,7 @@
 # Offline regression: every requested case/rep gets exactly one truthful row.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "${TMPDIR:-$HOME/.local/tmp}"
 scratch="$(mktemp -d "${TMPDIR:-$HOME/.local/tmp}/revera-prs-test.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/eval/prs/configs" "$scratch/bin"

@@ -585,26 +585,42 @@ vera: {}
 
     #[tokio::test]
     async fn run_budget_skips_lanes() {
-        let c = cfg();
+        let mut c = cfg();
         let ledger = LedgerHandle::new();
-        // exhaust the budget before lanes start
-        for _ in 0..2 {
-            ledger.record(LedgerEntry {
-                route: "r".into(),
-                model: "m".into(),
-                ..Default::default()
-            });
-        }
-        // emulate the lane gate used by delegated_candidates:
-        // `ledger.request_count() >= max_req` -> lane skipped
-        let mut c = c;
+        // The planner's one request exhausts the remaining budget before workers start.
+        ledger.record(LedgerEntry {
+            route: "r".into(),
+            model: "m".into(),
+            ..Default::default()
+        });
         c.budget.run_max_requests = 2;
-        let max_req = c.budget.run_max_requests;
-        let skipped = (0..3).filter(|_| ledger.request_count() >= max_req).count();
-        assert_eq!(skipped, 3);
-
-        // full-path check: prepared + skip -> partial_reasons gains the note
-        let repo = std::env::temp_dir();
+        let data = tempfile::tempdir().unwrap();
+        let repo = data.path().to_path_buf();
+        let script = serde_json::json!({"roles": {"lead": [
+            [{"tool_calls": [{"name": "submit_plan", "arguments": {"questions":
+                (0..3).map(|i| serde_json::json!({"id": format!("q{i}"), "question": "Check behavior"})).collect::<Vec<_>>()
+            }}]}],
+            [{"tool_calls": [{"name": "submit_findings", "arguments": {"findings": [], "coverage": "Workers skipped"}}]}]
+        ]}});
+        crate::fsutil::write_atomic_in(
+            data.path(),
+            "script.json",
+            &serde_json::to_vec(&script).unwrap(),
+        )
+        .unwrap();
+        c.models.investigator.protocol = crate::config::Protocol::Scripted;
+        c.models.investigator.script = Some(repo.join("script.json"));
+        c.models.workers = None;
+        let req = ReviewRequest {
+            repo: repo.clone(),
+            base: "b".into(),
+            head: Some("h".into()),
+            title: None,
+            body: String::new(),
+            strategy_override: None,
+            force: false,
+            repository_public: false,
+        };
         let vera = Arc::new(VeraClient {
             exe: "true".into(),
             repo_root: repo.clone(),
@@ -648,14 +664,24 @@ vera: {}
             timing: crate::timing::Recorder::default(),
             intent: String::new(),
         };
-        if skipped > 0 {
-            prep.partial_reasons
-                .push(format!("run budget exhausted before {skipped} lanes"));
-        }
+        let findings = delegated_candidates(&c, &req, &mut prep).await.unwrap();
+        assert!(findings.is_empty());
+        assert_eq!(
+            prep.partial_reasons,
+            ["investigation deadline or run budget exhausted before 3 lanes"]
+        );
+        let timing = prep.timing.finish(prep.wall);
+        let lanes: Vec<_> = timing.phases.iter().filter(|p| p.phase == "lane").collect();
+        assert_eq!(lanes.len(), 3);
+        assert!(lanes.iter().all(|p| p.outcome == "skipped"));
         assert!(
-            prep.partial_reasons
+            ledger
+                .0
+                .lock()
+                .unwrap()
+                .entries
                 .iter()
-                .any(|r| r == "run budget exhausted before 3 lanes")
+                .all(|e| e.role != "workers")
         );
     }
 }

@@ -2,7 +2,7 @@
 
 ## v0.11.0
 
-- Provider clients remember successful compatibility retries instead of sending rejected parameters again on every model turn.
+- Provider clients remember successful temperature, token-limit field and cache-hint compatibility retries; reasoning fallbacks stay per request.
 - Reviews follow a built-in **reviewer playbook**: a method (work out the
   intent, list every changed behavior, check what removed lines guaranteed
   and which inputs break each changed line, check each behavior against the
