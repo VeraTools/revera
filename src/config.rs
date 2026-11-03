@@ -330,6 +330,14 @@ pub struct VeraEndpoint {
     /// Vera's default (`false`).
     #[serde(default)]
     pub return_documents: Option<ReturnDocuments>,
+    /// Reranker only: candidates to rerank (Revera default
+    /// [`DEFAULT_RERANK_CANDIDATES`]).
+    #[serde(default)]
+    pub candidates: Option<u32>,
+    /// Reranker only: characters per document; 0 is unlimited (Revera default
+    /// [`DEFAULT_RERANK_MAX_DOC_CHARS`]).
+    #[serde(default)]
+    pub max_doc_chars: Option<u32>,
     /// Embedding only: concurrent embedding requests (Revera default
     /// [`DEFAULT_EMBED_MAX_CONCURRENT`]).
     #[serde(default)]
@@ -344,7 +352,8 @@ pub struct VeraEndpoint {
     pub timeout_secs: Option<u32>,
 }
 
-// Vera 2's defaults (two 128-input requests at a time, 120 s timeout).
+// Mirror Vera's defaults for embedding throughput (two 128-input requests at
+// a time, 120 s timeout) and reranker budgets.
 // Revera sets them explicitly because `vera config set` cannot clear a
 // numeric key, so the persistent Vera home would otherwise keep whatever an
 // earlier run or Revera release stored; older Vera (8 / 16 / 60 s) timed out
@@ -352,6 +361,8 @@ pub struct VeraEndpoint {
 pub const DEFAULT_EMBED_MAX_CONCURRENT: u32 = 8;
 pub const DEFAULT_EMBED_MAX_IN_FLIGHT: u32 = 256;
 pub const DEFAULT_EMBED_TIMEOUT_SECS: u32 = 120;
+pub const DEFAULT_RERANK_CANDIDATES: u32 = 20;
+pub const DEFAULT_RERANK_MAX_DOC_CHARS: u32 = 2000;
 
 impl VeraEndpoint {
     /// `vera config set` pairs tuning embedding throughput. Not part of the
@@ -816,6 +827,8 @@ impl VeraConfig {
                 "protocol": r.protocol.map(|p| p.as_str()),
                 "endpoint_path": r.endpoint_path,
                 "return_documents": crate::config::ReturnDocuments::config_value(r.return_documents),
+                "candidates": r.candidates.unwrap_or(DEFAULT_RERANK_CANDIDATES),
+                "max_doc_chars": r.max_doc_chars.unwrap_or(DEFAULT_RERANK_MAX_DOC_CHARS),
             }),
         }
     }
@@ -1350,11 +1363,18 @@ impl Config {
             if let Some(e) = &self.vera.embedding
                 && (e.protocol.is_some()
                     || e.endpoint_path.is_some()
-                    || e.return_documents.is_some())
+                    || e.return_documents.is_some()
+                    || e.candidates.is_some()
+                    || e.max_doc_chars.is_some())
             {
                 bail!(
-                    "vera.embedding: protocol/endpoint_path/return_documents apply to vera.reranker only"
+                    "vera.embedding: protocol/endpoint_path/return_documents/candidates/max_doc_chars apply to vera.reranker only"
                 );
+            }
+            if let Some(r) = &self.vera.reranker
+                && r.candidates == Some(0)
+            {
+                bail!("vera.reranker.candidates must be a positive integer");
             }
             if let Some(r) = &self.vera.reranker
                 && (r.max_concurrent_requests.is_some()

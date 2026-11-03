@@ -2,8 +2,8 @@
 //! Skipped (with a note) when no `vera` executable is available; set
 //! `REVERA_TEST_VERA` to an executable path to force a specific binary.
 
-use revera::config::Config;
-use revera::vera::{RerankState, VeraClient};
+use revera::config::{Config, VeraBackend};
+use revera::vera::{RerankSettings, RerankState, VeraClient};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
@@ -133,6 +133,52 @@ async fn requests_to(server: &MockServer, p: &str) -> Vec<Request> {
         .collect()
 }
 
+#[test]
+fn reranker_config_pairs_include_effective_budgets_only_when_configured() {
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    assert_eq!(
+        RerankSettings::config_pairs(None),
+        vec![
+            ("retrieval.reranking_enabled", "false".into()),
+            ("retrieval.reranker_protocol", "null".into()),
+            ("retrieval.reranker_endpoint_path", "null".into()),
+            ("retrieval.reranker_return_documents", "false".into()),
+        ]
+    );
+    for backend in [VeraBackend::Api, VeraBackend::Local] {
+        for (extra, candidates, max_doc_chars) in [
+            ("protocol: generic", "20", "2000"),
+            (
+                "protocol: generic, candidates: 7, max_doc_chars: 0",
+                "7",
+                "0",
+            ),
+        ] {
+            let mut cfg = config_with(
+                "http://127.0.0.1:9",
+                home.path(),
+                Path::new("vera"),
+                Some(extra),
+            );
+            cfg.vera.backend = backend;
+            let client = VeraClient::from_config(&cfg.vera, repo.path()).unwrap();
+            assert_eq!(
+                RerankSettings::config_pairs(client.rerank.as_ref()),
+                vec![
+                    ("retrieval.reranking_enabled", "true".into()),
+                    ("retrieval.reranker_protocol", "generic".into()),
+                    ("retrieval.reranker_endpoint_path", "null".into()),
+                    ("retrieval.reranker_return_documents", "false".into()),
+                    ("retrieval.rerank_candidates", candidates.into()),
+                    ("retrieval.reranker_max_doc_chars", max_doc_chars.into()),
+                ],
+                "{backend:?}: {extra}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn cli_index_builds_then_incrementally_updates() {
     let Some((server, exe)) = setup().await else {
@@ -216,6 +262,8 @@ async fn reranker_is_activated_in_isolated_home_and_invoked() {
     assert_eq!(retrieval["reranking_enabled"], true);
     assert_eq!(retrieval["reranker_protocol"], "generic");
     assert_eq!(retrieval["reranker_endpoint_path"], "/rerank");
+    assert_eq!(retrieval["rerank_candidates"], 20);
+    assert_eq!(retrieval["reranker_max_doc_chars"], 2000);
     assert!(!stored.contains(EMBED_KEY) && !stored.contains(RERANK_KEY));
 
     vera.ensure_index().await.unwrap();
@@ -618,6 +666,36 @@ async fn embedding_throughput_reaches_the_vera_home() {
     assert_eq!(emb["max_concurrent_requests"], 8, "{stored}");
     assert_eq!(emb["max_in_flight_inputs"], 256, "{stored}");
     assert_eq!(emb["timeout_secs"], 120, "{stored}");
+}
+
+#[tokio::test]
+async fn reranker_budgets_replace_persistent_values_and_reset_to_defaults() {
+    let Some((server, exe)) = setup().await else {
+        return;
+    };
+    let repo = fixture_repo();
+    let home = tempfile::tempdir().unwrap();
+    for (extra, candidates, max_doc_chars) in [
+        ("protocol: generic, candidates: 7, max_doc_chars: 0", 7, 0),
+        ("protocol: generic", 20, 2000),
+    ] {
+        let vera = VeraClient::from_config(
+            &config_with(&server.uri(), home.path(), &exe, Some(extra)).vera,
+            repo.path(),
+        )
+        .unwrap();
+        assert_eq!(vera.configure().await.unwrap(), RerankState::Enabled);
+        let stored: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+        )
+        .unwrap();
+        let retrieval = &stored["core_config"]["retrieval"];
+        assert_eq!(retrieval["rerank_candidates"], candidates, "{stored}");
+        assert_eq!(
+            retrieval["reranker_max_doc_chars"], max_doc_chars,
+            "{stored}"
+        );
+    }
 }
 
 fn commit_all(dir: &Path, msg: &str) {

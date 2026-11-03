@@ -3,6 +3,7 @@
 ## Unreleased
 
 - A provider request that times out while its response body is still arriving (for example behind a proxy that sends headers and keepalive bytes early) now counts as a timeout: it is retried and falls back with reason `timeout`, instead of failing as a malformed empty response.
+- `vera.reranker` accepts `candidates` (default `20`) and `max_doc_chars` (default `2000`, `0` for unlimited), matching Vera's defaults. Revera applies both explicitly so its persistent Vera home cannot retain older budgets; changes affect the review fingerprint but keep the index cache warm.
 
 ## v0.12.0
 
