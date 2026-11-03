@@ -6,19 +6,25 @@ use super::{ChatMessage, LedgerHandle, ModelClient, ProviderError, Usage};
 use crate::config::{ModelRoute, Protocol, VeraEndpoint};
 use serde_json::{Value, json};
 
-fn transport(role: &str, requests: u32, retries: u32) -> Result<HttpTransport, ProviderError> {
-    let mut transport = HttpTransport::new(LedgerHandle::new(), requests, retries, role)?;
+fn transport(
+    role: &str,
+    requests: u32,
+    retries: u32,
+    timeout_secs: u64,
+) -> Result<HttpTransport, ProviderError> {
+    let mut transport =
+        HttpTransport::new(LedgerHandle::new(), requests, retries, role, timeout_secs)?;
     transport.http = crate::tls::with_bundled_roots(reqwest::Client::builder())
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("revera/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .map_err(|error| ProviderError::Other(error.to_string()))?;
     Ok(transport)
 }
 
 pub async fn model(route: ModelRoute, key: String) -> Result<(), ProviderError> {
-    let transport = transport("connectivity", 3, 1)?;
+    let transport = transport("connectivity", 3, 1, route.timeout_secs)?;
     let client: Box<dyn ModelClient> = match route.protocol {
         Protocol::OpenaiChat => Box::new(HttpClient {
             adapter: super::openai_chat::OpenAiChatAdapter::with_api_key(route, key),
@@ -99,16 +105,21 @@ impl ProtocolAdapter for Embedding {
 
 pub async fn embedding(endpoint: VeraEndpoint, key: String) -> Result<(), ProviderError> {
     crate::redact::register(&key);
+    let timeout_secs = u64::from(
+        endpoint
+            .timeout_secs
+            .unwrap_or(crate::config::DEFAULT_EMBED_TIMEOUT_SECS),
+    );
     let client = HttpClient {
         adapter: Embedding { endpoint, key },
-        transport: transport("embedding-connectivity", 3, 1)?,
+        transport: transport("embedding-connectivity", 3, 1, timeout_secs)?,
     };
     client.complete(&[], &[]).await?;
     Ok(())
 }
 
 pub async fn models(route: &ModelRoute, key: &str) -> Result<Vec<String>, ProviderError> {
-    let transport = transport("model-list", 1, 0)?;
+    let transport = transport("model-list", 1, 0, route.timeout_secs)?;
     let base = route
         .base_url
         .as_deref()

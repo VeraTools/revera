@@ -9,8 +9,8 @@ interface ReviewBudget {
   max_diff_bytes: number;
   max_findings: number;
 }
-// Mirrors the server's saturating u32 arithmetic (seconds are capped at 3000 anyway).
-const twice = (value: number) => Math.min(0xffffffff, value * 2);
+// Mirrors ProfileOverride::builtin, including the saturating request multiplier.
+const triple = (value: number) => Math.min(0xffffffff, value * 3);
 export function quickBudget(b: Budget): Budget {
   return {
     ...b,
@@ -22,10 +22,10 @@ export function quickBudget(b: Budget): Budget {
 export function deepBudget(b: Budget, review: ReviewBudget) {
   return {
     ...b,
-    agent_max_tool_calls: twice(b.agent_max_tool_calls),
-    agent_max_seconds: Math.max(b.agent_max_seconds, Math.min(twice(b.agent_max_seconds), 3000)),
-    run_max_seconds: Math.max(b.run_max_seconds, Math.min(twice(b.run_max_seconds), 3000)),
-    run_max_requests: twice(b.run_max_requests),
+    agent_max_tool_calls: b.agent_max_tool_calls,
+    agent_max_seconds: b.agent_max_seconds,
+    run_max_seconds: Math.min(b.run_max_seconds * 2, 3000),
+    run_max_requests: triple(b.run_max_requests),
     review: {
       ...review,
       max_diff_bytes: Math.max(review.max_diff_bytes, 400000),

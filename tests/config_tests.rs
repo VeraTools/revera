@@ -241,6 +241,125 @@ models:
 }
 
 #[test]
+fn builtin_defaults_allow_longer_reviews_without_changing_other_limits() {
+    let c = Config::parse(
+        "models: {investigator: {protocol: scripted, script: unused.json, model: m}}",
+        "defaults",
+    )
+    .unwrap();
+    assert_eq!(c.budget.agent_max_tool_calls, 50);
+    assert_eq!(c.budget.agent_max_seconds, 900);
+    assert_eq!(c.budget.run_max_requests, 300);
+    assert_eq!(c.budget.run_max_seconds, 1800);
+    assert_eq!(c.models.investigator.max_output_tokens, 16000);
+    assert_eq!(c.models.investigator.timeout_secs, 300);
+    assert_eq!(c.effective_validator().timeout_secs, 300);
+    assert_eq!(c.panel.scout_max_tool_calls, 30);
+    assert_eq!(c.delegated.worker_max_tool_calls, 24);
+    assert_eq!(c.delegated.worker_max_seconds, 360);
+    assert_eq!(c.review.max_diff_bytes, 200000);
+    assert_eq!(c.review.max_findings, 10);
+    assert_eq!(c.budget.retries, 3);
+    assert_eq!(c.review.concurrency, 4);
+    assert_eq!(c.review.max_tool_output_bytes, 12000);
+
+    let mut previous = c.clone();
+    previous.budget.agent_max_tool_calls = 25;
+    previous.budget.agent_max_seconds = 300;
+    previous.budget.run_max_requests = 120;
+    previous.budget.run_max_seconds = 900;
+    assert_ne!(
+        c.review_fingerprint("baseline"),
+        previous.review_fingerprint("baseline")
+    );
+    assert_eq!(c.vera.index_key(), previous.vera.index_key());
+}
+
+#[test]
+fn timeout_range_is_checked_for_primary_and_fallback_routes() {
+    let route = |seconds: u64| {
+        format!("{{protocol: scripted, script: unused.json, model: m, timeout_secs: {seconds}}}")
+    };
+    for seconds in [10, 300, 3600] {
+        let yaml = format!("models: {{investigator: {}}}", route(seconds));
+        assert_eq!(
+            Config::parse(&yaml, "timeout")
+                .unwrap()
+                .models
+                .investigator
+                .timeout_secs,
+            seconds
+        );
+    }
+    for seconds in [0, 1, 9, 3601, u64::MAX] {
+        for (yaml, name) in [
+            (
+                format!("models: {{investigator: {}}}", route(seconds)),
+                "investigator",
+            ),
+            (
+                format!(
+                    "models: {{investigator: {{protocol: scripted, script: unused.json, model: m, fallback: [{}]}}}}",
+                    route(seconds)
+                ),
+                "investigator.fallback[0]",
+            ),
+            (
+                format!(
+                    "models: {{investigator: {}, validator: {}}}",
+                    route(300),
+                    route(seconds)
+                ),
+                "validator",
+            ),
+        ] {
+            let error = Config::parse(&yaml, "timeout").unwrap_err();
+            assert!(
+                error.to_string().contains(&format!(
+                    "models.{name}: timeout_secs must be between 10 and 3600 seconds"
+                )),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inherited_validator_keeps_each_routes_timeout_and_review_identity() {
+    let c = Config::parse(
+        r#"
+models:
+  investigator:
+    protocol: scripted
+    script: unused.json
+    model: primary
+    timeout_secs: 600
+    fallback:
+      - {protocol: scripted, script: unused.json, model: backup, timeout_secs: 900}
+      - {protocol: scripted, script: unused.json, model: default-backup}
+"#,
+        "timeouts",
+    )
+    .unwrap();
+    assert!(c.validator_inherited());
+    assert_eq!(c.effective_validator().timeout_secs, 600);
+    assert_eq!(c.effective_validator().fallback[0].timeout_secs, 900);
+    assert_eq!(c.effective_validator().fallback[1].timeout_secs, 300);
+    let fingerprint = c.review_fingerprint("baseline");
+    for fallback in [false, true] {
+        let mut changed = c.clone();
+        let route = if fallback {
+            &mut changed.models.investigator.fallback[0]
+        } else {
+            &mut changed.models.investigator
+        };
+        route.timeout_secs += 1;
+        assert_ne!(fingerprint, changed.review_fingerprint("baseline"));
+        assert_eq!(c.vera.index_key(), changed.vera.index_key());
+    }
+}
+
+#[test]
 fn explicit_validator_overrides_inheritance() {
     let yaml = r#"
 models:

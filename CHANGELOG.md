@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.12.0
+
+- Model routes accept `timeout_secs` for provider requests, still bounded by agent and run deadlines. The default rises from the previous fixed 120 seconds to 300 seconds; fix agents and fallbacks keep their configured values, and the dashboard embedding test uses `vera.embedding.timeout_secs`. The timeout is part of the review fingerprint.
+- Raise built-in budgets to 50 tool calls / 900 seconds per agent and 300 requests / 1800 seconds per run, output tokens to 16000, scout calls to 30, and worker limits to 24 calls / 360 seconds. The budget change alters the review fingerprint, so the first review after upgrading does not reuse an earlier identical-head review.
+
 ## v0.11.0
 
 - Provider clients remember successful temperature, token-limit field and cache-hint compatibility retries; reasoning fallbacks stay per request.

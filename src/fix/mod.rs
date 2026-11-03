@@ -453,7 +453,7 @@ fn route_json(route: &ModelRoute) -> Value {
         crate::config::ReasoningField::Openai => "openai",
         crate::config::ReasoningField::Openrouter => "openrouter",
     };
-    let mut v = json!({"protocol":protocol,"base_url":route.base_url,"api_key_env":route.api_key_env,"model":route.model,"max_output_tokens":route.max_output_tokens,"cache":route.cache,"temperature":route.temperature,"extra_headers":route.extra_headers,"session_header":route.session_header,"script":route.script,"reasoning":{"effort":route.reasoning.effort().as_str(),"budget_tokens":route.reasoning.budget_tokens(),"field":field}});
+    let mut v = json!({"protocol":protocol,"base_url":route.base_url,"api_key_env":route.api_key_env,"model":route.model,"max_output_tokens":route.max_output_tokens,"timeout_secs":route.timeout_secs,"cache":route.cache,"temperature":route.temperature,"extra_headers":route.extra_headers,"session_header":route.session_header,"script":route.script,"reasoning":{"effort":route.reasoning.effort().as_str(),"budget_tokens":route.reasoning.budget_tokens(),"field":field}});
     if !route.fallback.is_empty() {
         v["fallback"] = Value::Array(route.fallback.iter().map(route_json).collect());
     }

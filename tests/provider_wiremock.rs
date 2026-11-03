@@ -41,6 +41,7 @@ fn route(url: &str) -> ModelRoute {
         api_key_env: Some("REVERA_TEST_KEY".into()),
         model: "test-model".into(),
         max_output_tokens: 100,
+        timeout_secs: 300,
         cache: false,
         temperature: 0.2,
         extra_headers: HashMap::new(),
@@ -319,6 +320,7 @@ fn route_for(url: &str, proto: Protocol, model: &str) -> ModelRoute {
         api_key_env: Some("REVERA_TEST_KEY".into()),
         model: model.into(),
         max_output_tokens: 100,
+        timeout_secs: 300,
         cache: false,
         temperature: 0.2,
         extra_headers: HashMap::new(),
@@ -354,6 +356,74 @@ fn routed_client(
         "submit_findings",
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn configured_timeout_reaches_every_http_protocol() {
+    for protocol in [
+        Protocol::OpenaiChat,
+        Protocol::OpenaiResponses,
+        Protocol::Anthropic,
+        Protocol::Gemini,
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut route = route_for(&server.uri(), protocol, "test-model");
+        // Direct construction permits a fast test below the YAML minimum of 10 seconds.
+        route.timeout_secs = 1;
+        let ledger = LedgerHandle::new();
+        let client = routed_client(&route, &ledger, "timeout-test", 1, 0);
+        let error = client
+            .complete(&[ChatMessage::user("hi")], &[])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.fallback_reason(),
+            Some(revera::provider::FallbackReason::Timeout)
+        );
+        assert_eq!(ledger.request_count(), 1);
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn fallback_uses_its_own_request_timeout() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    for server in [&primary, &backup] {
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(
+                        json!({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+                    ),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    let mut route = fallback_route(&primary, &backup);
+    route.timeout_secs = 1;
+    route.fallback[0].timeout_secs = 5;
+    let ledger = LedgerHandle::new();
+    let client = routed_client(&route, &ledger, "timeout-fallback", 2, 0);
+    let completion = client
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap();
+    assert_eq!(completion.model, "backup");
+    assert_eq!(completion.message.content.as_deref(), Some("ok"));
+    assert_eq!(ledger.request_count(), 2);
+    let events = ledger.0.lock().unwrap().fallback_events.clone();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].reason, revera::provider::FallbackReason::Timeout);
+    primary.verify().await;
+    backup.verify().await;
 }
 
 #[tokio::test]
@@ -1360,7 +1430,7 @@ async fn openai_responses_request_shape() {
             "m-resp",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     let (msgs, tools) = convo();
     let r = c.complete(&msgs, &tools).await.unwrap();
@@ -1390,7 +1460,7 @@ async fn openai_responses_parses_function_call() {
             "m",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.tool_calls[0].id, "fc_9");
@@ -1426,7 +1496,7 @@ async fn openai_responses_retries_429() {
             "m",
         ))
         .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.content.as_deref(), Some("ok"));
@@ -1483,7 +1553,7 @@ async fn anthropic_request_shape_and_tool_result_merge() {
             "claude-x",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     let (.., tools) = convo();
     let r = c.complete(&msgs, &tools).await.unwrap();
@@ -1513,7 +1583,7 @@ async fn anthropic_parses_tool_use() {
             "claude-x",
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.tool_calls[0].name, "vera_grep");
@@ -1541,7 +1611,7 @@ async fn anthropic_retries_429() {
     let c = HttpClient {
         adapter: AnthropicAdapter::from_route(route_for(&server.uri(), Protocol::Anthropic, "m"))
             .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(ledger.request_count(), 2);
@@ -1584,7 +1654,7 @@ async fn gemini_request_shape_and_schema_strip() {
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(route_for(&server.uri(), Protocol::Gemini, "gem-x"))
             .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     // schema includes a key Gemini rejects; stripping must remove it
     let (mut msgs, mut tools) = convo();
@@ -1614,7 +1684,7 @@ async fn gemini_parses_function_call_synth_id() {
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(route_for(&server.uri(), Protocol::Gemini, "gem-x"))
             .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     let r = c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(r.message.tool_calls[0].id, "vera_references-0");
@@ -1642,7 +1712,7 @@ async fn gemini_retries_429() {
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(route_for(&server.uri(), Protocol::Gemini, "gem-x"))
             .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     assert_eq!(ledger.request_count(), 2);
@@ -2063,7 +2133,7 @@ fn resp_adapter(url: &str, r: Reasoning) -> HttpClient<OpenAiResponsesAdapter> {
             r,
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     }
 }
 
@@ -2112,7 +2182,7 @@ async fn responses_max_passes_through_on_gpt5() {
             spec(ReasoningEffort::Max, None, ReasoningField::Auto),
         ))
         .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -2193,7 +2263,7 @@ async fn responses_reasoning_400_retries_without() {
             spec(ReasoningEffort::High, None, ReasoningField::Auto),
         ))
         .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -2262,7 +2332,7 @@ fn anth_adapter(url: &str, r: Reasoning, max_out: u32) -> HttpClient<AnthropicAd
     rt.max_output_tokens = max_out;
     HttpClient {
         adapter: AnthropicAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     }
 }
 
@@ -2673,7 +2743,7 @@ async fn anthropic_thinking_400_retries_without() {
     rt.max_output_tokens = 20000;
     let c = HttpClient {
         adapter: AnthropicAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -2741,7 +2811,7 @@ fn gem_adapter(url: &str, model: &str, r: Reasoning) -> HttpClient<GeminiAdapter
     HttpClient {
         adapter: GeminiAdapter::from_route(route_reasoning(url, Protocol::Gemini, model, r))
             .unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     }
 }
 
@@ -2771,7 +2841,7 @@ async fn gemini_thinking_budget_emitted() {
         rt.max_output_tokens = 20000;
         let c = HttpClient {
             adapter: GeminiAdapter::from_route(rt).unwrap(),
-            transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+            transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
         };
         c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     }
@@ -2874,7 +2944,7 @@ async fn gemini_thinking_400_retries_without() {
     rt.max_output_tokens = 20000;
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -2963,7 +3033,7 @@ async fn gemini_thinking_budget_reconciles_max_output() {
     rt.max_output_tokens = 4000;
     let c = HttpClient {
         adapter: GeminiAdapter::from_route(rt).unwrap(),
-        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(LedgerHandle::new(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -3176,7 +3246,7 @@ async fn ledger_entry_records_reasoning_tokens() {
             spec(ReasoningEffort::High, None, ReasoningField::Auto),
         ))
         .unwrap(),
-        transport: HttpTransport::new(ledger.clone(), 10, 3, "test").unwrap(),
+        transport: HttpTransport::new(ledger.clone(), 10, 3, "test", 300).unwrap(),
     };
     c.complete(&[ChatMessage::user("x")], &[]).await.unwrap();
     server.verify().await;
@@ -3228,11 +3298,11 @@ fn cache_client(
         Protocol::Anthropic => Box::new(HttpClient {
             adapter: AnthropicAdapter::from_route(cache_route_for(url, proto, model, cache))
                 .unwrap(),
-            transport: HttpTransport::new(ledger, 10, 0, "cache-test").unwrap(),
+            transport: HttpTransport::new(ledger, 10, 0, "cache-test", 300).unwrap(),
         }),
         Protocol::Gemini => Box::new(HttpClient {
             adapter: GeminiAdapter::from_route(cache_route_for(url, proto, model, cache)).unwrap(),
-            transport: HttpTransport::new(ledger, 10, 0, "cache-test").unwrap(),
+            transport: HttpTransport::new(ledger, 10, 0, "cache-test", 300).unwrap(),
         }),
         Protocol::Scripted => unreachable!(),
     }

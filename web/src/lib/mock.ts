@@ -352,19 +352,22 @@ models:
     api_key_env: OPENAI_API_KEY
     model: model-large
     max_output_tokens: 16000
+    timeout_secs: 300
     reasoning: medium
     fallback:
       - protocol: anthropic
         base_url: https://backup.example.com
         api_key_env: ANTHROPIC_API_KEY
         model: model-small
+        timeout_secs: 300
   # Re-checks each finding in a fresh context.
   validator:
     protocol: anthropic
     base_url: https://backup.example.com
     api_key_env: ANTHROPIC_API_KEY
     model: model-small
-    max_output_tokens: 8000
+    max_output_tokens: 16000
+    timeout_secs: 300
     reasoning: medium
 
 review:
@@ -374,10 +377,10 @@ review:
   publish: comment
 
 budget:
-  agent_max_tool_calls: 25
-  agent_max_seconds: 300
-  run_max_requests: 120
-  run_max_seconds: 900
+  agent_max_tool_calls: 50
+  agent_max_seconds: 900
+  run_max_requests: 300
+  run_max_seconds: 1800
   retries: 3
 
 vera:

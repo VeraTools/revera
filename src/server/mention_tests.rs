@@ -969,7 +969,7 @@ fn builtin_profiles_use_deep_panel_and_preserve_validation_and_index_identity() 
             quick.budget.agent_max_seconds,
             quick.budget.run_max_seconds
         ),
-        (12, 150, 450)
+        (25, 450, 900)
     );
     assert_eq!(
         (
@@ -977,15 +977,15 @@ fn builtin_profiles_use_deep_panel_and_preserve_validation_and_index_identity() 
             deep.budget.agent_max_seconds,
             deep.budget.run_max_seconds
         ),
-        (25, 300, 1800)
+        (50, 900, 3000)
     );
     assert_eq!(
         deep.review.max_diff_bytes,
         2 * standard.review.max_diff_bytes
     );
     assert_eq!(deep.review.max_findings, 20);
-    assert_eq!(quick.budget.run_max_requests, 120);
-    assert_eq!(deep.budget.run_max_requests, 360);
+    assert_eq!(quick.budget.run_max_requests, 300);
+    assert_eq!(deep.budget.run_max_requests, 900);
     assert_eq!(quick.review.strategy, standard.review.strategy);
     assert_eq!(deep.review.strategy, crate::config::Strategy::Panel);
     for config in [&quick, &deep] {
@@ -1031,7 +1031,7 @@ fn builtin_profiles_use_deep_panel_and_preserve_validation_and_index_identity() 
     let mut user_quick = crate::config::Config::parse(
         &format!(
             "{CONFIG}profiles:\n  quick:\n    budget: \
-        {{agent_max_tool_calls: 12, agent_max_seconds: 150, run_max_seconds: 450}}\n"
+        {{agent_max_tool_calls: 25, agent_max_seconds: 450, run_max_seconds: 900}}\n"
         ),
         "test",
     )

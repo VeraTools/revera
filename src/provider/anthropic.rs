@@ -75,9 +75,10 @@ impl HttpClient<AnthropicAdapter> {
         retries: u32,
         role: &str,
     ) -> Result<Self, ProviderError> {
+        let timeout_secs = route.timeout_secs;
         Ok(Self {
             adapter: AnthropicAdapter::from_route(route)?,
-            transport: HttpTransport::new(ledger, max_requests, retries, role)?,
+            transport: HttpTransport::new(ledger, max_requests, retries, role, timeout_secs)?,
         })
     }
 }

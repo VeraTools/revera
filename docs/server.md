@@ -842,6 +842,15 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
+### From 0.11.x to 0.12.0
+
+No change is required. Model requests now time out after 300 seconds instead
+of a fixed 120; set `timeout_secs` on a model route to change it. Embedding
+requests keep their 120-second default and `vera.embedding.timeout_secs`.
+Budgets you have not set yourself use the larger built-in defaults. The first
+review after the upgrade does not reuse earlier results, because budgets and
+the timeout are part of the review identity.
+
 ### From 0.10.x to 0.11.0
 
 No change is required. Reviews use the built-in playbook until you edit it on

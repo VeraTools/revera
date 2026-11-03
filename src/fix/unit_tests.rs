@@ -674,6 +674,18 @@ fn inheritance_trust_and_terminal_ids() {
     assert!(validate_request(&r, Stage::Generate).is_err());
 }
 
+#[test]
+fn sandbox_route_keeps_request_timeouts() {
+    let cfg = Config::parse(r#"models: {investigator: {protocol: openai-chat, base_url: "https://api.example.com/v1", api_key_env: MODEL_KEY, model: primary, timeout_secs: 45, fallback: [{protocol: openai-chat, base_url: "https://api.example.com/v1", api_key_env: MODEL_KEY, model: backup, timeout_secs: 1200}]}}"#, "test").unwrap();
+    let yaml = serde_json::to_string(
+        &json!({"models":{"investigator":route_json(&cfg.models.investigator)}}),
+    )
+    .unwrap();
+    let child = Config::parse(&yaml, "child").unwrap();
+    assert_eq!(child.models.investigator.timeout_secs, 45);
+    assert_eq!(child.models.investigator.fallback[0].timeout_secs, 1200);
+}
+
 struct SlowClient;
 
 struct CarriedContextClient;

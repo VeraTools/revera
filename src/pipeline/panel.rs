@@ -313,6 +313,7 @@ mod tests {
             api_key_env: Some("REVERA_TEST_KEY".into()),
             model: model.into(),
             max_output_tokens: 100,
+            timeout_secs: 300,
             cache: false,
             temperature: 0.0,
             extra_headers: HashMap::new(),

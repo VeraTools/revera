@@ -702,7 +702,7 @@ fn deep_profile_and_fingerprint_obey_playbook_and_explicit_focuses() {
     );
     assert_eq!(
         cfg.budget.run_max_seconds,
-        original.budget.run_max_seconds * 2
+        (original.budget.run_max_seconds * 2).min(3000)
     );
     assert_eq!(cfg.review.max_diff_bytes, 400000);
     assert_eq!(cfg.review.max_findings, 20);
