@@ -11,7 +11,7 @@
 # PARALLEL (default 3), REVERA_BIN (default target/debug/revera),
 # EVAL_CACHE (default ~/.cache/revera-eval), EVAL_WORK (default
 # ~/.local/tmp/revera-eval), plus the REVERA_MODEL_* and
-# REVERA_EMBEDDING_* variables the config references.
+# REVERA_EMBEDDING_* and REVERA_RERANKER_* variables the config references.
 # RUN_REAL_DRY_RUN=1 prints the plan and exits.
 set -uo pipefail
 
@@ -58,7 +58,8 @@ fi
 
 missing=()
 for var in REVERA_MODEL_BASE_URL REVERA_MODEL_API_KEY \
-    REVERA_EMBEDDING_BASE_URL REVERA_EMBEDDING_API_KEY; do
+    REVERA_EMBEDDING_BASE_URL REVERA_EMBEDDING_API_KEY \
+    REVERA_RERANKER_BASE_URL REVERA_RERANKER_API_KEY; do
     [ -n "${!var:-}" ] || missing+=("$var")
 done
 if [ ${#missing[@]} -gt 0 ]; then

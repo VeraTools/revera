@@ -24,6 +24,8 @@ jobs:
         env:
           REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+          REVERA_RERANKER_BASE_URL: ${{ secrets.REVERA_RERANKER_BASE_URL }}
+          REVERA_RERANKER_API_KEY: ${{ secrets.REVERA_RERANKER_API_KEY }}
           REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
           REVERA_FALLBACK_BASE_URL: ${{ secrets.REVERA_FALLBACK_BASE_URL }}
@@ -32,6 +34,8 @@ jobs:
           missing=()
           [ -n "$REVERA_EMBEDDING_BASE_URL" ] || missing+=(REVERA_EMBEDDING_BASE_URL)
           [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
+          [ -n "$REVERA_RERANKER_BASE_URL" ] || missing+=(REVERA_RERANKER_BASE_URL)
+          [ -n "$REVERA_RERANKER_API_KEY" ] || missing+=(REVERA_RERANKER_API_KEY)
           [ -n "$REVERA_MODEL_BASE_URL" ] || missing+=(REVERA_MODEL_BASE_URL)
           [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
           [ -n "$REVERA_FALLBACK_BASE_URL" ] || missing+=(REVERA_FALLBACK_BASE_URL)
@@ -89,6 +93,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
           REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+          REVERA_RERANKER_BASE_URL: ${{ secrets.REVERA_RERANKER_BASE_URL }}
+          REVERA_RERANKER_API_KEY: ${{ secrets.REVERA_RERANKER_API_KEY }}
           REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
           REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
           REVERA_FALLBACK_BASE_URL: ${{ secrets.REVERA_FALLBACK_BASE_URL }}

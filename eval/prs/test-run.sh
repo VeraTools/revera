@@ -45,6 +45,7 @@ chmod +x "$scratch/bin/git" "$scratch/bin/revera"
 PATH="$scratch/bin:$PATH" REVERA_BIN="$scratch/bin/revera" \
     REVERA_MODEL_BASE_URL=fixture REVERA_MODEL_API_KEY=fixture \
     REVERA_EMBEDDING_BASE_URL=fixture REVERA_EMBEDDING_API_KEY=fixture \
+    REVERA_RERANKER_BASE_URL=fixture REVERA_RERANKER_API_KEY=fixture \
     EVAL_CACHE="$scratch/cache" EVAL_WORK="$scratch/work" REPS=2 PARALLEL=3 \
     bash "$scratch/eval/prs/run.sh" server > "$scratch/run.log" 2>&1
 python3 - "$scratch/eval/prs/results.jsonl" <<'PY'
