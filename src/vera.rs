@@ -1,4 +1,6 @@
-use crate::config::{VeraBackend, VeraConfig};
+use crate::config::{
+    DEFAULT_RERANK_CANDIDATES, DEFAULT_RERANK_MAX_DOC_CHARS, VeraBackend, VeraConfig,
+};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,6 +42,8 @@ pub struct RerankSettings {
     pub protocol: Option<&'static str>,
     pub endpoint_path: Option<String>,
     pub return_documents: Option<crate::config::ReturnDocuments>,
+    pub candidates: u32,
+    pub max_doc_chars: u32,
 }
 
 impl RerankSettings {
@@ -66,6 +70,13 @@ impl RerankSettings {
             "retrieval.reranker_return_documents",
             crate::config::ReturnDocuments::config_value(docs).to_string(),
         ));
+        if let Some(r) = this {
+            v.push(("retrieval.rerank_candidates", r.candidates.to_string()));
+            v.push((
+                "retrieval.reranker_max_doc_chars",
+                r.max_doc_chars.to_string(),
+            ));
+        }
         v
     }
 }
@@ -187,6 +198,8 @@ impl VeraClient {
                     protocol: r.protocol.map(|p| p.as_str()),
                     endpoint_path: r.endpoint_path.clone(),
                     return_documents: r.return_documents,
+                    candidates: r.candidates.unwrap_or(DEFAULT_RERANK_CANDIDATES),
+                    max_doc_chars: r.max_doc_chars.unwrap_or(DEFAULT_RERANK_MAX_DOC_CHARS),
                 })
             }
             None => None,

@@ -842,6 +842,15 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
+### From 0.12.0 to 0.12.1
+
+No change is required. Reranking now sends 20 candidates of up to 2000
+characters each instead of 50 of up to 4800, which uses about a third of the
+reranker tokens. Set `vera.reranker.candidates` and `vera.reranker.max_doc_chars`
+to change it. The first review after the upgrade does not reuse earlier
+results, because the reranker budget is part of the review identity; the Vera
+index cache stays warm.
+
 ### From 0.11.x to 0.12.0
 
 No change is required. Model requests now time out after 300 seconds instead

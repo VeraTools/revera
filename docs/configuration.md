@@ -275,7 +275,7 @@ key or index is needed. Present: enabled unless `enabled: false`.
 | `version` | — | expected Vera version; mismatch is reported by `doctor` |
 | `backend` | `local` | `local` (on-device embeddings) or `api` |
 | `embedding` | — | `api` backend: `{base_url, model, api_key_env, max_concurrent_requests?, max_in_flight_inputs?, timeout_secs?}` |
-| `reranker` | — | optional `{base_url, model, api_key_env, protocol?, endpoint_path?, return_documents?}` |
+| `reranker` | — | optional `{base_url, model, api_key_env, protocol?, endpoint_path?, return_documents?, candidates?, max_doc_chars?}` |
 | `exclude` | `[]` | glob patterns excluded from indexing and lexical tools |
 | `home` | see below | Revera-owned Vera home (settings and local models) |
 
@@ -284,6 +284,9 @@ Reranker options: `protocol` is `generic` (`/rerank`, `top_n`) or `voyage`
 joined onto `base_url` (default `/rerank`). `return_documents` is `true` or
 `false` (sent explicitly; default `false`) or `omit` (field left out for
 providers that reject it). These options are rejected on `embedding`.
+`candidates` (at least `1`, default `20`) and `max_doc_chars` (`0` is unlimited,
+default `2000`) apply only to reranking; both defaults match Vera 2.3.1's, and
+Revera sets them on every run (Vera 1.3.0 or later).
 
 Embedding options (`api` backend only; rejected on `reranker`):
 `max_concurrent_requests` (default `8`), `max_in_flight_inputs` (default

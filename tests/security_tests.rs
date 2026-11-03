@@ -151,6 +151,76 @@ fn with_embedding_extra(extra: &str) -> Config {
 }
 
 #[test]
+fn reranker_budget_settings_are_reranker_only_and_candidates_are_positive() {
+    for extra in ["candidates: 20", "max_doc_chars: 0"] {
+        let error = with_embedding_extra(extra)
+            .check_trust(false)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "vera.embedding: protocol/endpoint_path/return_documents/candidates/max_doc_chars apply to vera.reranker only",
+            "{extra}"
+        );
+    }
+    let reranker = |extra: &str| {
+        format!(
+            "  reranker: {{base_url: https://api.example.com/v1, model: r, api_key_env: K_RR, {extra}}}\n"
+        )
+    };
+    assert_eq!(
+        cfg(&reranker("candidates: 0"))
+            .check_trust(false)
+            .unwrap_err()
+            .to_string(),
+        "vera.reranker.candidates must be a positive integer"
+    );
+    cfg(&reranker("candidates: 1, max_doc_chars: 0"))
+        .check_trust(false)
+        .unwrap();
+    for extra in [
+        "candidates: -1",
+        "max_doc_chars: -1",
+        "candidates: 4294967296",
+        "max_doc_chars: 4294967296",
+    ] {
+        assert!(Config::parse(&format!("{BASE_YAML}{}", reranker(extra)), "t").is_err());
+    }
+}
+
+#[test]
+fn reranker_budgets_change_review_fingerprint_but_keep_index_identity() {
+    let plain =
+        cfg("  reranker: {base_url: https://api.example.com/v1, model: r, api_key_env: K_RR}\n");
+    let fingerprint = plain.review_fingerprint("baseline");
+    let index = plain.vera.index_identity();
+    let index_key = plain.vera.index_key();
+    let mut explicit_defaults = plain.clone();
+    let r = explicit_defaults.vera.reranker.as_mut().unwrap();
+    r.candidates = Some(20);
+    r.max_doc_chars = Some(2000);
+    assert_eq!(
+        fingerprint,
+        explicit_defaults.review_fingerprint("baseline")
+    );
+    for field in ["candidates", "max_doc_chars"] {
+        let mut changed = plain.clone();
+        let r = changed.vera.reranker.as_mut().unwrap();
+        match field {
+            "candidates" => r.candidates = Some(21),
+            _ => r.max_doc_chars = Some(0),
+        }
+        assert_ne!(
+            fingerprint,
+            changed.review_fingerprint("baseline"),
+            "{field}"
+        );
+        assert_eq!(index, changed.vera.index_identity(), "{field}");
+        assert_eq!(index_key, changed.vera.index_key(), "{field}");
+    }
+}
+
+#[test]
 fn embedding_throughput_settings_parse_and_default() {
     let plain = cfg("");
     let e = plain.vera.embedding.as_ref().unwrap();
