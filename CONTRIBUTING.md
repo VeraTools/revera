@@ -35,7 +35,7 @@ Live checks, run when the relevant endpoint and key are available:
   first. Configurations using Vera also need
   `REVERA_EMBEDDING_BASE_URL=… REVERA_EMBEDDING_API_KEY=…`, plus
   `REVERA_RERANKER_BASE_URL=… REVERA_RERANKER_API_KEY=…` when they set a
-  reranker (the self-review and eval configurations do).
+  reranker.
 
 Report live checks as run, skipped or blocked; never count a check that did
 not run as passed.
