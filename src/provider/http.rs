@@ -316,7 +316,8 @@ impl HttpTransport {
                 req = req.header(k.as_str(), v.as_str());
             }
             // A proxy that sends headers early (keepalive) leaves the wait in
-            // the body read, so its errors count as transport errors too.
+            // the body read: a 2xx body that never arrives is a transport
+            // error; error statuses keep their status-based handling.
             let result = match req.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
@@ -325,7 +326,11 @@ impl HttpTransport {
                         .get("retry-after")
                         .and_then(|h| h.to_str().ok())
                         .map(str::to_string);
-                    resp.text().await.map(|text| (status, retry_after, text))
+                    match resp.text().await {
+                        Ok(text) => Ok((status, retry_after, text)),
+                        Err(e) if (200..300).contains(&status) => Err(e),
+                        Err(_) => Ok((status, retry_after, String::new())),
+                    }
                 }
                 Err(e) => Err(e),
             };
