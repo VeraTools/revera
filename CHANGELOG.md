@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A provider request that times out while its response body is still arriving (for example behind a proxy that sends headers and keepalive bytes early) now counts as a timeout: it is retried and falls back with reason `timeout`, instead of failing as a malformed empty response.
+
 ## v0.12.0
 
 - Model routes accept `timeout_secs` for provider requests, still bounded by agent and run deadlines. The default rises from the previous fixed 120 seconds to 300 seconds; fix agents and fallbacks keep their configured values, and the dashboard embedding test uses `vera.embedding.timeout_secs`. The timeout is part of the review fingerprint.

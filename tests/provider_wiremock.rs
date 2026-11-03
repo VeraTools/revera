@@ -390,6 +390,60 @@ async fn configured_timeout_reaches_every_http_protocol() {
     }
 }
 
+/// Serves `status` headers and one keepalive byte, then stalls the body.
+async fn stalled_body_server(
+    status: &'static str,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let accepts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counter = accepts.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                let _ = socket.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n "
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            });
+        }
+    });
+    (url, accepts)
+}
+
+#[tokio::test]
+async fn body_read_timeout_is_a_timeout_not_a_malformed_response() {
+    use revera::provider::FallbackReason;
+    for (status, reason) in [
+        ("200 OK", FallbackReason::Timeout),
+        // an error status keeps its own classification and retry
+        ("503 Service Unavailable", FallbackReason::RateLimitOrServer),
+    ] {
+        let (url, accepts) = stalled_body_server(status).await;
+        let mut route = route_for(&url, Protocol::OpenaiChat, "test-model");
+        route.timeout_secs = 1;
+        let ledger = LedgerHandle::new();
+        let client = routed_client(&route, &ledger, "body-timeout", 2, 1);
+        let error = client
+            .complete(&[ChatMessage::user("hi")], &[])
+            .await
+            .unwrap_err();
+        assert_eq!(error.fallback_reason(), Some(reason), "{status}: {error}");
+        // both failures are transient, so the one configured retry is used
+        assert_eq!(
+            accepts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "{status}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn fallback_uses_its_own_request_timeout() {
     let primary = MockServer::start().await;

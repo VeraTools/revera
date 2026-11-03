@@ -315,8 +315,10 @@ impl HttpTransport {
             for (k, v) in &spec.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            let result = req.send().await;
-            match result {
+            // A proxy that sends headers early (keepalive) leaves the wait in
+            // the body read: a 2xx body that never arrives is a transport
+            // error; error statuses keep their status-based handling.
+            let result = match req.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let retry_after = resp
@@ -324,7 +326,16 @@ impl HttpTransport {
                         .get("retry-after")
                         .and_then(|h| h.to_str().ok())
                         .map(str::to_string);
-                    let text = resp.text().await.unwrap_or_default();
+                    match resp.text().await {
+                        Ok(text) => Ok((status, retry_after, text)),
+                        Err(e) if (200..300).contains(&status) => Err(e),
+                        Err(_) => Ok((status, retry_after, String::new())),
+                    }
+                }
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok((status, retry_after, text)) => {
                     if status == 429 || status >= 500 {
                         if attempts <= self.retries {
                             self.record(
