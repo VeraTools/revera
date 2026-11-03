@@ -391,6 +391,47 @@ async fn configured_timeout_reaches_every_http_protocol() {
 }
 
 #[tokio::test]
+async fn body_read_timeout_is_a_timeout_not_a_malformed_response() {
+    use tokio::io::AsyncWriteExt;
+    // Headers and a keepalive byte arrive at once; the body never finishes.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let accepts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counter = accepts.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n ",
+                    )
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            });
+        }
+    });
+    let mut route = route_for(&url, Protocol::OpenaiChat, "test-model");
+    route.timeout_secs = 1;
+    let ledger = LedgerHandle::new();
+    let client = routed_client(&route, &ledger, "body-timeout", 2, 1);
+    let error = client
+        .complete(&[ChatMessage::user("hi")], &[])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.fallback_reason(),
+        Some(revera::provider::FallbackReason::Timeout),
+        "{error}"
+    );
+    // the timeout is transient, so the one configured retry is used
+    assert_eq!(accepts.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn fallback_uses_its_own_request_timeout() {
     let primary = MockServer::start().await;
     let backup = MockServer::start().await;
