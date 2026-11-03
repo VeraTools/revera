@@ -51,6 +51,8 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       REVERA_EMBEDDING_BASE_URL: ${{ secrets.REVERA_EMBEDDING_BASE_URL }}
       REVERA_EMBEDDING_API_KEY: ${{ secrets.REVERA_EMBEDDING_API_KEY }}
+      REVERA_RERANKER_BASE_URL: ${{ secrets.REVERA_RERANKER_BASE_URL }}
+      REVERA_RERANKER_API_KEY: ${{ secrets.REVERA_RERANKER_API_KEY }}
       REVERA_MODEL_BASE_URL: ${{ secrets.REVERA_MODEL_BASE_URL }}
       REVERA_MODEL_API_KEY: ${{ secrets.REVERA_MODEL_API_KEY }}
       REVERA_FALLBACK_BASE_URL: ${{ secrets.REVERA_FALLBACK_BASE_URL }}
@@ -61,6 +63,8 @@ jobs:
           missing=()
           [ -n "$REVERA_EMBEDDING_BASE_URL" ] || missing+=(REVERA_EMBEDDING_BASE_URL)
           [ -n "$REVERA_EMBEDDING_API_KEY" ] || missing+=(REVERA_EMBEDDING_API_KEY)
+          [ -n "$REVERA_RERANKER_BASE_URL" ] || missing+=(REVERA_RERANKER_BASE_URL)
+          [ -n "$REVERA_RERANKER_API_KEY" ] || missing+=(REVERA_RERANKER_API_KEY)
           [ -n "$REVERA_MODEL_BASE_URL" ] || missing+=(REVERA_MODEL_BASE_URL)
           [ -n "$REVERA_MODEL_API_KEY" ] || missing+=(REVERA_MODEL_API_KEY)
           [ -n "$REVERA_FALLBACK_BASE_URL" ] || missing+=(REVERA_FALLBACK_BASE_URL)
@@ -210,15 +214,20 @@ jobs:
           git show "$BASE_SHA:.github/revera-self-review.yaml" > "$cfg"
           value() { yq -r "$1 // \"\"" "$cfg"; }
           home=$(value .vera.home)
+          if [ "$(value .vera.reranker.api_key_env)" = REVERA_RERANKER_API_KEY ]; then
+            rerank_url=$REVERA_RERANKER_BASE_URL rerank_key=$REVERA_RERANKER_API_KEY
+          else
+            rerank_url=$REVERA_EMBEDDING_BASE_URL rerank_key=$REVERA_EMBEDDING_API_KEY
+          fi
           while read -r name; do unset "$name"; done < <(compgen -e | grep '^VERA_')
           VERA_HOME="${home:-${REVERA_VERA_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/revera/vera-home}}" \
           VERA_NO_UPDATE_CHECK=1 VERA_BACKEND=api \
           EMBEDDING_MODEL_BASE_URL="$REVERA_EMBEDDING_BASE_URL" \
           EMBEDDING_MODEL_ID=$(value .vera.embedding.model) \
           EMBEDDING_MODEL_API_KEY="$REVERA_EMBEDDING_API_KEY" \
-          RERANKER_MODEL_BASE_URL="$REVERA_EMBEDDING_BASE_URL" \
+          RERANKER_MODEL_BASE_URL="$rerank_url" \
           RERANKER_MODEL_ID=$(value .vera.reranker.model) \
-          RERANKER_MODEL_API_KEY="$REVERA_EMBEDDING_API_KEY" \
+          RERANKER_MODEL_API_KEY="$rerank_key" \
             vera search "${EXPECT_TERMS//[,|]/ }" --json --rerank-status --limit 3 \
             > "$RUNNER_TEMP/probe-out.json" 2> "$RUNNER_TEMP/probe-err.txt" \
             || echo "::warning::rerank probe failed; the proof needs a vera_search call in run 1"
@@ -272,7 +281,8 @@ jobs:
           import os, sys, urllib.parse
           from pathlib import Path
           subs = []
-          for var in ("REVERA_MODEL_BASE_URL", "REVERA_FALLBACK_BASE_URL", "REVERA_EMBEDDING_BASE_URL"):
+          for var in ("REVERA_MODEL_BASE_URL", "REVERA_FALLBACK_BASE_URL", "REVERA_EMBEDDING_BASE_URL",
+                      "REVERA_RERANKER_BASE_URL"):
               url = os.environ.get(var, "").strip()
               if url:
                   subs.append((url.rstrip("/"), f"[{var}]"))

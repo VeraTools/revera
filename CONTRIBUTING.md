@@ -33,7 +33,9 @@ Live checks, run when the relevant endpoint and key are available:
 - `REVERA_MODEL_BASE_URL=… REVERA_MODEL_API_KEY=… revera review --repo <path> --base <rev> --config <cfg>`
   against a real model endpoint for a manual end-to-end run; `revera doctor`
   first. Configurations using Vera also need
-  `REVERA_EMBEDDING_BASE_URL=… REVERA_EMBEDDING_API_KEY=…`.
+  `REVERA_EMBEDDING_BASE_URL=… REVERA_EMBEDDING_API_KEY=…`, plus
+  `REVERA_RERANKER_BASE_URL=… REVERA_RERANKER_API_KEY=…` when they set a
+  reranker.
 
 Report live checks as run, skipped or blocked; never count a check that did
 not run as passed.

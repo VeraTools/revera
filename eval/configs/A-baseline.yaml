@@ -32,6 +32,6 @@ vera:
     model: qwen/qwen3-embedding-8b
     api_key_env: REVERA_EMBEDDING_API_KEY
   reranker:
-    base_url: ${REVERA_EMBEDDING_BASE_URL}
-    model: qwen/qwen3-reranker-8b
-    api_key_env: REVERA_EMBEDDING_API_KEY
+    base_url: ${REVERA_RERANKER_BASE_URL}
+    model: Qwen/Qwen3-Reranker-8B
+    api_key_env: REVERA_RERANKER_API_KEY
