@@ -285,7 +285,8 @@ joined onto `base_url` (default `/rerank`). `return_documents` is `true` or
 `false` (sent explicitly; default `false`) or `omit` (field left out for
 providers that reject it). These options are rejected on `embedding`.
 `candidates` (at least `1`, default `20`) and `max_doc_chars` (`0` is unlimited,
-default `2000`) apply only to reranking; both defaults match Vera's.
+default `2000`) apply only to reranking; both defaults match Vera 2.3.1's, and
+Revera sets them on every run (Vera 1.3.0 or later).
 
 Embedding options (`api` backend only; rejected on `reranker`):
 `max_concurrent_requests` (default `8`), `max_in_flight_inputs` (default
