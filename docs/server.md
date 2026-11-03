@@ -844,8 +844,9 @@ Check the [trigger migration](#triggers-review-modes-and-mentions) and
 
 ### From 0.11.x to 0.12.0
 
-No change is required. Provider requests now time out after 300 seconds
-instead of a fixed 120; set `timeout_secs` on a model route to change it.
+No change is required. Model requests now time out after 300 seconds instead
+of a fixed 120; set `timeout_secs` on a model route to change it. Embedding
+requests keep their 120-second default and `vera.embedding.timeout_secs`.
 Budgets you have not set yourself use the larger built-in defaults. The first
 review after the upgrade does not reuse earlier results, because budgets and
 the timeout are part of the review identity.
