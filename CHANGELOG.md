@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.1
 
 - A provider request that times out while its response body is still arriving (for example behind a proxy that sends headers and keepalive bytes early) now counts as a timeout: it is retried and falls back with reason `timeout`, instead of failing as a malformed empty response.
 - `vera.reranker` accepts `candidates` (default `20`) and `max_doc_chars` (default `2000`, `0` for unlimited), matching Vera 2.3.1's defaults. Revera applies both on every run (Vera 1.3.0 or later), so existing Revera Vera homes move from the previous 50 candidates of up to 4800 characters to 20 of up to 2000, cutting reranker tokens by about two thirds. Changes affect the review fingerprint but keep the index cache warm.
