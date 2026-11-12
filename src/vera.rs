@@ -358,8 +358,8 @@ impl VeraClient {
             .with_context(|| format!("vera {}: invalid JSON output", args.join(" ")))
     }
 
-    async fn run_json_index(&self, args: &[&str], cap: Option<Duration>) -> Result<Value> {
-        let out = self.run_bounded(args, cap).await?;
+    async fn run_json_index(&self, args: &[&str]) -> Result<Value> {
+        let out = self.run_bounded(args, None).await?;
         serde_json::from_str(&out)
             .with_context(|| format!("vera {}: invalid JSON output", args.join(" ")))
     }
@@ -414,9 +414,19 @@ impl VeraClient {
         self.ensure_index_within(None).await
     }
 
-    /// [`Self::ensure_index`], stopped after `cap`. Vera keeps finished
-    /// embeddings in `.vera.resume`, so a later run continues the build.
+    /// [`Self::ensure_index`], including its health check, stopped after
+    /// `cap`. Vera keeps finished embeddings in `.vera.resume`, so a later
+    /// run continues the build.
     pub async fn ensure_index_within(&self, cap: Option<Duration>) -> Result<Value> {
+        let Some(cap) = cap else {
+            return self.index_or_update().await;
+        };
+        let end = Instant::now() + cap;
+        let deadline = self.deadline.map_or(end, |d| d.min(end));
+        self.clone().with_deadline(deadline).index_or_update().await
+    }
+
+    async fn index_or_update(&self) -> Result<Value> {
         let index_dir = self.repo_root.join(".vera");
         let mut indexed = index_dir.exists();
         if indexed && let Some(why) = self.cache_incompatibility() {
@@ -432,7 +442,7 @@ impl VeraClient {
             args.push("--exclude");
             args.push(e);
         }
-        let summary = self.run_json_index(&args, cap).await?;
+        let summary = self.run_json_index(&args).await?;
         if !index_dir.exists() {
             bail!(
                 "vera {verb} reported success but {} is missing",
@@ -571,6 +581,28 @@ fn index_summary_line(summary: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn index_cap_also_bounds_the_health_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) mkdir .vera; echo '{}';;\n  stats) sleep 5;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(dir.path());
+        client.exe = exe;
+        client.backend = "api".into();
+        let start = std::time::Instant::now();
+        let result = client
+            .ensure_index_within(Some(std::time::Duration::from_secs(1)))
+            .await;
+        assert!(result.is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(4));
+    }
+
     #[test]
     fn index_summary_line_keeps_known_counters_only() {
         let v = serde_json::json!({

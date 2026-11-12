@@ -264,7 +264,7 @@ pub const CLEAN_ARGS: &[&str] = &[
     ".revera/vera-cache.json",
     // finished embeddings of an interrupted build, resumed by the next run
     "-e",
-    ".vera.resume",
+    "/.vera.resume",
 ];
 
 /// Clear ambient credentials and git configuration for public targets. Only
