@@ -438,6 +438,7 @@ impl VeraClient {
             let _ = std::fs::remove_dir_all(self.repo_root.join(".vera.resume"));
             indexed = false;
         }
+        self.claim_saved_embeddings()?;
         let verb = if indexed { "update" } else { "index" };
         let mut args = vec![verb, ".", "--json"];
         for e in &self.exclude {
@@ -458,6 +459,23 @@ impl VeraClient {
         self.write_cache_info().await.ok();
         tracing::info!("vera {verb}: {}", index_summary_line(&summary));
         Ok(summary)
+    }
+
+    /// Keep `.vera.resume` only if it was saved under the current index
+    /// identity, then record that identity in it, so an interrupted build
+    /// is never resumed with another embedding endpoint or exclusion list.
+    fn claim_saved_embeddings(&self) -> Result<()> {
+        let rel = Path::new(".vera.resume/revera-index-key");
+        let resume = self.repo_root.join(".vera.resume");
+        if resume.exists() {
+            let saved = std::fs::read_to_string(self.repo_root.join(rel)).ok();
+            if saved.as_deref() != Some(self.index_key.as_str()) {
+                tracing::info!("discarding saved embeddings from another index identity");
+                std::fs::remove_dir_all(&resume)
+                    .with_context(|| format!("remove {}", resume.display()))?;
+            }
+        }
+        crate::fsutil::write_repo_file(&self.repo_root, rel, self.index_key.as_bytes())
     }
 
     /// Health probe: the index must open via `vera stats --json` and hold
@@ -600,7 +618,7 @@ mod tests {
         let exe = dir.path().join("vera");
         std::fs::write(
             &exe,
-            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume ] && exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume/embeddings.db ] && exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
         )
         .unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -609,7 +627,51 @@ mod tests {
         client.backend = "api".into();
         client.index_key = "new".into();
         client.ensure_index().await.unwrap();
-        assert!(!root.join(".vera.resume").exists());
+        assert!(!root.join(".vera.resume/embeddings.db").exists());
+    }
+
+    #[tokio::test]
+    async fn interrupted_build_from_another_identity_is_not_resumed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join(".vera.resume")).unwrap();
+        std::fs::write(root.join(".vera.resume/embeddings.db"), "old").unwrap();
+        std::fs::write(root.join(".vera.resume/revera-index-key"), "old").unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume/embeddings.db ] && exit 1; [ \"$(cat .vera.resume/revera-index-key)\" = new ] || exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "new".into();
+        client.ensure_index().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_build_with_the_same_identity_is_resumed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join(".vera.resume")).unwrap();
+        std::fs::write(root.join(".vera.resume/embeddings.db"), "saved").unwrap();
+        std::fs::write(root.join(".vera.resume/revera-index-key"), "same").unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume/embeddings.db ] || exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "same".into();
+        client.ensure_index().await.unwrap();
     }
 
     #[tokio::test]
