@@ -75,7 +75,10 @@ def match_designated_finding(
             continue
         if finding.get("file") != expected_file:
             continue
-        if finding.get("validation_status") != "accepted":
+        if (
+            finding.get("validation_status") != "accepted"
+            or finding.get("duplicate_of") is not None
+        ):
             continue
         haystack = finding_text(finding)
         if all(any(term.casefold() in haystack for term in group) for group in term_groups):
@@ -83,7 +86,7 @@ def match_designated_finding(
 
     require(
         len(matches) == 1,
-        "run 1 must contain exactly one accepted finding at --expect-file matching every --expect-term group",
+        "run 1 must contain exactly one accepted, non-duplicate finding at --expect-file matching every --expect-term group",
     )
     target = matches[0]
     target_id = finding_id(target)

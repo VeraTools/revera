@@ -311,6 +311,17 @@ try:
     if "provider.example" in summary_text or "validator.example" in summary_text:
         raise AssertionError("proof summary leaked a route URL")
 
+    with_duplicate = report(1)
+    duplicate = dict(with_duplicate["findings"][0])
+    duplicate["defect_key"] = "null-check-docs"
+    duplicate["start_line"] = 30
+    duplicate["title"] = "Doc comment contradicts the missing null guard"
+    duplicate["duplicate_of"] = FINDING_ID
+    with_duplicate["findings"].append(duplicate)
+    expect_pass("accepted-duplicate", first=with_duplicate)
+    with_duplicate["findings"][1]["duplicate_of"] = ""
+    expect_pass("empty-duplicate-reference", first=with_duplicate)
+
     unrelated = report(1)
     unrelated["findings"][0]["title"] = "Unrelated accepted finding"
     unrelated["findings"][0]["claim"] = "No matching issue here."
@@ -318,7 +329,7 @@ try:
     unrelated["findings"][0]["impact"] = "A neutral result follows."
     expect_fail(
         "unrelated-accepted",
-        "exactly one accepted finding at --expect-file matching every --expect-term group",
+        "exactly one accepted, non-duplicate finding at --expect-file matching every --expect-term group",
         first=unrelated,
     )
 
