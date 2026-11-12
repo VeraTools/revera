@@ -434,6 +434,8 @@ impl VeraClient {
             std::fs::remove_dir_all(&index_dir)
                 .with_context(|| format!("remove {}", index_dir.display()))?;
             let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
+            // saved embeddings are keyed by model name only, not endpoint
+            let _ = std::fs::remove_dir_all(self.repo_root.join(".vera.resume"));
             indexed = false;
         }
         let verb = if indexed { "update" } else { "index" };
@@ -581,6 +583,35 @@ fn index_summary_line(summary: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn incompatible_index_also_drops_saved_embeddings() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        for path in [".vera", ".vera.resume", ".revera"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        std::fs::write(root.join(".vera.resume/embeddings.db"), "old").unwrap();
+        std::fs::write(
+            root.join(".revera/vera-cache.json"),
+            r#"{"vera_version":"2.4.1","backend":"api","embedding_model":null,"dim":null,"updated_at":"","index_key":"old"}"#,
+        )
+        .unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume ] && exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "new".into();
+        client.ensure_index().await.unwrap();
+        assert!(!root.join(".vera.resume").exists());
+    }
+
     #[tokio::test]
     async fn index_cap_also_bounds_the_health_check() {
         use std::os::unix::fs::PermissionsExt;
