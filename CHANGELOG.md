@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.12.3
+
+- A model reply still in flight when an investigation reaches its soft time limit is now awaited for up to half of the remaining reserve before Revera gives up on it, so slow turns are used instead of being cancelled. The wrap-up turn keeps at least half of the reserve, and never less than 20 seconds; with 20 seconds or less left, the reply is dropped as before. A request that fails during that wait still leads to the wrap-up.
+
 ## v0.12.2
 
 - The Action and the container image now install Vera 2.4.1 (was 2.1.4). Vera 2.4.1 splits an embedding batch that a provider rejects as over its per-request token quota, where earlier versions retried it until the index failed. This happened with `qwen/qwen3-embedding-8b` served by Nebius on repositories with large functions. It also recovers more C and C++ code that the parser previously missed.

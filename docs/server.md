@@ -842,6 +842,10 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
+### From 0.12.2 to 0.12.3
+
+No change is required.
+
 ### From 0.12.1 to 0.12.2
 
 No change is required. The image ships Vera 2.4.1. A review that has to build
