@@ -1,7 +1,8 @@
 use crate::provider::{ChatMessage, ModelClient, ProviderError, ToolCall, ToolSpec};
 use crate::tools::ToolBox;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// Tools available to one agent. Fix agents use a separate, confined dispatcher;
 /// the review toolbox and the loop's budgeting/terminal semantics are unchanged.
@@ -291,13 +292,27 @@ pub async fn run_agent_checked(
         // The wrap-up turn after a time-budget notice runs at low effort:
         // a reasoning model at full effort over a long transcript can need
         // more than the reserve, and then every candidate is lost.
-        let call = if budget_notice_sent && budget_stop == StopReason::TimeBudget {
-            client.complete_capped(&messages, turn_specs, crate::config::ReasoningEffort::Low)
-        } else {
-            client.complete(&messages, turn_specs)
-        };
         let asked = Instant::now();
-        let completion = match tokio::time::timeout(limit, call).await {
+        let outcome = {
+            let mut call = if budget_notice_sent && budget_stop == StopReason::TimeBudget {
+                client.complete_capped(&messages, turn_specs, crate::config::ReasoningEffort::Low)
+            } else {
+                client.complete(&messages, turn_specs)
+            };
+            let mut outcome = tokio::time::timeout(limit, &mut call).await;
+            if outcome.is_err() && !budget_notice_sent {
+                // dropping a reply already in flight wastes the request: let
+                // it finish while the wrap-up keeps half of what is left, and
+                // never less than the grace allowance
+                let left = hard_left();
+                let extra = left.saturating_sub((left / 2).max(TERMINAL_GRACE));
+                if !extra.is_zero() {
+                    outcome = tokio::time::timeout(extra, &mut call).await;
+                }
+            }
+            outcome
+        };
+        let completion = match outcome {
             Ok(Ok(c)) => {
                 slowest_reply = slowest_reply.max(asked.elapsed());
                 c

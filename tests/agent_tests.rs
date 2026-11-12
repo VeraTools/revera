@@ -596,6 +596,88 @@ async fn slow_turn_at_the_deadline_still_submits() {
     );
 }
 
+/// Answers its first turn with a submission, `delay` after it was asked.
+struct LateSubmit {
+    delay: std::time::Duration,
+    calls: Mutex<u32>,
+}
+
+#[async_trait::async_trait]
+impl ModelClient for LateSubmit {
+    async fn complete(
+        &self,
+        _m: &[ChatMessage],
+        _t: &[ToolSpec],
+    ) -> Result<Completion, ProviderError> {
+        *self.calls.lock().unwrap() += 1;
+        tokio::time::sleep(self.delay).await;
+        Ok(Completion {
+            message: assistant_calls(vec![(
+                "submit_findings",
+                json!({"findings": [{"title": "late"}], "coverage": "complete"}),
+            )]),
+            usage: Usage::default(),
+            model: "stub".into(),
+            latency_ms: 0,
+        })
+    }
+    fn route_label(&self) -> String {
+        "late-submit".into()
+    }
+}
+
+/// A reply still in flight at the soft deadline is awaited while the
+/// wrap-up keeps half of the reserve, so a slow turn is not thrown away.
+#[tokio::test(start_paused = true)]
+async fn reply_in_flight_at_the_soft_deadline_is_awaited_before_wrap_up() {
+    let client = LateSubmit {
+        // a 900 s budget has a 90 s reserve; this reply lands 40 s past the
+        // soft deadline, inside the 45 s the wrap-up can spare
+        delay: std::time::Duration::from_secs(850),
+        calls: Mutex::new(0),
+    };
+    let budget = AgentBudget {
+        max_tool_calls: 5,
+        max_seconds: 900,
+    };
+    let r = run_agent(&client, "s", "u", &toolbox(), &terminal(), &budget)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(
+        r.final_call.unwrap().arguments["findings"][0]["title"],
+        "late"
+    );
+    assert_eq!(*client.calls.lock().unwrap(), 1);
+}
+
+/// A reply that does not arrive within the extension is still dropped, and
+/// the wrap-up submits inside the hard budget.
+#[tokio::test(start_paused = true)]
+async fn reply_still_missing_after_the_extension_is_dropped_for_wrap_up() {
+    let start = tokio::time::Instant::now();
+    let client = SlowThenSubmit {
+        calls: Mutex::new(0),
+        capped: Mutex::new(0),
+    };
+    let budget = AgentBudget {
+        max_tool_calls: 5,
+        max_seconds: 900,
+    };
+    let r = run_agent(&client, "s", "u", &toolbox(), &terminal(), &budget)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(*client.calls.lock().unwrap(), 2);
+    assert_eq!(*client.capped.lock().unwrap(), 1);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_secs(855)
+            && elapsed < std::time::Duration::from_secs(900),
+        "{elapsed:?}"
+    );
+}
+
 /// Records the text of every message each call receives.
 struct Recording {
     inner: Stub,
