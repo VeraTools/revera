@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.12.2
+
+- The Action and the container image now install Vera 2.4.1 (was 2.1.4). Vera 2.4.1 splits an embedding batch that a provider rejects as over its per-request token quota, where earlier versions retried it until the index failed. This happened with `qwen/qwen3-embedding-8b` served by Nebius on repositories with large functions. It also recovers more C and C++ code that the parser previously missed.
+- Building the Vera index may use at most half of the investigation time, so a slow first build no longer takes the whole run. The server keeps the finished embeddings of an interrupted build (`.vera.resume`) when it resets the workspace, so the next review continues the build instead of starting over.
+
 ## v0.12.1
 
 - A provider request that times out while its response body is still arriving (for example behind a proxy that sends headers and keepalive bytes early) now counts as a timeout: it is retried and falls back with reason `timeout`, instead of failing as a malformed empty response.

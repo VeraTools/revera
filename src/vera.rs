@@ -411,6 +411,22 @@ impl VeraClient {
     /// built with a different backend/embedding model is discarded first;
     /// cache info is written only after a successful index.
     pub async fn ensure_index(&self) -> Result<Value> {
+        self.ensure_index_within(None).await
+    }
+
+    /// [`Self::ensure_index`], including its health check, stopped after
+    /// `cap`. Vera keeps finished embeddings in `.vera.resume`, so a later
+    /// run continues the build.
+    pub async fn ensure_index_within(&self, cap: Option<Duration>) -> Result<Value> {
+        let Some(cap) = cap else {
+            return self.index_or_update().await;
+        };
+        let end = Instant::now() + cap;
+        let deadline = self.deadline.map_or(end, |d| d.min(end));
+        self.clone().with_deadline(deadline).index_or_update().await
+    }
+
+    async fn index_or_update(&self) -> Result<Value> {
         let index_dir = self.repo_root.join(".vera");
         let mut indexed = index_dir.exists();
         if indexed && let Some(why) = self.cache_incompatibility() {
@@ -418,8 +434,11 @@ impl VeraClient {
             std::fs::remove_dir_all(&index_dir)
                 .with_context(|| format!("remove {}", index_dir.display()))?;
             let _ = std::fs::remove_file(Self::cache_info_path(&self.repo_root));
+            // saved embeddings are keyed by model name only, not endpoint
+            let _ = std::fs::remove_dir_all(self.repo_root.join(".vera.resume"));
             indexed = false;
         }
+        self.claim_saved_embeddings()?;
         let verb = if indexed { "update" } else { "index" };
         let mut args = vec![verb, ".", "--json"];
         for e in &self.exclude {
@@ -440,6 +459,23 @@ impl VeraClient {
         self.write_cache_info().await.ok();
         tracing::info!("vera {verb}: {}", index_summary_line(&summary));
         Ok(summary)
+    }
+
+    /// Keep `.vera.resume` only if it was saved under the current index
+    /// identity, then record that identity in it, so an interrupted build
+    /// is never resumed with another embedding endpoint or exclusion list.
+    fn claim_saved_embeddings(&self) -> Result<()> {
+        let rel = Path::new(".vera.resume/revera-index-key");
+        let resume = self.repo_root.join(".vera.resume");
+        if resume.exists() {
+            let saved = std::fs::read_to_string(self.repo_root.join(rel)).ok();
+            if saved.as_deref() != Some(self.index_key.as_str()) {
+                tracing::info!("discarding saved embeddings from another index identity");
+                std::fs::remove_dir_all(&resume)
+                    .with_context(|| format!("remove {}", resume.display()))?;
+            }
+        }
+        crate::fsutil::write_repo_file(&self.repo_root, rel, self.index_key.as_bytes())
     }
 
     /// Health probe: the index must open via `vera stats --json` and hold
@@ -565,6 +601,101 @@ fn index_summary_line(summary: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn incompatible_index_also_drops_saved_embeddings() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        for path in [".vera", ".vera.resume", ".revera"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        std::fs::write(root.join(".vera.resume/embeddings.db"), "old").unwrap();
+        std::fs::write(
+            root.join(".revera/vera-cache.json"),
+            r#"{"vera_version":"2.4.1","backend":"api","embedding_model":null,"dim":null,"updated_at":"","index_key":"old"}"#,
+        )
+        .unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume/embeddings.db ] && exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "new".into();
+        client.ensure_index().await.unwrap();
+        assert!(!root.join(".vera.resume/embeddings.db").exists());
+    }
+
+    #[tokio::test]
+    async fn interrupted_build_from_another_identity_is_not_resumed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join(".vera.resume")).unwrap();
+        std::fs::write(root.join(".vera.resume/embeddings.db"), "old").unwrap();
+        std::fs::write(root.join(".vera.resume/revera-index-key"), "old").unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume/embeddings.db ] && exit 1; [ \"$(cat .vera.resume/revera-index-key)\" = new ] || exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "new".into();
+        client.ensure_index().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_build_with_the_same_identity_is_resumed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join(".vera.resume")).unwrap();
+        std::fs::write(root.join(".vera.resume/embeddings.db"), "saved").unwrap();
+        std::fs::write(root.join(".vera.resume/revera-index-key"), "same").unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.resume/embeddings.db ] || exit 1; mkdir .vera; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "same".into();
+        client.ensure_index().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn index_cap_also_bounds_the_health_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) mkdir .vera; echo '{}';;\n  stats) sleep 5;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut client = super::VeraClient::disabled(dir.path());
+        client.exe = exe;
+        client.backend = "api".into();
+        let start = std::time::Instant::now();
+        let result = client
+            .ensure_index_within(Some(std::time::Duration::from_secs(1)))
+            .await;
+        assert!(result.is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(4));
+    }
+
     #[test]
     fn index_summary_line_keeps_known_counters_only() {
         let v = serde_json::json!({

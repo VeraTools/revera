@@ -714,7 +714,7 @@ export async function mockRequest(path: string, method: string, body?: unknown):
           ok: true,
           checked_at: ago(12),
         })),
-        vera: { enabled: true, version: '2.1.4' },
+        vera: { enabled: true, version: '2.4.1' },
       },
       queue: {
         running: jobs.filter((job) => job.status === 'running'),

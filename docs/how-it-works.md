@@ -114,7 +114,11 @@ comments or checks.
    fingerprinted.
 4. Everything provider- or subprocess-facing is bounded by
    `budget.run_max_seconds`, with a reserve kept for validation and the
-   final report. Except for optional deduplication (which fails open and keeps
+   final report. Building or updating the Vera index may use at most half of
+   the investigation time. On the server, an unfinished build keeps its
+   embeddings in `.vera.resume` and the next review of the repository
+   continues it; Action jobs start the build again. Except for optional
+   deduplication (which fails open and keeps
    every accepted finding), a budget breach yields `partial` with the reason in the
    summary, never a silently truncated "clean" review.
 5. [Opt-in App fixes](server.md#fixes-opt-in) have a separate boundary and

@@ -39,7 +39,7 @@ models:
         temperature: 0.2
         reasoning: high
 vera:
-  version: "2.1.4"
+  version: "2.4.1"
   backend: api
   embedding:
     base_url: ${REVERA_EMBEDDING_BASE_URL}
