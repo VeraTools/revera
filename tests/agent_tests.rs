@@ -596,9 +596,11 @@ async fn slow_turn_at_the_deadline_still_submits() {
     );
 }
 
-/// Answers its first turn with a submission, `delay` after it was asked.
+/// Answers its first turn with a submission, `delay` after it was asked;
+/// with `fail_first`, that turn fails instead and the next one submits.
 struct LateSubmit {
     delay: std::time::Duration,
+    fail_first: bool,
     calls: Mutex<u32>,
 }
 
@@ -609,8 +611,17 @@ impl ModelClient for LateSubmit {
         _m: &[ChatMessage],
         _t: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
-        *self.calls.lock().unwrap() += 1;
-        tokio::time::sleep(self.delay).await;
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c
+        };
+        if n == 1 {
+            tokio::time::sleep(self.delay).await;
+            if self.fail_first {
+                return Err(ProviderError::Http("late failure".into()));
+            }
+        }
         Ok(Completion {
             message: assistant_calls(vec![(
                 "submit_findings",
@@ -634,6 +645,7 @@ async fn reply_in_flight_at_the_soft_deadline_is_awaited_before_wrap_up() {
         // a 900 s budget has a 90 s reserve; this reply lands 40 s past the
         // soft deadline, inside the 45 s the wrap-up can spare
         delay: std::time::Duration::from_secs(850),
+        fail_first: false,
         calls: Mutex::new(0),
     };
     let budget = AgentBudget {
@@ -649,6 +661,26 @@ async fn reply_in_flight_at_the_soft_deadline_is_awaited_before_wrap_up() {
         "late"
     );
     assert_eq!(*client.calls.lock().unwrap(), 1);
+}
+
+/// A request that fails while it is awaited past the soft deadline still
+/// leads to the wrap-up, as it would had it been dropped at the deadline.
+#[tokio::test(start_paused = true)]
+async fn request_failing_after_the_soft_deadline_still_gets_a_wrap_up() {
+    let client = LateSubmit {
+        delay: std::time::Duration::from_secs(850),
+        fail_first: true,
+        calls: Mutex::new(0),
+    };
+    let budget = AgentBudget {
+        max_tool_calls: 5,
+        max_seconds: 900,
+    };
+    let r = run_agent(&client, "s", "u", &toolbox(), &terminal(), &budget)
+        .await
+        .unwrap();
+    assert_eq!(r.stopped, StopReason::Terminal);
+    assert_eq!(*client.calls.lock().unwrap(), 2);
 }
 
 /// A reply that does not arrive within the extension is still dropped, and

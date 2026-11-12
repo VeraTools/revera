@@ -293,6 +293,7 @@ pub async fn run_agent_checked(
         // a reasoning model at full effort over a long transcript can need
         // more than the reserve, and then every candidate is lost.
         let asked = Instant::now();
+        let mut extended = false;
         let outcome = {
             let mut call = if budget_notice_sent && budget_stop == StopReason::TimeBudget {
                 client.complete_capped(&messages, turn_specs, crate::config::ReasoningEffort::Low)
@@ -307,6 +308,7 @@ pub async fn run_agent_checked(
                 let left = hard_left();
                 let extra = left.saturating_sub((left / 2).max(TERMINAL_GRACE));
                 if !extra.is_zero() {
+                    extended = true;
                     outcome = tokio::time::timeout(extra, &mut call).await;
                 }
             }
@@ -316,6 +318,18 @@ pub async fn run_agent_checked(
             Ok(Ok(c)) => {
                 slowest_reply = slowest_reply.max(asked.elapsed());
                 c
+            }
+            // a request that fails after the soft deadline leaves the
+            // wrap-up the same reserve it would have had without waiting
+            Ok(Err(e)) if extended => {
+                tracing::warn!(
+                    "model request failed after the soft deadline: {e}; requesting wrap-up"
+                );
+                budget_notice_sent = true;
+                budget_stop = StopReason::TimeBudget;
+                soft_timed_out = true;
+                messages.push(wrap_up(&terminal_tool.name));
+                continue;
             }
             Ok(Err(e)) => {
                 tracing::warn!("model request failed: {e}");

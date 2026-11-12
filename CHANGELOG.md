@@ -2,7 +2,7 @@
 
 ## v0.12.3
 
-- A model reply still in flight when an investigation reaches its soft time limit is now awaited for up to half of the remaining reserve before Revera gives up on it, so slow turns are used instead of being cancelled. The wrap-up turn keeps at least half of the reserve, and never less than 20 seconds; with less time left, the reply is dropped as before.
+- A model reply still in flight when an investigation reaches its soft time limit is now awaited for up to half of the remaining reserve before Revera gives up on it, so slow turns are used instead of being cancelled. The wrap-up turn keeps at least half of the reserve, and never less than 20 seconds; with 20 seconds or less left, the reply is dropped as before. A request that fails during that wait still leads to the wrap-up.
 
 ## v0.12.2
 
