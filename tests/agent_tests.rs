@@ -602,15 +602,22 @@ struct LateSubmit {
     delay: std::time::Duration,
     fail_first: bool,
     calls: Mutex<u32>,
+    wrap_ups: Mutex<u32>,
 }
 
 #[async_trait::async_trait]
 impl ModelClient for LateSubmit {
     async fn complete(
         &self,
-        _m: &[ChatMessage],
+        m: &[ChatMessage],
         _t: &[ToolSpec],
     ) -> Result<Completion, ProviderError> {
+        if m.last()
+            .and_then(|x| x.content.as_deref())
+            .is_some_and(|c| c.contains("Budget exhausted"))
+        {
+            *self.wrap_ups.lock().unwrap() += 1;
+        }
         let n = {
             let mut c = self.calls.lock().unwrap();
             *c += 1;
@@ -647,6 +654,7 @@ async fn reply_in_flight_at_the_soft_deadline_is_awaited_before_wrap_up() {
         delay: std::time::Duration::from_secs(850),
         fail_first: false,
         calls: Mutex::new(0),
+        wrap_ups: Mutex::new(0),
     };
     let budget = AgentBudget {
         max_tool_calls: 5,
@@ -671,6 +679,7 @@ async fn request_failing_after_the_soft_deadline_still_gets_a_wrap_up() {
         delay: std::time::Duration::from_secs(850),
         fail_first: true,
         calls: Mutex::new(0),
+        wrap_ups: Mutex::new(0),
     };
     let budget = AgentBudget {
         max_tool_calls: 5,
@@ -681,6 +690,7 @@ async fn request_failing_after_the_soft_deadline_still_gets_a_wrap_up() {
         .unwrap();
     assert_eq!(r.stopped, StopReason::Terminal);
     assert_eq!(*client.calls.lock().unwrap(), 2);
+    assert_eq!(*client.wrap_ups.lock().unwrap(), 1);
 }
 
 /// A reply that does not arrive within the extension is still dropped, and

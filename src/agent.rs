@@ -319,16 +319,12 @@ pub async fn run_agent_checked(
                 slowest_reply = slowest_reply.max(asked.elapsed());
                 c
             }
-            // a request that fails after the soft deadline leaves the
-            // wrap-up the same reserve it would have had without waiting
+            // a request that fails while awaited past the soft deadline
+            // still gets the wrap-up, which the next turn sends
             Ok(Err(e)) if extended => {
                 tracing::warn!(
                     "model request failed after the soft deadline: {e}; requesting wrap-up"
                 );
-                budget_notice_sent = true;
-                budget_stop = StopReason::TimeBudget;
-                soft_timed_out = true;
-                messages.push(wrap_up(&terminal_tool.name));
                 continue;
             }
             Ok(Err(e)) => {
