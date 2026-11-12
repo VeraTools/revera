@@ -331,6 +331,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
     let wall = Instant::now();
     let timing = Recorder::default();
     let deadline = wall + std::time::Duration::from_secs(cfg.budget.run_max_seconds);
+    let reserve = validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate);
     let repo = git::repo_root(&req.repo);
     if !git::is_repo(&repo).await {
         bail!("{} is not a git repository", repo.display());
@@ -545,7 +546,15 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
             }
         }
         let indexed = match configured {
-            Ok(_) => vera.ensure_index().await,
+            // a slow first build may use half of the investigation window,
+            // so the lanes still run; the next review resumes the build
+            Ok(_) => {
+                let window = deadline
+                    .checked_sub(reserve)
+                    .unwrap_or(deadline)
+                    .saturating_duration_since(Instant::now());
+                vera.ensure_index_within(Some(window / 2)).await
+            }
             Err(e) => Err(e),
         };
         match indexed {
@@ -698,7 +707,7 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
         coverage_gaps,
         report_note: None,
         deadline,
-        reserve: validation_reserve(cfg.budget.run_max_seconds, cfg.review.validate),
+        reserve,
         wall,
         timing,
         intent,

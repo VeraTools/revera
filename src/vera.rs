@@ -358,8 +358,8 @@ impl VeraClient {
             .with_context(|| format!("vera {}: invalid JSON output", args.join(" ")))
     }
 
-    async fn run_json_index(&self, args: &[&str]) -> Result<Value> {
-        let out = self.run_bounded(args, None).await?;
+    async fn run_json_index(&self, args: &[&str], cap: Option<Duration>) -> Result<Value> {
+        let out = self.run_bounded(args, cap).await?;
         serde_json::from_str(&out)
             .with_context(|| format!("vera {}: invalid JSON output", args.join(" ")))
     }
@@ -411,6 +411,12 @@ impl VeraClient {
     /// built with a different backend/embedding model is discarded first;
     /// cache info is written only after a successful index.
     pub async fn ensure_index(&self) -> Result<Value> {
+        self.ensure_index_within(None).await
+    }
+
+    /// [`Self::ensure_index`], stopped after `cap`. Vera keeps finished
+    /// embeddings in `.vera.resume`, so a later run continues the build.
+    pub async fn ensure_index_within(&self, cap: Option<Duration>) -> Result<Value> {
         let index_dir = self.repo_root.join(".vera");
         let mut indexed = index_dir.exists();
         if indexed && let Some(why) = self.cache_incompatibility() {
@@ -426,7 +432,7 @@ impl VeraClient {
             args.push("--exclude");
             args.push(e);
         }
-        let summary = self.run_json_index(&args).await?;
+        let summary = self.run_json_index(&args, cap).await?;
         if !index_dir.exists() {
             bail!(
                 "vera {verb} reported success but {} is missing",

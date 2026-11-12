@@ -749,6 +749,7 @@ async fn clean_preserves_index_identity_but_removes_review_state() {
     let ws = data.path().join("repos/owner/repo");
     for (path, content) in [
         (".vera/index", "warm vectors"),
+        (".vera.resume/embeddings.db", "finished embeddings"),
         (
             ".revera/vera-cache.json",
             "{\"index_key\":\"warm-identity\"}",
@@ -776,6 +777,10 @@ async fn clean_preserves_index_identity_but_removes_review_state() {
     assert_eq!(
         std::fs::read_to_string(ws.join(".vera/index")).unwrap(),
         "warm vectors"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join(".vera.resume/embeddings.db")).unwrap(),
+        "finished embeddings"
     );
     assert!(!ws.join(".revera/state.json").exists());
     assert!(!ws.join(".revera/other").exists());
