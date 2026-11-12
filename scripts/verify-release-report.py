@@ -75,7 +75,7 @@ def match_designated_finding(
             continue
         if finding.get("file") != expected_file:
             continue
-        if finding.get("validation_status") != "accepted":
+        if finding.get("validation_status") != "accepted" or finding.get("duplicate_of"):
             continue
         haystack = finding_text(finding)
         if all(any(term.casefold() in haystack for term in group) for group in term_groups):

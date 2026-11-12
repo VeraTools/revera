@@ -311,6 +311,13 @@ try:
     if "provider.example" in summary_text or "validator.example" in summary_text:
         raise AssertionError("proof summary leaked a route URL")
 
+    with_duplicate = report(1)
+    duplicate = dict(with_duplicate["findings"][0])
+    duplicate["defect_key"] = "null-check-docs"
+    duplicate["duplicate_of"] = FINDING_ID
+    with_duplicate["findings"].append(duplicate)
+    expect_pass("accepted-duplicate", first=with_duplicate)
+
     unrelated = report(1)
     unrelated["findings"][0]["title"] = "Unrelated accepted finding"
     unrelated["findings"][0]["claim"] = "No matching issue here."
