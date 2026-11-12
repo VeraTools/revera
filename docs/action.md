@@ -78,7 +78,7 @@ through `env:` using the names in your configuration.
 | `publish` | `comment` | `dry-run` prints the plan without posting |
 | `fail-on` | `failed` | `failed`, `partial` or `never` |
 | `revera-version` | pinned to the Action release | Revera binary to install |
-| `vera-version` | `2.1.4` | Vera binary to install; skipped when retrieval is off |
+| `vera-version` | `2.4.1` | Vera binary to install; skipped when retrieval is off |
 | `github-token` | `${{ github.token }}` | Token for PR data and comments |
 | `cache` | `true` | Cache the Vera index between runs |
 

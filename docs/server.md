@@ -842,6 +842,13 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
+### From 0.12.1 to 0.12.2
+
+No change is required. The image ships Vera 2.4.1. A review that has to build
+the Vera index from scratch spends at most half of its investigation time on
+it; if the build does not finish, the next review continues from the saved
+embeddings.
+
 ### From 0.12.0 to 0.12.1
 
 No change is required. Reranking now sends 20 candidates of up to 2000

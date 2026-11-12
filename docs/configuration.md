@@ -527,7 +527,7 @@ and version pinning.
 | `publish` | `comment` | `dry-run` to only print the plan |
 | `fail-on` | `failed` | `failed` · `partial` · `never` |
 | `revera-version` | pinned to the Action release | Revera binary to install |
-| `vera-version` | `2.1.4` | Vera binary to install (skipped when Vera is disabled) |
+| `vera-version` | `2.4.1` | Vera binary to install (skipped when Vera is disabled) |
 | `github-token` | `${{ github.token }}` | |
 | `cache` | `true` | cache the `.vera` index between runs |
 
