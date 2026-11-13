@@ -83,7 +83,7 @@
   </p>
   <p class="muted">
     Tracking is {enabled ? 'enabled' : 'off'}.
-    <a href="/settings#external-prs">External PR settings</a>
+    <a href="/settings?tab=external">External PR settings</a>
   </p>
   <button class="button" disabled={busy} onclick={find}
     >{busy ? 'Working…' : 'Find my open PRs'}</button

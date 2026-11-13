@@ -343,8 +343,8 @@ not run repository scripts or tests. Installed reviews retain their separate
 
 Tracking is **off by default** and never selects all PRs automatically:
 
-1. Open **Settings**, find **External PRs**, enable **Track my external PRs**
-   and click **Save external settings**. The polling interval defaults to
+1. Open **Settings → External**, enable **Enable external PR tracking for all
+   users** and click **Save external settings**. The polling interval defaults to
    60 minutes; you can set 15–1440 minutes.
 2. In **Reviews**, expand **Track my external PRs → Find my open PRs**. This
    searches public open PRs authored by your signed-in GitHub identity,

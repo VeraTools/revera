@@ -28,6 +28,7 @@
   import WebSearchFields from './WebSearchFields.svelte';
   import MentionCommands from './MentionCommands.svelte';
   import FixSettings from './FixSettings.svelte';
+  import ExternalSettings from './ExternalSettings.svelte';
   import { validFixLimits } from '../fix-policy';
   import {
     guidanceHint,
@@ -37,7 +38,16 @@
     notesCharacters,
   } from '../guidance';
 
-  const tabs = ['Models', 'Review', 'Fixes', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
+  const tabs = [
+    'Models',
+    'Review',
+    'Fixes',
+    'Budgets',
+    'Retrieval',
+    'Access',
+    'External',
+    'Advanced',
+  ];
   const modelRoles = [
     {
       role: 'investigator',
@@ -746,6 +756,7 @@
         </div>
       </section></Tabs.Content
     >
+    <Tabs.Content value="external"><ExternalSettings /></Tabs.Content>
     <Tabs.Content value="advanced"
       ><div class="section-heading">
         <div>

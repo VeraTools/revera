@@ -1223,6 +1223,13 @@ async function checkExternalReviews() {
     false,
   );
   await page.getByRole('link', { name: 'External PR settings', exact: true }).click();
+  assert.equal(
+    await page.getByRole('tab', { name: 'External', exact: true }).getAttribute('aria-selected'),
+    'true',
+  );
+  await page.getByRole('tab', { name: 'Models', exact: true }).click();
+  assert.equal(await page.locator('[aria-label="External PR settings"]').isVisible(), false);
+  await page.getByRole('tab', { name: 'External', exact: true }).click();
   await page
     .getByRole('checkbox', { name: 'Enable external PR tracking for all users', exact: true })
     .check();

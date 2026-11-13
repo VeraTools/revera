@@ -29,13 +29,17 @@
   }
 </script>
 
-<section id="external-prs" class="card" style="margin-top: 24px" aria-label="External PR settings">
-  <h2>External PRs</h2>
-  <p class="muted">
-    Public repositories only. Reviews and downloadable fixes stay private; an external review never
-    posts or pushes upstream. Reviews use the operator's models and budgets, not repository
-    configuration or guidance.
-  </p>
+<section id="external-prs" class="settings-section" aria-label="External PR settings">
+  <div class="section-heading">
+    <div>
+      <h2>External PRs</h2>
+      <p>
+        Public repositories only. Reviews and downloadable fixes stay private; an external review
+        never posts or pushes upstream. Reviews use the operator's models and budgets, not
+        repository configuration or guidance.
+      </p>
+    </div>
+  </div>
   {#if policy}
     <label
       ><input
