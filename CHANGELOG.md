@@ -2,7 +2,7 @@
 
 ## v0.12.4
 
-- Server reviews retry failed downloads from GitHub up to three times. Failed reviews now leave a failed check and a pull request comment with the reason, a link to the review, and instructions to try again, even when downloading the code fails. Failed review requests also get a confused reaction on the requesting comment.
+- Server reviews try each download from GitHub up to three times before failing. Failed reviews now leave a failed check and a pull request comment with the reason, a link to the review, and instructions to try again, even when downloading the code fails. Failed review requests also get a confused reaction on the requesting comment.
 
 ## v0.12.3
 
