@@ -28,6 +28,7 @@
   import WebSearchFields from './WebSearchFields.svelte';
   import MentionCommands from './MentionCommands.svelte';
   import FixSettings from './FixSettings.svelte';
+  import ExternalSettings from './ExternalSettings.svelte';
   import { validFixLimits } from '../fix-policy';
   import {
     guidanceHint,
@@ -37,7 +38,16 @@
     notesCharacters,
   } from '../guidance';
 
-  const tabs = ['Models', 'Review', 'Fixes', 'Budgets', 'Retrieval', 'Access', 'Advanced'];
+  const tabs = [
+    'Models',
+    'Review',
+    'Fixes',
+    'Budgets',
+    'Retrieval',
+    'Access',
+    'External',
+    'Advanced',
+  ];
   const modelRoles = [
     {
       role: 'investigator',
@@ -316,7 +326,8 @@
       >{#each tabs as item}<Tabs.Trigger
           class="tab-trigger"
           value={item.toLowerCase()}
-          disabled={config.errors.length > 0 && item !== 'Advanced'}>{item}</Tabs.Trigger
+          disabled={config.errors.length > 0 && item !== 'Advanced' && item !== 'External'}
+          >{item}</Tabs.Trigger
         >{/each}</Tabs.List
     >
     <Tabs.Content value="models">
@@ -746,6 +757,7 @@
         </div>
       </section></Tabs.Content
     >
+    <Tabs.Content value="external"><ExternalSettings /></Tabs.Content>
     <Tabs.Content value="advanced"
       ><div class="section-heading">
         <div>
@@ -796,5 +808,6 @@
         >
       </div>
     </div>{/if}
-{:else if loading}<div class="loading" role="status">Loading settings…</div>{/if}
+{:else if loading}<div class="loading" role="status">Loading settings…</div>{:else}<ExternalSettings
+  />{/if}
 <SecretDialog bind:open={secretOpen} name={secretName} onsaved={refreshSecrets} />
