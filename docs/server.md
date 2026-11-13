@@ -613,6 +613,15 @@ failure. Cancelled work gets a cancelled check. Only validator-accepted
 findings count toward check and dashboard totals. Re-running the App's check
 forces a fresh review even when the patch is unchanged.
 
+Once Revera has a GitHub token for the repository, a failed review is reported
+on the PR. The check is created before Revera downloads the code, so a failed
+download or setup step still fails the check, and its summary gives the reason
+and a link to the review page. Revera also posts a PR comment with the reason,
+the link and the command to try again, unless that run already updated its
+summary comment. A failed review started by a mention also gets a confused
+reaction on the requesting comment. Fetches from GitHub are tried up to three
+times; a clone is retried only when the failed attempt left nothing behind.
+
 Reconciliation runs at startup and every ten minutes by default. The first
 sighting records existing PR heads without reviewing them. Later head changes
 are recovered in auto mode if not already queued or running.
