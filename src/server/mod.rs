@@ -415,6 +415,7 @@ impl Server {
                         events::Job {
                             id: uuid::Uuid::new_v4().simple().to_string(),
                             trigger: "rerun".into(),
+                            comment: None,
                             mode,
                             repo,
                             kind: events::Kind::Review {

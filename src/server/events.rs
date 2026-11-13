@@ -98,6 +98,7 @@ pub struct Job {
     pub id: String,
     pub trigger: String,
     pub mode: Mode,
+    pub comment: Option<u64>,
     pub repo: Repo,
     pub kind: Kind,
 }
@@ -108,6 +109,7 @@ impl Job {
             id: uuid::Uuid::new_v4().simple().to_string(),
             trigger: trigger.into(),
             mode: Mode::Standard,
+            comment: None,
             repo,
             kind,
         }
@@ -232,6 +234,7 @@ impl super::Server {
         {
             job.trigger = previous.trigger;
             job.mode = previous.mode;
+            job.comment = previous.comment;
             if let Kind::Review {
                 force: previous_force,
                 ..
@@ -334,6 +337,7 @@ pub fn map_with_preferences(
                     id: uuid::Uuid::new_v4().simple().to_string(),
                     trigger: "auto".into(),
                     mode: preferences.mode(&repo.full_name),
+                    comment: None,
                     repo,
                     kind: Kind::Review {
                         number,
@@ -359,6 +363,7 @@ pub fn map_with_preferences(
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 trigger: "webhook".into(),
                 mode: Mode::Standard,
+                comment: None,
                 repo,
                 kind: Kind::Index,
             }));
