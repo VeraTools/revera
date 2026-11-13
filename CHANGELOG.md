@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.12.4
+
+- Server reviews retry failed downloads from GitHub up to three times. Failed reviews now leave a failed check and a pull request comment with the reason, a link to the review, and instructions to try again, even when downloading the code fails. Failed review requests also get a confused reaction on the requesting comment.
+
 ## v0.12.3
 
 - A model reply still in flight when an investigation reaches its soft time limit is now awaited for up to half of the remaining reserve before Revera gives up on it, so slow turns are used instead of being cancelled. The wrap-up turn keeps at least half of the reserve, and never less than 20 seconds; with 20 seconds or less left, the reply is dropped as before. A request that fails during that wait still leads to the wrap-up.

@@ -153,12 +153,79 @@ async fn logged(command: &mut Command, log: Log) -> Result<i32> {
 }
 
 async fn git(ws: &Path, env: &[(String, String)], args: &[&str], log: Log) -> Result<()> {
-    let mut command = Command::new("git");
-    command.current_dir(ws).envs(env.iter().cloned()).args(args);
-    if logged(&mut command, log).await? != 0 {
-        bail!("git command failed (see job log)");
+    git_command(ws, env, args, log, false).await
+}
+
+async fn retry_git<F, Fut>(
+    ws: &Path,
+    operation: &str,
+    anonymous: bool,
+    log: Log,
+    mut run: F,
+) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<i32>>,
+{
+    let network = matches!(operation, "clone" | "fetch");
+    let label = if anonymous { "anonymous git" } else { "git" };
+    for attempt in 1..=3 {
+        if run().await? == 0 {
+            return Ok(());
+        }
+        if !network {
+            bail!("{label} command failed (see job log)");
+        }
+        // A failed clone can leave a partial repository. Never reuse or remove it.
+        let clone_left_git = operation == "clone"
+            && !matches!(std::fs::symlink_metadata(ws.join(".git")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+        if attempt == 3 || clone_left_git {
+            let suffix = if attempt == 1 { "attempt" } else { "attempts" };
+            bail!("{label} {operation} failed after {attempt} {suffix} (see job log)");
+        }
+        let seconds = if attempt == 1 { 3 } else { 10 };
+        use std::io::Write;
+        writeln!(
+            log.lock().await,
+            "{label} {operation} failed; retrying in {seconds}s (attempt {} of 3)",
+            attempt + 1
+        )?;
+        tokio::time::sleep(if cfg!(test) {
+            Duration::ZERO
+        } else {
+            Duration::from_secs(seconds)
+        })
+        .await;
     }
-    Ok(())
+    unreachable!()
+}
+
+async fn git_command(
+    ws: &Path,
+    env: &[(String, String)],
+    args: &[&str],
+    log: Log,
+    anonymous: bool,
+) -> Result<()> {
+    retry_git(
+        ws,
+        args.first().copied().unwrap_or(""),
+        anonymous,
+        log.clone(),
+        || {
+            let log = log.clone();
+            async move {
+                let mut command = Command::new("git");
+                if anonymous {
+                    command.env_clear().stdin(Stdio::null());
+                }
+                command.current_dir(ws).envs(env.iter().cloned()).args(args);
+                logged(&mut command, log).await
+            }
+        },
+    )
+    .await
 }
 
 pub(super) async fn config(
@@ -313,17 +380,7 @@ fn anonymous_env(data: &Path, repo_id: u64) -> Vec<(String, String)> {
 }
 
 async fn anonymous_git(ws: &Path, env: &[(String, String)], args: &[&str], log: Log) -> Result<()> {
-    let mut command = Command::new("git");
-    command
-        .env_clear()
-        .envs(env.iter().cloned())
-        .current_dir(ws)
-        .args(args)
-        .stdin(Stdio::null());
-    if logged(&mut command, log).await? != 0 {
-        bail!("anonymous git command failed (see job log)");
-    }
-    Ok(())
+    git_command(ws, env, args, log, true).await
 }
 
 async fn prepare_external(
@@ -553,6 +610,38 @@ async fn execute(
             },
         )
         .await?;
+    if let Kind::Review { number, pr, .. } = &job.kind {
+        let head = pr["head"]["sha"].as_str().context("PR missing head sha")?;
+        if !crate::git::is_oid(head) {
+            bail!("PR has invalid commit ids");
+        }
+        let response = server
+            .api
+            .request(
+                reqwest::Method::POST,
+                &format!("/repos/{}/check-runs", job.repo.full_name),
+                &execution.token,
+                Some(json!({
+                    "name": "Revera", "head_sha": head,
+                    "status": "in_progress", "external_id": number.to_string()
+                })),
+            )
+            .await?;
+        let check = response["id"]
+            .as_u64()
+            .context("check response missing id")?;
+        execution.check = Some(check);
+        server
+            .patch_job(&job.id, |summary| {
+                summary.check_run_url = response["html_url"].as_str().map(str::to_owned);
+                summary.check = Some(super::dashboard::CheckRecovery {
+                    id: check,
+                    repo: job.repo.clone(),
+                    pending: true,
+                });
+            })
+            .await?;
+    }
     crate::fsutil::ensure_dir(
         &server.settings.data_dir,
         &Path::new("cache").join(&job.repo.full_name),
@@ -654,37 +743,7 @@ async fn execute(
         &secrets,
     ));
     match &job.kind {
-        Kind::Review { number, force, .. } => {
-            let body = json!({
-                "name": "Revera",
-                "head_sha": head,
-                "status": "in_progress",
-                "external_id": number.to_string()
-            });
-            let response = server
-                .api
-                .request(
-                    reqwest::Method::POST,
-                    &format!("/repos/{}/check-runs", job.repo.full_name),
-                    &execution.token,
-                    Some(body),
-                )
-                .await?;
-            execution.check = Some(
-                response["id"]
-                    .as_u64()
-                    .context("check response missing id")?,
-            );
-            server
-                .patch_job(&job.id, |summary| {
-                    summary.check_run_url = response["html_url"].as_str().map(str::to_owned);
-                    summary.check = Some(super::dashboard::CheckRecovery {
-                        id: execution.check.unwrap(),
-                        repo: job.repo.clone(),
-                        pending: true,
-                    });
-                })
-                .await?;
+        Kind::Review { force, .. } => {
             let event = execution.report.parent().unwrap().join("event.json");
             let mut value = job.event();
             crate::redact::json(&mut value);
@@ -847,7 +906,14 @@ async fn complete_check(
     let report = std::fs::read(&execution.report)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-    let (conclusion, title, summary) = conclusion(exit, report.as_ref(), cancelled);
+    let (conclusion, title, mut summary) = conclusion(exit, report.as_ref(), cancelled);
+    if conclusion == "failure" && report.is_none() {
+        summary = format!(
+            "Review failed: {}. Details: {}",
+            failure_reason(&execution.report.with_file_name("log.txt"), exit),
+            review_url(server, job)
+        );
+    }
     let mut body = json!({
         "status": "completed",
         "conclusion": conclusion,
@@ -865,6 +931,7 @@ async fn complete_check(
     {
         body["actions"] = json!([{"label":"Fix with Revera","description":"Open a fix request","identifier":"revera_fix"}]);
     }
+    crate::redact::json(&mut body);
     server
         .patch_job(&job.id, |summary| {
             if let Some(check) = &mut summary.check {
@@ -984,6 +1051,12 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
         }
         break;
     }
+    if let Err(error) = notify_failure(server, job, &app, &execution).await {
+        tracing::warn!(
+            "failure notification: {}",
+            crate::redact::diagnostic(&format!("{error:#}"))
+        );
+    }
     tracing::info!("job finished: exit={exit}, cancelled={cancelled}");
     let event = dir.join("event.json");
     crate::fsutil::check_regular_target(&event)?;
@@ -991,6 +1064,81 @@ async fn run_inner(server: &Server, job: &Job, cancel: watch::Receiver<bool>) ->
         std::fs::remove_file(event)?;
     }
     server.prune_jobs().await?;
+    Ok(())
+}
+
+fn review_url(server: &Server, job: &Job) -> String {
+    format!(
+        "{}/reviews/{}",
+        server.settings.public_url.trim_end_matches('/'),
+        job.id
+    )
+}
+
+async fn notify_failure(
+    server: &Server,
+    job: &Job,
+    app: &super::app::App,
+    execution: &Execution,
+) -> Result<()> {
+    let Kind::Review { number, .. } = &job.kind else {
+        return Ok(());
+    };
+    if job.publication() != super::events::Publication::Github {
+        return Ok(());
+    }
+    let reason = {
+        let dashboard = server.dashboard.lock().await;
+        let Some(summary) = dashboard.jobs.get(&job.id).filter(|s| s.status == "failed") else {
+            return Ok(());
+        };
+        summary
+            .reason
+            .clone()
+            .unwrap_or_else(|| "review failed".into())
+    };
+    let published = std::fs::read(&execution.report)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|report| !report["publication"]["summary_comment_id"].is_null());
+    if published && job.comment.is_none() {
+        return Ok(());
+    }
+    let token = server
+        .api
+        .installation_token(
+            app,
+            job.repo.installation_id()?,
+            Some(job.repo.id),
+            super::app::Permissions::Comments,
+        )
+        .await?;
+    if !published {
+        let head: String = job.head().chars().take(7).collect();
+        let mut body = json!({"body": format!(
+            "Revera couldn't finish reviewing `{head}`: {reason}. Details: {}. Comment `@{} review` to try again.",
+            review_url(server, job), app.slug
+        )});
+        crate::redact::json(&mut body);
+        if let Err(error) = server
+            .api
+            .request(
+                reqwest::Method::POST,
+                &format!("/repos/{}/issues/{number}/comments", job.repo.full_name),
+                &token,
+                Some(body),
+            )
+            .await
+        {
+            tracing::warn!(
+                "failure comment: {}",
+                crate::redact::diagnostic(&format!("{error:#}"))
+            );
+        }
+    }
+    if let Some(comment) = job.comment {
+        super::mentions::confused(server, &job.repo, comment, &token).await;
+    }
     Ok(())
 }
 
@@ -1090,6 +1238,72 @@ fn failure_reason(path: &Path, exit: i32) -> String {
         }
     }
     last.unwrap_or_else(|| format!("process exited with status {exit}"))
+}
+
+#[cfg(test)]
+mod git_retry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fetch_retries_transient_and_permanent_failures() {
+        for (succeed_at, anonymous) in [(2, false), (4, false), (4, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = Arc::new(Mutex::new(
+                crate::fsutil::create_private(dir.path(), "log.txt").unwrap(),
+            ));
+            let mut attempts = 0;
+            let result = retry_git(dir.path(), "fetch", anonymous, log, || {
+                attempts += 1;
+                std::future::ready(Ok(i32::from(attempts < succeed_at)))
+            })
+            .await;
+            assert_eq!(attempts, succeed_at.min(3));
+            if succeed_at <= 3 {
+                result.unwrap();
+            } else {
+                let prefix = if anonymous { "anonymous git" } else { "git" };
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!("{prefix} fetch failed after 3 attempts (see job log)")
+                );
+            }
+            let text = std::fs::read_to_string(dir.path().join("log.txt")).unwrap();
+            assert!(text.contains("retrying in 3s (attempt 2 of 3)"));
+            assert_eq!(
+                text.contains("retrying in 10s (attempt 3 of 3)"),
+                succeed_at > 2
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn clone_retries_only_without_leftover_git_and_local_commands_never_retry() {
+        for (operation, leftover, expected) in [
+            ("clone", false, 3),
+            ("clone", true, 1),
+            ("checkout", false, 1),
+            ("clean", false, 1),
+            ("config", false, 1),
+            ("init", false, 1),
+            ("remote", false, 1),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = Arc::new(Mutex::new(
+                crate::fsutil::create_private(dir.path(), "log.txt").unwrap(),
+            ));
+            let mut attempts = 0;
+            let result = retry_git(dir.path(), operation, false, log, || {
+                attempts += 1;
+                if leftover {
+                    crate::fsutil::ensure_dir(dir.path(), Path::new(".git")).unwrap();
+                }
+                std::future::ready(Ok(1))
+            })
+            .await;
+            assert!(result.is_err());
+            assert_eq!(attempts, expected, "{operation}, leftover={leftover}");
+        }
+    }
 }
 
 #[cfg(test)]

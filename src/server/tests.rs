@@ -52,6 +52,7 @@ fn job(head: &str) -> events::Job {
     events::Job {
         id: uuid::Uuid::new_v4().simple().to_string(),
         trigger: "webhook".into(),
+        comment: None,
         mode: dashboard::Mode::Standard,
         repo: events::Repo::parse(&repository(), 9).unwrap(),
         kind: events::Kind::Review {

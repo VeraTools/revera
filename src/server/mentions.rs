@@ -274,7 +274,14 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
             &token,
             None,
         )
-        .await?;
+        .await;
+    let pr = match pr {
+        Ok(pr) => pr,
+        Err(error) => {
+            confused(server, &request.repo, request.comment, &token).await;
+            return Err(error);
+        }
+    };
     if pr["state"] == "closed" {
         return reply(
             server,
@@ -297,8 +304,30 @@ pub async fn handle(server: &Server, app: &app::App, request: Request) -> Result
         "mention",
     );
     job.mode = override_mode.unwrap_or(mode);
+    job.comment = Some(request.comment);
     server.enqueue_inner(job, Some(&admission)).await;
     Ok(())
+}
+
+pub(super) async fn confused(server: &Server, repo: &Repo, comment: u64, token: &str) {
+    if let Err(error) = server
+        .api
+        .request(
+            reqwest::Method::POST,
+            &format!(
+                "/repos/{}/issues/comments/{comment}/reactions",
+                repo.full_name
+            ),
+            token,
+            Some(json!({"content": "confused"})),
+        )
+        .await
+    {
+        tracing::warn!(
+            "failure reaction: {}",
+            crate::redact::diagnostic(&format!("{error:#}"))
+        );
+    }
 }
 
 pub(super) async fn reply(

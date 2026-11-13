@@ -460,6 +460,7 @@ async fn mentions_acknowledge_then_force_current_head_and_ignore_auto_filters() 
         assert_eq!(review.head(), "current-head-not-webhook-head");
         assert_eq!(review.mode, expected);
         assert_eq!(review.trigger, "mention");
+        assert_eq!(review.comment, Some(33));
         assert!(matches!(
             review.kind,
             events::Kind::Review { force: true, .. }
@@ -1038,4 +1039,298 @@ fn builtin_profiles_use_deep_panel_and_preserve_validation_and_index_identity() 
     .unwrap();
     user_quick.apply_profile("quick").unwrap();
     assert_eq!(user_quick.review_fingerprint("baseline"), fingerprints[1]);
+}
+
+#[tokio::test]
+async fn failed_pr_lookup_after_acknowledgement_adds_confused_reaction() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    mention_token(&mock).await;
+    for content in ["eyes", "confused"] {
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/comments/33/reactions"))
+            .and(body_json(json!({"content": content})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls/7"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let request = mentions::event(
+        &comment("@revera-test review"),
+        "revera-test",
+        &Preferences::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        mentions::handle(&server, &test_app(), request)
+            .await
+            .is_err()
+    );
+    assert!(server.queue.lock().await.pending.is_empty());
+}
+
+// A local smart-git transport exercises the actual fetch/retry path without
+// changing PATH or contacting GitHub. Only this fixture enables ext transport.
+async fn fetch_fixture(
+    mock: &MockServer,
+    permanent: bool,
+    child: &str,
+) -> (tempfile::TempDir, Arc<Server>, events::Job) {
+    let (data, server) = server(
+        mock,
+        runner::Runner {
+            executable: "/bin/sh".into(),
+            prefix: vec!["-c".into(), child.into(), "child".into()],
+        },
+        true,
+    )
+    .await;
+    let source = crate::fsutil::ensure_dir(data.path(), Path::new("source")).unwrap();
+    git(&source, &["init", "-q"]);
+    git(&source, &["config", "user.email", "test@example.com"]);
+    git(&source, &["config", "user.name", "test"]);
+    git(
+        &source,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ],
+    );
+    let head = crate::git::current_head(&source).await.unwrap();
+    git(&source, &["update-ref", "refs/pull/7/head", &head]);
+    let ws = crate::fsutil::ensure_dir(data.path(), Path::new("repos/owner/repo")).unwrap();
+    git(
+        &ws,
+        &["clone", "--no-checkout", source.to_str().unwrap(), "."],
+    );
+    git(&ws, &["config", "protocol.ext.allow", "always"]);
+    let transport = data.path().join("transport.sh");
+    let count = data.path().join("attempts");
+    let script = format!(
+        "n=0; [ ! -f '{count}' ] || n=$(cat '{count}')\nn=$((n+1)); echo $n > '{count}'\n\
+         if [ $n -eq 1 ] || [ '{permanent}' = true ]; then echo 'error: RPC failed; HTTP 404' >&2; exit 1; fi\n\
+         exec git-upload-pack '{source}'\n",
+        count = count.display(),
+        source = source.display(),
+    );
+    crate::fsutil::write_output(data.path(), &transport, script.as_bytes()).unwrap();
+    git(
+        &ws,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("ext::sh {}", transport.display()),
+        ],
+    );
+    let mut current = job(&head);
+    if let events::Kind::Review { pr, .. } = &mut current.kind {
+        pr["base"]["sha"] = json!(head);
+    }
+    (data, server, current)
+}
+
+async fn review_check_mocks(mock: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/app/installations/9/access_tokens"))
+        .and(body_json(json!({"repository_ids": [1], "permissions": {
+            "contents": "read", "pull_requests": "write", "checks": "write", "metadata": "read"
+        }})))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(json!({"token": "fetch-review-token"})),
+        )
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/check-runs"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"id": 100, "html_url": "https://github.com/check/100"})),
+        )
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/owner/repo/check-runs/100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 100})))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn transient_git_fetch_is_retried_and_review_proceeds() {
+    let mock = MockServer::start().await;
+    let (data, server, current) = fetch_fixture(&mock, false,
+        "while [ $# -gt 0 ]; do if [ \"$1\" = --out ]; then shift; out=$1; fi; shift; done; \
+         printf '%s' '{\"status\":\"complete\",\"findings\":[],\"plan\":{\"summary_markdown\":\"clean\"}}' > \"$out\""
+    ).await;
+    review_check_mocks(&mock).await;
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    runner::run(server.clone(), &current, rx).await;
+    assert_eq!(
+        server.dashboard.lock().await.jobs[&current.id].status,
+        "complete"
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.path().join("attempts"))
+            .unwrap()
+            .trim(),
+        "3"
+    );
+    let log = std::fs::read_to_string(data.path().join("jobs").join(&current.id).join("log.txt"))
+        .unwrap();
+    assert_eq!(log.matches("retrying").count(), 1);
+    let requests = mock.received_requests().await.unwrap();
+    let check: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    assert_eq!(check["conclusion"], "success");
+    assert!(!requests.iter().any(|r| r.url.path().ends_with("/comments")));
+}
+
+#[tokio::test]
+async fn failed_git_fetch_completes_early_check_and_notifies_auto_and_mention_reviews() {
+    for mention in [false, true] {
+        let mock = MockServer::start().await;
+        let (data, server, mut current) = fetch_fixture(&mock, true, "exit 99").await;
+        if mention {
+            current.trigger = "mention".into();
+            current.comment = Some(33);
+        }
+        review_check_mocks(&mock).await;
+        mention_token(&mock).await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .and(header("authorization", "Bearer mention-token"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 55})))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/comments/33/reactions"))
+            .and(body_json(json!({"content": "confused"})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+            .expect(u64::from(mention))
+            .mount(&mock)
+            .await;
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        runner::run(server.clone(), &current, rx).await;
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("attempts"))
+                .unwrap()
+                .trim(),
+            "3"
+        );
+        let dashboard = server.dashboard.lock().await;
+        let summary = &dashboard.jobs[&current.id];
+        assert_eq!(summary.status, "failed");
+        let reason = summary.reason.as_deref().unwrap();
+        assert_eq!(
+            reason,
+            "error: git fetch failed after 3 attempts (see job log)"
+        );
+        assert_eq!(
+            summary.check_run_url.as_deref(),
+            Some("https://github.com/check/100")
+        );
+        assert!(!summary.check.as_ref().unwrap().pending);
+        let link = format!("https://revera.example.com/reviews/{}", current.id);
+        let requests = mock.received_requests().await.unwrap();
+        let create = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/check-runs"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&create.body).unwrap();
+        assert_eq!(body["head_sha"], current.head());
+        let check = requests
+            .iter()
+            .find(|r| r.method.as_str() == "PATCH")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&check.body).unwrap();
+        assert_eq!(body["conclusion"], "failure");
+        for expected in [reason, &link] {
+            assert!(
+                body["output"]["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected)
+            );
+        }
+        let comment = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/issues/7/comments"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&comment.body).unwrap();
+        for expected in [reason, &link, "@revera-test review", &current.head()[..7]] {
+            assert!(body["body"].as_str().unwrap().contains(expected));
+        }
+        drop(dashboard);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_review_does_not_post_failure_comment_or_reaction() {
+    let mock = MockServer::start().await;
+    let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
+    let mut current = job(&"a".repeat(40));
+    current.comment = Some(33);
+    let (_tx, rx) = tokio::sync::watch::channel(true);
+    runner::run(server.clone(), &current, rx).await;
+    assert_eq!(
+        server.dashboard.lock().await.jobs[&current.id].status,
+        "cancelled"
+    );
+    assert!(
+        !mock
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method.as_str() == "POST")
+    );
+}
+
+#[tokio::test]
+async fn published_failure_summary_skips_comment_but_still_reacts_to_mention() {
+    let mock = MockServer::start().await;
+    let (_data, server, mut current) = fetch_fixture(&mock, false,
+        "while [ $# -gt 0 ]; do if [ \"$1\" = --out ]; then shift; out=$1; fi; shift; done; \
+         printf '%s' '{\"status\":\"failed\",\"publication\":{\"summary_comment_id\":123}}' > \"$out\"; \
+         echo 'error: model failed'; exit 1"
+    ).await;
+    current.comment = Some(33);
+    review_check_mocks(&mock).await;
+    mention_token(&mock).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues/comments/33/reactions"))
+        .and(body_json(json!({"content": "confused"})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 44})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    runner::run(server.clone(), &current, rx).await;
+    assert_eq!(
+        server.dashboard.lock().await.jobs[&current.id].status,
+        "failed"
+    );
+    assert!(
+        !mock
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("/issues/7/comments"))
+    );
 }

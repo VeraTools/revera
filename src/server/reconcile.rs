@@ -341,6 +341,7 @@ impl Seen {
             jobs.push(Job {
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 trigger: "reconcile".into(),
+                comment: None,
                 mode: Mode::Standard,
                 repo: repo.clone(),
                 kind: Kind::Index,
@@ -360,6 +361,7 @@ impl Seen {
                 jobs.push(Job {
                     id: uuid::Uuid::new_v4().simple().to_string(),
                     trigger: "auto".into(),
+                    comment: None,
                     mode: preferences.mode(&repo.full_name),
                     repo: repo.clone(),
                     kind: Kind::Review {
