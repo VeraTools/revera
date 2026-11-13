@@ -326,7 +326,8 @@
       >{#each tabs as item}<Tabs.Trigger
           class="tab-trigger"
           value={item.toLowerCase()}
-          disabled={config.errors.length > 0 && item !== 'Advanced'}>{item}</Tabs.Trigger
+          disabled={config.errors.length > 0 && item !== 'Advanced' && item !== 'External'}
+          >{item}</Tabs.Trigger
         >{/each}</Tabs.List
     >
     <Tabs.Content value="models">
@@ -807,5 +808,6 @@
         >
       </div>
     </div>{/if}
-{:else if loading}<div class="loading" role="status">Loading settings…</div>{/if}
+{:else if loading}<div class="loading" role="status">Loading settings…</div>{:else}<ExternalSettings
+  />{/if}
 <SecretDialog bind:open={secretOpen} name={secretName} onsaved={refreshSecrets} />
