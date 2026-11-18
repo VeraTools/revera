@@ -409,6 +409,21 @@ mod tests {
         let parsed: crate::findings::Verdict =
             serde_json::from_value(plain_string_payload).unwrap();
         assert_eq!(parsed.counterevidence_checked, vec!["a.rs:1"]);
+
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!(true),
+            serde_json::json!(["a.rs:1", 42]),
+            serde_json::json!("[\"a.rs:1\", 42]"),
+        ] {
+            let err = super::verdict_terminal_check(&serde_json::json!({
+                "validation_status": "accepted",
+                "counterevidence_checked": invalid,
+                "rationale": "checked"
+            }))
+            .expect_err("malformed counterevidence_checked must be rejected");
+            assert!(err.contains("counterevidence_checked"), "{err}");
+        }
     }
 
     #[test]

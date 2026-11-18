@@ -27,9 +27,10 @@ rather than public issues. Expect an acknowledgement within a week.
   network or credentials, and Rust checks every patch before human-approved or
   explicitly configured draft-PR publication.
 - In the Action, the GitHub token needs `contents: read` and
-  `pull-requests: write` for publishing and is used for nothing else; fork PRs
-  are skipped by default because secrets are not available to them. In the
-  self-hosted GitHub App, jobs receive short-lived per-repository installation
-  tokens scoped to each job's required permissions.
+  `pull-requests: write` to read pull request data and publish comments, and is
+  used for nothing else; fork PRs are skipped by default because secrets are
+  not available to them. In the self-hosted GitHub App, jobs receive
+  short-lived per-repository installation tokens scoped to each job's required
+  permissions.
 - Release binaries are published with SHA-256 checksums;
   `scripts/install-revera.sh` verifies them before install.

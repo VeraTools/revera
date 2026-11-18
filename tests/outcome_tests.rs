@@ -825,7 +825,7 @@ fn summary_presentation_sanitizes_retrieval_unavailable() {
         status: Some(RunStatus::Partial),
         strategy: "baseline",
         retrieval_unavailable: Some(
-            "vera update failed: @someone see https://evil.example\n<script>alert(1)</script> [x]",
+            "vera update failed: @someone see https://docs.example.test\n<tag>detail</tag> [x]",
         ),
         ..Default::default()
     });
@@ -834,9 +834,9 @@ fn summary_presentation_sanitizes_retrieval_unavailable() {
         .find(|l| l.starts_with("> Semantic retrieval unavailable ("))
         .expect("retrieval blockquote present");
     assert!(!line.contains("@someone"), "{line}");
-    assert!(!line.contains("https://evil.example"), "{line}");
-    assert!(!line.contains("<script>"), "{line}");
-    assert!(line.contains("&lt;script>"), "{line}");
+    assert!(!line.contains("https://docs.example.test"), "{line}");
+    assert!(!line.contains("<tag>"), "{line}");
+    assert!(line.contains("&lt;tag>"), "{line}");
     assert!(line.contains(r"\[x\]"), "{line}");
     assert!(line.ends_with("; repository-wide lookups used lexical search only."));
 }

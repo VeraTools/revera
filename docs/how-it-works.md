@@ -36,11 +36,12 @@ It fails if there is still no merge base; it never falls back to a two-dot diff.
 **Retrieval.** Every run has lexical tools over the tracked files of the
 head tree (`grep_repo`, `find_files`, `read_file`, `diff_context`,
 `list_changed_files`; `.git`, `.revera` and Vera's `.vera*` directories
-excluded). When a `vera:` block is configured, Revera runs `vera index .` or `vera update .`
-once before any model call and adds `vera_search`, `vera_references`,
-`vera_grep` and `vera_overview`. Models cannot rebuild the index. If Vera is missing, fails or times out, the
-run continues lexical-only and is marked `partial` with "semantic retrieval
-unavailable".
+excluded). When a `vera:` block is configured, Revera runs `vera index .` or
+`vera update .` (retrying with `vera index .` when an update reports an
+incompatible index) once before any model call and adds `vera_search`,
+`vera_references`, `vera_grep` and `vera_overview`. Models cannot rebuild the
+index. If Vera is missing, fails or times out, the run continues lexical-only
+and is marked `partial` with "semantic retrieval unavailable".
 
 **Investigate.** The investigator reads the diff, explores with tools inside
 a tool-call and wall-clock budget, and ends by calling `submit_findings`
@@ -293,20 +294,21 @@ sets `VERA_BACKEND=api` plus `EMBEDDING_*`/`RERANKER_*` from the configured
 env names). `.revera/vera-cache.json` records Vera version, backend,
 embedding model, vector dimension and `index_key`, and is rewritten only after a
 successful, health-checked index or update. A restored or existing `.vera`
-index without matching `vera-cache.json` metadata, an unhealthy index, or an
-index whose `vera update` reports an incompatible format or provider is rebuilt
-via `vera index`, while transient update failures keep the warm index intact.
-`revera cache-key` hashes only the index-shaping
-configuration (backend, embedding origin and model, excludes, Vera
-version) so the Action's cache survives investigator, validator, reranker,
-prompt, budget and credential-name changes; it prints
-`disabled` when Vera is off, and the Action then skips the Vera download
-entirely.
+index without matching `vera-cache.json` metadata or whose `vera update` reports
+an incompatible format or provider is rebuilt via `vera index`, an unhealthy
+index is discarded so the next review rebuilds it cleanly (leaving the current
+run lexical-only), and transient update or health-probe timeouts keep the warm
+index intact. `revera cache-key` hashes only the index-shaping configuration
+(backend, embedding origin and model, excludes, Vera version) so the Action's
+cache survives investigator, validator, reranker, prompt, budget and
+credential-name changes; it prints `disabled` when Vera is off, and the Action
+then skips the Vera download entirely.
 
 ## Code map
 
 ```text
 src/
+  agent.rs      bounded tool-calling loop
   cli.rs        serve | review | index | doctor | cache-key | cache-info
   config.rs     revera.yaml schema, env expansion, profiles, effective validation
   diff.rs       unified diff → hunks → reviewable lines

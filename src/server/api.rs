@@ -1120,7 +1120,7 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                     .ok()
                     .and_then(crate::timeutil::from_unix_secs)
                 {
-                    value["pushed_at"] = json!(crate::timeutil::format_rfc3339(pushed_at));
+                    value["pushed_at"] = json!(crate::timeutil::format_rfc3339_secs_z(pushed_at));
                 }
                 if let Some(open_prs) = info.open_prs {
                     value["open_prs"] = json!(open_prs);

@@ -42,6 +42,9 @@ pub struct AttemptState {
     /// Omit echoed opaque `provider_state` items (e.g. encrypted reasoning)
     /// when a load-balanced endpoint cannot decrypt items from another key.
     pub drop_provider_state: bool,
+    /// Per-attempt marker: true only when `build()` actually emitted prior
+    /// opaque `provider_state` items in the outbound payload.
+    pub sent_provider_state: bool,
     /// After a 400 that rejected the requested effort, cap subsequent
     /// attempts to this level before falling back to dropping reasoning.
     pub reasoning_cap: Option<ReasoningEffort>,
@@ -57,6 +60,7 @@ impl Default for AttemptState {
             drop_reasoning: false,
             drop_cache_hint: false,
             drop_provider_state: false,
+            sent_provider_state: false,
             reasoning_cap: None,
             thinking_mode_retried: false,
         }
@@ -64,7 +68,8 @@ impl Default for AttemptState {
 }
 
 impl AttemptState {
-    /// Merge only rejected-field adjustments: token key, temperature and cache hints.
+    /// Merge rejected-field and encrypted-state compatibility adjustments: token
+    /// key, temperature, cache hints, and dropping un-decryptable provider state.
     /// Reasoning fallbacks and retry guards stay per-request and are never copied.
     fn merge_adjustments(&mut self, other: &Self) {
         if other.tokens_key == "max_completion_tokens" {
@@ -72,6 +77,7 @@ impl AttemptState {
         }
         self.drop_temperature |= other.drop_temperature;
         self.drop_cache_hint |= other.drop_cache_hint;
+        self.drop_provider_state |= other.drop_provider_state;
     }
 }
 
@@ -278,7 +284,6 @@ impl HttpTransport {
             ..AttemptState::default()
         };
         let mut pending = AttemptState::default();
-        let mut attempts = 0u32;
         let mut retries_used = 0u32;
         let start = Instant::now();
         loop {
@@ -287,7 +292,6 @@ impl HttpTransport {
             if !self.ledger.try_reserve(self.max_requests) {
                 return Err(ProviderError::BudgetExhausted);
             }
-            attempts += 1;
             // Also pick up adjustments learned while this request was in flight.
             attempt.merge_adjustments(&self.learned.lock().unwrap());
             let spec = match adapter.build(messages, tools, &mut attempt) {
@@ -331,16 +335,18 @@ impl HttpTransport {
                         .map(str::to_string);
                     match resp.text().await {
                         Ok(text) => Ok((status, retry_after, text)),
-                        Err(e) if (200..300).contains(&status) || status == 400 => Err(e),
+                        Err(e) if (200..300).contains(&status) || status == 400 => {
+                            Err((Some(status), e))
+                        }
                         Err(_) => Ok((status, retry_after, String::new())),
                     }
                 }
-                Err(e) => Err(e),
+                Err(e) => Err((None, e)),
             };
             match result {
                 Ok((status, retry_after, text)) => {
                     if status == 429 || status >= 500 {
-                        if attempts <= self.retries {
+                        if retries_used < self.retries {
                             self.record(
                                 &tel,
                                 &effective,
@@ -479,7 +485,7 @@ impl HttpTransport {
                         }
                     }
                 }
-                Err(e) => {
+                Err((failed_status, e)) => {
                     let reason = if e.is_timeout() {
                         FallbackReason::Timeout
                     } else {
@@ -487,8 +493,14 @@ impl HttpTransport {
                     };
                     let transient =
                         e.is_timeout() || e.is_connect() || e.is_body() || e.is_decode();
-                    let message = crate::redact::diagnostic(&e.without_url().to_string());
-                    if transient && attempts <= self.retries {
+                    let raw = e.without_url().to_string();
+                    let message = match failed_status {
+                        Some(status) => crate::redact::diagnostic(&format!(
+                            "HTTP {status} body read failed: {raw}"
+                        )),
+                        None => crate::redact::diagnostic(&raw),
+                    };
+                    if transient && retries_used < self.retries {
                         self.record(
                             &tel,
                             &effective,
@@ -520,20 +532,34 @@ impl HttpTransport {
     }
 }
 
+fn error_code(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    v["error"]["code"]
+        .as_str()
+        .or_else(|| v["code"].as_str())
+        .map(str::to_ascii_lowercase)
+}
+
+fn is_quota_or_policy(lower_body: &str, code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("insufficient_quota" | "insufficient_user_quota" | "content_policy_rejected")
+    ) || lower_body.contains("insufficient_quota")
+        || lower_body.contains("insufficient_user_quota")
+        || lower_body.contains("content_policy_rejected")
+        || lower_body.contains("usage policy")
+}
+
 fn wrapped_upstream_failure(body: &str) -> Option<FallbackReason> {
     let lower = body.to_ascii_lowercase();
-    if lower.contains("status 401")
-        || lower.contains("status 402")
-        || lower.contains("status 403")
-        || lower.contains("insufficient_quota")
-        || lower.contains("insufficient_user_quota")
-        || lower.contains("content_policy_rejected")
-        || lower.contains("usage policy")
-    {
+    let code = error_code(body);
+    if lower.contains("status 402") || is_quota_or_policy(&lower, code.as_deref()) {
+        Some(FallbackReason::QuotaOrPolicy)
+    } else if lower.contains("status 401") || lower.contains("status 403") {
         Some(FallbackReason::Authentication)
-    } else if lower.contains("status 404") || lower.contains("model_not_found") {
+    } else if lower.contains("status 404") || code.as_deref() == Some("model_not_found") {
         Some(FallbackReason::NotFound)
-    } else if lower.contains("status 429") || lower.contains("rate_limit_exceeded") {
+    } else if lower.contains("status 429") || code.as_deref() == Some("rate_limit_exceeded") {
         Some(FallbackReason::RateLimitOrServer)
     } else {
         None
@@ -542,10 +568,18 @@ fn wrapped_upstream_failure(body: &str) -> Option<FallbackReason> {
 
 fn classify_http_failure(status: u16, body: &str) -> Option<FallbackReason> {
     match status {
-        401..=403 => Some(FallbackReason::Authentication),
+        402 => Some(FallbackReason::QuotaOrPolicy),
+        401 | 403 => {
+            let lower = body.to_ascii_lowercase();
+            let code = error_code(body);
+            if is_quota_or_policy(&lower, code.as_deref()) {
+                Some(FallbackReason::QuotaOrPolicy)
+            } else {
+                Some(FallbackReason::Authentication)
+            }
+        }
         404 => Some(FallbackReason::NotFound),
         200..=299 => Some(FallbackReason::MalformedResponse),
-        400 => wrapped_upstream_failure(body),
         _ => None,
     }
 }
@@ -615,6 +649,7 @@ mod tests {
             drop_reasoning: true,
             drop_cache_hint: true,
             drop_provider_state: true,
+            sent_provider_state: true,
             reasoning_cap: Some(ReasoningEffort::Low),
             thinking_mode_retried: true,
         });
@@ -627,7 +662,8 @@ mod tests {
         assert!(learned.drop_temperature);
         assert!(!learned.drop_reasoning);
         assert!(learned.drop_cache_hint);
-        assert!(!learned.drop_provider_state);
+        assert!(learned.drop_provider_state);
+        assert!(!learned.sent_provider_state);
         assert_eq!(learned.reasoning_cap, None);
         assert!(!learned.thinking_mode_retried);
 
@@ -639,7 +675,8 @@ mod tests {
         request.merge_adjustments(&learned);
         assert!(request.drop_reasoning);
         assert_eq!(request.reasoning_cap, Some(ReasoningEffort::Low));
-        assert!(request.drop_temperature && request.drop_cache_hint);
+        assert!(request.drop_temperature && request.drop_cache_hint && request.drop_provider_state);
+        assert!(!request.sent_provider_state);
         assert_eq!(request.tokens_key, "max_completion_tokens");
     }
 }

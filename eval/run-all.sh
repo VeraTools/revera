@@ -90,19 +90,22 @@ fi
 [ "$build_real" -eq 1 ] && bash "$HERE/real/build-corpus.sh"
 [ "$build_large" -eq 1 ] && bash "$HERE/large/build-corpus.sh"
 
-# warm index once per corpus (vera enabled configs reuse the copied .vera);
+# warm index once per corpus via revera index (writes .vera + .revera/vera-cache.json);
 # configs with Vera off need no embedding endpoint, so this is optional
-if [ -n "${REVERA_EMBEDDING_BASE_URL:-}" ] && [ -n "${REVERA_EMBEDDING_API_KEY:-}" ]; then
-    export VERA_BACKEND=api \
-        EMBEDDING_MODEL_BASE_URL="${REVERA_EMBEDDING_BASE_URL}" \
-        EMBEDDING_MODEL_ID="qwen/qwen3-embedding-8b" \
-        EMBEDDING_MODEL_API_KEY="$REVERA_EMBEDDING_API_KEY"
+warm_cfg=""
+for cfg in $CONFIGS; do
+    if grep -qE '^vera:' "$HERE/configs/$cfg.yaml" && awk 'BEGIN{found=0} /^vera:/{v=1; next} v && /^[^ ]/{v=0} v && /^[[:space:]]*enabled:[[:space:]]*false/{found=1} END{exit found}' "$HERE/configs/$cfg.yaml"; then
+        warm_cfg="$HERE/configs/$cfg.yaml"
+        break
+    fi
+done
+if [ -n "$warm_cfg" ] && [ -n "${REVERA_EMBEDDING_BASE_URL:-}" ] && [ -n "${REVERA_EMBEDDING_API_KEY:-}" ]; then
     for c in $CORPORA; do
         d="$HERE/corpus/$c"
         git -C "$d" checkout -q head 2>/dev/null || true
-        (cd "$d" && vera index . >/dev/null 2>&1) || true
+        "${REVERA_BIN:-$ROOT/target/debug/revera}" index --repo "$d" --config "$warm_cfg" >/dev/null 2>&1 || true
     done
-else
+elif [ -n "$warm_cfg" ]; then
     echo "no embedding endpoint: skipping the warm Vera index" >&2
 fi
 

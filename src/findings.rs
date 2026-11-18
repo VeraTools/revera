@@ -251,25 +251,29 @@ fn lenient_fix<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>,
 }
 
 fn lenient_string_vec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    Ok(match serde_json::Value::deserialize(d)? {
-        serde_json::Value::Array(items) => items
+    let strings_only = |items: Vec<serde_json::Value>| -> Result<Vec<String>, D::Error> {
+        items
             .into_iter()
-            .filter_map(|v| match v {
-                serde_json::Value::String(s) => Some(s),
-                _ => None,
+            .map(|v| match v {
+                serde_json::Value::String(s) => Ok(s),
+                _ => Err(serde::de::Error::custom(
+                    "counterevidence_checked items must be strings",
+                )),
             })
-            .collect(),
-        serde_json::Value::String(s) => {
-            if let Ok(items) = serde_json::from_str::<Vec<String>>(&s) {
-                items
-            } else if !s.trim().is_empty() {
-                vec![s]
-            } else {
-                vec![]
-            }
-        }
-        _ => vec![],
-    })
+            .collect()
+    };
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(vec![]),
+        serde_json::Value::Array(items) => strings_only(items),
+        serde_json::Value::String(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(serde_json::Value::Array(items)) => strings_only(items),
+            _ if !s.trim().is_empty() => Ok(vec![s]),
+            _ => Ok(vec![]),
+        },
+        _ => Err(serde::de::Error::custom(
+            "counterevidence_checked must be an array of strings or a string",
+        )),
+    }
 }
 
 fn normalize_title(t: &str) -> Vec<String> {

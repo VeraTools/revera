@@ -130,7 +130,9 @@ fn command_label(args: &[&str]) -> String {
 }
 
 fn requires_reindex(err: &str) -> bool {
-    err.contains("Index format version mismatch") || err.contains("Please re-index")
+    err.contains("Index format version mismatch")
+        || err.contains("Please re-index")
+        || err.contains("to rebuild the full index")
 }
 
 fn index_args<'a>(verb: &'a str, exclude: &'a [String]) -> Vec<&'a str> {
@@ -473,6 +475,8 @@ impl VeraClient {
 
     fn discard_index(&self, index_dir: &Path) -> Result<()> {
         remove_any(index_dir)?;
+        let _ = remove_any(&self.repo_root.join(".vera.old"));
+        let _ = remove_any(&self.repo_root.join(".vera.build"));
         let revera_dir = self.repo_root.join(".revera");
         if std::fs::symlink_metadata(&revera_dir).is_ok_and(|m| !m.file_type().is_dir()) {
             remove_any(&revera_dir)?;
@@ -523,6 +527,16 @@ impl VeraClient {
             self.discard_index(&index_dir)?;
             indexed = false;
         }
+        if !indexed {
+            let _ = remove_any(&self.repo_root.join(".vera.old"));
+            let _ = remove_any(&self.repo_root.join(".vera.build"));
+            let revera_dir = self.repo_root.join(".revera");
+            if std::fs::symlink_metadata(&revera_dir).is_ok_and(|m| !m.file_type().is_dir()) {
+                remove_any(&revera_dir)?;
+            } else {
+                let _ = remove_any(&Self::cache_info_path(&self.repo_root));
+            }
+        }
         self.claim_saved_embeddings()?;
         let mut verb = if indexed { "update" } else { "index" };
         let summary = match self.run_json_index(&index_args(verb, &self.exclude)).await {
@@ -545,11 +559,17 @@ impl VeraClient {
             );
         }
         if let Err(e) = self.check_health().await {
+            let msg = format!("{e:#}");
+            if msg.contains("timed out after ") || msg.contains("run time budget exhausted") {
+                return Err(e.context(format!("vera {verb} health check timed out")));
+            }
             let _ = remove_any(&index_dir);
             let _ = remove_any(&Self::cache_info_path(&self.repo_root));
             return Err(e.context(format!("vera {verb} left an unhealthy index")));
         }
-        self.write_cache_info().await.ok();
+        if let Err(e) = self.write_cache_info().await {
+            tracing::warn!("failed to write vera cache metadata: {e:#}");
+        }
         tracing::info!("vera {verb}: {}", index_summary_line(&summary));
         Ok(summary)
     }
@@ -1024,5 +1044,71 @@ mod tests {
         assert!(super::is_real_dir(&root3.join(".vera")));
         assert!(root3.join(".vera/built").exists());
         assert!(outside.join("keep").exists());
+    }
+
+    #[tokio::test]
+    async fn health_check_timeout_preserves_warm_index_and_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        for path in [".vera", ".revera"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        std::fs::write(root.join(".vera/warm"), "keep").unwrap();
+        std::fs::write(
+            root.join(".revera/vera-cache.json"),
+            r#"{"vera_version":"2.4.1","backend":"api","embedding_model":"m","dim":8,"updated_at":"","index_key":"same"}"#,
+        )
+        .unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  update) echo '{}';;\n  stats) sleep 5;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "same".into();
+        let err = format!(
+            "{:#}",
+            client
+                .ensure_index_within(Some(std::time::Duration::from_secs(1)))
+                .await
+                .unwrap_err()
+        );
+        assert!(err.contains("health check timed out"), "{err}");
+        assert!(root.join(".vera/warm").exists());
+        assert!(super::VeraClient::cache_info_path(&root).exists());
+    }
+
+    #[tokio::test]
+    async fn cold_build_and_discard_clear_vera_old_and_build_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        for path in [".vera.old", ".vera.build"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        std::fs::write(root.join(".vera.old/stale"), "old").unwrap();
+        std::fs::write(root.join(".vera.build/tmp"), "partial").unwrap();
+        let exe = dir.path().join("vera");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ncase $1 in\n  index) [ -e .vera.old ] && exit 1; [ -e .vera.build ] && exit 1; mkdir -p .vera; touch .vera/fresh; echo '{}';;\n  stats) echo '{\"chunk_count\":1}';;\n  --version) echo 'vera 2.5.0';;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut client = super::VeraClient::disabled(&root);
+        client.exe = exe;
+        client.backend = "api".into();
+        client.index_key = "k1".into();
+        client.ensure_index().await.unwrap();
+        assert!(!root.join(".vera.old").exists());
+        assert!(!root.join(".vera.build").exists());
+        assert!(root.join(".vera/fresh").exists());
     }
 }

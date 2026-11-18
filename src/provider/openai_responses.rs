@@ -154,6 +154,10 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         tools: &[ToolSpec],
         attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
+        attempt.sent_provider_state = !attempt.drop_provider_state
+            && messages.iter().any(
+                |m| matches!(&m.provider_state, Some(Value::Array(items)) if !items.is_empty()),
+            );
         let (instructions, input) = to_input(messages, attempt.drop_provider_state);
         let tool_specs: Vec<Value> = tools
             .iter()
@@ -190,7 +194,9 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         let r = &self.route.reasoning;
         if r.enabled() && !attempt.drop_reasoning {
             body["reasoning"] = json!({"effort": self.effort(attempt).as_str()});
-            body["include"] = json!(["reasoning.encrypted_content"]);
+            if !attempt.drop_provider_state {
+                body["include"] = json!(["reasoning.encrypted_content"]);
+            }
         }
         let mut headers = vec![
             (
@@ -218,6 +224,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
             return Parse::RetrySameSlot("400: retrying without prompt cache hint".into());
         }
         if status == 400
+            && attempt.sent_provider_state
             && !attempt.drop_provider_state
             && (body.contains("invalid_encrypted_content")
                 || body

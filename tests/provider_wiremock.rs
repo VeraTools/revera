@@ -16,7 +16,7 @@ fn retry_after_supports_delta_dates_and_caps() {
         HttpTransport::retry_delay(Some("3"), 1, now),
         std::time::Duration::from_secs(3)
     );
-    let date = format_rfc2822(now + TimeDuration::seconds(10));
+    let date = format_rfc2822(now + TimeDuration::seconds(10)).unwrap();
     let date_delay = HttpTransport::retry_delay(Some(&date), 1, now);
     assert!((9..=10).contains(&date_delay.as_secs()));
     assert_eq!(
@@ -489,6 +489,44 @@ async fn aborted_body_read_retries_once_and_falls_back_as_transport() {
 }
 
 #[tokio::test]
+async fn same_slot_adjustment_does_not_consume_transient_retry_allowance() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(|req: &wiremock::Request| !String::from_utf8_lossy(&req.body).contains("max_completion_tokens"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(|req: &wiremock::Request| {
+            String::from_utf8_lossy(&req.body).contains("max_completion_tokens")
+        })
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(|req: &wiremock::Request| {
+            String::from_utf8_lossy(&req.body).contains("max_completion_tokens")
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let route = route_for(&server.uri(), Protocol::OpenaiChat, "test-model");
+    let ledger = LedgerHandle::new();
+    let c = routed_client(&route, &ledger, "retry-slot", 5, 1);
+    let completion = c.complete(&[ChatMessage::user("hi")], &[]).await.unwrap();
+    assert_eq!(completion.message.tool_calls[0].name, "submit_findings");
+    assert_eq!(ledger.request_count(), 3);
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn fallback_uses_its_own_request_timeout() {
     let primary = MockServer::start().await;
     let backup = MockServer::start().await;
@@ -882,19 +920,29 @@ async fn fallback_waits_for_retries_then_is_sticky_across_recreated_role_clients
 async fn fallback_provider_failure_classes_and_nonretryable_http_errors() {
     for (status, body, reason) in [
         (401, "bad key", Some("authentication")),
-        (402, "quota exhausted", Some("authentication")),
+        (402, "quota exhausted", Some("quota_or_policy")),
         (403, "denied", Some("authentication")),
         (404, "unknown model", Some("not_found")),
         (429, "rate limit", Some("rate_limit_or_server")),
         (
             400,
             r#"{"error":{"message":"status 403: blocked by upstream usage policy for reasoning","code":"content_policy_rejected"}}"#,
+            Some("quota_or_policy"),
+        ),
+        (
+            400,
+            r#"{"error":{"message":"status 401: invalid api key"}}"#,
             Some("authentication"),
         ),
         (
             400,
-            r#"{"error":{"message":"status 404: model_not_found: model-thinking"}}"#,
+            r#"{"error":{"message":"status 404: model_not_found: model-thinking","code":"model_not_found"}}"#,
             Some("not_found"),
+        ),
+        (
+            400,
+            r#"{"error":{"code":"invalid_request_error","message":"Invalid parameter for model_not_found-preview"}}"#,
+            None,
         ),
         (
             400,
@@ -3983,9 +4031,20 @@ async fn openai_responses_retries_without_prior_encrypted_reasoning_items_on_400
         .mount(&server)
         .await;
     Mock::given(method("POST"))
+        .and(|req: &wiremock::Request| String::from_utf8_lossy(&req.body).contains("call_2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"done"}]}],
+            "usage": {"input_tokens": 12, "output_tokens": 2}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
         .and(|req: &wiremock::Request| String::from_utf8_lossy(&req.body).contains("call_1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "output": [
+                {"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{}"}
+            ],
             "usage": {"input_tokens": 10, "output_tokens": 2}
         })))
         .expect(1)
@@ -4012,13 +4071,17 @@ async fn openai_responses_retries_without_prior_encrypted_reasoning_items_on_400
     messages.push(turn1.message);
     messages.push(ChatMessage::tool("call_1", "read_file", "fn a() {}"));
     let turn2 = c.complete(&messages, &[]).await.unwrap();
-    assert_eq!(turn2.message.content.as_deref(), Some("ok"));
+    messages.push(turn2.message);
+    messages.push(ChatMessage::tool("call_2", "read_file", "fn b() {}"));
+    let turn3 = c.complete(&messages, &[]).await.unwrap();
+    assert_eq!(turn3.message.content.as_deref(), Some("done"));
     server.verify().await;
 
     let reqs = server.received_requests().await.unwrap();
-    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs.len(), 4);
     let retry_body: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
     assert_eq!(retry_body["reasoning"]["effort"], "high");
+    assert!(retry_body.get("include").is_none());
     let input = retry_body["input"].as_array().unwrap();
     assert!(!input.iter().any(|item| item["type"] == "reasoning"));
     assert!(input.iter().any(|item| item["type"] == "function_call"));
@@ -4027,4 +4090,37 @@ async fn openai_responses_retries_without_prior_encrypted_reasoning_items_on_400
             .iter()
             .any(|item| item["type"] == "function_call_output")
     );
+    let turn3_body: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    assert!(turn3_body.get("include").is_none());
+    assert!(
+        !turn3_body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "reasoning")
+    );
+
+    // Without emitted provider_state, invalid_encrypted_content must not retry.
+    let single = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "invalid_encrypted_content",
+                "message": "Encrypted content could not be decrypted or parsed."
+            }
+        })))
+        .expect(1)
+        .mount(&single)
+        .await;
+    let fresh = resp_adapter(
+        &single.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    assert!(
+        fresh
+            .complete(&[ChatMessage::user("hi")], &[])
+            .await
+            .is_err()
+    );
+    single.verify().await;
 }

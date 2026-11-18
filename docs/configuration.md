@@ -169,10 +169,11 @@ models:
 
 Revera tries the next available route after the current route exhausts its
 retries and request adjustments. Fallback applies to HTTP 429, 5xx, 401, 402,
-403 and 404; HTTP 400 responses wrapping those upstream statuses or
-quota/usage-policy rejections; timeouts, connection and transport errors; and
-empty or malformed provider responses. Other HTTP errors, exhausted budgets or
-deadlines, cancellation and agent submission failures do not trigger fallback.
+403 and 404; HTTP 400 responses wrapping upstream 401, 402, 403, 404 or 429
+errors or quota/usage-policy rejections; timeouts, connection and transport
+errors; and empty or malformed provider responses. Other HTTP errors, exhausted
+budgets or deadlines, cancellation and agent submission failures do not trigger
+fallback.
 
 A missing or empty key makes that route unavailable. The primary key may
 be missing if an alternative has a key. `revera doctor` lists key presence
@@ -529,7 +530,7 @@ and version pinning.
 | `publish` | `comment` | `dry-run` to only print the plan |
 | `fail-on` | `failed` | `failed` · `partial` · `never` |
 | `revera-version` | pinned to the Action release | Revera binary to install |
-| `vera-version` | `2.4.1` | Vera binary to install (skipped when Vera is disabled) |
+| `vera-version` | `2.5.0` | Vera binary to install (skipped when Vera is disabled) |
 | `github-token` | `${{ github.token }}` | |
 | `cache` | `true` | cache the `.vera` index between runs |
 

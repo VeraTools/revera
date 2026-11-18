@@ -185,8 +185,16 @@ where
             let suffix = if attempt == 1 { "attempt" } else { "attempts" };
             bail!("{label} {operation} failed after {attempt} {suffix} (see job log)");
         }
-        if operation == "checkout" && ws.join(".git").is_dir() {
-            let _ = clear_checkout_locks(ws);
+        if operation == "checkout"
+            && ws.join(".git").is_dir()
+            && let Err(error) = clear_checkout_locks(ws)
+        {
+            use std::io::Write;
+            writeln!(
+                log.lock().await,
+                "could not clear stale Git locks: {}",
+                crate::redact::diagnostic(&format!("{error:#}"))
+            )?;
         }
         let seconds = if attempt == 1 { 3 } else { 10 };
         use std::io::Write;

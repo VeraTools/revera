@@ -856,9 +856,10 @@ Check the [trigger migration](#triggers-review-modes-and-mentions) and
 
 ### From 0.12.2 to 0.12.6
 
-No change is required. Existing Vera indexes remain valid; unverified,
-unhealthy or format-incompatible indexes are rebuilt automatically on the next
-review.
+No change is required. The image ships Vera 2.5.0. Existing Vera indexes remain
+valid; unverified or format-incompatible indexes are rebuilt automatically
+during review, while an unhealthy index is discarded (leaving that review
+lexical-only) and rebuilt on the next fresh review.
 
 ### From 0.12.1 to 0.12.2
 
