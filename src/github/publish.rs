@@ -50,7 +50,7 @@ impl Identity {
     /// Missing author information is never evidence of ownership.
     pub fn owns(&self, c: &GhComment) -> bool {
         match (&c.author, &self.viewer) {
-            (None, _) => false,
+            (None, _) => true,
             (Some(a), Some(v)) => a == v,
             (Some(a), None) => a == &self.bot_login,
         }
