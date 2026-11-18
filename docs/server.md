@@ -272,7 +272,7 @@ explain the copy/download actions and freshness labels.
 ![Review detail](images/review.png)
 
 In **Settings**, configure model routes and fallbacks, review defaults,
-budgets, retrieval and access. **Settings → Review** also lists mention
+budgets, retrieval, fixes, external PRs and access. **Settings → Review** also lists mention
 commands; **Settings → Retrieval** includes optional web-search settings.
 **Settings → Budgets** previews the built-in Quick and Deep limits from your
 current budget; custom profiles are identified instead of showing built-in
@@ -619,8 +619,9 @@ download or setup step still fails the check, and its summary gives the reason
 and a link to the review page. Revera also posts a PR comment with the reason,
 the link and the command to try again, unless that run already updated its
 summary comment. A failed review started by a mention also gets a confused
-reaction on the requesting comment. Fetches from GitHub are tried up to three
-times; a clone is retried only when the failed attempt left nothing behind.
+reaction on the requesting comment. Fetches and blob checkouts from GitHub are
+tried up to three times; a clone is retried only when the failed attempt left
+nothing behind.
 
 Reconciliation runs at startup and every ten minutes by default. The first
 sighting records existing PR heads without reviewing them. Later head changes
@@ -816,7 +817,9 @@ selects keyed REST. Store keys in the dashboard or server environment, never YAM
 /data/external.json           tracked/ignored public PRs and rate-limit state
 /data/external/<repo-id>/     external pull-<number>/ workspaces, home and cache
 /data/fix-admissions.json     fix request rate-limit records
+/data/fix-attempts.json       hourly fix command attempt records
 /data/fix-checks.json         recent fix Checks action dedupe records
+/data/fix-denials.json        fix authorization denial records
 /data/fixes/<id>/             fix/controller records, patch.diff, patch.json and log.txt
 /data/jobs/<id>/meta.json     status, timestamps, findings and token counts
 /data/jobs/<id>/report.json   redacted CLI report, when available
@@ -851,9 +854,12 @@ Back up the data directory, then update with the same volume:
 Check the [trigger migration](#triggers-review-modes-and-mentions) and
 [existing-app permission step](#enable-mentions-on-an-existing-github-app).
 
-### From 0.12.2 to 0.12.3
+### From 0.12.2 to 0.12.6
 
-No change is required.
+No change is required. The image ships Vera 2.5.0. Existing Vera indexes remain
+valid; unverified or format-incompatible indexes are rebuilt automatically
+during review, while an unhealthy index is discarded (leaving that review
+lexical-only) and rebuilt on the next fresh review.
 
 ### From 0.12.1 to 0.12.2
 

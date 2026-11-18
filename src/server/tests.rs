@@ -270,7 +270,7 @@ fn jwt_signs_and_verifies_generated_key() {
         &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256),
     )
     .unwrap();
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::timeutil::now_unix();
     assert_eq!(decoded.claims["iss"], "42");
     assert!((decoded.claims["iat"].as_i64().unwrap() - (now - 60)).abs() <= 1);
     assert!((decoded.claims["exp"].as_i64().unwrap() - (now + 540)).abs() <= 1);
@@ -1023,7 +1023,7 @@ async fn administrator(server: &Server) -> (String, String) {
             avatar_url: "https://example.com/avatar".into(),
         },
         csrf: csrf.clone(),
-        exp: chrono::Utc::now().timestamp() + 3600,
+        exp: crate::timeutil::now_unix() + 3600,
         kind: "session".into(),
     };
     (

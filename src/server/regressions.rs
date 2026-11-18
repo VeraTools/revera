@@ -458,7 +458,7 @@ async fn sse_ends_before_emitting_to_revoked_or_expired_sessions() {
         let mock = MockServer::start().await;
         let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
         let (mut cookie, _) = administrator(&server).await;
-        let exp = chrono::Utc::now().timestamp() + 2;
+        let exp = crate::timeutil::now_unix() + 2;
         if expired {
             let mut session: auth::Session =
                 auth::verify(&server.session_key, cookie.split_once('=').unwrap().1).unwrap();
@@ -472,7 +472,7 @@ async fn sse_ends_before_emitting_to_revoked_or_expired_sessions() {
         let (url, task) = http(server.clone()).await;
         let mut response = open_events(&server, &url, &cookie).await;
         if expired {
-            while chrono::Utc::now().timestamp() < exp {
+            while crate::timeutil::now_unix() < exp {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         } else {

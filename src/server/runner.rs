@@ -167,7 +167,8 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<i32>>,
 {
-    let network = matches!(operation, "clone" | "fetch");
+    // `--filter=blob:none` checkouts fetch missing blobs lazily from the remote.
+    let network = matches!(operation, "clone" | "fetch" | "checkout");
     let label = if anonymous { "anonymous git" } else { "git" };
     for attempt in 1..=3 {
         if run().await? == 0 {
@@ -183,6 +184,17 @@ where
         if attempt == 3 || clone_left_git {
             let suffix = if attempt == 1 { "attempt" } else { "attempts" };
             bail!("{label} {operation} failed after {attempt} {suffix} (see job log)");
+        }
+        if operation == "checkout"
+            && ws.join(".git").is_dir()
+            && let Err(error) = clear_checkout_locks(ws)
+        {
+            use std::io::Write;
+            writeln!(
+                log.lock().await,
+                "could not clear stale Git locks: {}",
+                crate::redact::diagnostic(&format!("{error:#}"))
+            )?;
         }
         let seconds = if attempt == 1 { 3 } else { 10 };
         use std::io::Write;
@@ -917,7 +929,7 @@ async fn complete_check(
     let mut body = json!({
         "status": "completed",
         "conclusion": conclusion,
-        "completed_at": chrono::Utc::now().to_rfc3339(),
+        "completed_at": crate::timeutil::now_rfc3339(),
         "output": {"title": title, "summary": summary}
     });
     if !cancelled
@@ -1281,7 +1293,7 @@ mod git_retry_tests {
         for (operation, leftover, expected) in [
             ("clone", false, 3),
             ("clone", true, 1),
-            ("checkout", false, 1),
+            ("checkout", false, 3),
             ("clean", false, 1),
             ("config", false, 1),
             ("init", false, 1),
@@ -1303,6 +1315,31 @@ mod git_retry_tests {
             assert!(result.is_err());
             assert_eq!(attempts, expected, "{operation}, leftover={leftover}");
         }
+    }
+
+    #[tokio::test]
+    async fn checkout_retry_clears_checkout_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        let log = Arc::new(Mutex::new(
+            crate::fsutil::create_private(dir.path(), "log.txt").unwrap(),
+        ));
+        let mut attempts = 0;
+        retry_git(dir.path(), "checkout", false, log, || {
+            attempts += 1;
+            if attempts == 1 {
+                std::fs::write(git_dir.join("index.lock"), "stale").unwrap();
+                std::fs::write(git_dir.join("HEAD.lock"), "stale").unwrap();
+                return std::future::ready(Ok(1));
+            }
+            assert!(!git_dir.join("index.lock").exists());
+            assert!(!git_dir.join("HEAD.lock").exists());
+            std::future::ready(Ok(0))
+        })
+        .await
+        .unwrap();
+        assert_eq!(attempts, 2);
     }
 }
 

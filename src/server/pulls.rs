@@ -173,7 +173,7 @@ impl Cache {
             repo.id,
             RepoPulls {
                 pulls: pulls.into_values().collect(),
-                refreshed_at: chrono::Utc::now().to_rfc3339(),
+                refreshed_at: crate::timeutil::now_rfc3339(),
             },
         );
     }
@@ -219,7 +219,7 @@ impl Cache {
         if open {
             cached.pulls.push(pull);
         }
-        cached.refreshed_at = chrono::Utc::now().to_rfc3339();
+        cached.refreshed_at = crate::timeutil::now_rfc3339();
     }
 
     pub(super) fn remove_repo(&mut self, repo_id: u64) {

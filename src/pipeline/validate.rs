@@ -388,6 +388,42 @@ mod tests {
         }))
         .expect_err("a blank rationale must be refused");
         assert!(err.contains("rationale"), "{err}");
+
+        let json_list_payload = serde_json::json!({
+            "validation_status": "accepted",
+            "counterevidence_checked": "[\"a.rs:1\", \"b.rs:2\"]",
+            "rationale": "checked"
+        });
+        super::verdict_terminal_check(&json_list_payload)
+            .expect("JSON-encoded string array must be accepted");
+        let parsed: crate::findings::Verdict = serde_json::from_value(json_list_payload).unwrap();
+        assert_eq!(parsed.counterevidence_checked, vec!["a.rs:1", "b.rs:2"]);
+
+        let plain_string_payload = serde_json::json!({
+            "validation_status": "accepted",
+            "counterevidence_checked": "a.rs:1",
+            "rationale": "checked"
+        });
+        super::verdict_terminal_check(&plain_string_payload)
+            .expect("single string counterevidence_checked must be accepted");
+        let parsed: crate::findings::Verdict =
+            serde_json::from_value(plain_string_payload).unwrap();
+        assert_eq!(parsed.counterevidence_checked, vec!["a.rs:1"]);
+
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!(true),
+            serde_json::json!(["a.rs:1", 42]),
+            serde_json::json!("[\"a.rs:1\", 42]"),
+        ] {
+            let err = super::verdict_terminal_check(&serde_json::json!({
+                "validation_status": "accepted",
+                "counterevidence_checked": invalid,
+                "rationale": "checked"
+            }))
+            .expect_err("malformed counterevidence_checked must be rejected");
+            assert!(err.contains("counterevidence_checked"), "{err}");
+        }
     }
 
     #[test]

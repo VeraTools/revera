@@ -445,7 +445,7 @@ async fn external_rate_limits_back_off_and_persist() {
                 .insert_header("x-ratelimit-remaining", "0")
                 .insert_header(
                     "x-ratelimit-reset",
-                    (chrono::Utc::now().timestamp() + 180).to_string(),
+                    (crate::timeutil::now_unix() + 180).to_string(),
                 );
         }
         Mock::given(method("GET"))
@@ -465,9 +465,7 @@ async fn external_rate_limits_back_off_and_persist() {
             assert_eq!(error.status, 429);
             assert!(error.retry_after.unwrap() >= 59);
         }
-        assert!(
-            external::Store::load(data.path()).unwrap().retry_at > chrono::Utc::now().timestamp()
-        );
+        assert!(external::Store::load(data.path()).unwrap().retry_at > crate::timeutil::now_unix());
     }
 }
 
@@ -569,7 +567,7 @@ async fn external_hourly_and_tracking_caps_persist_and_retry_without_losing_head
     // Expired admissions are removed; the initial head is still due for review.
     {
         let mut store = server.external.lock().await;
-        store.admissions[0] = chrono::Utc::now().timestamp() - 3601;
+        store.admissions[0] = crate::timeutil::now_unix() - 3601;
         store.tracked.get_mut(&selection.url).unwrap().next_poll = 0;
     }
     external::poll(&server).await.unwrap();
@@ -726,7 +724,7 @@ async fn external_retention_bounds_idle_checkouts_but_preserves_active_and_track
         .preferences
         .external
         .max_checkouts = 2;
-    let now = chrono::Utc::now();
+    let now = crate::timeutil::now_utc();
     for (id, days) in [(1, 0), (2, 1), (3, 2), (4, 8), (5, 9), (6, 9), (7, 9)] {
         crate::fsutil::ensure_dir(
             data.path(),
@@ -738,7 +736,8 @@ async fn external_retention_bounds_idle_checkouts_but_preserves_active_and_track
         review.repo.id = id;
         review.repo.installation = None;
         let mut summary = dashboard::JobSummary::queued(&review);
-        summary.queued_at = (now - chrono::Duration::days(days)).to_rfc3339();
+        summary.queued_at =
+            crate::timeutil::format_rfc3339(now - crate::timeutil::Duration::days(days));
         summary.set_state("complete", None);
         server.update_job(summary).await.unwrap();
         if id == 5 || id == 6 {
@@ -842,7 +841,7 @@ async fn external_unconfigured_and_rejected_admissions_preserve_quota_and_retry_
 async fn external_retention_prunes_inactive_prs_inside_an_active_repository() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
-    let now = chrono::Utc::now();
+    let now = crate::timeutil::now_utc();
     server
         .dashboard
         .lock()
@@ -872,7 +871,8 @@ async fn external_retention_prunes_inactive_prs_inside_an_active_repository() {
             "manual",
         );
         let mut summary = dashboard::JobSummary::queued(&review);
-        summary.queued_at = (now - chrono::Duration::days(days)).to_rfc3339();
+        summary.queued_at =
+            crate::timeutil::format_rfc3339(now - crate::timeutil::Duration::days(days));
         summary.set_state("complete", None);
         server.update_job(summary).await.unwrap();
         if matches!(number, 10 | 11) {

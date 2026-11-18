@@ -2,7 +2,7 @@ FROM debian:trixie-slim AS binaries
 
 ARG TARGETARCH
 ARG DEBIAN_FRONTEND=noninteractive
-ARG VERA_VERSION=2.4.1
+ARG VERA_VERSION=2.5.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl python3 \

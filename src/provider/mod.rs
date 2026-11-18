@@ -142,6 +142,7 @@ pub enum ProviderError {
 pub enum FallbackReason {
     RateLimitOrServer,
     Authentication,
+    QuotaOrPolicy,
     NotFound,
     Timeout,
     Transport,

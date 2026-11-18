@@ -62,7 +62,7 @@ pub struct Finding {
     pub introduced_by_change: bool,
     #[serde(default)]
     pub supporting_evidence: Vec<Evidence>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub counterevidence_checked: Vec<String>,
     #[serde(default)]
     pub validation_status: Option<ValidationStatus>,
@@ -116,7 +116,7 @@ pub fn finding_id(file: &str, defect_key: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verdict {
     pub validation_status: ValidationStatus,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub counterevidence_checked: Vec<String>,
     #[serde(default)]
     pub severity: Option<Severity>,
@@ -248,6 +248,32 @@ fn lenient_fix<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>,
         serde_json::Value::String(s) if !s.trim().is_empty() => Some(s),
         _ => None,
     })
+}
+
+fn lenient_string_vec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let strings_only = |items: Vec<serde_json::Value>| -> Result<Vec<String>, D::Error> {
+        items
+            .into_iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => Ok(s),
+                _ => Err(serde::de::Error::custom(
+                    "counterevidence_checked items must be strings",
+                )),
+            })
+            .collect()
+    };
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(vec![]),
+        serde_json::Value::Array(items) => strings_only(items),
+        serde_json::Value::String(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(serde_json::Value::Array(items)) => strings_only(items),
+            _ if !s.trim().is_empty() => Ok(vec![s]),
+            _ => Ok(vec![]),
+        },
+        _ => Err(serde::de::Error::custom(
+            "counterevidence_checked must be an array of strings or a string",
+        )),
+    }
 }
 
 fn normalize_title(t: &str) -> Vec<String> {

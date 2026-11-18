@@ -57,6 +57,7 @@
   const reasons: Record<string, string> = {
     rate_limit_or_server: 'rate limit or server error',
     authentication: 'key rejected',
+    quota_or_policy: 'quota or policy limit',
     not_found: 'model not found',
     timeout: 'request timed out',
     transport: 'connection failed',

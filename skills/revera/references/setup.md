@@ -17,6 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@<full-sha> # vX.Y.Z
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: VeraTools/revera@<full-sha> # vX.Y.Z

@@ -18,6 +18,7 @@ pub mod report;
 pub mod server;
 pub mod state;
 pub mod text;
+pub mod timeutil;
 pub mod timing;
 pub mod tls;
 pub mod tools;

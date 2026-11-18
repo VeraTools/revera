@@ -217,7 +217,7 @@ without it.
 - [How it works](docs/how-it-works.md), including review strategies and trust boundaries
 - [Evaluation](docs/evaluation.md): measurements, limitations and reproduction
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
-- [Upgrading from 0.7.0](docs/server.md#from-070-to-080): existing review-only installations need no change
+- [Upgrading the GitHub App](docs/server.md#upgrading)
 
 ## License
 

@@ -142,7 +142,7 @@ Protocol wire formats:
 | protocol | request | reasoning |
 |---|---|---|
 | `openai-chat` | `POST {base_url}/chat/completions` | `reasoning_effort` or `reasoning: {effort}` |
-| `openai-responses` | `POST {base_url}/responses` | `reasoning.effort`; encrypted reasoning items echoed back |
+| `openai-responses` | `POST {base_url}/responses` | `reasoning.effort`; encrypted reasoning items echoed back (omitted on retry if rejected as undecryptable) |
 | `anthropic` | `POST {base_url}/v1/messages` (default `https://api.anthropic.com`) | `thinking: {type: adaptive}` + `output_config.effort` by default; `thinking.budget_tokens` for explicit budgets or models without adaptive thinking |
 | `gemini` | `POST {base_url}/v1beta/models/{model}:generateContent` | `thinkingConfig` |
 
@@ -168,10 +168,12 @@ models:
 ```
 
 Revera tries the next available route after the current route exhausts its
-retries and request adjustments. Fallback applies to HTTP 429, 5xx, 401, 403
-and 404; timeouts, connection and transport errors; and empty or malformed
-provider responses. Other HTTP errors, exhausted budgets or deadlines,
-cancellation and agent submission failures do not trigger fallback.
+retries and request adjustments. Fallback applies to HTTP 429, 5xx, 401, 402,
+403 and 404; HTTP 400 responses wrapping upstream 401, 402, 403, 404 or 429
+errors or quota/usage-policy rejections; timeouts, connection and transport
+errors; and empty or malformed provider responses. Other HTTP errors, exhausted
+budgets or deadlines, cancellation and agent submission failures do not trigger
+fallback.
 
 A missing or empty key makes that route unavailable. The primary key may
 be missing if an alternative has a key. `revera doctor` lists key presence
@@ -503,11 +505,12 @@ the built-in deep profile still turns an effective baseline into a panel.
 The [CLI guide](cli.md) covers installation and the first local review.
 
 ```sh
-revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
+revera review --repo <path> --base <rev> [--head <rev>] [--config <file>] [--profile <name>] [--guidance off|review|agents|skills] [--notes-file <file>] [--playbook-dir <dir>] [--strategy <s>] [--publish dry-run|comment] [--out <report.json>] [--force]
 revera review --event "$GITHUB_EVENT_PATH" [--config <file>] --publish comment
+revera serve --public-url <https-url> [--data-dir <dir>] [--config <file>] [--listen <addr>] [--concurrency <n>] [--reconcile-minutes <m>]
 revera doctor [--config <file>] [--profile <name>] [--strategy <s>] [--publish dry-run|comment]
 revera index [--repo <path>] [--config <file>] [--profile <name>]
-revera cache-key [--config <file>] [--profile <name>]
+revera cache-key [--repo <path>] [--config <file>] [--profile <name>] [--event <file>]
 revera cache-info [--repo <path>]
 ```
 
@@ -527,7 +530,7 @@ and version pinning.
 | `publish` | `comment` | `dry-run` to only print the plan |
 | `fail-on` | `failed` | `failed` · `partial` · `never` |
 | `revera-version` | pinned to the Action release | Revera binary to install |
-| `vera-version` | `2.4.1` | Vera binary to install (skipped when Vera is disabled) |
+| `vera-version` | `2.5.0` | Vera binary to install (skipped when Vera is disabled) |
 | `github-token` | `${{ github.token }}` | |
 | `cache` | `true` | cache the `.vera` index between runs |
 

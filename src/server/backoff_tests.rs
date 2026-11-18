@@ -1,17 +1,18 @@
 use super::*;
-use chrono::{DateTime, Duration, Utc};
+use crate::timeutil::{
+    Duration, OffsetDateTime, format_rfc3339, from_unix_secs, now_utc, parse_rfc3339,
+};
 
-fn index_history(order: i64, status: &str, finished: DateTime<Utc>) -> dashboard::JobSummary {
+fn index_history(order: i64, status: &str, finished: OffsetDateTime) -> dashboard::JobSummary {
     let job = events::Job::new(job("").repo, events::Kind::Index, "reconcile");
     let mut summary = dashboard::JobSummary::queued(&job);
     // IDs deliberately sort in the opposite order to the enqueue timestamps.
     summary.id = format!("{:032}", 1000 - order);
-    summary.queued_at = (DateTime::from_timestamp(1_700_000_000, 0).unwrap()
-        + Duration::seconds(order))
-    .to_rfc3339();
+    summary.queued_at =
+        format_rfc3339(from_unix_secs(1_700_000_000).unwrap() + Duration::seconds(order));
     summary.set_state(status, None);
     if summary.terminal() {
-        summary.finished_at = Some(finished.to_rfc3339());
+        summary.finished_at = Some(format_rfc3339(finished));
     }
     summary
 }
@@ -49,9 +50,7 @@ pub(super) async fn inventory(mock: &MockServer, repo: Value, prs: Vec<Value>, t
 async fn index_backoff_doubles_from_latest_finish_and_caps_at_one_day() {
     let mock = MockServer::start().await;
     let (data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
-    let base = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc);
+    let base = parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
     assert_eq!(
         server.dashboard.lock().await.index_retry_at("owner/repo"),
         None
@@ -132,7 +131,7 @@ async fn reconcile_waits_for_backoff_on_both_index_triggers_but_not_reviews() {
                 .0
                 .get(&repo.id)
                 .map(|seen| seen.pushed_at.clone());
-            let failed = index_history(1, status, Utc::now());
+            let failed = index_history(1, status, now_utc());
             server.update_job(failed.clone()).await.unwrap();
             let mut value = repository();
             value["pushed_at"] = json!(repo.pushed_at);
@@ -153,7 +152,7 @@ async fn reconcile_waits_for_backoff_on_both_index_triggers_but_not_reviews() {
                 before.unwrap_or_default()
             );
             let mut due = failed;
-            due.finished_at = Some((Utc::now() - Duration::minutes(10)).to_rfc3339());
+            due.finished_at = Some(format_rfc3339(now_utc() - Duration::minutes(10)));
             server.update_job(due).await.unwrap();
             reconcile::once(&server).await.unwrap();
             let queue = server.queue.lock().await;
@@ -170,7 +169,7 @@ async fn push_webhook_with_new_pushed_at_bypasses_index_backoff() {
     let mock = MockServer::start().await;
     let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
     server
-        .update_job(index_history(1, "failed", Utc::now()))
+        .update_job(index_history(1, "failed", now_utc()))
         .await
         .unwrap();
     assert!(
@@ -180,7 +179,7 @@ async fn push_webhook_with_new_pushed_at_bypasses_index_backoff() {
             .await
             .index_retry_at("owner/repo")
             .unwrap()
-            > Utc::now()
+            > now_utc()
     );
     let (url, task) = http(server.clone()).await;
     let mut repo = repository();
@@ -218,7 +217,7 @@ async fn manual_index_bypasses_backoff_and_repo_api_reports_retry_time() {
     let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
     let (cookie, csrf) = administrator(&server).await;
     server
-        .update_job(index_history(1, "failed", Utc::now()))
+        .update_job(index_history(1, "failed", now_utc()))
         .await
         .unwrap();
     inventory(&mock, repository(), vec![], 1).await;
@@ -241,9 +240,7 @@ async fn manual_index_bypasses_backoff_and_repo_api_reports_retry_time() {
         .json()
         .await
         .unwrap();
-    let retry_at = DateTime::parse_from_rfc3339(repos[0]["index"]["retry_at"].as_str().unwrap())
-        .unwrap()
-        .with_timezone(&Utc);
+    let retry_at = parse_rfc3339(repos[0]["index"]["retry_at"].as_str().unwrap()).unwrap();
     assert_eq!(retry_at, expected);
     let response = client
         .post(format!("{url}/api/repos/owner/repo/index"))
@@ -267,7 +264,7 @@ async fn completed_index_resets_backoff_and_clears_repo_retry_time() {
     let mock = MockServer::start().await;
     let (_data, server) = server(&mock, runner::Runner::current().unwrap(), true).await;
     let (cookie, _) = administrator(&server).await;
-    let finished = Utc::now();
+    let finished = now_utc();
     for order in 1..=3 {
         server
             .update_job(index_history(order, "failed", finished))

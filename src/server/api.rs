@@ -323,12 +323,11 @@ fn ordered(dashboard: &Dashboard) -> Vec<JobSummary> {
     jobs
 }
 
-fn history_window(jobs: &[JobSummary], cutoff: chrono::DateTime<chrono::Utc>) -> Value {
+fn history_window(jobs: &[JobSummary], cutoff: crate::timeutil::OffsetDateTime) -> Value {
     let window: Vec<_> = jobs
         .iter()
         .filter(|job| {
-            chrono::DateTime::parse_from_rfc3339(&job.queued_at)
-                .is_ok_and(|queued| queued >= cutoff)
+            crate::timeutil::parse_rfc3339(&job.queued_at).is_some_and(|queued| queued >= cutoff)
         })
         .collect();
     let reviews: Vec<_> = window.iter().filter(|job| job.kind == "review").collect();
@@ -421,10 +420,10 @@ async fn overview(State(server): State<Arc<Server>>) -> ApiResult {
         })
         .collect();
     let github = dashboard.github.clone();
-    let now = chrono::Utc::now();
+    let now = crate::timeutil::now_utc();
     let recent: Vec<_> = jobs.iter().take(10).cloned().collect();
-    let last_24h = history_window(&jobs, now - chrono::Duration::hours(24));
-    let last_7d = history_window(&jobs, now - chrono::Duration::days(7));
+    let last_24h = history_window(&jobs, now - crate::timeutil::Duration::hours(24));
+    let last_7d = history_window(&jobs, now - crate::timeutil::Duration::days(7));
     let history_since = jobs.last().map(|job| &job.queued_at);
     let running: Vec<_> = jobs
         .iter()
@@ -1092,11 +1091,12 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                 if let Some(updated) = updated {
                     index["updated_at"] = json!(updated);
                 }
-                if let Some(retry_at) = dashboard
-                    .index_retry_at(&info.repo.full_name)
-                    .filter(|at| dashboard.preferences.index_on_push && *at > chrono::Utc::now())
+                if let Some(retry_at) =
+                    dashboard.index_retry_at(&info.repo.full_name).filter(|at| {
+                        dashboard.preferences.index_on_push && *at > crate::timeutil::now_utc()
+                    })
                 {
-                    index["retry_at"] = json!(retry_at.to_rfc3339());
+                    index["retry_at"] = json!(crate::timeutil::format_rfc3339(retry_at));
                 }
                 let mut value = json!({"full_name": info.repo.full_name, "private": info.private,
             "default_branch": info.repo.default_branch,
@@ -1118,10 +1118,9 @@ async fn repos(State(server): State<Arc<Server>>) -> Json<Value> {
                     .pushed_at
                     .parse::<i64>()
                     .ok()
-                    .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                    .and_then(crate::timeutil::from_unix_secs)
                 {
-                    value["pushed_at"] =
-                        json!(pushed_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+                    value["pushed_at"] = json!(crate::timeutil::format_rfc3339_secs_z(pushed_at));
                 }
                 if let Some(open_prs) = info.open_prs {
                     value["open_prs"] = json!(open_prs);
@@ -1754,7 +1753,7 @@ async fn run_test(server: &Server, input: Role) -> Result<Value, Error> {
     let mut health = value.clone();
     health["role"] = json!(input.role);
     health["model"] = json!(model.unwrap_or_default());
-    health["checked_at"] = json!(chrono::Utc::now().to_rfc3339());
+    health["checked_at"] = json!(crate::timeutil::now_rfc3339());
     let mut dashboard = server.dashboard.lock().await;
     let yaml = server.config_yaml()?;
     dashboard.sync_health(
@@ -1814,7 +1813,7 @@ async fn events(
                 match received {
                     Ok((name, mut value)) => {
                         let dashboard = server.dashboard.lock().await;
-                        if session.exp <= chrono::Utc::now().timestamp()
+                        if session.exp <= crate::timeutil::now_unix()
                             || !dashboard.preferences.admin(&session.user.login)
                         {
                             return None;

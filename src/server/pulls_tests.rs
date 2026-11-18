@@ -109,9 +109,7 @@ async fn webhook_cache_upserts_all_supported_actions_and_removes_closed_and_unin
         );
         webhook_pull(&url, action, pull).await;
         let value = get(&client, &url, "/api/pulls", &cookie).await;
-        assert!(
-            chrono::DateTime::parse_from_rfc3339(value["refreshed_at"].as_str().unwrap()).is_ok()
-        );
+        assert!(crate::timeutil::parse_rfc3339(value["refreshed_at"].as_str().unwrap()).is_some());
         let pulls = value["pulls"].as_array().unwrap();
         assert_eq!(pulls.len(), 1);
         let pull = &pulls[0];
