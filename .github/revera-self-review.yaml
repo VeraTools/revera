@@ -7,34 +7,34 @@ review:
   max_diff_bytes: 400000
 models:
   investigator:
-    protocol: openai-chat
+    protocol: openai-responses
     base_url: ${REVERA_MODEL_BASE_URL}
     api_key_env: REVERA_MODEL_API_KEY
-    model: glm-5.3
+    model: gpt-6.1-sol
     max_output_tokens: 16000
     temperature: 0.2
     reasoning: high
     fallback:
-      - protocol: openai-chat
+      - protocol: openai-responses
         base_url: ${REVERA_FALLBACK_BASE_URL}
         api_key_env: REVERA_FALLBACK_API_KEY
-        model: factory/glm-5.3
+        model: factory/gpt-6.1-sol
         max_output_tokens: 16000
         temperature: 0.2
         reasoning: high
   validator:
-    protocol: openai-chat
+    protocol: openai-responses
     base_url: ${REVERA_MODEL_BASE_URL}
     api_key_env: REVERA_MODEL_API_KEY
-    model: glm-5.3-flash
+    model: gpt-6.1-sol
     max_output_tokens: 16000
     temperature: 0.2
     reasoning: high
     fallback:
-      - protocol: openai-chat
+      - protocol: openai-responses
         base_url: ${REVERA_FALLBACK_BASE_URL}
         api_key_env: REVERA_FALLBACK_API_KEY
-        model: factory/glm-5.3-flash
+        model: factory/gpt-6.1-sol
         max_output_tokens: 16000
         temperature: 0.2
         reasoning: high
