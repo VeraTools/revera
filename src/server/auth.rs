@@ -84,7 +84,7 @@ pub fn set_cookie(name: &str, value: &str, seconds: u64) -> String {
 fn purpose(server: &Server, headers: &HeaderMap, cookie_name: &str, kind: &str) -> Option<Value> {
     let payload: Value = verify(&server.session_key, cookie(headers, cookie_name)?)?;
     (payload["kind"].as_str() == Some(kind)
-        && payload["exp"].as_i64()? > chrono::Utc::now().timestamp())
+        && payload["exp"].as_i64()? > crate::timeutil::now_unix())
     .then_some(payload)
 }
 
@@ -94,7 +94,7 @@ pub fn bootstrap(server: &Server, headers: &HeaderMap) -> bool {
 
 pub async fn session(server: &Server, headers: &HeaderMap) -> Option<Session> {
     let session: Session = verify(&server.session_key, cookie(headers, SESSION)?)?;
-    if session.kind != "session" || session.exp <= chrono::Utc::now().timestamp() {
+    if session.kind != "session" || session.exp <= crate::timeutil::now_unix() {
         return None;
     }
     let dashboard = server.dashboard.lock().await;
@@ -155,7 +155,7 @@ pub async fn setup(
     let value = sign(
         &server.session_key,
         &json!({
-            "kind": "setup", "exp": chrono::Utc::now().timestamp() + 3600,
+            "kind": "setup", "exp": crate::timeutil::now_unix() + 3600,
             "nonce": uuid::Uuid::new_v4().simple().to_string()
         }),
     );
@@ -190,7 +190,7 @@ pub async fn login(State(server): State<Arc<Server>>) -> Response {
     let value = sign(
         &server.session_key,
         &json!({
-            "kind": "oauth", "nonce": state, "exp": chrono::Utc::now().timestamp() + 600
+            "kind": "oauth", "nonce": state, "exp": crate::timeutil::now_unix() + 600
         }),
     );
     let mut response = Redirect::to(url.as_str()).into_response();
@@ -250,7 +250,7 @@ pub async fn callback(
     let session = Session {
         user,
         csrf: uuid::Uuid::new_v4().simple().to_string(),
-        exp: chrono::Utc::now().timestamp() + 14 * 86400,
+        exp: crate::timeutil::now_unix() + 14 * 86400,
         kind: "session".into(),
     };
     // A full reconcile can take a while on a large inventory; the browser

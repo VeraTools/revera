@@ -206,7 +206,7 @@ struct Read {
     etag: Option<String>,
 }
 async fn read(server: &Server, path: &str, etag: Option<&str>) -> Outcome<Read> {
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::timeutil::now_unix();
     let retry_at = server.external.lock().await.retry_at;
     if retry_at > now {
         return Err(Failure {
@@ -372,7 +372,7 @@ async fn enqueue(
     admission: Option<&super::queue::ReviewAdmission>,
 ) -> Outcome<Value> {
     let policy = server.dashboard.lock().await.preferences.external.clone();
-    let admitted_at = chrono::Utc::now().timestamp();
+    let admitted_at = crate::timeutil::now_unix();
     {
         let mut store = server.external.lock().await;
         let mut next = store.clone();
@@ -418,7 +418,7 @@ pub async fn stale(server: &Server, summary: &dashboard::JobSummary) -> Option<b
     let head = summary.head_sha.as_deref()?;
     let target = PrUrl::parse(summary.pr_url.as_deref()?).ok()?;
     let key = target.url();
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::timeutil::now_unix();
     if let Some((at, current)) = server.external_heads.lock().await.get(&key)
         && now - at < 60
     {
@@ -701,7 +701,7 @@ pub async fn poll(server: &Server) -> Result<()> {
     };
     let policy = server.dashboard.lock().await.preferences.external.clone();
     if policy.tracking_enabled {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::timeutil::now_unix();
         let due: Vec<_> = server
             .external
             .lock()
@@ -836,7 +836,8 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
             .filter(|item| item.status == "tracking")
             .map(|item| (item.repo_id, item.number)),
     );
-    let cutoff = chrono::Utc::now() - chrono::Duration::days(policy.retention_days as i64);
+    let cutoff =
+        crate::timeutil::now_utc() - crate::timeutil::Duration::days(policy.retention_days as i64);
     let dashboard = server.dashboard.lock().await;
     let recent: BTreeMap<_, _> = dashboard
         .jobs
@@ -845,7 +846,7 @@ async fn prune(server: &Server, policy: &Policy) -> Result<()> {
         .filter_map(|job| {
             Some((
                 (job.repo_id?, job.pr?),
-                chrono::DateTime::parse_from_rfc3339(&job.queued_at).ok()?,
+                crate::timeutil::parse_rfc3339(&job.queued_at)?,
             ))
         })
         .fold(BTreeMap::new(), |mut acc, (id, at)| {

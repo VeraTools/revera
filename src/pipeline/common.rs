@@ -563,16 +563,17 @@ pub async fn prepare(cfg: &Config, req: &ReviewRequest, strategy_name: &str) -> 
                 None
             }
             Err(e) => {
+                let full = format!("{e:#}");
                 timing.record(
                     "vera_index",
                     "",
                     t0,
                     wall,
-                    &format!("error:{}", crate::text::excerpt_bytes(&e.to_string(), 60)),
+                    &format!("error:{}", crate::text::excerpt_bytes(&full, 60)),
                 );
-                tracing::warn!("vera index failed (continuing without retrieval): {e}");
+                tracing::warn!("vera index failed (continuing without retrieval): {full}");
                 partial_reasons.push("semantic retrieval unavailable".into());
-                Some(crate::text::excerpt_bytes(&e.to_string(), 200))
+                Some(crate::text::excerpt_bytes(&full, 200))
             }
         }
     };

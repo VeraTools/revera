@@ -818,6 +818,30 @@ fn summary_presentation_retrieval_unavailable_and_provider_timeout() {
 }
 
 #[test]
+fn summary_presentation_sanitizes_retrieval_unavailable() {
+    use revera::report::Summary;
+    let s = render(&Summary {
+        coverage: "x",
+        status: Some(RunStatus::Partial),
+        strategy: "baseline",
+        retrieval_unavailable: Some(
+            "vera update failed: @someone see https://evil.example\n<script>alert(1)</script> [x]",
+        ),
+        ..Default::default()
+    });
+    let line = s
+        .lines()
+        .find(|l| l.starts_with("> Semantic retrieval unavailable ("))
+        .expect("retrieval blockquote present");
+    assert!(!line.contains("@someone"), "{line}");
+    assert!(!line.contains("https://evil.example"), "{line}");
+    assert!(!line.contains("<script>"), "{line}");
+    assert!(line.contains("&lt;script>"), "{line}");
+    assert!(line.contains(r"\[x\]"), "{line}");
+    assert!(line.ends_with("; repository-wide lookups used lexical search only."));
+}
+
+#[test]
 fn summary_presentation_failed_publication_note() {
     use revera::report::Summary;
     let s = render(&Summary {

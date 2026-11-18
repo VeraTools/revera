@@ -3,7 +3,7 @@ use super::{
     Usage,
 };
 use crate::config::{ModelRoute, ReasoningEffort};
-use chrono::{DateTime, Utc};
+use crate::timeutil::{OffsetDateTime, now_utc, parse_rfc2822};
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -39,6 +39,9 @@ pub struct AttemptState {
     pub drop_reasoning: bool,
     /// Omit provider prompt-cache hints after a provider rejects them.
     pub drop_cache_hint: bool,
+    /// Omit echoed opaque `provider_state` items (e.g. encrypted reasoning)
+    /// when a load-balanced endpoint cannot decrypt items from another key.
+    pub drop_provider_state: bool,
     /// After a 400 that rejected the requested effort, cap subsequent
     /// attempts to this level before falling back to dropping reasoning.
     pub reasoning_cap: Option<ReasoningEffort>,
@@ -53,6 +56,7 @@ impl Default for AttemptState {
             drop_temperature: false,
             drop_reasoning: false,
             drop_cache_hint: false,
+            drop_provider_state: false,
             reasoning_cap: None,
             thinking_mode_retried: false,
         }
@@ -233,16 +237,14 @@ impl HttpTransport {
         Duration::from_secs_f64(backoff.min(MAX_RETRY_AFTER_SECS))
     }
 
-    pub fn retry_delay(header: Option<&str>, attempt: u32, now: DateTime<Utc>) -> Duration {
+    pub fn retry_delay(header: Option<&str>, attempt: u32, now: OffsetDateTime) -> Duration {
         if let Some(value) = header.map(str::trim) {
             if let Ok(seconds) = value.parse::<f64>() {
                 if seconds.is_finite() && seconds >= 0.0 {
                     return Duration::from_secs_f64(seconds.min(MAX_RETRY_AFTER_SECS));
                 }
-            } else if let Ok(date) = DateTime::parse_from_rfc2822(value) {
-                let seconds = (date.with_timezone(&Utc) - now)
-                    .to_std()
-                    .unwrap_or_default();
+            } else if let Some(date) = parse_rfc2822(value) {
+                let seconds = std::time::Duration::try_from(date - now).unwrap_or_default();
                 return seconds.min(Duration::from_secs_f64(MAX_RETRY_AFTER_SECS));
             }
         }
@@ -316,8 +318,9 @@ impl HttpTransport {
                 req = req.header(k.as_str(), v.as_str());
             }
             // A proxy that sends headers early (keepalive) leaves the wait in
-            // the body read: a 2xx body that never arrives is a transport
-            // error; error statuses keep their status-based handling.
+            // the body read: a 2xx or 400 body that never arrives is a
+            // transport error (400 relies on the body to classify upstream or
+            // field errors); other error statuses keep their status handling.
             let result = match req.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
@@ -328,7 +331,7 @@ impl HttpTransport {
                         .map(str::to_string);
                     match resp.text().await {
                         Ok(text) => Ok((status, retry_after, text)),
-                        Err(e) if (200..300).contains(&status) => Err(e),
+                        Err(e) if (200..300).contains(&status) || status == 400 => Err(e),
                         Err(_) => Ok((status, retry_after, String::new())),
                     }
                 }
@@ -349,7 +352,7 @@ impl HttpTransport {
                             );
                             retries_used += 1;
                             let d =
-                                Self::retry_delay(retry_after.as_deref(), retries_used, Utc::now());
+                                Self::retry_delay(retry_after.as_deref(), retries_used, now_utc());
                             tokio::time::sleep(d).await;
                             continue;
                         }
@@ -357,6 +360,28 @@ impl HttpTransport {
                             "HTTP {status}: {}",
                             crate::text::excerpt_bytes(&text, 400)
                         )));
+                        self.record(
+                            &tel,
+                            &effective,
+                            LedgerEntry {
+                                latency_ms: start.elapsed().as_millis() as u64,
+                                retries: retries_used,
+                                error: Some(err.to_string()),
+                                ..Default::default()
+                            },
+                        );
+                        return Err(err);
+                    }
+                    if status == 400
+                        && let Some(reason) = wrapped_upstream_failure(&text)
+                    {
+                        let err = diagnostic_error(ProviderError::Failure {
+                            reason,
+                            message: format!(
+                                "HTTP 400: {}",
+                                crate::text::excerpt_bytes(&text, 400)
+                            ),
+                        });
                         self.record(
                             &tel,
                             &effective,
@@ -430,12 +455,7 @@ impl HttpTransport {
                             continue;
                         }
                         Parse::Err(e) => {
-                            let reason = match status {
-                                401 | 403 => Some(FallbackReason::Authentication),
-                                404 => Some(FallbackReason::NotFound),
-                                200..=299 => Some(FallbackReason::MalformedResponse),
-                                _ => None,
-                            };
+                            let reason = classify_http_failure(status, &text);
                             let e = if let Some(reason) = reason {
                                 ProviderError::Failure {
                                     reason,
@@ -465,7 +485,8 @@ impl HttpTransport {
                     } else {
                         FallbackReason::Transport
                     };
-                    let transient = e.is_timeout() || e.is_connect();
+                    let transient =
+                        e.is_timeout() || e.is_connect() || e.is_body() || e.is_decode();
                     let message = crate::redact::diagnostic(&e.without_url().to_string());
                     if transient && attempts <= self.retries {
                         self.record(
@@ -478,7 +499,7 @@ impl HttpTransport {
                             },
                         );
                         retries_used += 1;
-                        tokio::time::sleep(Self::retry_delay(None, retries_used, Utc::now())).await;
+                        tokio::time::sleep(Self::retry_delay(None, retries_used, now_utc())).await;
                         continue;
                     }
                     let err = diagnostic_error(ProviderError::Failure { reason, message });
@@ -496,6 +517,36 @@ impl HttpTransport {
                 }
             }
         }
+    }
+}
+
+fn wrapped_upstream_failure(body: &str) -> Option<FallbackReason> {
+    let lower = body.to_ascii_lowercase();
+    if lower.contains("status 401")
+        || lower.contains("status 402")
+        || lower.contains("status 403")
+        || lower.contains("insufficient_quota")
+        || lower.contains("insufficient_user_quota")
+        || lower.contains("content_policy_rejected")
+        || lower.contains("usage policy")
+    {
+        Some(FallbackReason::Authentication)
+    } else if lower.contains("status 404") || lower.contains("model_not_found") {
+        Some(FallbackReason::NotFound)
+    } else if lower.contains("status 429") || lower.contains("rate_limit_exceeded") {
+        Some(FallbackReason::RateLimitOrServer)
+    } else {
+        None
+    }
+}
+
+fn classify_http_failure(status: u16, body: &str) -> Option<FallbackReason> {
+    match status {
+        401..=403 => Some(FallbackReason::Authentication),
+        404 => Some(FallbackReason::NotFound),
+        200..=299 => Some(FallbackReason::MalformedResponse),
+        400 => wrapped_upstream_failure(body),
+        _ => None,
     }
 }
 
@@ -563,6 +614,7 @@ mod tests {
             drop_temperature: true,
             drop_reasoning: true,
             drop_cache_hint: true,
+            drop_provider_state: true,
             reasoning_cap: Some(ReasoningEffort::Low),
             thinking_mode_retried: true,
         });
@@ -575,6 +627,7 @@ mod tests {
         assert!(learned.drop_temperature);
         assert!(!learned.drop_reasoning);
         assert!(learned.drop_cache_hint);
+        assert!(!learned.drop_provider_state);
         assert_eq!(learned.reasoning_cap, None);
         assert!(!learned.thinking_mode_retried);
 

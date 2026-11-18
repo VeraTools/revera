@@ -691,7 +691,7 @@ pub(super) async fn once_locked(server: &Server) -> Result<()> {
                 // Both an unadvanced push checkpoint and a failed legacy job can
                 // request an index. Neither may bypass reconcile retry backoff.
                 if matches!(job.kind, Kind::Index)
-                    && retry_at.is_some_and(|at| at > chrono::Utc::now())
+                    && retry_at.is_some_and(|at| at > crate::timeutil::now_utc())
                 {
                     continue;
                 }

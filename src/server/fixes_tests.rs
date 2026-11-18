@@ -325,7 +325,7 @@ async fn call(
             avatar_url: String::new(),
         },
         csrf: "csrf-fixture".into(),
-        exp: chrono::Utc::now().timestamp() + 3600,
+        exp: crate::timeutil::now_unix() + 3600,
         kind: "session".into(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2121,13 +2121,15 @@ async fn retention_keeps_latest_200_and_durable_rate_limits_survive_eviction() {
     let mut store = s.fixes.lock().await;
     let mut template = store.entries[&id].clone();
     template.record.state = "discarded".into();
-    let now = chrono::Utc::now();
-    template.record.created_at = (now - chrono::Duration::seconds(2000)).to_rfc3339();
+    let now = crate::timeutil::now_utc();
+    template.record.created_at =
+        crate::timeutil::format_rfc3339(now - crate::timeutil::Duration::seconds(2000));
     save(&s, &mut store, template.clone()).await.unwrap();
     for i in 1..=201 {
         let mut e = template.clone();
         e.record.id = format!("{i:032x}");
-        e.record.created_at = (now - chrono::Duration::seconds(1000 - i)).to_rfc3339();
+        e.record.created_at =
+            crate::timeutil::format_rfc3339(now - crate::timeutil::Duration::seconds(1000 - i));
         save(&s, &mut store, e).await.unwrap();
     }
     store.prune(&s.settings.data_dir).unwrap();

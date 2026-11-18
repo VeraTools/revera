@@ -62,7 +62,7 @@ pub struct Finding {
     pub introduced_by_change: bool,
     #[serde(default)]
     pub supporting_evidence: Vec<Evidence>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub counterevidence_checked: Vec<String>,
     #[serde(default)]
     pub validation_status: Option<ValidationStatus>,
@@ -116,7 +116,7 @@ pub fn finding_id(file: &str, defect_key: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verdict {
     pub validation_status: ValidationStatus,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub counterevidence_checked: Vec<String>,
     #[serde(default)]
     pub severity: Option<Severity>,
@@ -247,6 +247,28 @@ fn lenient_fix<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>,
     Ok(match serde_json::Value::deserialize(d)? {
         serde_json::Value::String(s) if !s.trim().is_empty() => Some(s),
         _ => None,
+    })
+}
+
+fn lenient_string_vec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+        serde_json::Value::String(s) => {
+            if let Ok(items) = serde_json::from_str::<Vec<String>>(&s) {
+                items
+            } else if !s.trim().is_empty() {
+                vec![s]
+            } else {
+                vec![]
+            }
+        }
+        _ => vec![],
     })
 }
 

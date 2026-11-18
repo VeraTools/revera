@@ -78,9 +78,9 @@ pub type Key = (u64, u64, Source);
 /// Unix seconds; normalize so the two compare equal.
 fn pushed_at(value: &Value) -> String {
     match value {
-        Value::String(s) => chrono::DateTime::parse_from_rfc3339(s)
-            .map(|t| t.timestamp().to_string())
-            .unwrap_or_else(|_| s.clone()),
+        Value::String(s) => crate::timeutil::parse_rfc3339(s)
+            .map(|t| t.unix_timestamp().to_string())
+            .unwrap_or_else(|| s.clone()),
         Value::Number(n) => n.as_i64().map_or_else(|| n.to_string(), |t| t.to_string()),
         _ => String::new(),
     }

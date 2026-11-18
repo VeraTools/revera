@@ -381,7 +381,7 @@ impl JobSummary {
             status: "queued".into(),
             reason: None,
             findings: FindingCounts::default(),
-            queued_at: chrono::Utc::now().to_rfc3339(),
+            queued_at: crate::timeutil::now_rfc3339(),
             started_at: None,
             finished_at: None,
             duration_ms: None,
@@ -396,21 +396,17 @@ impl JobSummary {
     pub fn set_state(&mut self, status: &str, reason: Option<String>) {
         self.status = status.into();
         self.reason = reason;
-        let now = chrono::Utc::now();
+        let now = crate::timeutil::now_utc();
         if status == "running" {
-            self.started_at = Some(now.to_rfc3339());
+            self.started_at = Some(crate::timeutil::format_rfc3339(now));
         }
         if self.terminal() {
-            self.finished_at = Some(now.to_rfc3339());
+            self.finished_at = Some(crate::timeutil::format_rfc3339(now));
             self.duration_ms = self
                 .started_at
                 .as_ref()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|start| {
-                    (now - start.with_timezone(&chrono::Utc))
-                        .num_milliseconds()
-                        .max(0) as u64
-                });
+                .and_then(|s| crate::timeutil::parse_rfc3339(s))
+                .map(|start| (now - start).whole_milliseconds().max(0) as u64);
         }
     }
 }
@@ -577,7 +573,7 @@ impl Dashboard {
         crate::redact::json(&mut value);
         crate::fsutil::write_atomic_in(data, "health.json", &serde_json::to_vec_pretty(&value)?)
     }
-    pub fn index_retry_at(&self, repo: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn index_retry_at(&self, repo: &str) -> Option<crate::timeutil::OffsetDateTime> {
         let mut history: Vec<_> = self
             .jobs
             .values()
@@ -597,11 +593,9 @@ impl Dashboard {
             }
         }
         let latest = latest?;
-        let finished = chrono::DateTime::parse_from_rfc3339(latest.finished_at.as_deref()?)
-            .ok()?
-            .with_timezone(&chrono::Utc);
+        let finished = crate::timeutil::parse_rfc3339(latest.finished_at.as_deref()?)?;
         let minutes = (1..failures).fold(10, |delay, _| (delay * 2).min(24 * 60));
-        Some(finished + chrono::Duration::minutes(minutes))
+        Some(finished + crate::timeutil::Duration::minutes(minutes))
     }
     pub fn unconfigured_reviews(&self, repo: &str) -> BTreeSet<u64> {
         let mut latest = BTreeMap::<u64, &JobSummary>::new();
@@ -833,7 +827,7 @@ impl Server {
                         &token,
                         Some(json!({
                             "status": "completed", "conclusion": "cancelled",
-                            "completed_at": chrono::Utc::now().to_rfc3339(),
+                            "completed_at": crate::timeutil::now_rfc3339(),
                             "output": {"title": "Review cancelled", "summary": "server restarted"}
                         })),
                     )

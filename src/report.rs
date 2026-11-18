@@ -514,7 +514,8 @@ pub fn summary_markdown(inp: &Summary<'_>) -> String {
     }
     if let Some(r) = inp.retrieval_unavailable {
         s.push_str(&format!(
-            "\n> Semantic retrieval unavailable ({r}); repository-wide lookups used lexical search only.\n"
+            "\n> Semantic retrieval unavailable ({}); repository-wide lookups used lexical search only.\n",
+            public_line(r)
         ));
     }
     s.push('\n');

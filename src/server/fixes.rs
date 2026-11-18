@@ -238,7 +238,7 @@ pub struct Record {
 }
 impl Record {
     fn audit(&mut self, actor: &str, action: &str, detail: &str) {
-        self.updated_at = chrono::Utc::now().to_rfc3339();
+        self.updated_at = crate::timeutil::now_rfc3339();
         let detail = crate::handoff::text(detail, 4000);
         if let Some(event) = self
             .events
@@ -404,7 +404,7 @@ impl Store {
         };
         store
             .admissions
-            .retain(|a| a.at > chrono::Utc::now().timestamp() - 86400);
+            .retain(|a| a.at > crate::timeutil::now_unix() - 86400);
         for item in std::fs::read_dir(root)? {
             let item = item?;
             if !item.file_type()?.is_dir() {
@@ -778,7 +778,7 @@ fn admit_attempt(
     repo: &str,
     p: &Policy,
 ) -> Outcome<()> {
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::timeutil::now_unix();
     let mut attempts = store.attempts.clone();
     attempts.retain(|a| a.at > now - 3600);
     if attempts
@@ -832,7 +832,7 @@ pub async fn request(
     let key = key(&job, &selected);
     let mut store = server.fixes.lock().await;
     if denied.is_some() {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::timeutil::now_unix();
         let mut denials = store.denials.clone();
         denials.retain(|a| a.at > now - 3600);
         if denials.iter().any(|a| a.actor.eq_ignore_ascii_case(actor)) {
@@ -882,13 +882,15 @@ pub async fn request(
             Ok(record)
         };
     }
-    let now = chrono::Utc::now();
+    let now = crate::timeutil::now_utc();
+    let now_ts = now.unix_timestamp();
+    let now_iso = crate::timeutil::format_rfc3339(now);
     let count = |window: i64, user: bool| {
         store
             .admissions
             .iter()
             .filter(|a| {
-                a.at > now.timestamp() - window
+                a.at > now_ts - window
                     && if user {
                         a.actor.eq_ignore_ascii_case(actor)
                     } else {
@@ -915,7 +917,7 @@ pub async fn request(
         && !preview_only
         && matches!(origin, "mention" | "check");
     let queue = consent.is_some() && (once || origin == "auto" || !p.confirm || trusted_skip);
-    let mut record = Record { id: uuid::Uuid::new_v4().simple().to_string(), created_at: now.to_rfc3339(), updated_at: now.to_rfc3339(), state: if queue {"queued"} else {"awaiting_confirmation"}.into(), reason: None, source: origin.into(), requested_by: actor.into(), consent, repo: job.repo.clone(), repo_source:job.source, pr:job.pr.unwrap(), pr_url:format!("https://github.com/{}/pull/{}",job.repo,job.pr.unwrap()), pr_title:crate::handoff::text(pr["title"].as_str().unwrap_or(""),500), review_job:job.id, base_sha:job.base_sha.clone().filter(|s|crate::git::is_oid(s)).context("review missing base SHA")?, head_sha:job.head_sha.clone().filter(|s|crate::git::is_oid(s)).context("review missing head SHA")?, findings:selected.iter().map(|f|json!({"id":f.id(),"severity":f.severity,"title":crate::handoff::text(&f.title,500),"file":crate::handoff::text(&f.file,1000),"start_line":f.start_line,"end_line":f.end_line.unwrap_or(f.start_line)})).collect(), attempt:0, max_attempts:p.limits.attempts, progress:None, generation:None, verification:None, tests:None, patch:None, usage:None, delivery:None, verify_review:None, events:vec![] };
+    let mut record = Record { id: uuid::Uuid::new_v4().simple().to_string(), created_at: now_iso.clone(), updated_at: now_iso, state: if queue {"queued"} else {"awaiting_confirmation"}.into(), reason: None, source: origin.into(), requested_by: actor.into(), consent, repo: job.repo.clone(), repo_source:job.source, pr:job.pr.unwrap(), pr_url:format!("https://github.com/{}/pull/{}",job.repo,job.pr.unwrap()), pr_title:crate::handoff::text(pr["title"].as_str().unwrap_or(""),500), review_job:job.id, base_sha:job.base_sha.clone().filter(|s|crate::git::is_oid(s)).context("review missing base SHA")?, head_sha:job.head_sha.clone().filter(|s|crate::git::is_oid(s)).context("review missing head SHA")?, findings:selected.iter().map(|f|json!({"id":f.id(),"severity":f.severity,"title":crate::handoff::text(&f.title,500),"file":crate::handoff::text(&f.file,1000),"start_line":f.start_line,"end_line":f.end_line.unwrap_or(f.start_line)})).collect(), attempt:0, max_attempts:p.limits.attempts, progress:None, generation:None, verification:None, tests:None, patch:None, usage:None, delivery:None, verify_review:None, events:vec![] };
     record.audit(actor, "requested", origin);
     if let Some(reason) = denied.as_deref() {
         record.transition("failed", Some(reason), actor, "permission_denied");
@@ -927,9 +929,9 @@ pub async fn request(
     }
     if denied.is_none() {
         let mut admissions = store.admissions.clone();
-        admissions.retain(|a| a.at > now.timestamp() - 86400);
+        admissions.retain(|a| a.at > now_ts - 86400);
         admissions.push(Admission {
-            at: now.timestamp(),
+            at: now_ts,
             actor: actor.into(),
             repo: record.repo.clone(),
         });

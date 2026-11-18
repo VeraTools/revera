@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.12.6
+
+- Vera index and update errors now show the subcommand and actual failure or timeout (without the `--exclude` flag list crowding out the cause), note when partial embeddings were saved to `.vera.resume` on timeout, and sanitize retrieval notices in the PR summary comment. Existing `.vera` indexes without `.revera/vera-cache.json` metadata, unhealthy indexes, and indexes whose `vera update` reports an incompatible format or provider are rebuilt via `vera index`, while transient update failures keep the warm index intact.
+- OpenAI Responses requests recover from `invalid_encrypted_content` 400 errors on load-balanced multi-key endpoints by retrying the request without echoed encrypted reasoning items.
+- Provider transport now retries dropped or truncated HTTP response streams up to the configured retry limit, and route fallback handles HTTP 402 as well as gateway-wrapped HTTP 400 errors carrying upstream auth, quota, usage-policy, not-found, or rate-limit statuses.
+- Server jobs retry blobless `git checkout` up to three times (clearing stale checkout locks between attempts), and `submit_verdict` / `submit_findings` accept JSON-encoded string arrays or single strings for `counterevidence_checked`.
+- Replaced `chrono` with `time` (`RUSTSEC-2026-0543`) and refreshed repository documentation.
+
 ## v0.12.5
 
 - The dashboard's External PRs settings now have their own **External** tab in Settings. They were previously shown below every settings tab. The **External PR settings** link in Reviews opens that tab.

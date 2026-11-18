@@ -343,8 +343,9 @@ async fn disabled_push_indexing_advances_checkpoints_and_hides_all_retries() {
             "reconcile",
         ));
         summary.set_state("failed", None);
-        summary.finished_at =
-            Some((chrono::Utc::now() - chrono::Duration::minutes(minutes)).to_rfc3339());
+        summary.finished_at = Some(crate::timeutil::format_rfc3339(
+            crate::timeutil::now_utc() - crate::timeutil::Duration::minutes(minutes),
+        ));
         server.update_job(summary).await.unwrap();
         let mut value = repository();
         value["pushed_at"] = json!("two");
@@ -395,7 +396,9 @@ async fn due_index_retry_checks_sha_even_without_a_new_push() {
     let mut summary =
         dashboard::JobSummary::queued(&events::Job::new(repo, events::Kind::Index, "reconcile"));
     summary.set_state("failed", None);
-    summary.finished_at = Some((chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339());
+    summary.finished_at = Some(crate::timeutil::format_rfc3339(
+        crate::timeutil::now_utc() - crate::timeutil::Duration::minutes(20),
+    ));
     server.update_job(summary).await.unwrap();
     inventory(&mock, repository(), vec![], 1).await;
     Mock::given(method("GET"))

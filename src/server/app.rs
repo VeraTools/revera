@@ -60,7 +60,7 @@ impl App {
     }
 
     pub fn jwt(&self) -> Result<String> {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::timeutil::now_unix();
         let jwt = jsonwebtoken::encode(
             &Header::new(Algorithm::RS256),
             &json!({"iat": now - 60, "exp": now + 9 * 60, "iss": self.id.to_string()}),
@@ -348,11 +348,9 @@ impl Api {
             .to_string();
         let valid_for = response["expires_at"]
             .as_str()
-            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .and_then(crate::timeutil::parse_rfc3339)
             .map_or(INSTALLATION_TOKEN_LIFETIME, |at| {
-                (at.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                    .to_std()
-                    .unwrap_or_default()
+                std::time::Duration::try_from(at - crate::timeutil::now_utc()).unwrap_or_default()
             });
         crate::redact::register_expiring(&token, valid_for);
         Ok(token)

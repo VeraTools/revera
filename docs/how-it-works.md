@@ -20,7 +20,7 @@ content affects review identity, not the Vera index cache.
 
 ```text
 1. diff       base…head (merge-base; fetch more history if needed)
-2. retrieve   optional `vera update` on the exact head; lexical tools always
+2. retrieve   optional `vera index` / `vera update` on the exact head; lexical tools always
 3. investigate  agent loop with read-only tools → candidate findings
 4. validate   one fresh-context agent per candidate → accepted | rejected | uncertain
 5. reconcile  anchor to diff lines, dedupe, resolve/reopen against prior state
@@ -36,7 +36,7 @@ It fails if there is still no merge base; it never falls back to a two-dot diff.
 **Retrieval.** Every run has lexical tools over the tracked files of the
 head tree (`grep_repo`, `find_files`, `read_file`, `diff_context`,
 `list_changed_files`; `.git`, `.revera` and Vera's `.vera*` directories
-excluded). When a `vera:` block is configured, Revera runs `vera update .`
+excluded). When a `vera:` block is configured, Revera runs `vera index .` or `vera update .`
 once before any model call and adds `vera_search`, `vera_references`,
 `vera_grep` and `vera_overview`. Models cannot rebuild the index. If Vera is missing, fails or times out, the
 run continues lexical-only and is marked `partial` with "semantic retrieval
@@ -291,9 +291,12 @@ choosing them. Route and budget keys are in the
 `vera:` configuration becomes the subprocess environment (`backend: api`
 sets `VERA_BACKEND=api` plus `EMBEDDING_*`/`RERANKER_*` from the configured
 env names). `.revera/vera-cache.json` records Vera version, backend,
-embedding model and vector dimension and is rewritten only after a
-successful, health-checked index or update; a restored cache that does not
-match is discarded. `revera cache-key` hashes only the index-shaping
+embedding model, vector dimension and `index_key`, and is rewritten only after a
+successful, health-checked index or update. A restored or existing `.vera`
+index without matching `vera-cache.json` metadata, an unhealthy index, or an
+index whose `vera update` reports an incompatible format or provider is rebuilt
+via `vera index`, while transient update failures keep the warm index intact.
+`revera cache-key` hashes only the index-shaping
 configuration (backend, embedding origin and model, excludes, Vera
 version) so the Action's cache survives investigator, validator, reranker,
 prompt, budget and credential-name changes; it prints
@@ -306,18 +309,26 @@ entirely.
 src/
   cli.rs        serve | review | index | doctor | cache-key | cache-info
   config.rs     revera.yaml schema, env expansion, profiles, effective validation
-  git.rs        git subprocesses: revisions, merge-base, diff, patch and tree ids, grep
   diff.rs       unified diff → hunks → reviewable lines
-  vera.rs       external `vera` executable: version, update, search, references
-  provider/     ModelClient: openai-chat, openai-responses, anthropic, gemini, scripted
-  tools.rs      read-only tool set exposed to models
-  agent.rs      bounded tool-calling loop
-  pipeline/     baseline | delegated | panel → candidates → validation → anchoring
   findings.rs   finding and verdict schema, ids, candidate collapsing
-  handoff.rs    accepted-finding instructions shared by dashboard and GitHub
-  state.rs      review state and review key
+  fix/          sandboxed fix generation, patch policy checks and verification
+  fsutil.rs     symlink-safe, atomic repo and state file operations
+  git.rs        git subprocesses: revisions, merge-base, diff, patch and tree ids, grep
   github/       event parsing, API, publication, state marker
+  guidance.rs   base-commit REVIEW.md / AGENTS.md / CLAUDE.md and skills loader
+  handoff.rs    accepted-finding instructions shared by dashboard and GitHub
+  pipeline/     baseline | delegated | panel → candidates → validation → anchoring
+  playbook.rs   built-in and operator-override reviewer playbook loader
+  provider/     ModelClient: openai-chat, openai-responses, anthropic, gemini, scripted
+  redact.rs     credential registration and text/JSON redaction
   report.rs     run report + summary rendering
-  server/       GitHub App, dashboard API, review queue and external PR tracking
-prompts/        investigator, validator, lead, worker, scout prompts
+  server/       GitHub App, dashboard API, review queue, fixes and external PR tracking
+  state.rs      review state and review key
+  timeutil.rs   UTC RFC 3339 / RFC 2822 and timestamp helpers
+  timing.rs     per-phase duration recorder
+  tools.rs      read-only tool set exposed to models
+  vera.rs       external `vera` executable: version, index, update, search, references
+  web.rs        bounded, opt-in external web search and page reads
+playbook/       built-in reviewer method and twelve defect-class skills
+prompts/        investigator, validator, recheck, dedup, lead, worker and focus prompts
 ```

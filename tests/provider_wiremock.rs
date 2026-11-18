@@ -1,7 +1,7 @@
-use chrono::{Duration as ChronoDuration, Utc};
 use revera::config::{ModelRoute, Protocol};
 use revera::provider::openai_chat::OpenAiChatClient;
 use revera::provider::{ChatMessage, LedgerHandle, ModelClient, ProviderError};
+use revera::timeutil::{Duration as TimeDuration, format_rfc2822, now_utc};
 use serde_json::json;
 use std::collections::HashMap;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -11,12 +11,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn retry_after_supports_delta_dates_and_caps() {
     use revera::provider::http::HttpTransport;
 
-    let now = Utc::now();
+    let now = now_utc();
     assert_eq!(
         HttpTransport::retry_delay(Some("3"), 1, now),
         std::time::Duration::from_secs(3)
     );
-    let date = (now + ChronoDuration::seconds(10)).to_rfc2822();
+    let date = format_rfc2822(now + TimeDuration::seconds(10));
     let date_delay = HttpTransport::retry_delay(Some(&date), 1, now);
     assert!((9..=10).contains(&date_delay.as_secs()));
     assert_eq!(
@@ -445,6 +445,50 @@ async fn body_read_timeout_is_a_timeout_not_a_malformed_response() {
 }
 
 #[tokio::test]
+async fn aborted_body_read_retries_once_and_falls_back_as_transport() {
+    use revera::provider::FallbackReason;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for status in ["200 OK", "400 Bad Request"] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = accepts.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let _ = socket.read(&mut buf).await;
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{{"
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        let route = route_for(&url, Protocol::OpenaiChat, "test-model");
+        let ledger = LedgerHandle::new();
+        let client = routed_client(&route, &ledger, "body-abort", 3, 1);
+        let error = client
+            .complete(&[ChatMessage::user("hi")], &[])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.fallback_reason(),
+            Some(FallbackReason::Transport),
+            "{status}: {error}"
+        );
+        assert_eq!(
+            accepts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "{status}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn fallback_uses_its_own_request_timeout() {
     let primary = MockServer::start().await;
     let backup = MockServer::start().await;
@@ -838,9 +882,25 @@ async fn fallback_waits_for_retries_then_is_sticky_across_recreated_role_clients
 async fn fallback_provider_failure_classes_and_nonretryable_http_errors() {
     for (status, body, reason) in [
         (401, "bad key", Some("authentication")),
+        (402, "quota exhausted", Some("authentication")),
         (403, "denied", Some("authentication")),
         (404, "unknown model", Some("not_found")),
         (429, "rate limit", Some("rate_limit_or_server")),
+        (
+            400,
+            r#"{"error":{"message":"status 403: blocked by upstream usage policy for reasoning","code":"content_policy_rejected"}}"#,
+            Some("authentication"),
+        ),
+        (
+            400,
+            r#"{"error":{"message":"status 404: model_not_found: model-thinking"}}"#,
+            Some("not_found"),
+        ),
+        (
+            400,
+            r#"{"error":{"message":"status 429: rate_limit_exceeded"}}"#,
+            Some("rate_limit_or_server"),
+        ),
         (200, "not JSON", Some("malformed_response")),
         (200, "{}", Some("malformed_response")),
         (
@@ -3906,4 +3966,65 @@ async fn anthropic_capped_call_lowers_an_explicit_thinking_budget() {
         .await
         .unwrap();
     server.verify().await;
+}
+
+#[tokio::test]
+async fn openai_responses_retries_without_prior_encrypted_reasoning_items_on_400() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(|req: &wiremock::Request| String::from_utf8_lossy(&req.body).contains("\"rs_1\""))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "invalid_encrypted_content",
+                "message": "Encrypted content could not be decrypted or parsed."
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(|req: &wiremock::Request| String::from_utf8_lossy(&req.body).contains("call_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 2}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": [
+                {"type":"reasoning","id":"rs_1","encrypted_content":"enc_abc"},
+                {"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 3}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let c = resp_adapter(
+        &server.uri(),
+        spec(ReasoningEffort::High, None, ReasoningField::Auto),
+    );
+    let mut messages = vec![ChatMessage::user("check")];
+    let turn1 = c.complete(&messages, &[]).await.unwrap();
+    messages.push(turn1.message);
+    messages.push(ChatMessage::tool("call_1", "read_file", "fn a() {}"));
+    let turn2 = c.complete(&messages, &[]).await.unwrap();
+    assert_eq!(turn2.message.content.as_deref(), Some("ok"));
+    server.verify().await;
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 3);
+    let retry_body: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert_eq!(retry_body["reasoning"]["effort"], "high");
+    let input = retry_body["input"].as_array().unwrap();
+    assert!(!input.iter().any(|item| item["type"] == "reasoning"));
+    assert!(input.iter().any(|item| item["type"] == "function_call"));
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "function_call_output")
+    );
 }

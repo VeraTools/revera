@@ -236,8 +236,9 @@ async fn repositories_expose_push_time_inventory_and_review_only_counts() {
         .enumerate()
         {
             let mut summary = JobSummary::queued(&job("head"));
-            summary.queued_at =
-                (chrono::Utc::now() - chrono::Duration::minutes(minutes as i64)).to_rfc3339();
+            summary.queued_at = crate::timeutil::format_rfc3339(
+                crate::timeutil::now_utc() - crate::timeutil::Duration::minutes(minutes as i64),
+            );
             summary.repo = repo.into();
             summary.kind = kind.into();
             summary.status = "failed".into();
@@ -295,7 +296,7 @@ async fn overview_windows_sum_review_findings_failures_tokens_and_median() {
         .expect(3)
         .mount(&mock)
         .await;
-    let now = chrono::Utc::now();
+    let now = crate::timeutil::now_utc();
     let mut entries = Vec::new();
     for (hours, kind, status, duration, high, medium, low, tokens) in [
         (
@@ -345,7 +346,8 @@ async fn overview_windows_sum_review_findings_failures_tokens_and_median() {
         (192, "review", "complete", Some(700), 1, 0, 0, None),
     ] {
         let mut summary = JobSummary::queued(&job("head"));
-        summary.queued_at = (now - chrono::Duration::hours(hours)).to_rfc3339();
+        summary.queued_at =
+            crate::timeutil::format_rfc3339(now - crate::timeutil::Duration::hours(hours));
         summary.kind = kind.into();
         summary.status = status.into();
         summary.duration_ms = duration;
@@ -432,8 +434,9 @@ async fn jobs_search_matches_title_author_repo_pr_and_filtered_pagination() {
     .enumerate()
     {
         let mut summary = JobSummary::queued(&job("head"));
-        summary.queued_at =
-            (chrono::Utc::now() - chrono::Duration::minutes(index as i64)).to_rfc3339();
+        summary.queued_at = crate::timeutil::format_rfc3339(
+            crate::timeutil::now_utc() - crate::timeutil::Duration::minutes(index as i64),
+        );
         summary.repo = repo.into();
         summary.title = Some(title.into());
         summary.author = Some(author.into());

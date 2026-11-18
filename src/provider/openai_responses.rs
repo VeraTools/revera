@@ -71,7 +71,7 @@ impl HttpClient<OpenAiResponsesAdapter> {
 /// Responses API `input`: system -> top-level `instructions`; user/assistant
 /// text -> {role, content:[{type: input_text|output_text}]}; assistant tool
 /// calls -> function_call items; tool results -> function_call_output items.
-fn to_input(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
+fn to_input(messages: &[ChatMessage], drop_provider_state: bool) -> (Vec<String>, Vec<Value>) {
     let mut instructions: Vec<String> = vec![];
     let mut out: Vec<Value> = vec![];
     for m in messages {
@@ -96,7 +96,7 @@ fn to_input(messages: &[ChatMessage]) -> (Vec<String>, Vec<Value>) {
                 }
                 // reasoning items go immediately before this turn's
                 // function_call items (store:false echo-back)
-                if let Some(Value::Array(items)) = &m.provider_state {
+                if !drop_provider_state && let Some(Value::Array(items)) = &m.provider_state {
                     out.extend(items.iter().cloned());
                 }
                 for t in &m.tool_calls {
@@ -154,7 +154,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         tools: &[ToolSpec],
         attempt: &mut AttemptState,
     ) -> Result<HttpRequestSpec, ProviderError> {
-        let (instructions, input) = to_input(messages);
+        let (instructions, input) = to_input(messages, attempt.drop_provider_state);
         let tool_specs: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -216,6 +216,18 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         {
             attempt.drop_cache_hint = true;
             return Parse::RetrySameSlot("400: retrying without prompt cache hint".into());
+        }
+        if status == 400
+            && !attempt.drop_provider_state
+            && (body.contains("invalid_encrypted_content")
+                || body
+                    .to_ascii_lowercase()
+                    .contains("encrypted content could not be decrypted"))
+        {
+            attempt.drop_provider_state = true;
+            return Parse::RetrySameSlot(
+                "400: retrying without prior encrypted reasoning items".into(),
+            );
         }
         // reasoning or temperature 400 -> drop the named field, same slot
         if let Some(p) = detect_400_fallback(

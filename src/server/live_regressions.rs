@@ -483,8 +483,9 @@ async fn failed_index_preserves_pushed_at_and_next_reconcile_retries() {
         }
         // A retry is due only once the first ten-minute delay has elapsed.
         let mut failed = server.dashboard.lock().await.jobs[&current.id].clone();
-        failed.finished_at =
-            Some((chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
+        failed.finished_at = Some(crate::timeutil::format_rfc3339(
+            crate::timeutil::now_utc() - crate::timeutil::Duration::minutes(10),
+        ));
         server.update_job(failed).await.unwrap();
         mock.reset().await;
         mock_registration(&mock).await;
