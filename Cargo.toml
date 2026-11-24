@@ -36,7 +36,7 @@ url = "2"
 axum = "0.8.9"
 hmac = "0.13.0"
 jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
-nix = { version = "0.31", features = ["signal", "process"] }
+nix = { version = "0.32", features = ["signal", "process"] }
 rust-embed = { version = "8.13.0", features = ["debug-embed"] }
 mime_guess = "2.0.5"
 getrandom = "0.4.3"
